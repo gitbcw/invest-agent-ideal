@@ -10,7 +10,7 @@
  * list 返回每个候选的最新版本,审计可通过 listMethodChangeVersions 看全部历史。
  */
 
-import { and, desc, eq, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, type SQL } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db } from "../db/index.js";
 import { methodChangeCandidates } from "../db/schema.js";
@@ -64,8 +64,8 @@ export interface MethodChangeBackend {
   get(userId: string, instanceId: string, id: string): Promise<MethodChangeRecord | null>;
   /** 修改 status 为 confirmed/rejected。返回更新后的记录。 */
   decide(input: DecideInput): Promise<MethodChangeRecord | null>;
-  /** 列出候选(去重版本,按 updated_at desc)。status 可选过滤。 */
-  list(userId: string, instanceId: string, options: { status?: MethodChangeStatus; limit?: number }): Promise<MethodChangeRecord[]>;
+  /** 列出候选(去重版本,按 updated_at desc)。status 可选过滤。maxAgeDays 可选:仅返回 N 天内的候选,用于避免旧 proposed 候选污染 dashboard 上下文。 */
+  list(userId: string, instanceId: string, options: { status?: MethodChangeStatus; limit?: number; maxAgeDays?: number }): Promise<MethodChangeRecord[]>;
 }
 
 // ============ SQLite 实现 ============
@@ -140,6 +140,10 @@ export const sqliteMethodChangeBackend: MethodChangeBackend = {
     ];
     if (options.status) {
       conditions.push(eq(methodChangeCandidates.status, options.status));
+    }
+    if (options.maxAgeDays && options.maxAgeDays > 0) {
+      const cutoff = new Date(Date.now() - options.maxAgeDays * 24 * 3600 * 1000).toISOString();
+      conditions.push(gte(methodChangeCandidates.createdAt, cutoff));
     }
     const rows = await db
       .select()
@@ -268,7 +272,12 @@ export const workspaceMethodChangeBackend: MethodChangeBackend = {
       status: options.status,
       limit: options.limit,
     });
-    return all.map(fromYaml);
+    let filtered = all;
+    if (options.maxAgeDays && options.maxAgeDays > 0) {
+      const cutoff = Date.now() - options.maxAgeDays * 24 * 3600 * 1000;
+      filtered = all.filter((r) => new Date(r.created_at).getTime() >= cutoff);
+    }
+    return filtered.map(fromYaml);
   },
 };
 
