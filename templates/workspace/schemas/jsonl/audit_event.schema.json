@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["id", "created_at", "event_type", "summary"],
+  "properties": {
+    "id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "event_type": { "type": "string" },
+    "summary": { "type": "string" },
+    "related_task": { "type": "string" }
+  }
+}

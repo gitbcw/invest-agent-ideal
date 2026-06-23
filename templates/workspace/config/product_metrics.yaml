@@ -1,0 +1,65 @@
+# 产品成功指标。用于判断助手是否真正释放精力、降低噪音、形成闭环。
+metric_periods:
+  - "weekly"
+  - "monthly"
+
+effort_reduction:
+  - key: "intraday_push_count"
+    meaning: "盘中主动推送次数"
+    target_direction: "lower_with_no_missed_p0"
+  - key: "manual_refresh_count"
+    meaning: "用户重复刷新同周期报告次数"
+    target_direction: "lower"
+  - key: "brief_to_detail_ratio"
+    meaning: "简报后用户查看完整报告的比例"
+    target_direction: "interpret_by_user_segment"
+
+decision_quality:
+  - key: "rule_based_action_ratio"
+    meaning: "建议动作中由用户确认规则触发的比例"
+    target_direction: "higher"
+  - key: "out_of_rule_action_requests"
+    meaning: "用户提出的规则外操作请求次数"
+    target_direction: "lower"
+  - key: "decision_records_reviewed_on_time"
+    meaning: "观点验证点按期回看的比例"
+    target_direction: "higher"
+
+trust_and_data_quality:
+  - key: "important_claims_with_evidence_ratio"
+    meaning: "重要观点有证据支撑的比例"
+    target_direction: "higher"
+  - key: "source_conflict_count"
+    meaning: "信息源冲突次数"
+    target_direction: "monitor"
+  - key: "missing_data_blocked_decisions"
+    meaning: "因缺关键数据而阻止输出结论的次数"
+    target_direction: "monitor"
+
+behavior_correction:
+  - key: "short_term_query_count"
+    meaning: "短线涨跌询问次数"
+    target_direction: "lower_if_long_term_profile"
+  - key: "chase_rally_warning_count"
+    meaning: "追高风险提醒次数"
+    target_direction: "lower"
+
+retention_and_trust:
+  - key: "weekly_review_viewed_4w_streak"
+    meaning: "用户是否连续 4 周查看周复盘"
+    target_direction: "higher"
+  - key: "intraday_user_query_reduction"
+    meaning: "用户盘中主动查询次数是否下降"
+    target_direction: "higher"
+  - key: "p0_alert_useful_ratio"
+    meaning: "P0 提醒被用户标记为有价值的比例"
+    target_direction: "higher"
+  - key: "watch_rule_confirmed_count"
+    meaning: "用户确认过的观察仓规则数量"
+    target_direction: "higher"
+  - key: "method_revision_confirmed_count"
+    meaning: "用户基于复盘确认过的方法修订数量"
+    target_direction: "monitor"
+  - key: "rule_based_confirmation_shift"
+    meaning: "用户是否从频繁问涨跌转向按规则确认"
+    target_direction: "higher"

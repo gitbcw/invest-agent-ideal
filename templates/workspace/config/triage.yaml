@@ -1,0 +1,35 @@
+# Triage 意图分流层配置。
+#
+# 这一层位于微信/HTTP 入口与 Codex 之间,用 DeepSeek light 做意图分类,
+# 决定消息走 direct_reply(轻量自答)/fallback_codex(复杂推理)/reject(投资无关拒绝)。
+#
+# 修改后通过 USE_YAML_CONFIG=true 启用;不启用时仍走 triage.ts 内的硬编码默认值。
+# 详见 docs/ideal-refactor-plan.md 工作包 3 / WP3b。
+
+# 置信度阈值。triage LLM 输出的 confidence 低于此值时,direct_reply 降级为 fallback_codex。
+# 范围 0.0-1.0,默认 0.6。
+confidence_threshold: 0.6
+
+# 拒绝阈值。triage 判定 reject 时,confidence 必须达到此值才执行拒绝;
+# 否则降级为 fallback_codex(宁可让 Codex 兜底,不误杀)。
+# 范围 0.0-1.0,默认 0.7(高于 confidence_threshold,反映"拒绝需要更高把握")。
+reject_threshold: 0.7
+
+# 短路长度上限。超过此长度的消息跳过 shortCircuit 判断(目前短路只识别日复盘请求),
+# 直接走 LLM 分类。目的是避免对长文本做无谓的关键词扫描。
+# 单位:字符数。
+max_short_circuit_len: 200
+
+# Provider 调用参数。这些是 triage 调 DeepSeek light 时的 LLM 参数,
+# 与 src/services/llm-router.ts 的默认值同步。
+llm:
+  profile: light
+  temperature: 0.3
+  max_tokens: 400
+
+# Provider fallback 链顺序。llm-router 按此顺序尝试,任一成功即返回。
+# 未配置 api key 的 provider 自动跳过。
+provider_chain:
+  - deepseek
+  - doubao
+  - stepfun

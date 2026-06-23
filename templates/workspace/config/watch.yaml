@@ -1,0 +1,59 @@
+# 智能盯盘规则。默认基于日复盘观察点，只在异常触发时推送。
+mode: default
+only_push_on_exception: true
+priority_policy: "P0 立即推送；P1 晚间汇总；P2 仅记录。详见 config/notification.yaml。"
+purpose_boundary: "盯盘用于发现规则触发和重大风险，不用于制造连续行情陪伴。"
+
+default_check_windows:
+  - name: "开盘后"
+    time: "09:55"
+    purpose: "检查核心持仓、观察仓和市场风格是否出现开盘异常。"
+  - name: "午盘前"
+    time: "11:20"
+    purpose: "检查风格切换、板块异动和持仓是否偏离日复盘判断。"
+  - name: "收盘前"
+    time: "14:30"
+    purpose: "检查是否触发买入区、减仓区或风险阈值。"
+
+exception_rules:
+  - "核心持仓接近用户设定的买入区或减仓区。"
+  - "观察仓进入用户设定的配置区。"
+  - "非核心持仓进入反弹优化窗口或跌破保护条件。"
+  - "持仓、行业或指数走势与日复盘核心判断明显相反。"
+  - "重大新闻、财报、政策或商品价格变化影响持仓逻辑。"
+  - "用户自定义的涨跌幅、成交量、估值或技术面阈值被触发。"
+
+non_exception_rules:
+  - "普通涨跌但未接近用户规则区间。"
+  - "无可靠来源的传闻或未核验消息。"
+  - "只与短线情绪相关、不能改变持仓逻辑的信息。"
+  - "重复触发但没有新增证据的同类提醒。"
+
+deduplication:
+  idempotency_key: "tenant_id + target_code + alert_type + trigger + trading_day"
+  suppress_same_alert_minutes: 120
+  max_intraday_pushes_per_target: 1
+
+priority_mapping:
+  P0:
+    - "核心持仓触发关键买卖区间且可能需要用户当日确认。"
+    - "重大财报、公告、政策或风险事件可能改变持仓逻辑。"
+    - "组合风险超过用户确认的仓位、现金或回撤阈值。"
+  P1:
+    - "持仓接近关键区间但尚未触发操作。"
+    - "风险雷达出现中等风险，需要晚间查看。"
+    - "观察仓距离配置区明显缩短。"
+  P2:
+    - "普通行情波动。"
+    - "仅用于后续复盘验证的市场信息。"
+
+custom_rules: []
+required_output_fields:
+  - "priority"
+  - "trigger"
+  - "fact"
+  - "inference"
+  - "user_action_needed"
+  - "evidence"
+  - "next_review_time"
+last_confirmed_at: null

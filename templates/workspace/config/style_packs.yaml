@@ -1,0 +1,48 @@
+# 默认投资风格包。用户可以选择一个作为起点，也可以通过微信描述自己的风格进行覆盖或扩展。
+default_selected: null
+allow_custom_style: true
+
+style_packs:
+  steady_value:
+    name: "稳健价值型"
+    suitable_for: "上班族、低频操作、长期持有、希望减少盯盘。"
+    focus:
+      - "基本面质量"
+      - "估值安全边际"
+      - "分红/回购/现金流"
+      - "仓位纪律"
+    default_rules:
+      - "不追涨，进入用户确认的安全边际区间后才分批行动。"
+      - "短期波动不改变长期判断，除非基本面或风控信号失效。"
+      - "技术面只作为买卖节奏辅助。"
+  index_allocation:
+    name: "指数配置型"
+    suitable_for: "不想研究太多个股、偏长期配置、希望用 ETF 降低复杂度。"
+    focus:
+      - "指数估值"
+      - "回撤区间"
+      - "再平衡"
+      - "现金和风险预算"
+    default_rules:
+      - "优先按回撤、估值和目标仓位分批配置。"
+      - "减少主题追逐，避免频繁切换 ETF。"
+      - "周/月复盘重点检查资产配置偏差。"
+  trend_assisted:
+    name: "趋势辅助型"
+    suitable_for: "能接受波动，希望用技术面辅助节奏，但仍需要风控约束。"
+    focus:
+      - "趋势结构"
+      - "量价关系"
+      - "止损/止盈纪律"
+      - "仓位分层"
+    default_rules:
+      - "趋势和量价用于判断节奏，仓位上限和止损规则必须提前确认。"
+      - "信号不明确时默认等待。"
+      - "周复盘必须检查是否过度交易。"
+
+custom_style:
+  name: ""
+  description: ""
+  focus: []
+  rules: []
+  last_confirmed_at: null

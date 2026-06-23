@@ -1,0 +1,937 @@
+import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import * as schema from "./schema.js";
+import { config } from "../lib/config.js";
+import { logger } from "../lib/logger.js";
+import { mkdirSync } from "fs";
+import { dirname } from "path";
+import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
+
+// 确保数据库目录存在
+mkdirSync(dirname(config.db.path), { recursive: true });
+
+const sqlite = new Database(config.db.path);
+sqlite.pragma("journal_mode = WAL");
+sqlite.pragma("foreign_keys = ON");
+
+export const db = drizzle(sqlite, { schema });
+
+// 初始化表
+export function initDb() {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      key TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS channel_accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel TEXT NOT NULL,
+      backend TEXT NOT NULL DEFAULT 'codex',
+      external_account_id TEXT NOT NULL,
+      state_dir TEXT,
+      display_name TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS channel_identities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      backend TEXT,
+      external_user_id TEXT NOT NULL,
+      external_account_id TEXT,
+      last_conversation_id TEXT,
+      last_context_token TEXT,
+      welcomed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    CREATE TABLE IF NOT EXISTS ai_projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      description TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ai_instances (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      backend TEXT NOT NULL DEFAULT 'hermes',
+      skill_bundle_id TEXT,
+      config TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES ai_projects(id),
+      FOREIGN KEY(owner_user_id) REFERENCES users(id)
+    );
+    CREATE TABLE IF NOT EXISTS channel_identity_instances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_identity_id INTEGER NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      is_default INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(channel_identity_id) REFERENCES channel_identities(id),
+      FOREIGN KEY(project_id) REFERENCES ai_projects(id),
+      FOREIGN KEY(instance_id) REFERENCES ai_instances(id)
+    );
+    CREATE TABLE IF NOT EXISTS watchlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      reason TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      UNIQUE(user_id, instance_id, stock_code)
+    );
+    CREATE TABLE IF NOT EXISTS portfolio (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      buy_date TEXT NOT NULL,
+      buy_price REAL,
+      sell_price REAL,
+      sell_date TEXT,
+      status TEXT NOT NULL DEFAULT 'open'
+    );
+    CREATE TABLE IF NOT EXISTS alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      indicator TEXT NOT NULL,
+      threshold TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS stock_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      support REAL,
+      resistance REAL,
+      target_price REAL,
+      stop_loss REAL,
+      notes TEXT,
+      watch_conditions TEXT,
+      linked_alert_rule_ids TEXT,
+      plan_type TEXT NOT NULL DEFAULT 'manual',
+      strategy_key TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, instance_id, stock_code)
+    );
+    CREATE TABLE IF NOT EXISTS chat_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      conversation_id TEXT,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS daily_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      plan_date TEXT NOT NULL,
+      generated_at TEXT NOT NULL,
+      summary TEXT,
+      content TEXT NOT NULL,
+      data TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS investment_profiles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      style TEXT,
+      selected_style_pack TEXT,
+      custom_style TEXT NOT NULL DEFAULT '{}',
+      risk_preference TEXT,
+      investment_horizon TEXT,
+      markets TEXT NOT NULL DEFAULT '[]',
+      allocation TEXT NOT NULL DEFAULT '{}',
+      position_roles TEXT NOT NULL DEFAULT '{}',
+      buy_rules TEXT NOT NULL DEFAULT '[]',
+      sell_rules TEXT NOT NULL DEFAULT '[]',
+      rebalance_rules TEXT NOT NULL DEFAULT '[]',
+      risk_rules TEXT NOT NULL DEFAULT '[]',
+      notification_policy TEXT NOT NULL DEFAULT '{}',
+      decision_policy TEXT NOT NULL DEFAULT '{}',
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, instance_id)
+    );
+    CREATE TABLE IF NOT EXISTS methodology_profiles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      fundamental_method TEXT NOT NULL DEFAULT '',
+      technical_method TEXT NOT NULL DEFAULT '',
+      macro_method TEXT NOT NULL DEFAULT '',
+      risk_method TEXT NOT NULL DEFAULT '',
+      source_policy TEXT NOT NULL DEFAULT '{}',
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, instance_id)
+    );
+    CREATE TABLE IF NOT EXISTS method_change_candidates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      source_review_id TEXT,
+      source_type TEXT NOT NULL DEFAULT 'review',
+      proposed_change TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      affected_resource TEXT NOT NULL DEFAULT 'methodology_profile',
+      status TEXT NOT NULL DEFAULT 'proposed',
+      decision_note TEXT,
+      confirmed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS review_viewpoints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      source_date TEXT NOT NULL,
+      viewpoint_id TEXT NOT NULL,
+      view TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      action TEXT NOT NULL,
+      validation TEXT NOT NULL,
+      expected_review_date TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      resolution TEXT,
+      resolved_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, instance_id, source_date, viewpoint_id)
+    );
+    CREATE TABLE IF NOT EXISTS alert_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      signal_key TEXT NOT NULL,
+      message TEXT NOT NULL,
+      relation_to_plan TEXT NOT NULL DEFAULT '未找到预案',
+      severity TEXT NOT NULL DEFAULT 'medium',
+      price REAL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      feedback TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS alert_signal_states (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      signal_key TEXT NOT NULL,
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      last_price REAL,
+      activated_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, instance_id, signal_key)
+    );
+    CREATE TABLE IF NOT EXISTS trade_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      action TEXT NOT NULL,
+      price REAL,
+      quantity INTEGER,
+      notes TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_traces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner_user_id TEXT NOT NULL DEFAULT 'primary',
+      user_id TEXT NOT NULL,
+      user_message TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      tool_name TEXT,
+      tool_args TEXT,
+      tool_result TEXT,
+      final_reply TEXT NOT NULL,
+      memory_before TEXT,
+      memory_after TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS codex_acp_traces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      conversation_id TEXT NOT NULL,
+      message_id TEXT,
+      channel TEXT NOT NULL,
+      user_text TEXT NOT NULL,
+      prompt_text TEXT,
+      reply_text_raw TEXT,
+      reply_text_sanitized TEXT,
+      mode TEXT NOT NULL,
+      review_context_summary TEXT,
+      sandbox_token_id TEXT,
+      sandbox_permissions TEXT,
+      status TEXT NOT NULL,
+      error_message TEXT,
+      elapsed_ms INTEGER,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS indicator_definitions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'stock',
+      timeframe TEXT NOT NULL,
+      formula_type TEXT NOT NULL,
+      formula TEXT NOT NULL,
+      params_schema TEXT NOT NULL DEFAULT '{}',
+      output_schema TEXT NOT NULL DEFAULT '{}',
+      data_requirements TEXT NOT NULL DEFAULT '[]',
+      reliability TEXT NOT NULL DEFAULT 'stable',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      owner TEXT NOT NULL DEFAULT 'system',
+      description TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS indicator_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      indicator_key TEXT NOT NULL,
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      timeframe TEXT NOT NULL,
+      calculated_at TEXT NOT NULL,
+      data_time TEXT NOT NULL,
+      value TEXT NOT NULL,
+      level TEXT,
+      confidence TEXT,
+      explanation TEXT,
+      source_snapshot TEXT NOT NULL DEFAULT '{}',
+      missing_data TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE TABLE IF NOT EXISTS alert_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      indicator_key TEXT NOT NULL,
+      condition TEXT NOT NULL,
+      params TEXT NOT NULL DEFAULT '{}',
+      schedule TEXT NOT NULL DEFAULT 'intraday',
+      dedupe_policy TEXT NOT NULL DEFAULT '{}',
+      severity TEXT NOT NULL DEFAULT 'medium',
+      relation_to_plan TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sandbox_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      role TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      backend TEXT,
+      conversation_id TEXT,
+      token_id TEXT,
+      operation TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT,
+      request_body TEXT NOT NULL DEFAULT '{}',
+      result_summary TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS pending_sandbox_confirmations (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      role TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      backend TEXT,
+      conversation_id TEXT,
+      requested_token_id TEXT,
+      confirmed_token_id TEXT,
+      operation TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT,
+      request_body TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS conversation_tasks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      conversation_id TEXT NOT NULL,
+      channel TEXT NOT NULL DEFAULT 'weixin-mobile',
+      backend TEXT,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      title TEXT NOT NULL,
+      summary TEXT,
+      draft_payload TEXT NOT NULL DEFAULT '{}',
+      target_operation TEXT NOT NULL,
+      result_summary TEXT,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS push_jobs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      channel TEXT NOT NULL DEFAULT 'weixin-mobile',
+      backend TEXT NOT NULL DEFAULT 'codex',
+      source TEXT NOT NULL DEFAULT 'scheduler',
+      message TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      next_retry_at TEXT NOT NULL,
+      last_attempt_at TEXT,
+      sent_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  ensureDefaultUser();
+  ensureDefaultAiInstance();
+  migrateWatchlistForUsers();
+  migrateStockPlansForUsers();
+  migrateAlertSignalStatesForUsers();
+  migrateWatchlistForInstances();
+  migrateStockPlansForInstances();
+  migrateAlertSignalStatesForInstances();
+  ensureColumn("watchlist", "source", "TEXT NOT NULL DEFAULT 'manual'");
+  ensureColumn("portfolio", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("portfolio", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("portfolio", "status", "TEXT NOT NULL DEFAULT 'open'");
+  ensureColumn("portfolio", "buy_price", "REAL");
+  ensureColumn("alerts", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("alerts", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("alert_rules", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("alert_rules", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("alert_events", "feedback", "TEXT");
+  ensureColumn("alert_events", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("alert_events", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("chat_history", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("chat_history", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("chat_history", "conversation_id", "TEXT");
+  ensureColumn("daily_plans", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("daily_plans", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("investment_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("investment_profiles", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("methodology_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("methodology_profiles", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("method_change_candidates", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("method_change_candidates", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("review_viewpoints", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("review_viewpoints", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("review_viewpoints", "resolution", "TEXT");
+  ensureColumn("review_viewpoints", "resolved_at", "TEXT");
+  ensureColumn("trade_actions", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("trade_actions", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("agent_traces", "owner_user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("codex_acp_traces", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("codex_acp_traces", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("codex_acp_traces", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("codex_acp_traces", "sandbox_token_id", "TEXT");
+  ensureColumn("codex_acp_traces", "sandbox_permissions", "TEXT");
+  ensureColumn("sandbox_audit_logs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("sandbox_audit_logs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("pending_sandbox_confirmations", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("pending_sandbox_confirmations", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("conversation_tasks", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("conversation_tasks", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("channel_identities", "welcomed_at", "TEXT");
+  ensureColumn("push_jobs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("push_jobs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("indicator_results", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("indicator_results", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("stock_plans", "watch_conditions", "TEXT");
+  ensureColumn("stock_plans", "linked_alert_rule_ids", "TEXT");
+  ensureColumn("stock_plans", "plan_type", "TEXT NOT NULL DEFAULT 'manual'");
+  ensureColumn("stock_plans", "strategy_key", "TEXT");
+  dropColumnIfExists("portfolio", "quantity");
+  backfillHistoricalInstanceAssignments();
+  sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_accounts_unique ON channel_accounts(channel, backend, external_account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_unique ON channel_identities(channel, external_user_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_instances_project_owner ON ai_instances(project_id, owner_user_id, status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identity_instances_default ON channel_identity_instances(channel_identity_id, project_id, is_default);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_profiles_scope ON investment_profiles(user_id, instance_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_methodology_profiles_scope ON methodology_profiles(user_id, instance_id);
+    CREATE INDEX IF NOT EXISTS idx_method_change_candidates_scope_status ON method_change_candidates(user_id, instance_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_watchlist_user_stock ON watchlist(user_id, stock_code);
+    CREATE INDEX IF NOT EXISTS idx_watchlist_instance_user_stock ON watchlist(instance_id, user_id, stock_code);
+    CREATE INDEX IF NOT EXISTS idx_portfolio_user_status ON portfolio(user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_portfolio_user_stock_open ON portfolio(user_id, stock_code, sell_date);
+    CREATE INDEX IF NOT EXISTS idx_portfolio_instance_user_status ON portfolio(instance_id, user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_stock_plans_user_stock ON stock_plans(user_id, stock_code);
+    CREATE INDEX IF NOT EXISTS idx_stock_plans_instance_user_stock ON stock_plans(instance_id, user_id, stock_code);
+    CREATE INDEX IF NOT EXISTS idx_daily_plans_date ON daily_plans(plan_date);
+    CREATE INDEX IF NOT EXISTS idx_daily_plans_user_date ON daily_plans(user_id, plan_date);
+    CREATE INDEX IF NOT EXISTS idx_daily_plans_instance_user_date ON daily_plans(instance_id, user_id, plan_date);
+    CREATE INDEX IF NOT EXISTS idx_review_viewpoints_scope_status ON review_viewpoints(instance_id, user_id, status, expected_review_date);
+    CREATE INDEX IF NOT EXISTS idx_review_viewpoints_scope_source ON review_viewpoints(instance_id, user_id, source_date);
+    CREATE INDEX IF NOT EXISTS idx_alert_events_date_code ON alert_events(event_date, stock_code);
+    CREATE INDEX IF NOT EXISTS idx_alert_events_user_date_code ON alert_events(user_id, event_date, stock_code);
+    CREATE INDEX IF NOT EXISTS idx_alert_events_instance_user_date_code ON alert_events(instance_id, user_id, event_date, stock_code);
+    CREATE INDEX IF NOT EXISTS idx_alert_events_signal ON alert_events(signal_key, created_at);
+    CREATE INDEX IF NOT EXISTS idx_alert_signal_states_stock ON alert_signal_states(stock_code, active);
+    CREATE INDEX IF NOT EXISTS idx_alert_signal_states_user_signal ON alert_signal_states(user_id, signal_key);
+    CREATE INDEX IF NOT EXISTS idx_alert_signal_states_instance_user_signal ON alert_signal_states(instance_id, user_id, signal_key);
+    CREATE INDEX IF NOT EXISTS idx_agent_traces_user ON agent_traces(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_conversation ON codex_acp_traces(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_user_conversation ON codex_acp_traces(user_id, conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_instance ON codex_acp_traces(instance_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_status ON codex_acp_traces(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_tasks_scope_status ON conversation_tasks(instance_id, user_id, conversation_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_indicator_definitions_key ON indicator_definitions(key);
+    CREATE INDEX IF NOT EXISTS idx_indicator_results_key_stock_time ON indicator_results(indicator_key, stock_code, data_time);
+    CREATE INDEX IF NOT EXISTS idx_indicator_results_user_key_stock_time ON indicator_results(user_id, indicator_key, stock_code, data_time);
+    CREATE INDEX IF NOT EXISTS idx_indicator_results_instance_user_key_stock_time ON indicator_results(instance_id, user_id, indicator_key, stock_code, data_time);
+    CREATE INDEX IF NOT EXISTS idx_alert_rules_stock_enabled ON alert_rules(stock_code, enabled);
+    CREATE INDEX IF NOT EXISTS idx_alert_rules_user_stock_enabled ON alert_rules(user_id, stock_code, enabled);
+    CREATE INDEX IF NOT EXISTS idx_alert_rules_instance_user_stock_enabled ON alert_rules(instance_id, user_id, stock_code, enabled);
+    CREATE INDEX IF NOT EXISTS idx_alert_rules_indicator ON alert_rules(indicator_key);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_audit_logs_user_time ON sandbox_audit_logs(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_audit_logs_instance_time ON sandbox_audit_logs(instance_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_audit_logs_token ON sandbox_audit_logs(token_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_sandbox_audit_logs_operation ON sandbox_audit_logs(operation, created_at);
+    CREATE INDEX IF NOT EXISTS idx_pending_sandbox_confirmations_user_status ON pending_sandbox_confirmations(user_id, status, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_pending_sandbox_confirmations_conversation ON pending_sandbox_confirmations(conversation_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_push_jobs_due ON push_jobs(status, next_retry_at);
+    CREATE INDEX IF NOT EXISTS idx_push_jobs_user_time ON push_jobs(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_push_jobs_instance_status ON push_jobs(instance_id, status, next_retry_at);
+    CREATE INDEX IF NOT EXISTS idx_push_jobs_backend_status ON push_jobs(backend, status, next_retry_at);
+  `);
+  logger.info("数据库初始化完成");
+}
+
+function ensureDefaultUser() {
+  const now = new Date().toISOString();
+  sqlite
+    .prepare(
+      `INSERT OR IGNORE INTO users (id, display_name, status, created_at, updated_at)
+       VALUES (?, ?, 'active', ?, ?)`
+    )
+    .run(DEFAULT_USER_ID, "主用户", now, now);
+}
+
+function ensureDefaultAiInstance() {
+  const now = new Date().toISOString();
+  sqlite
+    .prepare(
+      `INSERT OR IGNORE INTO ai_projects (id, name, type, status, description, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', ?, ?, ?)`
+    )
+    .run(DEFAULT_PROJECT_ID, "投资助手", "investment-assistant", "默认投资助手项目类型", now, now);
+
+  sqlite
+    .prepare(
+      `INSERT OR IGNORE INTO ai_instances (
+        id, project_id, owner_user_id, name, status, backend, skill_bundle_id, config, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'active', 'hermes', ?, ?, ?, ?)`
+    )
+    .run(
+      DEFAULT_INSTANCE_ID,
+      DEFAULT_PROJECT_ID,
+      DEFAULT_USER_ID,
+      "主用户投资助手",
+      "invest-agent-default",
+      JSON.stringify({ migratedFromUserId: DEFAULT_USER_ID }),
+      now,
+      now
+    );
+}
+
+function migrateWatchlistForUsers() {
+  const columns = tableColumns("watchlist");
+  const needsRebuild = !columns.some((c) => c.name === "id") || !columns.some((c) => c.name === "user_id");
+  if (!needsRebuild) return;
+  const sourceExpr = columns.some((c) => c.name === "source") ? "COALESCE(source, 'manual')" : "'manual'";
+
+  sqlite.exec(`
+    ALTER TABLE watchlist RENAME TO watchlist_legacy_user_migration;
+    CREATE TABLE watchlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      reason TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      UNIQUE(user_id, stock_code)
+    );
+    INSERT OR IGNORE INTO watchlist (user_id, stock_code, stock_name, added_at, reason, source)
+    SELECT 'primary', stock_code, stock_name, added_at, reason, ${sourceExpr}
+    FROM watchlist_legacy_user_migration;
+    DROP TABLE watchlist_legacy_user_migration;
+  `);
+  markMigration("watchlist_user_scope_v1");
+}
+
+function migrateStockPlansForUsers() {
+  const columns = tableColumns("stock_plans");
+  const needsRebuild = !columns.some((c) => c.name === "id") || !columns.some((c) => c.name === "user_id");
+  if (!needsRebuild) return;
+  const watchConditionsExpr = columns.some((c) => c.name === "watch_conditions") ? "watch_conditions" : "NULL";
+  const linkedAlertRuleIdsExpr = columns.some((c) => c.name === "linked_alert_rule_ids") ? "linked_alert_rule_ids" : "NULL";
+  const planTypeExpr = columns.some((c) => c.name === "plan_type") ? "COALESCE(plan_type, 'manual')" : "'manual'";
+
+  sqlite.exec(`
+    ALTER TABLE stock_plans RENAME TO stock_plans_legacy_user_migration;
+    CREATE TABLE stock_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      support REAL,
+      resistance REAL,
+      target_price REAL,
+      stop_loss REAL,
+      notes TEXT,
+      watch_conditions TEXT,
+      linked_alert_rule_ids TEXT,
+      plan_type TEXT NOT NULL DEFAULT 'manual',
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, stock_code)
+    );
+    INSERT OR IGNORE INTO stock_plans (
+      user_id, stock_code, stock_name, support, resistance, target_price, stop_loss,
+      notes, watch_conditions, linked_alert_rule_ids, plan_type, updated_at
+    )
+    SELECT
+      'primary', stock_code, stock_name, support, resistance, target_price, stop_loss,
+      notes,
+      ${watchConditionsExpr},
+      ${linkedAlertRuleIdsExpr},
+      ${planTypeExpr},
+      updated_at
+    FROM stock_plans_legacy_user_migration;
+    DROP TABLE stock_plans_legacy_user_migration;
+  `);
+  markMigration("stock_plans_user_scope_v1");
+}
+
+function migrateAlertSignalStatesForUsers() {
+  const columns = tableColumns("alert_signal_states");
+  const needsRebuild = !columns.some((c) => c.name === "id") || !columns.some((c) => c.name === "user_id");
+  if (!needsRebuild) return;
+
+  sqlite.exec(`
+    ALTER TABLE alert_signal_states RENAME TO alert_signal_states_legacy_user_migration;
+    CREATE TABLE alert_signal_states (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      signal_key TEXT NOT NULL,
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      last_price REAL,
+      activated_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, instance_id, signal_key)
+    );
+    INSERT OR IGNORE INTO alert_signal_states (
+      user_id, signal_key, stock_code, stock_name, active, last_price, activated_at, updated_at
+    )
+    SELECT 'primary', signal_key, stock_code, stock_name, active, last_price, activated_at, updated_at
+    FROM alert_signal_states_legacy_user_migration;
+    DROP TABLE alert_signal_states_legacy_user_migration;
+  `);
+  markMigration("alert_signal_states_user_scope_v1");
+}
+
+function migrateWatchlistForInstances() {
+  const columns = tableColumns("watchlist");
+  if (!columns.some((c) => c.name === "instance_id")) {
+    sqlite.exec(`ALTER TABLE watchlist ADD COLUMN instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary'`);
+  }
+  const indexes = indexList("watchlist");
+  const hasInstanceUnique = indexes.some((idx) => idx.unique && indexColumns(idx.name).join(",") === "user_id,instance_id,stock_code");
+  if (hasInstanceUnique) {
+    backfillInstanceIds("watchlist");
+    return;
+  }
+  sqlite.exec(`
+    ALTER TABLE watchlist RENAME TO watchlist_legacy_instance_migration;
+    CREATE TABLE watchlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      reason TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      UNIQUE(user_id, instance_id, stock_code)
+    );
+    INSERT OR IGNORE INTO watchlist (id, user_id, instance_id, stock_code, stock_name, added_at, reason, source)
+    SELECT id, user_id, instance_id, stock_code, stock_name, added_at, reason, source
+    FROM watchlist_legacy_instance_migration;
+    DROP TABLE watchlist_legacy_instance_migration;
+  `);
+  backfillInstanceIds("watchlist");
+  markMigration("watchlist_instance_scope_v1");
+}
+
+function migrateStockPlansForInstances() {
+  const columns = tableColumns("stock_plans");
+  if (!columns.some((c) => c.name === "instance_id")) {
+    sqlite.exec(`ALTER TABLE stock_plans ADD COLUMN instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary'`);
+  }
+  const indexes = indexList("stock_plans");
+  const hasInstanceUnique = indexes.some((idx) => idx.unique && indexColumns(idx.name).join(",") === "user_id,instance_id,stock_code");
+  if (hasInstanceUnique) {
+    backfillInstanceIds("stock_plans");
+    return;
+  }
+  sqlite.exec(`
+    ALTER TABLE stock_plans RENAME TO stock_plans_legacy_instance_migration;
+    CREATE TABLE stock_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      support REAL,
+      resistance REAL,
+      target_price REAL,
+      stop_loss REAL,
+      notes TEXT,
+      watch_conditions TEXT,
+      linked_alert_rule_ids TEXT,
+      plan_type TEXT NOT NULL DEFAULT 'manual',
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, instance_id, stock_code)
+    );
+    INSERT OR IGNORE INTO stock_plans (
+      id, user_id, instance_id, stock_code, stock_name, support, resistance, target_price, stop_loss,
+      notes, watch_conditions, linked_alert_rule_ids, plan_type, updated_at
+    )
+    SELECT
+      id, user_id, instance_id, stock_code, stock_name, support, resistance, target_price, stop_loss,
+      notes, watch_conditions, linked_alert_rule_ids, plan_type, updated_at
+    FROM stock_plans_legacy_instance_migration;
+    DROP TABLE stock_plans_legacy_instance_migration;
+  `);
+  backfillInstanceIds("stock_plans");
+  markMigration("stock_plans_instance_scope_v1");
+}
+
+function migrateAlertSignalStatesForInstances() {
+  const columns = tableColumns("alert_signal_states");
+  if (!columns.some((c) => c.name === "instance_id")) {
+    sqlite.exec(`ALTER TABLE alert_signal_states ADD COLUMN instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary'`);
+  }
+  const indexes = indexList("alert_signal_states");
+  const hasInstanceUnique = indexes.some((idx) => idx.unique && indexColumns(idx.name).join(",") === "user_id,instance_id,signal_key");
+  if (hasInstanceUnique) {
+    backfillInstanceIds("alert_signal_states");
+    return;
+  }
+  sqlite.exec(`
+    ALTER TABLE alert_signal_states RENAME TO alert_signal_states_legacy_instance_migration;
+    CREATE TABLE alert_signal_states (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      signal_key TEXT NOT NULL,
+      stock_code TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      last_price REAL,
+      activated_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(user_id, instance_id, signal_key)
+    );
+    INSERT OR IGNORE INTO alert_signal_states (
+      id, user_id, instance_id, signal_key, stock_code, stock_name, active, last_price, activated_at, updated_at
+    )
+    SELECT id, user_id, instance_id, signal_key, stock_code, stock_name, active, last_price, activated_at, updated_at
+    FROM alert_signal_states_legacy_instance_migration;
+    DROP TABLE alert_signal_states_legacy_instance_migration;
+  `);
+  backfillInstanceIds("alert_signal_states");
+  markMigration("alert_signal_states_instance_scope_v1");
+}
+
+function backfillInstanceIds(table: string) {
+  const rows = sqlite.prepare(`SELECT DISTINCT user_id AS userId FROM ${table}`).all() as Array<{ userId: string }>;
+  const update = sqlite.prepare(`UPDATE ${table} SET instance_id = ? WHERE user_id = ? AND instance_id = 'invest-agent-primary'`);
+  for (const row of rows) {
+    update.run(defaultInstanceIdForUser(row.userId), row.userId);
+  }
+}
+
+function backfillHistoricalInstanceAssignments() {
+  const migrationKey = "historical_instance_assignment_v1";
+  if (hasMigration(migrationKey)) return;
+
+  const scopedTables = [
+    "watchlist",
+    "portfolio",
+    "alerts",
+    "alert_rules",
+    "stock_plans",
+    "chat_history",
+    "daily_plans",
+    "alert_events",
+    "alert_signal_states",
+    "trade_actions",
+    "codex_acp_traces",
+    "sandbox_audit_logs",
+    "pending_sandbox_confirmations",
+    "push_jobs",
+    "indicator_results",
+  ].filter((table) => hasTable(table) && hasColumn(table, "user_id") && hasColumn(table, "instance_id"));
+
+  const affectedUsers = new Set<string>();
+  for (const table of scopedTables) {
+    const rows = sqlite
+      .prepare(`SELECT DISTINCT user_id AS userId FROM ${table} WHERE user_id <> ? AND instance_id = ?`)
+      .all(DEFAULT_USER_ID, DEFAULT_INSTANCE_ID) as Array<{ userId: string }>;
+    for (const row of rows) {
+      if (row.userId) affectedUsers.add(row.userId);
+    }
+  }
+
+  if (affectedUsers.size === 0) {
+    markMigration(migrationKey);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const insertUser = sqlite.prepare(
+    `INSERT OR IGNORE INTO users (id, display_name, status, created_at, updated_at)
+     VALUES (?, ?, 'active', ?, ?)`
+  );
+  const insertInstance = sqlite.prepare(
+    `INSERT OR IGNORE INTO ai_instances (
+      id, project_id, owner_user_id, name, status, backend, skill_bundle_id, config, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'active', 'hermes', ?, ?, ?, ?)`
+  );
+
+  const transaction = sqlite.transaction(() => {
+    for (const userId of affectedUsers) {
+      const instanceId = defaultInstanceIdForUser(userId);
+      insertUser.run(userId, userId, now, now);
+      insertInstance.run(
+        instanceId,
+        DEFAULT_PROJECT_ID,
+        userId,
+        `投资助手 ${userId.replace(/[^a-zA-Z0-9]/g, "").slice(-8) || userId}`,
+        "invest-agent-default",
+        JSON.stringify({ migratedFromUserId: userId, migration: migrationKey }),
+        now,
+        now
+      );
+    }
+
+    for (const table of scopedTables) {
+      const update = sqlite.prepare(`UPDATE ${table} SET instance_id = ? WHERE user_id = ? AND instance_id = ?`);
+      for (const userId of affectedUsers) {
+        update.run(defaultInstanceIdForUser(userId), userId, DEFAULT_INSTANCE_ID);
+      }
+    }
+
+    markMigration(migrationKey);
+  });
+
+  transaction();
+  logger.info(`历史实例归位完成 users=${affectedUsers.size} tables=${scopedTables.length}`);
+}
+
+function hasMigration(key: string) {
+  const row = sqlite.prepare("SELECT key FROM schema_migrations WHERE key = ?").get(key);
+  return Boolean(row);
+}
+
+function markMigration(key: string) {
+  sqlite
+    .prepare("INSERT OR REPLACE INTO schema_migrations (key, applied_at) VALUES (?, ?)")
+    .run(key, new Date().toISOString());
+}
+
+function ensureColumn(table: string, column: string, definition: string) {
+  const columns = tableColumns(table);
+  if (!columns.some((c) => c.name === column)) {
+    sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+function dropColumnIfExists(table: string, column: string) {
+  const columns = tableColumns(table);
+  if (columns.some((c) => c.name === column)) {
+    sqlite.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+    logger.info(`迁移:已删除 ${table}.${column}`);
+  }
+}
+
+function tableColumns(table: string) {
+  return sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+}
+
+function hasTable(table: string) {
+  const row = sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  return Boolean(row);
+}
+
+function hasColumn(table: string, column: string) {
+  return tableColumns(table).some((c) => c.name === column);
+}
+
+function indexList(table: string) {
+  return sqlite.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number }>;
+}
+
+function indexColumns(indexName: string) {
+  return sqlite.prepare(`PRAGMA index_info(${indexName})`).all().map((row: any) => row.name as string);
+}

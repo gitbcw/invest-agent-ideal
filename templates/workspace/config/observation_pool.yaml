@@ -1,0 +1,20 @@
+# 可跟踪观察池。候选标的必须有来源理由、排雷状态和买入等待条件。
+candidates: []
+# 示例结构：
+# - name: "候选标的"
+#   code: "证券代码"
+#   market: "A股/ETF/基金/商品"
+#   asset_type: "stock/etf/fund/convertible/gold/commodity"
+#   source_reason: "为什么进入观察池"
+#   style_fit: "与用户风格的匹配点"
+#   risk_flags: []
+#   waiting_conditions:
+#     price: ""
+#     valuation: ""
+#     event: ""
+#     financial_validation: ""
+#   max_weight: null
+#   status: "watching/risk_blocked/waiting_zone_triggered/archived"
+#   last_reviewed_at: null
+
+last_confirmed_at: null

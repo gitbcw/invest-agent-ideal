@@ -1,0 +1,92 @@
+# 用户可配置的信息源。复盘中需要记录来源，并持续验证可靠性。
+minimum_source_set:
+  required_for_mvp:
+    - "A 股实时/延时行情"
+    - "指数行情"
+    - "ETF 行情"
+    - "公司公告"
+    - "财报数据"
+    - "交易日历"
+    - "用户持仓成本和数量"
+  required_for_p1:
+    - "行业/主题分类"
+    - "新闻政策源"
+  priority_order:
+    - "行情"
+    - "公告"
+    - "财报"
+    - "交易日历"
+    - "新闻政策"
+    - "研报"
+
+market_data:
+  - name: "A 股行情源"
+    type: "market_price"
+    asset_scope: ["stock"]
+    url: ""
+    reliability: "unverified"
+    update_frequency: "realtime_or_delayed"
+    latency_policy: "超过 config/evidence_policy.yaml 允许时效则降级"
+    failure_policy: "不输出精确价格结论"
+  - name: "指数行情源"
+    type: "index_price"
+    asset_scope: ["index"]
+    url: ""
+    reliability: "unverified"
+    update_frequency: "realtime_or_delayed"
+    latency_policy: "超过 config/evidence_policy.yaml 允许时效则降级"
+    failure_policy: "不输出指数涨跌驱动结论"
+  - name: "ETF 行情源"
+    type: "etf_price"
+    asset_scope: ["etf"]
+    url: ""
+    reliability: "unverified"
+    update_frequency: "realtime_or_delayed"
+    latency_policy: "超过 config/evidence_policy.yaml 允许时效则降级"
+    failure_policy: "不输出 ETF 触发区间结论"
+
+trading_calendar:
+  - name: "交易日历源"
+    type: "trading_calendar"
+    market_scope: ["A股", "港股", "基金"]
+    url: ""
+    reliability: "unverified"
+    failure_policy: "无法判断自动任务是否应在交易日执行"
+
+financial_reports:
+  - name: "交易所/公司公告"
+    type: "announcement"
+    url: ""
+    reliability: "preferred_primary"
+    update_frequency: "on_announcement"
+    failure_policy: "不触发公告类 P0/P1 判断"
+  - name: "官方财报源"
+    type: "primary_report"
+    url: ""
+    reliability: "preferred_primary"
+    update_frequency: "on_report"
+    failure_policy: "提示缺少官方财报，不做确定性财务结论"
+
+industry_classification:
+  - name: "行业/主题分类源"
+    type: "industry_theme"
+    url: ""
+    reliability: "unverified"
+    usage_boundary: "用于集中度、主题暴露和观察池筛选"
+
+news_and_policy:
+  - name: "用户配置新闻/政策源"
+    type: "news_policy"
+    url: ""
+    reliability: "unverified"
+    cross_check_required: true
+
+research_reports:
+  - name: "用户配置研报源"
+    type: "research"
+    url: ""
+    reliability: "secondary"
+    usage_boundary: "只能辅助判断，不能单独作为关键买卖证据"
+
+source_audit_rule_path: "knowledge/source_audit.md"
+source_event_output: "memory/source_events.jsonl"

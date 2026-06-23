@@ -1,0 +1,44 @@
+# 用户投资风格和交易规则。由用户通过微信描述，系统整理后经确认写入。
+profile:
+  style: ""
+  selected_style_pack: null
+  custom_style_enabled: true
+  risk_preference: ""
+  investment_horizon: ""
+  markets: []
+  user_mode: "working_professional"
+  investor_segment: "unclassified"
+  decision_cadence: "low_frequency"
+  preferred_assets: []
+
+allocation:
+  target_structure: []
+  cash_rule: ""
+  minimum_cash_buffer: null
+  max_total_equity_weight: null
+  max_single_position_weight: null
+  max_single_industry_weight: null
+  max_observation_weight: null
+
+position_roles:
+  core: []
+  non_core: []
+  observation: []
+  defensive: []
+
+buy_rules: []
+sell_rules: []
+rebalance_rules: []
+risk_rules: []
+do_not_do_rules:
+  - "不因单日涨跌改变长期策略。"
+  - "不在未确认规则时把观察仓临时升格为核心仓。"
+
+decision_boundaries:
+  default_output: "analysis_only"
+  action_requires_rule_trigger: true
+  action_requires_user_confirmation: true
+  scenario_required_for_market_view: true
+
+notes: ""
+last_confirmed_at: null

@@ -1,0 +1,31 @@
+# 观察池和辅助选股产品化配置。系统不做泛泛推荐，只建立可跟踪观察池。
+positioning: "帮用户建立可跟踪观察池，而不是今日推荐股票。"
+
+modules:
+  observation_pool_build:
+    purpose: "从用户风格、市场范围和风险偏好出发，筛出候选标的。"
+    output: "config/observation_pool.yaml"
+    action_boundary: "analysis_only"
+  candidate_risk_scan:
+    purpose: "对候选标的做财务、估值、治理、流动性和题材过热排雷。"
+    output: "reports/company/"
+    action_boundary: "watch_only"
+  buy_waiting_zone:
+    purpose: "定义价格、估值、事件或财报验证条件，满足后再提醒。"
+    output: "config/observation_pool.yaml"
+    action_boundary: "rule_near_trigger"
+
+candidate_required_fields:
+  - "name"
+  - "code"
+  - "market"
+  - "asset_type"
+  - "source_reason"
+  - "risk_flags"
+  - "waiting_conditions"
+  - "max_weight"
+
+forbidden_outputs:
+  - "今日推荐三只股"
+  - "无条件买入建议"
+  - "仅基于题材热度加入观察池"

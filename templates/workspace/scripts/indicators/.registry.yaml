@@ -1,0 +1,36 @@
+# L3b 沙箱脚本指标注册表
+#
+# 每条 entry 描述一个 workspace/scripts/indicators/ 下的脚本指标。
+# Codex 通过 Skill 流程创建新指标时会更新本文件。
+#
+# 完整字段说明见 docs/composite-indicator-system.md 第 8.4 节。
+
+indicators:
+  - key: double_ma_cross
+    name: "5/20 日均线金叉/死叉"
+    script: ./double_ma_cross.ts
+    enabled: true
+    reliability: stable
+    schedule: daily_post_market
+    data_source_notes:
+      - "示例指标,无外部数据依赖"
+    user_acknowledged: false
+    description: "模板示例,演示 L3b 脚本结构。客户可以参考它创建自己的指标。"
+
+  - key: main_force_control
+    name: "主力控盘度(通达信 ZZLKP 模型)"
+    script: ./main_force_control.ts
+    enabled: true
+    reliability: experimental
+    schedule: daily_post_market
+    data_source_notes:
+      - "[近似模型] 筹码分布基于换手率衰减估算,非真实筹码数据"
+      - "[经验系数] ZLCM=WINNER(CLOSE)*70、SHCM=...*80,系数 70/80 为原作者经验值"
+      - "[经验周期] MA(13)、EMA(89) 为原作者经验周期,适用性因股而异"
+      - "[数据兜底] 换手率缺失时按成交量*0.3 估算,精度有限"
+      - "[频率限制] 输出每日盘后 1 次,盘中不实时"
+      - "[用途限制] 仅作迹象评分,不作为建仓结论"
+    user_acknowledged: true
+    acknowledged_at: "2026-06-22"
+    acknowledged_via: "weixin-mobile"
+    description: "客户公式实现。输出 ZZLKP/ZJLRQD/DKB 等主力行为指标,所有数据为近似估算。"

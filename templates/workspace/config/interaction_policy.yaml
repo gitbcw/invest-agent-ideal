@@ -1,0 +1,47 @@
+# 微信交互与低打扰策略。目标是减少用户盯盘，而不是把盯盘换成消息流。
+message_modes:
+  brief:
+    max_items: 5
+    purpose: "微信默认模式，只给结论、原因和是否需要确认"
+  detail:
+    trigger: "用户主动要求查看详细报告"
+    purpose: "返回报告路径或展开完整报告"
+  draft_confirmation:
+    purpose: "长期记忆、策略、规则或操作建议确认"
+
+interrupt_policy:
+  working_hours_only_push:
+    - "P0"
+  p1_delivery: "evening_brief"
+  p2_delivery: "report_only"
+  max_intraday_pushes:
+    P0: 3
+    P1: 0
+    P2: 0
+  quiet_value_signal:
+    enabled: true
+    daily_no_action_summary: "仅在晚间简报说明今日无关键触发"
+
+action_language_boundaries:
+  analysis_only: "仅分析，不构成操作请求"
+  rule_triggered: "用户已确认规则触发，需要用户自行确认是否执行"
+  confirmation_required: "先输出确认单，不使用命令式交易语言"
+  prohibited_phrases:
+    - "必须买入"
+    - "一定卖出"
+    - "稳赚"
+    - "确定上涨"
+
+clarification_policy:
+  ask_when:
+    - "持仓截图无法识别关键字段"
+    - "用户输入可能修改长期规则但意图不明确"
+    - "同一标的存在多个市场或代码歧义"
+    - "数据源冲突影响结论"
+  avoid_when:
+    - "可以用低风险默认值继续生成草案"
+    - "只影响报告格式不影响投资判断"
+
+behavior_logging:
+  enabled: true
+  output: "memory/behavior_events.jsonl"

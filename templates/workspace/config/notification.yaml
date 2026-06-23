@@ -1,0 +1,41 @@
+# 面向固定上班在职员工的低打扰通知策略。
+user_mode: working_professional
+
+priority_levels:
+  P0:
+    name: "立即关注"
+    meaning: "可能影响持仓逻辑、触发关键买卖区间或出现重大风险。"
+    push_policy: "立即微信推送"
+  P1:
+    name: "当天关注"
+    meaning: "需要用户当天晚间查看，但不需要盘中打断工作。"
+    push_policy: "晚间简报汇总"
+  P2:
+    name: "仅记录"
+    meaning: "用于复盘沉淀，不主动打扰用户。"
+    push_policy: "只写入报告和日志"
+
+working_hours:
+  start: "09:00"
+  end: "18:00"
+  policy: "工作时间只推 P0，P1/P2 延后到晚间简报。"
+
+lunch_break:
+  start: "11:30"
+  end: "13:30"
+  policy: "允许推送少量 P1，但默认不超过 1 条。"
+
+evening:
+  daily_brief_time: "19:00"
+  policy: "推送日复盘简报、P1 汇总和今日是否需要操作。"
+
+weekend:
+  weekly_meeting_time: "Saturday 09:00"
+  policy: "推送周末 10 分钟投资会议简报。"
+
+do_not_disturb:
+  enabled: true
+  allow_p0_override: true
+
+custom_rules: []
+last_confirmed_at: null

@@ -1,0 +1,19 @@
+# 交易策略列表(第一版)。
+#
+# 每份策略是用户的私人制品,作为 AI 起草交易预案(stock_plans)的稳定输入。
+# 与 strategy.yaml 平级,但语义不同:
+#   - strategy.yaml 装整体投资风格 / 风险约束 / "不做什么"
+#   - trading_strategies.yaml 装具体可执行策略 / "在什么条件下做什么"
+#
+# 字段说明:
+#   key             文件内唯一短标识(用户可读,如 breakout-pullback)
+#   name            显示名
+#   applicability   适用场景(第一版纯文字)
+#   body            策略正文(第一版纯文字,可换行)
+#   enabled         默认 true
+#   created_at      ISO 日期(自动填写)
+#   updated_at      ISO 日期(自动填写)
+#
+# 第一版默认留空,用户/Codex 在使用过程中按需追加。
+# 示例可参考 docs/trading-strategy-design.md §3.1。
+[]

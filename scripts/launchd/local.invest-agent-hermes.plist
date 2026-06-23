@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.invest-agent-hermes</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>/Users/combo/MyFile/projects/invest-agent/scripts/start-hermes-service.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/combo/MyFile/projects/invest-agent</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/combo/MyFile/projects/invest-agent/logs/hermes-service.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/combo/MyFile/projects/invest-agent/logs/hermes-service.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/combo/.nvm/versions/node/v22.22.0/bin:/Users/combo/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>PORT</key>
+    <string>22649</string>
+    <key>HERMES_EXPERIMENT_ENABLED</key>
+    <string>true</string>
+    <key>HERMES_PROFILE</key>
+    <string>invest-agent</string>
+    <key>WEIXIN_AUTO_START</key>
+    <string>false</string>
+    <key>HERMES_WEIXIN_AUTO_START</key>
+    <string>true</string>
+    <key>INVEST_AGENT_WEIXIN_STATE_DIR</key>
+    <string>/Users/combo/MyFile/projects/invest-agent/.state</string>
+    <key>HERMES_ACP_CWD</key>
+    <string>/Users/combo/MyFile/projects/invest-agent</string>
+  </dict>
+</dict>
+</plist>

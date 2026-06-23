@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "required": ["id", "created_at", "task_type", "period_key", "trigger", "idempotency_key", "status"],
+  "properties": {
+    "id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "task_type": { "type": "string" },
+    "period_key": { "type": "string" },
+    "trigger": { "type": "string" },
+    "idempotency_key": { "type": "string" },
+    "status": { "type": "string" },
+    "extra": { "type": "object" }
+  }
+}

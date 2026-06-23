@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "required": ["id", "created_at", "source_name", "source_type", "event", "reason"],
+  "properties": {
+    "id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "source_name": { "type": "string" },
+    "source_type": { "type": "string" },
+    "event": { "type": "string" },
+    "reason": { "type": "string" },
+    "related_task": { "type": "string" },
+    "missing_data": { "type": "array" }
+  }
+}

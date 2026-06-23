@@ -1,0 +1,38 @@
+# 证据与数据可信度策略。投资判断必须区分事实、推断和用户规则触发。
+minimum_evidence:
+  price_or_position:
+    required_level: "verified_market"
+    stale_after_minutes: 20
+    if_missing: "降低置信度，不输出具体涨跌幅结论"
+  company_financial:
+    required_level: "preferred_primary"
+    if_missing: "提示财报缺失，只能输出待验证风险清单"
+  material_news_or_policy:
+    required_level: "secondary"
+    cross_check_required: true
+    if_conflict: "优先公告/监管/交易所来源，标记冲突"
+  user_input:
+    required_level: "user_confirmed"
+    if_unconfirmed: "只能生成草案，不写入长期记忆"
+
+claim_types:
+  fact: "可由行情、公告、财报或用户确认信息直接支持"
+  inference: "基于事实和用户方法推导出的判断"
+  rule_trigger: "用户已确认规则被触发"
+  uncertainty: "缺数据、冲突数据或无法归因的部分"
+
+report_requirements:
+  important_claim_must_have_evidence: true
+  separate_fact_and_inference: true
+  include_data_as_of: true
+  include_missing_data: true
+  include_confidence: true
+  no_precise_prediction_without_scenario: true
+
+source_conflict_policy:
+  preferred_order:
+    - "preferred_primary"
+    - "verified_market"
+    - "secondary"
+    - "unverified"
+  must_record_conflict_to: "memory/source_events.jsonl"

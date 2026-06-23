@@ -1,0 +1,30 @@
+# 隐私、安全和审计约束。投资持仓属于高敏感个人数据。
+data_classification:
+  portfolio: "sensitive"
+  strategy: "sensitive"
+  reports: "sensitive"
+  public_market_data: "public"
+  financial_reports: "public_or_licensed"
+  chat_history: "sensitive"
+
+access_control:
+  default_scope: "current_project"
+  sandbox_assumption: "外层 SaaS 沙箱已经保证项目目录隔离，本配置不重复声明跨用户访问控制。"
+  export_requires_user_confirmation: true
+  delete_requires_user_confirmation: true
+
+logging:
+  redact_sensitive_in_system_logs: true
+  log_user_confirmation_events: true
+  log_model_failover_events: true
+  audit_output: "memory/audit_events.jsonl"
+
+retention:
+  reports: "user_controlled"
+  memory: "user_controlled"
+  raw_screenshots: "delete_after_structured_confirmation_unless_user_keeps"
+
+wechat_safety:
+  require_project_binding: true
+  ambiguous_sender_policy: "do_not_return_sensitive_data"
+  sensitive_reply_policy: "brief_only_unless_user_requests_detail"

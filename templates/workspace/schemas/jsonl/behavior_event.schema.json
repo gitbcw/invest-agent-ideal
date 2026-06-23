@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "required": ["id", "created_at", "event_type", "severity"],
+  "properties": {
+    "id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "event_type": { "type": "string" },
+    "severity": { "type": "string" },
+    "related_target": { "type": "object" },
+    "raw_user_intent": { "type": "string" },
+    "system_response": { "type": "string" }
+  }
+}

@@ -1,0 +1,96 @@
+# 投资风险分类。用于日复盘、周复盘、月复盘、财报分析和盯盘统一口径。
+risk_levels:
+  P0:
+    meaning: "可能改变持仓逻辑、触发用户确认动作或造成重大本金风险"
+    interrupt_allowed: true
+    severity_alias: high
+  P1:
+    meaning: "当天需要关注，但不适合打断工作"
+    interrupt_allowed: false
+    severity_alias: medium
+  P2:
+    meaning: "用于复盘沉淀，不主动推送"
+    interrupt_allowed: false
+    severity_alias: low
+
+# 信号优先级映射（WP3a 2026-06-21 引入）。
+# alert-check.ts 在生成 AlertItem 时按 signal_key 查此表得到 priority。
+# 同时 priority 会反推 severity(high/medium/low)以兼容现有数据库和 dashboard。
+#
+# signal_key 取值规则:alert-check 中 `signalKey` 字段冒号后的 suffix。
+#   - 单段:stop-loss / near-support / breakout-with-volume 等
+#   - 两段且带方向:price:up / price:down
+#   - 带参数前缀(自动匹配):target-price / support-price / vol-price-div
+#
+# 启用方式:USE_YAML_CONFIG=true 时从工作空间加载;否则走 alert-check.ts 内的硬编码默认值。
+signal_priority:
+  # 默认优先级:未在 overrides 显式声明的 signal_key 使用此值。
+  default: P2
+
+  # 按 signal_key 覆盖优先级。
+  overrides:
+    # === P0:可能改变持仓逻辑、需要立即确认 ===
+    stop-loss: P0
+    break-support: P0
+    breakout-with-volume: P0
+    target-price: P0
+    support-price: P0
+    "price:up:extreme": P0
+    "price:down:extreme": P0
+
+    # === P1:当天需要关注但不打断 ===
+    near-support: P1
+    near-resistance: P1
+    near-target: P1
+    capital-flow-main: P1
+    capital-flow-super-large: P1
+    vol-price-div: P1
+    "price:up": P1
+    "price:down": P1
+
+  # 价格异动升级阈值:|涨跌幅| >= 此值时,signal_key 自动追加 ":extreme",
+  # 命中 overrides["price:up:extreme"] / overrides["price:down:extreme"]。
+  # 单位:百分比。仅影响 priority 推断,不影响信号是否触发(触发阈值在 signal_config)。
+  price_escalation_threshold_percent: 5
+
+risk_categories:
+  portfolio:
+    - "单一标的集中度"
+    - "单一行业或主题暴露"
+    - "现金安全垫不足"
+    - "核心/非核心/观察仓角色漂移"
+  market_structure:
+    - "流动性恶化"
+    - "风格快速切换"
+    - "相关性在极端行情中上升"
+    - "估值分位极端"
+  asset_specific:
+    - "基本面恶化"
+    - "财报质量下降"
+    - "治理或监管风险"
+    - "停牌、退市、清盘或信用风险"
+  product_specific:
+    - "ETF 跟踪误差"
+    - "基金规模过小或清盘风险"
+    - "可转债强赎、信用和溢价率风险"
+    - "港股通汇率和流动性风险"
+    - "黄金/商品价格与汇率联动风险"
+  behavior:
+    - "追高"
+    - "频繁短线查询"
+    - "临时修改规则"
+    - "忽略现金安全垫"
+    - "因为单日涨跌改变长期判断"
+  data_quality:
+    - "行情延迟"
+    - "财报缺失"
+    - "新闻未核验"
+    - "来源冲突"
+
+classification_required_fields:
+  - "risk_category"
+  - "risk_item"
+  - "priority"
+  - "evidence"
+  - "portfolio_impact"
+  - "user_action_needed"

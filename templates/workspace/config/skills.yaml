@@ -1,0 +1,66 @@
+skills:
+  wechat_onboarding:
+    enabled: true
+    path: "skills/wechat-onboarding"
+    description: "首次使用和配置变更引导。"
+    must_follow:
+      - "config/tenant.yaml"
+      - "config/data_contracts.yaml"
+      - "config/interaction_policy.yaml"
+  daily_review:
+    enabled: true
+    path: "skills/daily-review"
+    description: "默认工作日 19:00 自动执行，侧重价格、盈亏、仓位和关键区间。"
+    must_follow:
+      - "config/data_contracts.yaml"
+      - "config/evidence_policy.yaml"
+      - "config/risk_taxonomy.yaml"
+      - "config/decision_policy.yaml"
+  weekly_review:
+    enabled: true
+    path: "skills/weekly-review"
+    description: "默认周六 09:00 自动执行，回测日复盘并输出风险雷达。"
+    must_follow:
+      - "config/data_contracts.yaml"
+      - "config/product_metrics.yaml"
+      - "config/risk_taxonomy.yaml"
+  monthly_review:
+    enabled: true
+    path: "skills/monthly-review"
+    description: "默认每月 1 号自动复盘上月，输出未来 1-3 个月走势判断。"
+    must_follow:
+      - "config/data_contracts.yaml"
+      - "config/product_metrics.yaml"
+      - "config/evidence_policy.yaml"
+  company_financial_analysis:
+    enabled: true
+    path: "skills/company-financial-analysis"
+    description: "下载/读取财报，分析公司长期投资价值并输出基本面预警。"
+    must_follow:
+      - "config/evidence_policy.yaml"
+      - "config/risk_taxonomy.yaml"
+      - "config/decision_policy.yaml"
+  market_watch:
+    enabled: true
+    path: "skills/market-watch"
+    description: "基于复盘观察点和盘中异常触发提醒。"
+    must_follow:
+      - "config/watch.yaml"
+      - "config/interaction_policy.yaml"
+      - "config/risk_taxonomy.yaml"
+  observation_pool:
+    enabled: true
+    path: "skills/observation-pool"
+    description: "建立可跟踪观察池、候选排雷和买入等待区，不做直接荐股。"
+    must_follow:
+      - "config/selection.yaml"
+      - "config/observation_pool.yaml"
+      - "knowledge/selection_protocol.md"
+  qa:
+    enabled: true
+    path: "skills/qa"
+    description: "只回答投资市场相关问题。"
+    must_follow:
+      - "config/privacy.yaml"
+      - "config/evidence_policy.yaml"
+      - "config/decision_policy.yaml"

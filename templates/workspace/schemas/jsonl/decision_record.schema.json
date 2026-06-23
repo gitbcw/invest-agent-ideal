@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "required": ["id", "created_at", "task_type", "period_key", "decision_type", "action_boundary", "view", "reasons", "validation_points", "invalidation_signals", "confidence"],
+  "properties": {
+    "id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "source_task_trace_id": { "type": "string" },
+    "task_type": { "type": "string" },
+    "period_key": { "type": "string" },
+    "decision_type": { "type": "string" },
+    "action_boundary": { "type": "string" },
+    "view": { "type": "string" },
+    "reasons": { "type": "array" },
+    "validation_points": { "type": "array" },
+    "invalidation_signals": { "type": "array" },
+    "confidence": { "type": "string" }
+  }
+}

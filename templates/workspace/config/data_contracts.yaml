@@ -1,0 +1,68 @@
+# 数据契约定义。所有 skill 输出和记忆写入应尽量按这些字段生成，避免长期复盘不可审计。
+version: "1.0"
+
+common_fields:
+  trace_id: "本次任务唯一追踪 ID"
+  tenant_id: "用户空间 ID"
+  generated_at: "ISO-8601 时间"
+  task_type: "daily_review/weekly_review/monthly_review/company_review/market_watch/qa/onboarding"
+  period_key: "任务周期，例如 2026-06-11、2026-W24、2026-06"
+  model_provider: "gpt/glm/manual"
+  data_as_of: "行情、财报或新闻数据截止时间"
+  confidence: "high/medium/low"
+  evidence_level: "primary/verified/secondary/unverified/mixed"
+  missing_data: []
+  assumptions: []
+
+decision_record:
+  id: null
+  source_task_trace_id: null
+  target:
+    name: ""
+    code: ""
+    asset_type: "stock/etf/fund/convertible/gold/commodity/cash/portfolio"
+    market: ""
+  decision_type: "observe/hold/buy_candidate/sell_candidate/rebalance_candidate/risk_warning/no_action"
+  view: ""
+  reasons: []
+  action_boundary: "analysis_only/rule_triggered/user_confirmation_required"
+  suggested_action: ""
+  user_confirmation_required: false
+  validation_points: []
+  invalidation_signals: []
+  review_due: null
+  outcome:
+    status: "pending/hit/miss/noise/invalidated"
+    checked_at: null
+    attribution: ""
+
+alert_record:
+  id: null
+  source_task_trace_id: null
+  priority: "P0/P1/P2"
+  alert_type: "price/risk/news/policy/financial_report/behavior/data_quality"
+  target: {}
+  trigger: ""
+  user_interrupt_allowed: false
+  message_brief: ""
+  evidence: []
+  next_review_time: null
+
+behavior_event:
+  id: null
+  event_type: "short_term_query/repeated_refresh/rule_change_request/chase_rally/ignore_cash_buffer/manual_feedback/report_opened/action_confirmed/action_rejected"
+  severity: "info/watch/risk"
+  related_target: {}
+  raw_user_intent: ""
+  system_response: ""
+  created_at: null
+
+source_event:
+  id: null
+  source_name: ""
+  source_type: "market_price/primary_report/news_policy/research/user_input"
+  reliability_before: "preferred_primary/verified_market/secondary/unverified"
+  reliability_after: null
+  event: "used/conflict/missing/stale/misleading/downgraded/upgraded"
+  reason: ""
+  created_at: null

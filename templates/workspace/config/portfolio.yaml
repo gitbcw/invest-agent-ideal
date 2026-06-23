@@ -1,0 +1,49 @@
+# 用户持仓配置。首次使用时由微信引导录入，确认后写入。
+cash:
+  available: null
+  currency: CNY
+  locked: null
+  safety_buffer: null
+  notes: ""
+
+holdings: []
+# 示例结构：
+# - name: "标的名称"
+#   code: "证券代码"
+#   asset_type: "stock/etf/fund/convertible/gold/commodity/cash"
+#   market: "A股/H股/ETF/基金/商品"
+#   account: "账户或券商，可为空"
+#   currency: "CNY/HKD/USD"
+#   cost_price: 70.0          # 每股成本价(单价),用于浮亏/盈亏比计算;可不填
+#   market_value: null
+#   weight: null
+#   target_weight: null
+#   max_weight: null
+#   role: "core/non_core/observation/defensive"
+#   thesis: "持有理由"
+#   invalidation_signals: []
+#   liquidity_notes: ""
+#   notes: ""
+# 隐私边界:系统只存"每股成本价(单价)",用于算浮亏比例和盈亏比;
+# 数量、总金额、仓位价值属于用户隐私,不存储。
+
+watchlist: []
+# 示例结构：
+# - name: "观察标的"
+#   code: "证券代码"
+#   asset_type: "stock/etf/fund/convertible/gold/commodity"
+#   market: "A股/ETF/基金/商品"
+#   trigger: "进入什么价格/估值/事件区间后提醒"
+#   max_weight: null
+#   evidence_needed: []
+#   notes: ""
+
+accounts: []
+# 示例结构：
+# - name: "账户名称"
+#   broker: ""
+#   base_currency: "CNY"
+#   notes: ""
+
+last_confirmed_at: null
+last_confirmed_by: null

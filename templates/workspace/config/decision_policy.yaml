@@ -1,0 +1,63 @@
+# 操作建议输出和确认规则，默认面向非专业在职投资者，强调少操作、强确认。
+default_action_bias: "无触发则不操作"
+responsibility_boundary: "系统输出事实、情景、规则触发和确认单；用户自行决定是否交易。"
+
+daily_action_summary_required: true
+daily_action_summary_fields:
+  - "是否需要操作"
+  - "是否需要关注"
+  - "是否需要用户确认"
+  - "今日最重要原因"
+
+operation_confirmation_required:
+  buy: true
+  sell: true
+  rebalance: true
+  strategy_change: true
+  method_change: true
+
+operation_checklist:
+  - "是否触发用户确认过的买入/卖出/再平衡条件"
+  - "是否超过单一标的或单一类别仓位上限"
+  - "是否影响现金安全垫"
+  - "是否存在基本面预警或风险雷达 P0/P1 信号"
+  - "是否属于追涨杀跌或偏离用户风格"
+  - "是否有明确验证点和失效信号"
+  - "关键事实是否有足够证据等级"
+  - "是否存在数据缺失或来源冲突"
+
+portfolio_health_check:
+  enabled: true
+  dimensions:
+    - "仓位纪律"
+    - "集中度"
+    - "现金安全垫"
+    - "非核心复杂度"
+    - "风险事件"
+    - "风格漂移"
+
+behavior_correction:
+  enabled: true
+  watch_items:
+    - "频繁询问短线涨跌，偏离用户长期策略"
+    - "观察仓未到规则区间却想追高"
+    - "非核心仓位因短期上涨被临时升格"
+    - "忽略现金安全垫或仓位上限"
+    - "连续要求刷新同一报告但没有新增信息"
+
+decision_language:
+  allowed_labels:
+    - "仅观察"
+    - "规则接近触发"
+    - "规则已触发，等待用户确认"
+    - "风险预警"
+    - "不建议因单日波动操作"
+  forbidden_labels:
+    - "必买"
+    - "必卖"
+    - "稳赚"
+    - "确定上涨"
+
+evidence_required_for_action: true
+
+last_confirmed_at: null

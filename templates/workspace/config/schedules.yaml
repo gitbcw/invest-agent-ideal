@@ -1,0 +1,45 @@
+timezone: Asia/Shanghai
+
+run_policy:
+  automatic_by_default: true
+  manual_trigger_allowed: true
+  skip_automatic_if_manual_report_exists: true
+  refresh_requires_user_confirmation: true
+
+daily_review:
+  enabled: true
+  auto_run: true
+  default_time: "19:00"
+  trading_days_only: true
+  focus: "价格、盈亏、仓位、买卖区间、观察仓触发情况"
+  output: "reports/daily"
+
+weekly_review:
+  enabled: true
+  auto_run: true
+  default_time: "Saturday 09:00"
+  focus: "周度观点回测、风险雷达、下周风险预案"
+  output: "reports/weekly"
+
+monthly_review:
+  enabled: true
+  auto_run: true
+  default_time: "day_1 09:00"
+  review_previous_month: true
+  focus: "上月策略执行、系统性偏差、未来 1-3 个月走势判断"
+  output: "reports/monthly"
+
+company_financial_analysis:
+  enabled: true
+  trigger: "user_request_or_new_report_detected"
+  focus: "基本面预警、财务质量、治理风险、同行对比、估值和仓位影响"
+  output: "reports/company"
+
+market_watch:
+  enabled: true
+  default_windows:
+    - "09:55"
+    - "11:20"
+    - "14:30"
+  custom_frequency: null
+  only_push_on_exception: true

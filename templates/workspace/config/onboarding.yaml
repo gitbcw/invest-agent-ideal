@@ -1,0 +1,38 @@
+# 冷启动分层。先让用户看到第一份持仓复盘价值，再逐步补充复杂规则。
+levels:
+  quick_30s:
+    goal: "快速生成第一份今日持仓复盘"
+    required:
+      - "上传持仓截图或输入核心持仓"
+      - "选择风格包"
+      - "确认低打扰模式"
+    writes:
+      - "config/portfolio.yaml"
+      - "config/strategy.yaml"
+      - "config/notification.yaml"
+  standard_3m:
+    goal: "补齐可用盯盘和仓位判断"
+    required:
+      - "现金"
+      - "观察仓"
+      - "单一标的或资产仓位上限"
+      - "提醒偏好"
+    writes:
+      - "config/portfolio.yaml"
+      - "config/watch.yaml"
+      - "config/decision_policy.yaml"
+  advanced:
+    goal: "沉淀个性化方法"
+    required:
+      - "基本面方法"
+      - "技术面方法"
+      - "宏观方法"
+      - "风控方法"
+    writes:
+      - "knowledge/methods/fundamental.md"
+      - "knowledge/methods/technical.md"
+      - "knowledge/methods/macro.md"
+      - "knowledge/methods/risk.md"
+
+default_start_level: "quick_30s"
+do_not_block_first_report_on_advanced_methods: true

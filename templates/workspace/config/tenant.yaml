@@ -1,0 +1,65 @@
+# 当前用户工作空间运行上下文。跨用户目录隔离由外层平台沙箱保证,
+# 本项目只记录当前空间身份、任务幂等和模型路由要求。
+workspace:
+  tenant_id: null
+  user_id: null
+  project_id: null
+  workspace_root: "."
+  data_residency: "local_macmini"
+  sandbox_assumption: "项目运行时只能看到当前用户项目目录;跨项目隔离由外层平台负责。"
+
+wechat:
+  channel_id: null
+  conversation_scope: "current_project"
+  inbound_idempotency_key_required: true
+  outbound_idempotency_key_required: true
+
+# 复杂推理统一由 Codex ACP 兜底。Hermes 已退出主链路(2026-06-21)。
+codex:
+  role: "complex_reasoning_fallback"
+  failover_policy:
+    trigger:
+      - "primary_timeout"
+      - "primary_network_error"
+      - "primary_unavailable"
+    retry_before_failover: 1
+    max_total_attempts: 3
+  model_contract:
+    must_load_paths:
+      - "AGENTS.md"
+      - "config/paths.yaml"
+      - "config/tenant.yaml"
+      - "config/data_contracts.yaml"
+    output_must_include_trace_id: true
+
+# 轻量级路由层。第一道国产模型先做意图分类/快速回答/边界拒绝,
+# 命中复杂推理或路由置信度低时再交给 Codex ACP。
+routing:
+  layer: "domestic_models_first"
+  boundary:
+    in_scope: "投资相关问题:持仓、组合、复盘、选股、风险、行情解读、宏观"
+    out_of_scope: "与投资无关的话题"
+    out_of_scope_reject_confidence_threshold: 0.7
+    reject_via: "llm_generated_polite_reply"
+  classification:
+    primary_provider: "deepseek"
+    fallback_providers:
+      - "doubao"
+      - "stepfun"
+    classification_confidence_threshold: 0.6
+    when_below_threshold: "fallback_to_codex"
+  failover_policy:
+    trigger:
+      - "primary_timeout"
+      - "primary_network_error"
+      - "primary_unavailable"
+    retry_before_fallback: 1
+    max_total_attempts: 3
+
+tasks:
+  scheduled_task_idempotency_required: true
+  manual_task_idempotency_required: true
+  duplicate_policy: "same_period_same_task_skip_unless_user_confirms_refresh"
+  recovery_policy: "resume_from_last_completed_step"
+
+last_confirmed_at: null
