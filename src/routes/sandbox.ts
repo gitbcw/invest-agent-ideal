@@ -282,8 +282,9 @@ export function registerSandboxRoutes(app: FastifyInstance) {
           return all.slice(0, 5);
         })(),
         db.select().from(codexAcpTraces).where(and(eq(codexAcpTraces.userId, ctx.userId), eq(codexAcpTraces.instanceId, ctx.instanceId))).orderBy(desc(codexAcpTraces.createdAt)).limit(20),
-        // WP4.9:method_change_candidates 走 backend
-        methodChangeBackend.list(ctx.userId, ctx.instanceId, { status: "proposed", limit: 20 }),
+        // WP4.9:method_change_candidates 走 backend。
+        // 只回最近 7 天的 proposed 候选,避免老候选当作"待确认操作"污染 Codex 上下文。
+        methodChangeBackend.list(ctx.userId, ctx.instanceId, { status: "proposed", limit: 20, maxAgeDays: 7 }),
         loadInvestmentProfile(ctx),
         loadMethodologyProfile(ctx),
       ]);
@@ -305,6 +306,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
         conversationCount: recentConversations.length,
         hasInvestmentProfile: investmentProfile !== null,
         hasMethodologyProfile: methodologyProfile !== null,
+        // 仅统计最近 7 天的 proposed 候选;超过 7 天的老候选已自动从上下文里隐藏,可经 monthly-context 完整查看。
         proposedMethodChangeCount: methodChangeRows.length,
       },
       investmentProfile,

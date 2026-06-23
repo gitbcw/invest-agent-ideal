@@ -78,6 +78,16 @@ Use `/api/dashboard` as the main state snapshot. It includes holdings, watchlist
 
 In sandbox mode, use `/api/sandbox/dashboard` instead.
 
+### Dashboard 字段语义(避免误读)
+
+`/api/sandbox/dashboard` 返回里有几个字段容易被混淆,务必按下面语义理解:
+
+- `alertRules` / `upgradedAlertRules`:用户**已生效**的提醒规则。这是"当前在跑的规则",不是"待确认的规则"。
+- `proposedMethodChanges`:**策略实例展开候选**(`method_change_candidates` 表里 status=proposed 的记录)。这是"复盘/对话里捞出来的、可考虑沉淀到方法论档案的候选",**不是待确认的提醒规则,也不是待确认的沙盒写操作**。仅展示最近 7 天,更老的候选请通过 `/api/sandbox/reviews/monthly-context` 的 `methodChangeProposals` 字段完整查看。向用户汇报时应说"近期方法论候选 N 条,是否要采纳沉淀到方法论档案",不要把它说成"待确认规则"。
+- 待确认的沙盒写操作(删除类操作)走另一个完全独立的机制,通过 `/api/sandbox/confirmations/pending` 查询,字段名是 `confirmations`。**两个机制不要混用。**
+
+判断"用户当前有什么提醒规则"永远只看 `alertRules` / `upgradedAlertRules`,不要从 `proposedMethodChanges` 反推。
+
 ## Review APIs
 
 Use these when skills need deterministic review context or need to persist a generated review artifact.

@@ -1,0 +1,31 @@
+{
+  "ran_at": "2026-06-23T04:16:02.540Z",
+  "test_user": {
+    "userId": "eval",
+    "instanceId": "eval-baseline",
+    "conversationId": "eval-session-001"
+  },
+  "results": [
+    {
+      "id": "strategy-002",
+      "scenario": "strategy_plan_drafting_gate_one",
+      "user_input": "用趋势中继策略给赣锋锂业出预案",
+      "expected": {
+        "must_contain": [
+          "第一道闸门:推荐适用策略 + 解释匹配理由(如该策略已存在则直接采用)",
+          "等待用户确认策略才进入第二道闸门(预案起草)"
+        ],
+        "must_not_contain": [
+          "跳过策略匹配,直接起草预案",
+          "一次对话内自动走完两道闸门(必须用户确认)",
+          "把策略命中率/反馈机制暴露给用户(系统不做这件事)"
+        ],
+        "style_notes": "体现双门流程的\"邀请确认\"节奏"
+      },
+      "actual_output": "当前未找到你保存的“趋势中继策略”档案，因此我不能直接按该策略给赣锋锂业出预案。\n\n请选择一个处理方式：\n\na) 让我按你的口述新建“趋势中继策略”（描述适用场景 + 进场/止损/目标规则），确认后存档；\nb) 改用你已有的其他策略（当前暂无已存策略，可先创建）。\n\n你想怎么继续？",
+      "error": null,
+      "elapsed_ms": 7160,
+      "ran_at": "2026-06-23T04:16:02.538Z"
+    }
+  ]
+}

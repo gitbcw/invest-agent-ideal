@@ -32,6 +32,7 @@ import { handleWatchlist } from "../handlers/watchlist.js";
 import { handleWatchlistTool } from "../handlers/watchlist.js";
 import { handleReviewRecordsTool } from "../handlers/review-records.js";
 import { handleTradeLogTool } from "../handlers/trade-log.js";
+import { handleTradingStrategyTool } from "../handlers/trading-strategy.js";
 import { formatAlerts, runAlertCheck } from "../scheduler/alert-check.js";
 import {
   extractRecentStockRefs,
@@ -68,7 +69,10 @@ const FAST_ADMIN_SYSTEM_PROMPT = [
   "- portfolio.remove：把明确给出的股票，或上下文里刚提到的股票，移出持有股票池",
   "- watchlist.query：查看自选、自选股、自选池",
   "- alerts.query：查看提醒、提醒列表、预警规则",
-  "- plans.query：查看预案、交易预案",
+  "- plans.query：查看预案、交易预案（某只股票的具体支撑/压力/目标/止损计划）",
+  "- strategies.query：查看**交易策略**(用户在 trading_strategies.yaml 里定义的可执行策略模板,如突破回踩/趋势中继)。",
+  "  重要区分：**交易策略 ≠ 交易预案**。策略是规则模板(可重复用于多只股票),预案是某只股票的具体计划。",
+  "  用户说\"我有哪些交易策略\"\"查看交易策略\"\"策略列表\"时必须走 strategies.query,不要走 plans.query。",
   "- trade_log.query：查看交易日志、操作记录、买卖记录、持仓变更记录",
   "- review_records.query：查看复盘记录、历史复盘、最近复盘、复盘存档",
   "- monitor.overview：查看监控、巡检、整体状态、概览",
@@ -103,6 +107,11 @@ const FAST_ADMIN_SYSTEM_PROMPT = [
   "{\"route\":\"tool\",\"tool\":\"strategy_expansion.draft\",\"confidence\":\"high\"}",
   "如果是简单寒暄或能力介绍，输出：",
   "{\"route\":\"tool\",\"tool\":\"smalltalk.reply\",\"reply\":\"简短客户回复\",\"confidence\":\"high\"}",
+  "",
+  "如果是非投资相关请求(写诗、讲笑话、写代码、翻译、闲聊新闻、生活建议、情感问题等),输出：",
+  "{\"route\":\"reject\",\"reply\":\"礼貌拒绝+说明只处理投资相关问题\",\"confidence\":\"high\"}",
+  "reject 规则:用户请求明显与投资/股票/持仓/复盘/策略无关时必须 reject,不要尝试执行也不要引导到其他话题。",
+  "边界:个股/行业/宏观市场讨论属于投资相关,不要 reject;能力介绍/寒暄走 smalltalk.reply 不要 reject。",
   "",
   "如果是复杂任务，输出：",
   "{\"route\":\"complex\",\"reason\":\"需要分析/研究/复盘/策略判断\"}",
@@ -142,11 +151,12 @@ interface FastAdminAlertSpec {
 }
 
 type FastAdminDecision =
-  | { route: "tool"; tool: "portfolio.query" | "watchlist.query" | "alerts.query" | "plans.query" | "trade_log.query" | "review_records.query" | "monitor.overview" | "alerts.check"; confidence?: string }
+  | { route: "tool"; tool: "portfolio.query" | "watchlist.query" | "alerts.query" | "plans.query" | "strategies.query" | "trade_log.query" | "review_records.query" | "monitor.overview" | "alerts.check"; confidence?: string }
   | { route: "tool"; tool: "preference.draft" | "strategy_expansion.draft" | "portfolio_watchlist.draft"; confidence?: string }
   | { route: "tool"; tool: "alert.set"; stockName?: string; stockCode?: string; direction?: "above" | "below"; price?: number; percent?: boolean; indicator?: FastAdminAlertIndicator; period?: number; kdjThreshold?: number; alerts?: Array<FastAdminAlertSpec>; confidence?: string }
   | { route: "tool"; tool: "watchlist.add" | "watchlist.remove" | "portfolio.add" | "portfolio.remove"; stocks?: Array<{ code?: string; name?: string }>; useRecentStocks?: boolean; count?: number; confidence?: string }
   | { route: "tool"; tool: "smalltalk.reply"; reply?: string; confidence?: string }
+  | { route: "reject"; reply?: string; confidence?: string }
   | { route: "complex"; reason?: string }
   | { route: "unknown"; reply?: string };
 
@@ -190,6 +200,7 @@ function parseFastAdminDecision(raw: string): FastAdminDecision | null {
     const parsed = JSON.parse(jsonText) as Partial<FastAdminDecision>;
     if (parsed.route === "complex") return { route: "complex", reason: parsed.reason };
     if (parsed.route === "unknown") return { route: "unknown", reply: parsed.reply };
+    if (parsed.route === "reject") return { route: "reject", reply: (parsed as { reply?: string }).reply, confidence: parsed.confidence };
     if (parsed.route !== "tool" || typeof parsed.tool !== "string") return null;
     if (parsed.tool === "alert.set") {
       const price = Number((parsed as { price?: unknown }).price);
@@ -265,7 +276,7 @@ function parseFastAdminDecision(raw: string): FastAdminDecision | null {
     if (parsed.tool === "smalltalk.reply") {
       return { route: "tool", tool: "smalltalk.reply", reply: (parsed as { reply?: string }).reply, confidence: parsed.confidence };
     }
-    if (["portfolio.query", "watchlist.query", "alerts.query", "plans.query", "trade_log.query", "review_records.query", "monitor.overview", "alerts.check", "preference.draft", "strategy_expansion.draft", "portfolio_watchlist.draft"].includes(parsed.tool)) {
+    if (["portfolio.query", "watchlist.query", "alerts.query", "plans.query", "strategies.query", "trade_log.query", "review_records.query", "monitor.overview", "alerts.check", "preference.draft", "strategy_expansion.draft", "portfolio_watchlist.draft"].includes(parsed.tool)) {
       return { route: "tool", tool: parsed.tool as Exclude<FastAdminDecision & { route: "tool" }, { tool: "alert.set" }>["tool"], confidence: parsed.confidence };
     }
     return null;
@@ -303,6 +314,12 @@ async function tryFastAdminTool(userContext: UserContext, text: string): Promise
     return {
       mode: "fast-admin-unknown",
       text: decision.reply || "我还没判断清楚。你可以直接说：查持仓、查自选、查提醒、查交易日志、查复盘记录，或让我做个股/行业分析。",
+    };
+  }
+  if (decision.route === "reject") {
+    return {
+      mode: "fast-admin-reject",
+      text: decision.reply || "抱歉,我只处理投资相关的问题。持仓、自选、提醒、复盘、选股分析这些都可以找我。",
     };
   }
 
@@ -344,6 +361,8 @@ async function tryFastAdminTool(userContext: UserContext, text: string): Promise
       return { mode: "fast-admin-alert-query", text: await handleAlertTool({ operation: "query" }, ctx) };
     case "plans.query":
       return { mode: "fast-admin-plan-query", text: await handlePlanTool({ operation: "query" }, ctx) };
+    case "strategies.query":
+      return { mode: "fast-admin-strategies-query", text: await handleTradingStrategyTool({ operation: "query" }, ctx) };
     case "trade_log.query":
       return { mode: "fast-admin-trade-log-query", text: await handleTradeLogTool(ctx) };
     case "review_records.query":

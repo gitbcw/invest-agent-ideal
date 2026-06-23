@@ -102,6 +102,24 @@ Skills should own how Codex uses these capabilities:
 
 In short: the service is the machine room; skills are the operating manual Codex uses to run it.
 
+## Strategy Plan Drafting (硬约束)
+
+涉及"用 X 策略给 Y 股票出预案""按 X 策略起草计划""出预案"等请求时,**必须**走两道闸门流程(详见 `.codex/skills/invest-agent-strategy-plan-drafting/SKILL.md`):
+
+1. **第一道闸门(策略匹配)**:确认策略 + 解释为什么该策略匹配这只股票(2-3 句),邀请用户确认。**不能在同一回复里继续起草预案**。
+2. **等用户回复确认**(如"确认""可以""就用这个")。
+3. **第二道闸门(预案起草)**:输出 support/resistance/target/stopLoss/notes 草案,**等用户确认才落库**。
+
+**禁止**:
+
+- ❌ 跳过第一道闸门,一次回复内直接起草预案(即使用户已指定策略名)
+- ❌ 在草案里包含仓位上限/持仓金额/持股数量/时间约束(系统不存这些字段)
+- ❌ 承诺收益、胜率或精确时间
+
+如果用户指定的策略在 `trading_strategies.yaml` 里不存在,**不要**用"通用版本"代替起草。先告知用户该策略未找到,询问是否:
+(a) 让我按你的口述新建该策略,或
+(b) 改用其他已存在的策略。
+
 ## Style
 
 Write investment outputs in Chinese unless the user asks otherwise. Be direct, operational, and cautious. The product should feel like a disciplined investment workbench, not a generic chatbot.
