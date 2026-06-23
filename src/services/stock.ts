@@ -108,7 +108,6 @@ export async function getKline(
   endDate?: string,
 ): Promise<StockKline[]> {
   const prefix = formatCode(code);
-  const market = prefix.startsWith("sh") ? 1 : 0;
   const start = startDate ? startDate.replace(/-/g, "-") : "";
   const end = endDate ? endDate.replace(/-/g, "-") : "";
   // 腾讯日K线接口 param 格式: {prefix},day,{startDate},{endDate},{count},qfq

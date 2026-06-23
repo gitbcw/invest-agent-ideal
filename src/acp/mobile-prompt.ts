@@ -1,5 +1,5 @@
 import type { DailyReviewContext } from "../handlers/review.js";
-import { renderSkillBundlePrompt } from "../platform/skill-bundles.js";
+import { renderInvestAgentSkillPrompt } from "./skill-bundle-prompt.js";
 
 export const MOBILE_SYSTEM_PROMPT = `
 <mobile_rules>
@@ -86,17 +86,11 @@ export function buildMobilePrompt(params: {
     : "";
   const projectType = params.userContext?.projectType || "invest-agent";
   const skillBundleLine = params.userContext
-    ? renderSkillBundlePrompt(params.userContext.skillBundleId || (projectType === "diet-recommendation" ? "diet-recommendation-default" : "invest-agent-default"))
+    ? renderInvestAgentSkillPrompt()
     : "";
-  const projectLine = projectType === "diet-recommendation"
-    ? [
-        "当前项目是饮食推荐助手。优先按饮食推荐 skill 的规则回复：先询问或利用用户目标、忌口、过敏、口味、预算、时间和运动情况，再给出可执行的饮食建议。",
-        "不要给出医疗诊断、治疗承诺或极端节食方案。涉及疾病、孕期、儿童、进食障碍、严重过敏或用药冲突时，建议咨询专业医生/营养师。",
-        "当前饮食项目暂不使用投资助手的持仓、自选、交易预案、提醒和复盘接口。",
-      ].join("\n")
-    : "当前项目是投资助手。所有持仓、自选、预案、提醒和复盘查询都必须限定在该实例/用户。";
+  const projectLine = "当前项目是投资助手。所有持仓、自选、预案、提醒和复盘查询都必须限定在该实例/用户。";
 const sandboxLine = params.sandboxToken
-    ? `如需调用本服务确定性能力，只能调用 /api/sandbox/* 用户态接口，并使用请求头 Authorization: Bearer ${params.sandboxToken}。不要在 query、header 或 body 中传 userId；服务端会从 sandbox token 决定用户身份。不要调用 /api/users、/api/signals、/api/interval、/api/weixin、/api/hermes-weixin 等管理接口。`
+    ? `如需调用本服务确定性能力，只能调用 /api/sandbox/* 用户态接口，并使用请求头 Authorization: Bearer ${params.sandboxToken}。不要在 query、header 或 body 中传 userId；服务端会从 sandbox token 决定用户身份。不要调用 /api/users、/api/signals、/api/interval、/api/weixin 等管理接口。`
     : "";
   const intentLine = projectType === "invest-agent"
     ? [

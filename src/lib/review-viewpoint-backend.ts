@@ -274,30 +274,6 @@ function compositeKey(sourceDate: string, viewpointId: string): string {
   return `${sourceDate}#${viewpointId}`;
 }
 
-function toYaml(rec: ReviewViewpointRecord): ReviewViewpointYamlRecord {
-  return {
-    viewpoint_key: compositeKey(rec.sourceDate, rec.viewpointId),
-    user_id: rec.userId,
-    instance_id: rec.instanceId,
-    source_date: rec.sourceDate,
-    viewpoint_id: rec.viewpointId,
-    view: rec.view,
-    reason: rec.reason,
-    action: rec.action,
-    validation: rec.validation,
-    expected_review_date: rec.expectedReviewDate,
-    status: rec.status,
-    resolution: rec.resolution ?? null,
-    resolved_at: rec.resolvedAt ?? null,
-    invalidation_signals: rec.invalidationSignals,
-    confidence: rec.confidence,
-    task_type: rec.taskType,
-    decision_type: rec.decisionType,
-    created_at: rec.createdAt,
-    updated_at: rec.updatedAt,
-  };
-}
-
 function fromYaml(rec: ReviewViewpointYamlRecord): ReviewViewpointRecord {
   return {
     id: rec.viewpoint_key,

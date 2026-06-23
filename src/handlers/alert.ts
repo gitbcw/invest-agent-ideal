@@ -237,15 +237,6 @@ function defaultThreshold(indicator: string): string | number {
   return defaults[indicator] ?? 3;
 }
 
-function safeParseThreshold(raw: string): string {
-  try {
-    const parsed = JSON.parse(raw) as { value?: string | number };
-    return String(parsed.value ?? raw);
-  } catch {
-    return raw;
-  }
-}
-
 // ---- 旧接口（保留兼容） ----
 
 /** 解析提醒操作 */

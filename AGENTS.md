@@ -32,7 +32,7 @@ In the current phase, keep Codex ACP as the primary intelligent backend. Do not 
 
 The durable product assets are Skills, sandbox/tool protocols, deterministic service APIs, context building, confirmation workflows, audit, and saved artifacts. Backend choices such as Codex ACP, LangChain, LangGraph, or a future self-built runtime are execution options, not product semantics.
 
-> **Hermes 已退出主链路**（2026-06-21 工作包 2）：Codex 一律兜底，Hermes 不再作为产品语义的一部分。`/api/hermes/*` 实验路由和 `src/acp/hermes-stdio-agent.ts` 仅作考古保留，不要在主链路重新引入依赖。后续工作包规划见 `docs/ideal-refactor-plan.md`。
+> **Hermes 已退出主链路**(2026-06-21 工作包 2):Codex 一律兜底,Hermes 不再作为产品语义的一部分。2026-06-23 进一步删除 `src/acp/hermes-stdio-agent.ts` 与 `/api/hermes/*` 实验路由;`HermesWeixinMobileBridge` 改名为 `BypassWeixinMobileBridge`(并行微信旁路通道)。后续工作包规划见 `docs/ideal-refactor-plan.md`。
 
 Use Codex as the first-phase complex-reasoning fallback and edge-case absorber. As repeated patterns become clear, move them into Strategy Skills, service tools, sandbox confirmations, evaluation examples, and deterministic fast paths.
 

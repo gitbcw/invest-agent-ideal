@@ -12,7 +12,7 @@
  */
 
 import { getWorkspaceStore, type PortfolioHolding } from "./workspace-store.js";
-import type { PortfolioBackend, PortfolioRow, TradeActionRow } from "./data-backend.js";
+import type { PortfolioBackend, PortfolioRow } from "./data-backend.js";
 
 function toRow(h: PortfolioHolding): PortfolioRow {
   return {

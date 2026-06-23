@@ -281,7 +281,7 @@ LLM_FALLBACK_PROVIDERS=doubao,stepfun(逗号分隔备用链)
 | 标记 hermes-stdio-agent 为 deprecated | `src/acp/hermes-stdio-agent.ts` | 文件顶部加 `@deprecated` 注释,不删代码 |
 | weixin-mobile 中的 hermesProfile 清理 | `src/channels/weixin-mobile.ts` | 移除传递 |
 | 文档更新 | `CLAUDE.md`、`AGENTS.md`、`docs/38-runtime-skill-evolution-strategy.md`(2026-06-22 WP6 已归档至 `docs/archive/`) | 删 Hermes 作为备用底座的描述 |
-| 实验性 Hermes API 路由保留 | `src/routes/` | `/api/hermes/*` 保留作考古,不删 |
+| 实验性 Hermes API 路由 | `src/routes/` | 2026-06-23 已删除 `/api/hermes/*` 与 `src/acp/hermes-stdio-agent.ts`;`BypassWeixinMobileBridge` 旁路桥 + `/api/bypass-weixin/*` 路由也已下线,数据库 `backend === "hermes"` 字符串保留兼容(运行时降级主桥) |
 
 **产出**:主链路对 Hermes 零依赖。
 **验收**:`grep -rn "hermes" src/acp/agent.ts src/acp/prompt-context-builder.ts` 仅剩注释。
@@ -652,7 +652,9 @@ LLM_FALLBACK_PROVIDERS=doubao,stepfun(逗号分隔备用链)
 - 字段舍弃:`customStyle` / `notificationPolicy` / `decisionPolicy` / `sourcePolicy`(运行时无消费,语义已被 yaml 其他字段覆盖;Codex prompt context 仍以 `{}` 占位返回,shape 不变)
 - 烟测:`scripts/profile-backend-smoke.mjs`(24/24 通过,workspace 模式)+ `scripts/portfolio-backend-smoke.mjs`(51/51 通过,无回归)
 
-> **2026-06-22 后续清理(方向 B 重构)**:`src/lib/profile-context.ts` 已删除,prompt 注入链路不再走"代码预拉数据塞 prompt"。Codex 改为通过 `/api/sandbox/profiles` / `/api/sandbox/reviews/*` 等 API 自取。`src/lib/strategy-skill-context.ts` 同步删除(Codex 自己读 `.codex/skills/invest-agent-strategy-middle-trend/`)。`profile-backend-smoke.mjs` 烟测已废弃移除。`conversation-tasks.ts` 与 `sandbox.ts` 的写入路径不受影响,继续直连 WorkspaceStore。
+> **2026-06-22 后续清理(方向 B 重构)**:`src/lib/profile-context.ts` 已删除,prompt 注入链路不再走"代码预拉数据塞 prompt"。Codex 改为通过 `/api/sandbox/profiles` / `/api/sandbox/reviews/*` 等 API 自取。`src/lib/strategy-skill-context.ts` 同步删除(Codex 自己读 `.codex/skills/invest-agent-strategy-middle-trend/`)。`profile-backend-smoke.mjs` 烟测已废弃移除。`sandbox.ts` 写入路径继续直连 WorkspaceStore。
+>
+> **2026-06-23 范围收缩 WP A3**:`src/lib/conversation-tasks.ts` 整文件删除(916 行)。所有"AI 意图 → Draft → 用户确认 → 落库"的中间层移除,用户消息直接进 Codex ACP,无中间 Draft。`conversation_tasks` 表保留作考古,所有读写路径已下线。
 
 #### ✅ 4.5 plan-conditions 切到 planBackend(已完成)
 - `src/handlers/plan-conditions.ts`:`setPlanWatchConditions` 不再直写 `stockPlans` 表,改用 `planBackend.upsert`

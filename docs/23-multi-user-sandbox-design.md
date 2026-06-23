@@ -134,7 +134,7 @@ Authorization: Bearer <sandboxToken>
 - `/api/signals/update`
 - `/api/interval/set`
 - `/api/weixin/*`
-- `/api/hermes-weixin/*`
+- `/api/bypass-weixin/*`
 - `/api/indicators*`
 - 测试推送、mock 推送、backend debug test
 

@@ -11,7 +11,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { portfolio, tradeActions } from "../db/schema.js";
-import type { PortfolioBackend, PortfolioRow, TradeActionRow } from "./data-backend.js";
+import type { PortfolioBackend, PortfolioRow } from "./data-backend.js";
 
 function serialize(row: typeof portfolio.$inferSelect): PortfolioRow {
   return {

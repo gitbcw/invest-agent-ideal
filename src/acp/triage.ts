@@ -217,8 +217,7 @@ function interpretDecision(
 }
 
 export async function triage(
-  text: string,
-  options: { conversationId?: string } = {}
+  text: string
 ): Promise<TriageResult> {
   const trimmed = text.trim();
   if (!trimmed) {

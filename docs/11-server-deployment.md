@@ -274,7 +274,6 @@ scripts/launchd/local.invest-agent-hermes.plist
 - `KeepAlive=true`：进程异常退出后由 launchd 拉起。
 - 服务端口：`22649`。
 - Hermes Profile：`invest-agent`。
-- 旁路微信自动监听：`HERMES_WEIXIN_AUTO_START=true`。
 - 标准输出日志：`logs/hermes-service.out.log`。
 - 错误日志：`logs/hermes-service.err.log`。
 

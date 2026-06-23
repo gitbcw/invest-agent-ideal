@@ -107,14 +107,6 @@ class Parser {
     return this.tokens[this.pos++];
   }
 
-  private expectOp(op: string): void {
-    const t = this.peek();
-    if (t.type !== "OP" || t.value !== op) {
-      throw new RuleExpressionError(`expected '${op}', got '${t.value || t.type}'`, t.pos);
-    }
-    this.advance();
-  }
-
   parseExpr(): Node {
     const node = this.parseOr();
     const eof = this.peek();

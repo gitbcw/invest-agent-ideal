@@ -4,7 +4,6 @@ import { randomBytes, randomUUID } from "node:crypto";
 import QRCode from "qrcode";
 import { createAgent, isDailyReviewRequest } from "../acp/agent.js";
 import { getCurrentAcpAgent } from "../acp/stdio-agent.js";
-import { hermesStdioAcpAgent } from "../acp/hermes-stdio-agent.js";
 import { buildAcpPromptContext } from "../acp/prompt-context-builder.js";
 import { db, initDb } from "../db/index.js";
 import { channelIdentities, channelIdentityInstances } from "../db/schema.js";
@@ -19,10 +18,8 @@ import { DEFAULT_USER_ID, type UserContext } from "../lib/user-context.js";
 import { ASSISTANT_GUIDE_MESSAGE } from "../lib/onboarding.js";
 import { getOnboardingState } from "../lib/onboarding-state.js";
 import { buildOnboardingReminder } from "../lib/onboarding-reminder.js";
-import { handleAiIntentDraftTurn, handlePendingConversationTaskTurn, createDraftTask, type DraftType } from "../lib/conversation-tasks.js";
 import { applyFastAlertSet } from "../lib/fast-alert-set.js";
 import { and, desc, eq } from "drizzle-orm";
-import { DIET_RECOMMENDATION_PROJECT_ID, DIET_RECOMMENDATION_SHARED_INSTANCE_ID } from "../platform/project-registry.js";
 import { callDeepSeek } from "../services/deepseek.js";
 import { handleAlertTool } from "../handlers/alert.js";
 import { handleMonitorTool } from "../handlers/monitor.js";
@@ -47,17 +44,7 @@ type WeixinBackend = "codex" | "hermes";
 
 type LoginStage = "idle" | "waiting_scan" | "scanned" | "connected" | "error";
 
-const FAST_INTENT_TIMEOUT_MS = 8000;
 const FAST_ADMIN_TIMEOUT_MS = 8000;
-const FAST_ALERT_INTENT_SYSTEM_PROMPT = [
-  "你是投资助手微信入口的快速意图识别器。",
-  "只判断用户是否在设置股票到价提醒。",
-  "如果是，必须只输出一段 XML：",
-  "<invest_agent_intent>{\"intent\":\"set_alert\",\"stockName\":\"股票名称或空\",\"stockCode\":\"6位代码或空\",\"direction\":\"above 或 below\",\"price\":数字,\"rawText\":\"用户原话\"}</invest_agent_intent>",
-  "direction 规则：涨到、达到、高于、突破、到某价格且未说明下跌时用 above；跌到、低于、回调到、支撑位附近用 below。",
-  "如果不是设置到价提醒，只输出 NONE。",
-  "不要解释，不要输出其他文字。",
-].join("\n");
 const FAST_ADMIN_SYSTEM_PROMPT = [
   "你是投资助手微信入口的快速管理员和工具路由器。",
   "你的任务是判断用户消息是否可以由确定性工具直接处理，还是必须交给复杂研究模型。",
@@ -80,9 +67,6 @@ const FAST_ADMIN_SYSTEM_PROMPT = [
   "- alert.set：设置股票到价提醒（直接写库，不需要用户确认）",
   "- watchlist.add：把明确给出的股票，或上下文里刚提到的股票，加入自选池",
   "- watchlist.remove：把明确给出的股票，或上下文里刚提到的股票，移出自选池",
-  "- portfolio_watchlist.draft：一次消息里同时录入持仓和自选（含成本价），需要用户确认才写入",
-  "- preference.draft：用户描述长期投资偏好、风格、风控规则，需要用户确认才写入长期偏好",
-  "- strategy_expansion.draft：用户提出方法论/规则级别的变更（如“以后回踩支撑再提醒”、“默认低噪音”、“复盘风格改成XX”），需要用户确认才作为实例展开候选",
   "- smalltalk.reply：寒暄、能力介绍、问可以做什么",
   "",
   "如果是确定性工具任务，输出：",
@@ -99,12 +83,6 @@ const FAST_ADMIN_SYSTEM_PROMPT = [
   "如果是加入/移出持仓，输出：",
   "{\"route\":\"tool\",\"tool\":\"portfolio.add\",\"stocks\":[{\"name\":\"股票名称\"},{\"code\":\"6位代码\"}],\"useRecentStocks\":false,\"confidence\":\"high\"}",
   "持仓池只代表当前持有标的范围，不强制要求成本和数量；如果用户只是说持有某股票，可以直接用 portfolio.add。",
-  "如果用户一次消息里同时要录入持仓和自选（例如“我持有A、B，自选C”），用 portfolio_watchlist.draft：",
-  "{\"route\":\"tool\",\"tool\":\"portfolio_watchlist.draft\",\"confidence\":\"high\"}",
-  "如果是长期偏好/风格描述（如“我稳健点，不要频繁操作”、“记住我偏好新能源”、“风格偏价值”），用 preference.draft：",
-  "{\"route\":\"tool\",\"tool\":\"preference.draft\",\"confidence\":\"high\"}",
-  "如果是方法论/规则变更（如“以后回踩支撑再提醒”、“默认低噪音，只有放量大涨才推送”、“复盘风格改成事实-推断-操作-验证”），用 strategy_expansion.draft：",
-  "{\"route\":\"tool\",\"tool\":\"strategy_expansion.draft\",\"confidence\":\"high\"}",
   "如果是简单寒暄或能力介绍，输出：",
   "{\"route\":\"tool\",\"tool\":\"smalltalk.reply\",\"reply\":\"简短客户回复\",\"confidence\":\"high\"}",
   "",
@@ -119,7 +97,6 @@ const FAST_ADMIN_SYSTEM_PROMPT = [
   "复杂任务包括：行业/公司/个股分析、选股、生成复盘、风险评估、估值、策略讨论、为什么、怎么看、值不值得买。",
   "如果用户只是查看、查询、列出已有数据，必须走工具，不要判为复杂。",
   "如果用户说查看复盘记录/历史复盘/最近复盘，必须走 review_records.query，不要生成复盘。",
-  "重要：单纯的“设置X涨到Y提醒我”必须走 alert.set，不要误判为 strategy_expansion.draft。strategy_expansion.draft 只用于“方法论级别的变更”，不针对单只股票的具体价格触发。",
   "alert.set 也支持技术指标触发提醒,需要输出 indicator 字段:",
   "- 「突破 X 日线 / 跌破 X 日线 / X 日均线上方下方」 → indicator=ma_breakout_above 或 ma_breakout_below,period=X(默认 20)",
   "- 「MACD 金叉 / 死叉」 → indicator=macd_golden_cross 或 macd_death_cross",
@@ -152,7 +129,6 @@ interface FastAdminAlertSpec {
 
 type FastAdminDecision =
   | { route: "tool"; tool: "portfolio.query" | "watchlist.query" | "alerts.query" | "plans.query" | "strategies.query" | "trade_log.query" | "review_records.query" | "monitor.overview" | "alerts.check"; confidence?: string }
-  | { route: "tool"; tool: "preference.draft" | "strategy_expansion.draft" | "portfolio_watchlist.draft"; confidence?: string }
   | { route: "tool"; tool: "alert.set"; stockName?: string; stockCode?: string; direction?: "above" | "below"; price?: number; percent?: boolean; indicator?: FastAdminAlertIndicator; period?: number; kdjThreshold?: number; alerts?: Array<FastAdminAlertSpec>; confidence?: string }
   | { route: "tool"; tool: "watchlist.add" | "watchlist.remove" | "portfolio.add" | "portfolio.remove"; stocks?: Array<{ code?: string; name?: string }>; useRecentStocks?: boolean; count?: number; confidence?: string }
   | { route: "tool"; tool: "smalltalk.reply"; reply?: string; confidence?: string }
@@ -172,25 +148,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-async function tryFastAlertIntent(userContext: UserContext, text: string) {
-  if (userContext.projectType === "diet-recommendation") return null;
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  const raw = await withTimeout(
-    callDeepSeek(trimmed, FAST_ALERT_INTENT_SYSTEM_PROMPT, [], {
-      provider: "deepseek",
-      profile: "light",
-      thinking: false,
-      temperature: 0,
-      maxTokens: 300,
-    }),
-    FAST_INTENT_TIMEOUT_MS,
-    "DeepSeek 快链路"
-  );
-  if (raw.trim() === "NONE") return null;
-  return handleAiIntentDraftTurn(userContext, raw);
 }
 
 function parseFastAdminDecision(raw: string): FastAdminDecision | null {
@@ -276,7 +233,7 @@ function parseFastAdminDecision(raw: string): FastAdminDecision | null {
     if (parsed.tool === "smalltalk.reply") {
       return { route: "tool", tool: "smalltalk.reply", reply: (parsed as { reply?: string }).reply, confidence: parsed.confidence };
     }
-    if (["portfolio.query", "watchlist.query", "alerts.query", "plans.query", "strategies.query", "trade_log.query", "review_records.query", "monitor.overview", "alerts.check", "preference.draft", "strategy_expansion.draft", "portfolio_watchlist.draft"].includes(parsed.tool)) {
+    if (["portfolio.query", "watchlist.query", "alerts.query", "plans.query", "strategies.query", "trade_log.query", "review_records.query", "monitor.overview", "alerts.check"].includes(parsed.tool)) {
       return { route: "tool", tool: parsed.tool as Exclude<FastAdminDecision & { route: "tool" }, { tool: "alert.set" }>["tool"], confidence: parsed.confidence };
     }
     return null;
@@ -286,7 +243,6 @@ function parseFastAdminDecision(raw: string): FastAdminDecision | null {
 }
 
 async function tryFastAdminTool(userContext: UserContext, text: string): Promise<{ mode: string; text: string } | null> {
-  if (userContext.projectType === "diet-recommendation") return null;
   const trimmed = text.trim();
   if (!trimmed) return null;
 
@@ -376,18 +332,6 @@ async function tryFastAdminTool(userContext: UserContext, text: string): Promise
         text: items.length > 0 ? formatAlerts(items) : "当前强制巡检完成：没有触发新的提醒。",
       };
     }
-    case "preference.draft": {
-      const reply = await createDraftTask(userContext, "preference", trimmed);
-      return reply ? { mode: "fast-admin-preference-draft", text: reply } : null;
-    }
-    case "strategy_expansion.draft": {
-      const reply = await createDraftTask(userContext, "strategy_expansion", trimmed);
-      return reply ? { mode: "fast-admin-strategy-expansion-draft", text: reply } : null;
-    }
-    case "portfolio_watchlist.draft": {
-      const reply = await createDraftTask(userContext, "portfolio_watchlist", trimmed);
-      return reply ? { mode: "fast-admin-portfolio-watchlist-draft", text: reply } : null;
-    }
     case "alert.set": {
       const result = await applyFastAlertSet({
         userId: userContext.userId,
@@ -434,7 +378,6 @@ function hasWriteIntent(text: string) {
 }
 
 async function tryFastDeterministicReply(userContext: UserContext, text: string): Promise<{ mode: string; text: string } | null> {
-  if (userContext.projectType === "diet-recommendation") return null;
   const raw = text.trim();
   const compact = normalizeFastText(raw);
   if (!compact || isComplexResearchIntent(compact)) return null;
@@ -532,21 +475,6 @@ interface WeixinAccountRecord {
   lastConversationId?: string;
   lastConversationAt?: string;
   lastContextToken?: string;
-}
-
-interface StartLoginResult {
-  qrcodeUrl?: string;
-  message: string;
-  sessionKey: string;
-}
-
-interface WaitLoginResult {
-  connected: boolean;
-  message: string;
-  botToken?: string;
-  accountId?: string;
-  baseUrl?: string;
-  userId?: string;
 }
 
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
@@ -1072,278 +1000,6 @@ class InvestAgentMobileBridge {
   }
 }
 
-class HermesWeixinMobileBridge {
-  constructor(
-    private readonly accountId: string,
-    private readonly stateDir: string,
-    private readonly projectBinding?: {
-      projectId: string;
-      instanceId: string;
-      hermesProfile?: string;
-      sharedUsers?: boolean;
-    }
-  ) {}
-
-  async chat(request: {
-    conversationId: string;
-    text: string;
-    media?: { type: string };
-    contextToken?: string;
-  }): Promise<{ text?: string }> {
-    const conversationId = request.conversationId || `hermes-weixin-${this.accountId}`;
-    const userContext = await resolveOrCreateChannelUser({
-      channel: "weixin-mobile",
-      backend: "hermes",
-      externalUserId: conversationId,
-      externalAccountId: this.accountId,
-      conversationId,
-      contextToken: request.contextToken,
-      projectBinding: this.projectBinding,
-    });
-
-    if (request.conversationId) {
-      saveWeixinAccount(
-        this.accountId,
-        {
-          lastConversationId: request.conversationId,
-          lastConversationAt: new Date().toISOString(),
-          lastContextToken: request.contextToken,
-        },
-        this.stateDir
-      );
-    }
-
-    if (request.media && !request.text) {
-      return {
-        text: "Hermes 项目微信连接暂只支持文本消息。图片、语音、文件会在后续阶段支持。",
-      };
-    }
-
-    const startedAt = Date.now();
-    const remember = async (text: string) => {
-      await rememberWeixinTurn(userContext, request.text || "", text);
-      return { text };
-    };
-
-    const taskReply = await handlePendingConversationTaskTurn(userContext, request.text || "");
-    if (taskReply) {
-      const text = sanitizeCustomerText(taskReply);
-      await recordCodexAcpTrace({
-        userId: userContext.userId,
-        projectId: userContext.projectId,
-        instanceId: userContext.instanceId,
-        conversationId,
-        channel: "weixin-hermes",
-        userText: request.text || "",
-        replyTextSanitized: text,
-        mode: "pending-conversation-task",
-        status: "success",
-        elapsedMs: Date.now() - startedAt,
-      });
-      return remember(text);
-    }
-
-    const isFirstConversation = !userContext.welcomedAt;
-    const isSmalltalk = /^(你好|您好|哈喽|hello|hi|嗨|在吗|在不在|在|早\b|早上好|下午好|晚上好|晚安|帮助|help|怎么用|怎么使用|如何使用|你能做什么|你能帮我做什么|有什么功能|使用说明|指令|命令|如何开始|如何配置)/i.test((request.text || "").trim());
-
-    if (isSmalltalk) {
-      const onboardingState = await getOnboardingState(userContext.userId);
-      const reminder = buildOnboardingReminder(onboardingState);
-      const text = reminder ? `${ASSISTANT_GUIDE_MESSAGE}\n\n${reminder}` : ASSISTANT_GUIDE_MESSAGE;
-
-      if (isFirstConversation) {
-        await markChannelIdentityWelcomed(userContext.userId, "weixin-mobile", conversationId);
-      }
-      await recordCodexAcpTrace({
-        userId: userContext.userId,
-        projectId: userContext.projectId,
-        instanceId: userContext.instanceId,
-        conversationId,
-        channel: "weixin-hermes",
-        userText: request.text || "",
-        replyTextSanitized: text,
-        mode: isFirstConversation ? "guide-fixed" : "guide-smalltalk",
-        status: "success",
-        elapsedMs: Date.now() - startedAt,
-      });
-      return remember(text);
-    }
-
-    try {
-      const adminReply = await tryFastAdminTool(userContext, request.text || "");
-      if (adminReply) {
-        const text = sanitizeCustomerText(adminReply.text);
-        await recordCodexAcpTrace({
-          userId: userContext.userId,
-          projectId: userContext.projectId,
-          instanceId: userContext.instanceId,
-          conversationId,
-          channel: "weixin-hermes",
-          userText: request.text || "",
-          replyTextSanitized: text,
-          mode: adminReply.mode,
-          status: "success",
-          elapsedMs: Date.now() - startedAt,
-        });
-        return remember(text);
-      }
-    } catch (error) {
-      logger.warn(`DeepSeek 快速管理员跳过: ${(error as Error).message}`);
-    }
-
-    try {
-      const deterministicReply = await tryFastDeterministicReply(userContext, request.text || "");
-      if (deterministicReply) {
-        const text = sanitizeCustomerText(deterministicReply.text);
-        await recordCodexAcpTrace({
-          userId: userContext.userId,
-          projectId: userContext.projectId,
-          instanceId: userContext.instanceId,
-          conversationId,
-          channel: "weixin-hermes",
-          userText: request.text || "",
-          replyTextSanitized: text,
-          mode: deterministicReply.mode,
-          status: "success",
-          elapsedMs: Date.now() - startedAt,
-        });
-        return remember(text);
-      }
-    } catch (error) {
-      logger.warn(`确定性快链路跳过: ${(error as Error).message}`);
-    }
-
-    try {
-      const fastIntentReply = await tryFastAlertIntent(userContext, request.text || "");
-      if (fastIntentReply) {
-        await recordCodexAcpTrace({
-          userId: userContext.userId,
-          projectId: userContext.projectId,
-          instanceId: userContext.instanceId,
-          conversationId,
-          channel: "weixin-hermes",
-          userText: request.text || "",
-          replyTextSanitized: fastIntentReply,
-          mode: "fast-alert-intent",
-          status: "success",
-          elapsedMs: Date.now() - startedAt,
-        });
-        return remember(fastIntentReply);
-      }
-    } catch (error) {
-      logger.warn(`DeepSeek 快链路跳过: ${(error as Error).message}`);
-    }
-
-    const recentConversationContext = formatRecentMemoryForPrompt(await loadRecentWeixinMemory(userContext));
-    let promptText: string;
-    let mode = "chat";
-    let reviewContextSummary: Record<string, unknown> | undefined;
-    let sandboxTokenId: string | undefined;
-    let sandboxPermissions: string[] | undefined;
-
-    if (userContext.projectType !== "diet-recommendation" && isDailyReviewRequest(request.text || "")) {
-      mode = "daily-review";
-      const reviewContext = await buildDailyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
-      const promptContext = await buildAcpPromptContext({
-        userText: request.text || "请生成今日复盘",
-        reviewContext,
-        userContext,
-        recentConversationContext,
-        isFirstConversation,
-      });
-      promptText = promptContext.promptText;
-      reviewContextSummary = promptContext.reviewContextSummary;
-      sandboxTokenId = promptContext.sandboxContext.tokenId;
-      sandboxPermissions = promptContext.sandboxContext.permissions;
-    } else {
-      const promptContext = await buildAcpPromptContext({
-        userText: request.text || "",
-        userContext,
-        recentConversationContext,
-        isFirstConversation,
-      });
-      promptText = promptContext.promptText;
-      sandboxTokenId = promptContext.sandboxContext.tokenId;
-      sandboxPermissions = promptContext.sandboxContext.permissions;
-    }
-
-    try {
-      const acpAgent = await getCurrentAcpAgent();
-      const raw = await acpAgent.chat({
-        conversationId,
-        text: promptText,
-        messageId: randomUUID(),
-      });
-      const intentReply = await handleAiIntentDraftTurn(userContext, raw);
-      if (intentReply) {
-        await recordCodexAcpTrace({
-          userId: userContext.userId,
-          projectId: userContext.projectId,
-          instanceId: userContext.instanceId,
-          conversationId,
-          channel: "weixin-hermes",
-          userText: request.text || "",
-          promptText,
-          replyTextSanitized: intentReply,
-          mode: "intent-draft",
-          reviewContextSummary,
-          sandboxTokenId,
-          sandboxPermissions,
-          status: "success",
-          elapsedMs: Date.now() - startedAt,
-        });
-        return remember(intentReply);
-      }
-      const text = sanitizeCustomerText(raw);
-      await recordCodexAcpTrace({
-        userId: userContext.userId,
-        projectId: userContext.projectId,
-        instanceId: userContext.instanceId,
-        conversationId,
-        channel: "weixin-hermes",
-        userText: request.text || "",
-        promptText,
-        replyTextSanitized: text,
-        mode,
-        reviewContextSummary,
-        sandboxTokenId,
-        sandboxPermissions,
-        status: "success",
-        elapsedMs: Date.now() - startedAt,
-      });
-      if (isFirstConversation) {
-        await markChannelIdentityWelcomed(userContext.userId, "weixin-mobile", conversationId);
-      }
-      return remember(text);
-    } catch (error) {
-      const errorMessage = formatUnknownError(error);
-      await recordCodexAcpTrace({
-        userId: userContext.userId,
-        projectId: userContext.projectId,
-        instanceId: userContext.instanceId,
-        conversationId,
-        channel: "weixin-hermes",
-        userText: request.text || "",
-        promptText,
-        mode,
-        reviewContextSummary,
-        sandboxTokenId,
-        sandboxPermissions,
-        status: errorMessage.includes("超时") ? "timeout" : "error",
-        errorMessage,
-        elapsedMs: Date.now() - startedAt,
-      });
-      throw error;
-    }
-  }
-
-  clearSession(conversationId?: string): void {
-    if (conversationId) {
-      void getCurrentAcpAgent().then((agent) => agent.clearSession(conversationId));
-    }
-  }
-}
-
 export class WeixinMobileManager {
   private state: WeixinConnectState = {
     enabled: false,
@@ -1505,10 +1161,7 @@ export class WeixinMobileManager {
     contextToken?: string;
   }): Promise<{ text?: string; accountId: string; conversationId: string }> {
     const accountId = normalizeAccountId(input.accountId || this.state.accountId || `${this.backend}-simulator`);
-    const bridge =
-      this.backend === "hermes"
-        ? new HermesWeixinMobileBridge(accountId, this.stateDir, this.projectBinding)
-        : new InvestAgentMobileBridge(accountId, this.stateDir);
+    const bridge = new InvestAgentMobileBridge(accountId, this.stateDir);
     const response = await bridge.chat({
       conversationId: input.conversationId,
       text: input.text,
@@ -1533,10 +1186,7 @@ export class WeixinMobileManager {
 
     const { start } = await loadWeixinSdk(this.stateDir);
     initDb();
-    const bridge =
-      this.backend === "hermes"
-        ? new HermesWeixinMobileBridge(account.accountId, this.stateDir, this.projectBinding)
-        : new InvestAgentMobileBridge(account.accountId, this.stateDir);
+    const bridge = new InvestAgentMobileBridge(account.accountId, this.stateDir);
     const abortController = new AbortController();
     this.listenerAbortControllers.set(account.accountId, abortController);
 
@@ -1767,19 +1417,4 @@ export class WeixinMobileManager {
 }
 
 export const weixinMobileManager = new WeixinMobileManager();
-export const hermesWeixinMobileManager = new WeixinMobileManager({
-  backend: "hermes",
-  stateDir: path.join(config.weixin.stateDir, "hermes-bypass"),
-  label: "Hermes 项目微信",
-});
-export const dietWeixinMobileManager = new WeixinMobileManager({
-  backend: "hermes",
-  stateDir: path.join(config.weixin.stateDir, "diet-recommendation-weixin"),
-  label: "饮食推荐助手微信",
-  projectBinding: {
-    projectId: DIET_RECOMMENDATION_PROJECT_ID,
-    instanceId: DIET_RECOMMENDATION_SHARED_INSTANCE_ID,
-    hermesProfile: "diet-recommendation",
-    sharedUsers: true,
-  },
-});
+

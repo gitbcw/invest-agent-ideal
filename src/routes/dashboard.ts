@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "../db/index.js";
-import { alertRules, alerts, alertEvents, codexAcpTraces, conversationTasks, indicatorResults, portfolio, stockPlans, users, watchlist } from "../db/schema.js";
+import { alertRules, alerts, alertEvents, codexAcpTraces, indicatorResults, portfolio, stockPlans, users, watchlist } from "../db/schema.js";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { getSignalConfig, handleSignalConfigTool } from "../handlers/signal-config.js";
 import { getAlertInterval, setAlertInterval } from "../scheduler/index.js";
@@ -101,7 +101,7 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     }
     const instanceId = currentProject.instanceId;
 
-    const [holdings, watchItems, plans, legacyAlertRules, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, reviewViewpointRows, openViewpoints, dueViewpoints, methodCandidates, pendingTasks, signals, indicators, interval, allUsers] =
+    const [holdings, watchItems, plans, legacyAlertRules, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, reviewViewpointRows, openViewpoints, dueViewpoints, methodCandidates, signals, indicators, interval, allUsers] =
       await Promise.all([
         db.select().from(portfolio).where(and(eq(portfolio.userId, userId), eq(portfolio.instanceId, instanceId), isNull(portfolio.sellDate))),
         db.select().from(watchlist).where(and(eq(watchlist.userId, userId), eq(watchlist.instanceId, instanceId))),
@@ -138,7 +138,6 @@ export function registerDashboardRoutes(app: FastifyInstance) {
         reviewViewpointBackend.list(userId, instanceId, { status: "open", expectedReviewDateTo: today, limit: 10 }),
         // WP4.9:method_change_candidates 走 backend(workspace 模式下读 jsonl,sqlite 模式读表)
         methodChangeBackend.list(userId, instanceId, { limit: 10 }),
-        db.select().from(conversationTasks).where(and(eq(conversationTasks.userId, userId), eq(conversationTasks.instanceId, instanceId), eq(conversationTasks.status, "pending"))).orderBy(desc(conversationTasks.createdAt)).limit(10),
         getSignalConfig(),
         listIndicatorDefinitions(),
         getAlertInterval(),
@@ -203,7 +202,7 @@ export function registerDashboardRoutes(app: FastifyInstance) {
       projectId: currentProject.legacyProjectId,
       aiProjectId: currentProject.projectId,
       instanceId,
-      projectType: currentProject.projectTypeManifest,
+      projectType: currentProject.projectType,
       skillBundleId: currentProject.skillBundleId,
       currentProject,
       currentInstance: {
@@ -218,7 +217,7 @@ export function registerDashboardRoutes(app: FastifyInstance) {
       },
       projects: [...new Map(runtimeContexts.map((project) => [project.legacyProjectId, {
         id: project.legacyProjectId,
-        name: project.projectTypeManifest.displayName,
+        name: project.name,
         type: project.projectType,
         status: "active",
       }])).values()],
@@ -246,7 +245,6 @@ export function registerDashboardRoutes(app: FastifyInstance) {
         openViewpointCount: openViewpoints.length,
         dueViewpointCount: dueViewpoints.length,
         methodCandidateCount: methodCandidates.filter((item) => item.status === "proposed").length,
-        pendingTaskCount: pendingTasks.length,
         intervalMinutes: interval,
       },
       holdings: holdingsWithQuote,
@@ -265,7 +263,6 @@ export function registerDashboardRoutes(app: FastifyInstance) {
       openViewpoints,
       dueViewpoints,
       methodCandidates,
-      pendingTasks,
       recentPlans: recentPlans.map((p) => ({
         planDate: p.planDate,
         generatedAt: p.generatedAt,

@@ -57,7 +57,7 @@ Rules:
 
 - Do not pass `userId` in query, headers, or body when calling `/api/sandbox/*`.
 - The service determines the current user from the sandbox token.
-- Never call admin APIs from a WeChat/ACP customer turn: `/api/users*`, `/api/signals/update`, `/api/interval/set`, `/api/weixin/*`, `/api/hermes-weixin/*`, or debug test endpoints.
+- Never call admin APIs from a WeChat/ACP customer turn: `/api/users*`, `/api/signals/update`, `/api/interval/set`, `/api/weixin/*`, `/api/bypass-weixin/*`, or debug test endpoints.
 - If the sandbox API rejects the token, report that the requested action could not be confirmed; do not try to bypass it with legacy APIs.
 - Delete-style sandbox operations require a server-side pending confirmation. First call the delete endpoint without `confirmationId`; it will return `confirmation required`. Ask the customer to confirm the exact deletion. After the customer confirms in a later message, query `/api/sandbox/confirmations/pending` and retry the exact delete with the matching `confirmationId`.
 - Do not invent or reuse confirmation IDs across users, conversations, operations, or resources.

@@ -116,7 +116,8 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 已完成(2026-06-21):
 - ✅ `investment_profiles` / `methodology_profiles` 读写 → `config/strategy.yaml` + `knowledge/methods/*.md`(当时由 `profile-context.ts` / `conversation-tasks.ts:applyInvestmentProfileTask` / `sandbox.ts:/api/sandbox/profiles*` 切到 WorkspaceStore,通过 `WORKSPACE_BACKEND` 切换)
   - 字段舍弃:`customStyle`、`notificationPolicy`、`decisionPolicy`、`sourcePolicy`(运行时无消费,语义已被 yaml 其他字段覆盖)
-  - 2026-06-22 后续清理(方向 B 重构):`src/lib/profile-context.ts` 已删除,prompt 注入路径不再走"代码预拉数据塞 prompt",而是 Codex 直接通过 `/api/sandbox/profiles` / `/api/sandbox/reviews/*` 等 API 自取。`conversation-tasks.ts` 与 `sandbox.ts` 不受影响,继续直连 WorkspaceStore。
+  - 2026-06-22 后续清理(方向 B 重构):`src/lib/profile-context.ts` 已删除,prompt 注入路径不再走"代码预拉数据塞 prompt",而是 Codex 直接通过 `/api/sandbox/profiles` / `/api/sandbox/reviews/*` 等 API 自取。`sandbox.ts` 不受影响,继续直连 WorkspaceStore。
+  - 2026-06-23 范围收缩 WP A3:`src/lib/conversation-tasks.ts` 整文件删除,所有 Draft 中间层下线,`conversation_tasks` 表保留作考古。
 
 切换方式:环境变量 `WORKSPACE_BACKEND=workspace` 开启 workspace 模式,默认仍走 SQLite。
 

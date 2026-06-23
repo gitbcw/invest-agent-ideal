@@ -100,7 +100,6 @@ export function parseCompositeYaml(text: string): CompositeIndicatorConfig[] {
   let current: CompositeIndicatorConfig | null = null;
   let inInputs = false;
   let inThresholds = false;
-  let inOutputs = false;
 
   const finishInput = () => {
     if (current && inInputs && (current.inputs.length === 0 || current.inputs[current.inputs.length - 1].key !== undefined)) {
@@ -129,7 +128,6 @@ export function parseCompositeYaml(text: string): CompositeIndicatorConfig[] {
       };
       inInputs = false;
       inThresholds = false;
-      inOutputs = false;
       continue;
     }
 
@@ -166,13 +164,10 @@ export function parseCompositeYaml(text: string): CompositeIndicatorConfig[] {
     } else if (indent === 2 && trimmed === "inputs:") {
       inInputs = true;
       inThresholds = false;
-      inOutputs = false;
     } else if (indent === 2 && trimmed === "thresholds:") {
       inThresholds = true;
       inInputs = false;
-      inOutputs = false;
     } else if (indent === 2 && trimmed === "outputs:") {
-      inOutputs = true;
       inInputs = false;
       inThresholds = false;
     } else if (inInputs && indent >= 4 && trimmed.startsWith("- key:")) {

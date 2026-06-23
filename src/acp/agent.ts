@@ -54,9 +54,7 @@ export function createAgent(): AcpAgent {
       // 首次对话跳过 triage,直接进 Codex(避免被 DeepSeek 吞成通用问候)
       if (!isFirstConversation) {
         // 路由层先跑:简单问题直接回复,边界问题礼貌拒绝,复杂问题才 fallback Codex
-        const triageResult = await triage(text, {
-          conversationId: String(message.context?.conversationId || message.from || ""),
-        });
+        const triageResult = await triage(text);
         if (triageResult.kind === "direct_reply") {
           logger.info(`triage direct_reply provider=${triageResult.provider ?? "-"} elapsedMs=${triageResult.elapsedMs}`);
           return textResponse(triageResult.text ?? "");

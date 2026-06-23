@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, type UserContext } from "./user-context.js";
-import { getProjectTypeManifest } from "../platform/project-types.js";
+import { DEFAULT_SANDBOX_PERMISSIONS, INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID } from "../platform/project-registry.js";
 
 export type SandboxRole = "admin" | "user" | "system" | "test";
 export type SandboxChannel = "dashboard" | "weixin-mobile" | "scheduler" | "api";
@@ -112,13 +112,12 @@ export function sandboxContextFromUserContext(
   userContext: UserContext,
   permissions?: SandboxPermission[]
 ): SandboxContext {
-  const manifest = getProjectTypeManifest(userContext.projectType || userContext.projectId || DEFAULT_PROJECT_ID);
   return {
     userId: userContext.userId,
     projectId: userContext.projectId || DEFAULT_PROJECT_ID,
     instanceId: userContext.instanceId || DEFAULT_INSTANCE_ID,
-    projectType: manifest.id,
-    skillBundleId: userContext.skillBundleId || manifest.defaultSkillBundleId,
+    projectType: "invest-agent",
+    skillBundleId: userContext.skillBundleId || INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID,
     strategySkillId: userContext.strategySkillId,
     instanceExpansionPath: userContext.instanceExpansionPath,
     role: "user",
@@ -127,7 +126,7 @@ export function sandboxContextFromUserContext(
     conversationId: userContext.conversationId,
     externalUserId: userContext.externalUserId,
     channelAccountId: userContext.channelAccountId,
-    permissions: permissions || manifest.defaultPermissions,
+    permissions: permissions || [...DEFAULT_SANDBOX_PERMISSIONS],
   };
 }
 

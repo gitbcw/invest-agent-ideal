@@ -1,7 +1,7 @@
 import { db } from "../db/index.js";
 import { alertEvents } from "../db/schema.js";
 import { settings } from "../db/schema.js";
-import { eq, isNull, desc, gte, lte, lt, and } from "drizzle-orm";
+import { eq, desc, gte, lte, and } from "drizzle-orm";
 import { getQuote, getKline, getMarketIndex } from "../services/stock.js";
 import { analyzeIndicators } from "../services/indicators.js";
 import { callDeepSeek } from "../services/deepseek.js";
@@ -1468,20 +1468,6 @@ function buildObserveRules(
   if (indicatorSummary) rules.push(`技术面摘要：${indicatorSummary}`);
   if (rules.length === 0) rules.push("数据不足，明日以价格和成交量变化为主观察");
   return rules;
-}
-
-function formatPlanItems(items: StockPlanItem[]): string {
-  if (items.length === 0) return "暂无持仓或自选股，无法生成明日预案。";
-  return items
-    .map((item) => [
-      `### ${item.name}(${item.code}) - ${item.pool === "holding" ? "持仓股" : "自选股"}`,
-      `- 支撑位: ${item.support ?? "数据不足"}`,
-      `- 压力位: ${item.resistance ?? "数据不足"}`,
-      `- 观察条件: ${item.observe.join("；")}`,
-      `- 风险点: ${item.risks.join("；")}`,
-      `- 置信度: ${item.confidence}`,
-    ].join("\n"))
-    .join("\n\n");
 }
 
 async function saveDailyPlan(userId: string, instanceId: string, date: string, content: string, data: DailyPlanData) {

@@ -788,13 +788,13 @@ export function registerSandboxRoutes(app: FastifyInstance) {
 
   app.post("/api/sandbox/alerts/check-and-push", sandboxSafe(["invest.alert.check", "push.weixin.send"], async (ctx, request) => {
     const { runAlertCheck, formatAlerts } = await import("../scheduler/alert-check.js");
-    const { hermesWeixinMobileManager, weixinMobileManager } = await import("../channels/weixin-mobile.js");
+    const { weixinMobileManager } = await import("../channels/weixin-mobile.js");
     const items = await runAlertCheck({ force: true, userId: ctx.userId, instanceId: ctx.instanceId });
     const text = items.length > 0 ? formatAlerts(items) : "当前强制巡检完成：没有触发提醒。";
     let pushed = false;
     let pushJobId: string | undefined;
     if (items.length > 0) {
-      const backend = (ctx.backend === "hermes" ? "hermes" : "codex") satisfies PushBackend;
+      const backend = "codex" satisfies PushBackend;
       const job = await enqueuePushJob({
         userId: ctx.userId,
         projectId: ctx.projectId,
@@ -805,8 +805,10 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       });
       pushJobId = job.id;
       await processDuePushJobs(async (dueJob) => {
-        const pushManager = dueJob.backend === "hermes" ? hermesWeixinMobileManager : weixinMobileManager;
-        return pushManager.pushText(dueJob.message, { userId: dueJob.userId });
+        if (dueJob.backend === "hermes") {
+          // 旁路微信通道已下线,降级到主桥
+        }
+        return weixinMobileManager.pushText(dueJob.message, { userId: dueJob.userId });
       }, { limit: 5 });
       const updated = await getPushJob(job.id);
       pushed = updated?.status === "sent";

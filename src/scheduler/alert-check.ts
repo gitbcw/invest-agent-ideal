@@ -111,7 +111,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
   const priorityCfg = await loadPriorityConfig();
 
   // 加载系统信号配置
-  const [sigPriceChange, sigNearSupport, sigNearResistance, sigNearTarget, sigStopLoss, sigBreakout, sigBreakSupport, sigTurnover, sigVolumeRatio, sigMacd, sigBidAsk, sigCapitalMain, sigCapitalSuperLarge, sigVolPriceDiv, sigMaBreakoutAbove, sigMaBreakoutBelow, sigMacdGoldenCross, sigMacdDeathCross, sigKdjOversold, sigKdjOverbought] =
+  const [sigPriceChange, sigNearSupport, sigNearResistance, sigNearTarget, sigStopLoss, sigBreakout, sigBreakSupport, , , , , sigCapitalMain, sigCapitalSuperLarge, sigVolPriceDiv, sigMaBreakoutAbove, sigMaBreakoutBelow, sigMacdGoldenCross, sigMacdDeathCross, sigKdjOversold, sigKdjOverbought] =
     await Promise.all([
       getSignalSetting("price_change"),
       getSignalSetting("near_support"),

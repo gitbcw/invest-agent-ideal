@@ -9,7 +9,7 @@
  * 工作包 4.2:扩展到 watchlist + plan。
  * 工作包 4.3:scheduler(alert-check/pre-market)、monitor/alert/review handler 全部切到 backend 读。
  * 工作包 4.4:profile / methodology 切到 workspace(strategy.yaml + knowledge/methods/*.md)。
- *   ACTIVE_BACKEND 在 conversation-tasks.ts / sandbox.ts 内部分支使用,
+ *   ACTIVE_BACKEND 在 sandbox.ts 内部分支使用,
  *   不通过 PortfolioBackend 接口抽象,因为 profile 读写是一次性整文件操作,不需要行级 CRUD。
  *   (2026-06-22 方向 B 重构:profile-context.ts 已删,相关读取不再经此层;此处注释保留历史)
  * 工作包 4.5:plan-conditions.setPlanWatchConditions 切到 planBackend.upsert,

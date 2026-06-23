@@ -2,74 +2,22 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { createAgent } from "./acp/agent.js";
 import type { AcpMessage, AcpResponse } from "./acp/protocol.js";
-import { textResponse } from "./acp/protocol.js";
 import { config } from "./lib/config.js";
 import { logger } from "./lib/logger.js";
 import { registerPush } from "./scheduler/index.js";
-import { getCodexAcpStatus } from "./acp/codex-stdio-agent.js";
 import { listAcpBackends } from "./acp/stdio-agent.js";
-import { getHermesAcpStatus, hermesStdioAcpAgent } from "./acp/hermes-stdio-agent.js";
 import { renderWeixinAdminPage } from "./admin/weixin-page.js";
-import { dietWeixinMobileManager, hermesWeixinMobileManager, weixinMobileManager } from "./channels/weixin-mobile.js";
+import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { registerSandboxRoutes } from "./routes/sandbox.js";
-import { autoStartPlatformWeixinListeners, projectWeixinManagerForInstance, registerPlatformRoutes, stopPlatformWeixinListeners } from "./routes/platform.js";
+import { autoStartPlatformWeixinListeners, projectWeixinManagerForInstance } from "./routes/platform.js";
 import { ensureBuiltInIndicatorDefinitions } from "./handlers/indicator-definitions.js";
 import { syncAllLegacyAlertsToAlertRules } from "./handlers/alert-rules.js";
-import { randomUUID } from "node:crypto";
-import { buildDailyReviewContext } from "./handlers/review.js";
-import { buildAcpPromptContext } from "./acp/prompt-context-builder.js";
-import { sanitizeCustomerText } from "./lib/customer-output.js";
-import { DEFAULT_USER_ID, instanceIdFromRequest, normalizeUserId, userIdFromRequest } from "./lib/user-context.js";
-import { handleAiIntentDraftTurn, handlePendingConversationTaskTurn } from "./lib/conversation-tasks.js";
 import { enqueuePushJob, getPushJob, getPushQueueSummary, processDuePushJobs, type PushBackend } from "./services/push-queue.js";
-import { DIET_RECOMMENDATION_SHARED_INSTANCE_ID, ensureBuiltInAiProjects, getProjectRuntimeContext } from "./platform/project-registry.js";
-import { DIET_RECOMMENDATION_PROJECT_TYPE_ID, INVEST_AGENT_PROJECT_TYPE_ID } from "./platform/project-types.js";
+import { ensureBuiltInAiProjects } from "./platform/project-registry.js";
+import { instanceIdFromRequest, userIdFromRequest } from "./lib/user-context.js";
 
 const agent = createAgent();
-
-async function hermesTestContextForProfile(profile: string, userId: string, conversationId: string, projectIdOrInstanceId?: string) {
-  if (projectIdOrInstanceId) {
-    const project = await getProjectRuntimeContext(projectIdOrInstanceId);
-    return {
-      userId: userId === DEFAULT_USER_ID ? project.ownerUserId : userId,
-      projectId: project.projectId,
-      instanceId: project.instanceId,
-      projectType: project.projectType,
-      skillBundleId: project.skillBundleId,
-      strategySkillId: project.strategySkillId,
-      instanceExpansionPath: project.instanceExpansionPath,
-      channel: "api" as const,
-      backend: "hermes" as const,
-      hermesProfile: profile || project.hermesProfile,
-      conversationId,
-    };
-  }
-  if (profile === "diet-recommendation") {
-    return {
-      userId,
-      projectId: DIET_RECOMMENDATION_SHARED_INSTANCE_ID,
-      instanceId: DIET_RECOMMENDATION_SHARED_INSTANCE_ID,
-      projectType: DIET_RECOMMENDATION_PROJECT_TYPE_ID,
-      skillBundleId: "diet-recommendation-default",
-      channel: "api" as const,
-      backend: "hermes" as const,
-      hermesProfile: profile,
-      conversationId,
-    };
-  }
-  return {
-    userId,
-    projectId: "invest-agent",
-    instanceId: userId === DEFAULT_USER_ID ? "invest-agent-primary" : `invest-agent-${userId}`,
-    projectType: INVEST_AGENT_PROJECT_TYPE_ID,
-    skillBundleId: "invest-agent-default",
-    channel: "api" as const,
-    backend: "hermes" as const,
-    hermesProfile: profile,
-    conversationId,
-  };
-}
 
 /** 待推送消息队列（OpenClaw 轮询取走） */
 let pendingAlerts: string[] = [];
@@ -85,8 +33,10 @@ async function sendPushJob(job: { userId: string; backend: PushBackend; message:
       logger.warn(`项目实例微信推送失败，尝试全局通道: ${(error as Error).message}`);
     }
   }
-  const manager = job.backend === "hermes" ? hermesWeixinMobileManager : weixinMobileManager;
-  return manager.pushText(job.message, { userId: job.userId, instanceId: job.instanceId });
+  if (job.backend === "hermes") {
+    logger.warn(`push job 的 backend="hermes" 旁路微信通道已下线,降级到主桥推送`);
+  }
+  return weixinMobileManager.pushText(job.message, { userId: job.userId, instanceId: job.instanceId });
 }
 
 function startPushQueueWorker() {
@@ -110,7 +60,6 @@ export async function createServer() {
 
   registerDashboardRoutes(app);
   registerSandboxRoutes(app);
-  registerPlatformRoutes(app);
 
   startPushQueueWorker();
 
@@ -129,18 +78,20 @@ export async function createServer() {
   });
 
   // 健康检查
-  app.get("/health", async () => ({
-    status: "ok",
-    agent: agent.agentName,
-    agentId: agent.agentId,
-    capabilities: agent.capabilities,
-    acpBackends: await listAcpBackends(),
-    codexAcp: getCodexAcpStatus(),
-    hermesAcp: getHermesAcpStatus(),
-    pendingAlerts: pendingAlerts.length,
-    pushQueue: await getPushQueueSummary(),
-    timestamp: new Date().toISOString(),
-  }));
+  app.get("/health", async () => {
+    const { backends } = await listAcpBackends();
+    return {
+      status: "ok",
+      agent: agent.agentName,
+      agentId: agent.agentId,
+      capabilities: agent.capabilities,
+      acpBackends: { backends },
+      codexAcp: backends.find((b) => b.id === "codex") ?? null,
+      pendingAlerts: pendingAlerts.length,
+      pushQueue: await getPushQueueSummary(),
+      timestamp: new Date().toISOString(),
+    };
+  });
 
   // 旧微信管理页重定向到统一 Dashboard
   app.get("/admin/weixin", async (_request, reply) => {
@@ -180,104 +131,6 @@ export async function createServer() {
         ok: false,
         message: (error as Error).message,
         state: weixinMobileManager.getState(),
-      });
-    }
-  });
-
-  app.get("/admin/hermes-weixin", async (_request, reply) => {
-    return reply
-      .type("text/html; charset=utf-8")
-      .send(renderWeixinAdminPage({
-        title: "项目微信绑定",
-        subtitle: "为当前 AI 项目绑定独立微信连接，消息将进入 Hermes 后端",
-        apiBase: "/api/hermes-weixin",
-        showAlertActions: false,
-        sampleMessages: ["你是谁？", "我的持仓", "自选列表", "每日复盘"],
-        qrHint: "请使用你的微信扫描二维码。该连接会绑定到当前 AI 项目的独立微信状态，不影响其他项目连接。",
-      }));
-  });
-
-  app.get("/admin/diet-weixin", async (_request, reply) => {
-    return reply
-      .type("text/html; charset=utf-8")
-      .send(renderWeixinAdminPage({
-        title: "饮食推荐助手微信绑定",
-        subtitle: "一个饮食推荐项目服务多个微信用户，使用同一套饮食推荐 Skill",
-        apiBase: "/api/diet-weixin",
-        showAlertActions: false,
-        sampleMessages: ["我想控制体重，晚餐怎么吃？", "帮我安排一周工作日早餐", "我不吃辣，有什么高蛋白午餐？"],
-        qrHint: "请使用微信扫描二维码。多个用户可通过该连接绑定到同一个饮食推荐助手项目。",
-      }));
-  });
-
-  app.get("/api/diet-weixin/status", async () => dietWeixinMobileManager.getState());
-
-  app.post("/api/diet-weixin/connect/start", async () => dietWeixinMobileManager.startLogin());
-
-  app.post("/api/diet-weixin/listener/start", async () => {
-    await dietWeixinMobileManager.ensureListenerStarted();
-    return dietWeixinMobileManager.getState();
-  });
-
-  app.post("/api/diet-weixin/connect/stop", async () => {
-    dietWeixinMobileManager.stop();
-    return dietWeixinMobileManager.getState();
-  });
-
-  app.post<{ Body: { message?: string } }>("/api/diet-weixin/push/test", async (request, reply) => {
-    const text = request.body?.message?.trim() || `饮食推荐助手测试提醒：${new Date().toLocaleString("zh-CN")}`;
-    try {
-      const pushed = await dietWeixinMobileManager.pushText(text);
-      if (!pushed) {
-        return reply.status(409).send({
-          ok: false,
-          message: "当前没有可用的饮食推荐助手微信会话，请先用该微信给助手发送一条消息。",
-          state: dietWeixinMobileManager.getState(),
-        });
-      }
-      return { ok: true, state: dietWeixinMobileManager.getState() };
-    } catch (error) {
-      logger.warn(`饮食推荐助手测试微信推送失败: ${(error as Error).message}`);
-      return reply.status(500).send({
-        ok: false,
-        message: (error as Error).message,
-        state: dietWeixinMobileManager.getState(),
-      });
-    }
-  });
-
-  app.get("/api/hermes-weixin/status", async () => hermesWeixinMobileManager.getState());
-
-  app.post("/api/hermes-weixin/connect/start", async () => hermesWeixinMobileManager.startLogin());
-
-  app.post("/api/hermes-weixin/listener/start", async () => {
-    await hermesWeixinMobileManager.ensureListenerStarted();
-    return hermesWeixinMobileManager.getState();
-  });
-
-  app.post("/api/hermes-weixin/connect/stop", async () => {
-    hermesWeixinMobileManager.stop();
-    return hermesWeixinMobileManager.getState();
-  });
-
-  app.post<{ Body: { message?: string } }>("/api/hermes-weixin/push/test", async (request, reply) => {
-    const text = request.body?.message?.trim() || `Hermes 后端测试提醒：${new Date().toLocaleString("zh-CN")}`;
-    try {
-      const pushed = await hermesWeixinMobileManager.pushText(text);
-      if (!pushed) {
-        return reply.status(409).send({
-          ok: false,
-          message: "当前没有可用的项目微信会话，请先用该微信给项目助手发送一条消息。",
-          state: hermesWeixinMobileManager.getState(),
-        });
-      }
-      return { ok: true, state: hermesWeixinMobileManager.getState() };
-    } catch (error) {
-      logger.warn(`Hermes 后端测试微信推送失败: ${(error as Error).message}`);
-      return reply.status(500).send({
-        ok: false,
-        message: (error as Error).message,
-        state: hermesWeixinMobileManager.getState(),
       });
     }
   });
@@ -348,62 +201,6 @@ export async function createServer() {
     }
   );
 
-  app.get("/api/hermes/status", async () => getHermesAcpStatus());
-
-  app.post<{ Body: { message?: string; conversationId?: string; userId?: string; profile?: string; projectId?: string; instanceId?: string } }>(
-    "/api/hermes/chat-test",
-    async (request, reply) => {
-      const message = request.body?.message?.trim();
-      if (!message) {
-        return reply.status(400).send({ error: "message is required" });
-      }
-
-      const startedAt = Date.now();
-      const profile = request.body?.profile?.trim() || getHermesAcpStatus().profile;
-      const userId = normalizeUserId(request.body?.userId || (request.body?.conversationId?.startsWith("user:") ? request.body.conversationId.slice(5) : DEFAULT_USER_ID));
-      const conversationId = request.body?.conversationId || "hermes-test";
-      const userContext = await hermesTestContextForProfile(profile, userId, conversationId, request.body?.instanceId || request.body?.projectId);
-      const taskReply = await handlePendingConversationTaskTurn(userContext, message);
-      if (taskReply) {
-        return {
-          ok: true,
-          backend: "conversation-task",
-          profile,
-          elapsedMs: Date.now() - startedAt,
-          text: taskReply,
-        };
-      }
-      const { promptText } = await buildAcpPromptContext({
-        userText: message,
-        userContext,
-      });
-      const raw = await hermesStdioAcpAgent.chat({
-        conversationId,
-        text: promptText,
-        messageId: randomUUID(),
-        profile,
-      });
-      const intentReply = await handleAiIntentDraftTurn(userContext, raw);
-      if (intentReply) {
-        return {
-          ok: true,
-          backend: "ai-intent-task",
-          profile,
-          elapsedMs: Date.now() - startedAt,
-          text: intentReply,
-        };
-      }
-      const text = sanitizeCustomerText(raw);
-      return {
-        ok: true,
-        backend: "hermes",
-        profile,
-        elapsedMs: Date.now() - startedAt,
-        text,
-      };
-    }
-  );
-
   app.post<{ Body: { message?: string; conversationId?: string; instanceId?: string; accountId?: string; contextToken?: string } }>(
     "/api/testing/weixin-simulate",
     async (request, reply) => {
@@ -415,7 +212,7 @@ export async function createServer() {
       const instanceId = request.body?.instanceId?.trim();
       const manager = instanceId
         ? await projectWeixinManagerForInstance(instanceId)
-        : hermesWeixinMobileManager;
+        : weixinMobileManager;
       const startedAt = Date.now();
       const response = await manager.simulateIncomingText({
         text: message,
@@ -429,44 +226,6 @@ export async function createServer() {
         conversationId: response.conversationId,
         accountId: response.accountId,
         text: response.text,
-      };
-    }
-  );
-
-  app.post<{ Body: { message?: string; conversationId?: string; userId?: string; profile?: string; projectId?: string; instanceId?: string } }>(
-    "/api/hermes/daily-review-test",
-    async (request) => {
-      const startedAt = Date.now();
-      const profile = request.body?.profile?.trim() || getHermesAcpStatus().profile;
-      const projectContext = request.body?.instanceId || request.body?.projectId
-        ? await getProjectRuntimeContext(request.body.instanceId || request.body.projectId!)
-        : undefined;
-      const userId = normalizeUserId(request.body?.userId || projectContext?.ownerUserId);
-      const reviewContext = await buildDailyReviewContext({ userId, instanceId: projectContext?.instanceId });
-      const conversationId = request.body?.conversationId || `hermes-daily-review-${reviewContext.date}`;
-      const userContext = await hermesTestContextForProfile(profile, userId, conversationId, request.body?.instanceId || request.body?.projectId);
-      const promptContext = await buildAcpPromptContext({
-        userText: request.body?.message?.trim() || "请生成今日复盘",
-        reviewContext,
-        userContext,
-      });
-      const promptText = promptContext.promptText;
-      const raw = await hermesStdioAcpAgent.chat({
-        conversationId,
-        text: promptText,
-        messageId: randomUUID(),
-        profile,
-      });
-      const text = sanitizeCustomerText(raw);
-      return {
-        ok: true,
-        backend: "hermes",
-        profile,
-        date: reviewContext.date,
-        saved: false,
-        elapsedMs: Date.now() - startedAt,
-        contextSummary: promptContext.reviewContextSummary,
-        text,
       };
     }
   );
@@ -547,24 +306,11 @@ export async function startServer() {
     logger.info(`ACP 端点: http://localhost:${config.port}/acp/message`);
     logger.info(`提醒轮询: http://localhost:${config.port}/acp/alerts`);
     logger.info(`微信连接后台: http://localhost:${config.port}/admin/weixin`);
-    logger.info(`Hermes 项目微信绑定后台: http://localhost:${config.port}/admin/hermes-weixin`);
-    logger.info(`饮食推荐助手微信绑定后台: http://localhost:${config.port}/admin/diet-weixin`);
     logger.info(`数据看板: http://localhost:${config.port}/dashboard`);
-    logger.info(`平台项目后台: http://localhost:${config.port}/platform`);
 
     if (process.env.WEIXIN_AUTO_START !== "false" && weixinMobileManager.getState().stage === "connected") {
       weixinMobileManager.ensureListenerStarted().catch((error) => {
         logger.warn(`微信监听自动启动失败: ${(error as Error).message}`);
-      });
-    }
-    if (process.env.HERMES_WEIXIN_AUTO_START === "true" && hermesWeixinMobileManager.getState().stage === "connected") {
-      hermesWeixinMobileManager.ensureListenerStarted().catch((error) => {
-        logger.warn(`Hermes 项目微信监听自动启动失败: ${(error as Error).message}`);
-      });
-    }
-    if (process.env.DIET_WEIXIN_AUTO_START === "true" && dietWeixinMobileManager.getState().stage === "connected") {
-      dietWeixinMobileManager.ensureListenerStarted().catch((error) => {
-        logger.warn(`饮食推荐助手微信监听自动启动失败: ${(error as Error).message}`);
       });
     }
     autoStartPlatformWeixinListeners().catch((error) => {

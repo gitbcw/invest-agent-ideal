@@ -2,45 +2,67 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { aiInstances, aiProjects, users } from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
-import {
-  DIET_RECOMMENDATION_DEFAULT_SKILL_BUNDLE_ID,
-  DIET_RECOMMENDATION_PROJECT_TYPE_ID,
-  getProjectTypeManifest,
-  INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID,
-  INVEST_AGENT_PROJECT_TYPE_ID,
-  summarizeProjectTypeManifest,
-  type ProjectTypeManifestSummary,
-} from "./project-types.js";
-import {
-  INVEST_AGENT_MG_CUSTOM_SKILL_BUNDLE_ID,
-  INVEST_AGENT_JR_IDEAL_SKILL_BUNDLE_ID,
-  INVEST_AGENT_PRIMARY_CUSTOM_SKILL_BUNDLE_ID,
-} from "./skill-bundles.js";
 import type { SandboxPermission } from "../lib/sandbox-context.js";
 
-export type AgentBackend = "codex" | "hermes";
+export const INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID = "invest-agent-default";
 
-export const DIET_RECOMMENDATION_PROJECT_ID = DIET_RECOMMENDATION_PROJECT_TYPE_ID;
-export const DIET_RECOMMENDATION_SHARED_INSTANCE_ID = "diet-recommendation-shared";
-export const INVEST_AGENT_JR_IDEAL_INSTANCE_ID = "invest-agent-jr-ideal";
-const PLATFORM_OWNER_USER_ID = "platform";
-const JR_IDEAL_OWNER_USER_ID = "jr-ideal-tester";
+export const ALLOWED_SANDBOX_TOOLS = [
+  "invest.dashboard.read",
+  "invest.portfolio.read",
+  "invest.portfolio.write",
+  "invest.watchlist.read",
+  "invest.watchlist.write",
+  "invest.plan.read",
+  "invest.plan.write",
+  "invest.profile.read",
+  "invest.profile.write",
+  "invest.review.read",
+  "invest.review.write",
+  "invest.alert.read",
+  "invest.alert.write",
+  "invest.alert.check",
+  "invest.strategy.read",
+  "invest.strategy.write",
+  "push.weixin.send",
+] as const;
+
+export const DEFAULT_SANDBOX_PERMISSIONS: SandboxPermission[] = [
+  "read:self",
+  "write:self",
+  "review:self",
+  "alert:self",
+  "push:self",
+];
+
+export const DEFAULT_RESOURCE_TYPES = [
+  "portfolio",
+  "watchlist",
+  "stock_plan",
+  "investment_profile",
+  "methodology_profile",
+  "method_change_candidate",
+  "alert_rule",
+  "alert_event",
+  "daily_review",
+  "indicator_result",
+  "conversation_trace",
+  "trading_strategy",
+];
 
 export interface AiProjectRuntimeContext {
   projectId: string;
   instanceId: string;
   legacyProjectId: string;
   projectType: string;
-  projectTypeManifest: ProjectTypeManifestSummary;
   ownerUserId: string;
   name: string;
   status: string;
-  backend: AgentBackend;
+  backend: "codex" | "hermes";
   skillBundleId: string;
   hermesProfile: string;
   permissions: SandboxPermission[];
   dashboardType: string;
-  allowedTools: string[];
+  allowedTools: readonly string[];
   resourceTypes: string[];
   config: Record<string, unknown>;
   strategySkillId?: string;
@@ -56,11 +78,7 @@ function makeInstanceId(userId: string) {
   return `${DEFAULT_PROJECT_ID}-${userId}`.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
 }
 
-function makeNamedInstanceId(projectType: string, userId: string) {
-  return `${projectType}-${userId}`.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
-}
-
-function parseBackend(value: string): AgentBackend {
+function parseBackend(value: string): "codex" | "hermes" {
   return value === "codex" ? "codex" : "hermes";
 }
 
@@ -75,25 +93,22 @@ function parseConfig(value?: string | null): Record<string, unknown> {
 }
 
 function runtimeContextFromInstance(instance: typeof aiInstances.$inferSelect): AiProjectRuntimeContext {
-  const manifest = getProjectTypeManifest(instance.projectId);
-  const summary = summarizeProjectTypeManifest(manifest);
   const config = parseConfig(instance.config);
   return {
     projectId: instance.id,
     instanceId: instance.id,
     legacyProjectId: instance.projectId,
-    projectType: manifest.id,
-    projectTypeManifest: summary,
+    projectType: "invest-agent",
     ownerUserId: instance.ownerUserId,
     name: instance.name,
     status: instance.status,
     backend: parseBackend(instance.backend),
-    skillBundleId: instance.skillBundleId || manifest.defaultSkillBundleId,
-    hermesProfile: String(config.hermesProfile || manifest.defaultHermesProfile),
-    permissions: [...manifest.defaultPermissions],
-    dashboardType: manifest.dashboardType,
-    allowedTools: [...manifest.allowedTools],
-    resourceTypes: [...manifest.resourceTypes],
+    skillBundleId: instance.skillBundleId || INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID,
+    hermesProfile: String(config.hermesProfile || "invest-agent"),
+    permissions: [...DEFAULT_SANDBOX_PERMISSIONS],
+    dashboardType: "invest-agent",
+    allowedTools: ALLOWED_SANDBOX_TOOLS,
+    resourceTypes: [...DEFAULT_RESOURCE_TYPES],
     config,
     strategySkillId: typeof config.strategySkillId === "string" ? String(config.strategySkillId) : undefined,
     instanceExpansionPath: typeof config.instanceExpansionPath === "string" ? String(config.instanceExpansionPath) : undefined,
@@ -102,7 +117,7 @@ function runtimeContextFromInstance(instance: typeof aiInstances.$inferSelect): 
 
 export async function ensureDefaultProjectForUser(
   userId: string,
-  backend: AgentBackend = "hermes",
+  backend: "codex" | "hermes" = "hermes",
   displayName?: string
 ): Promise<AiProjectRuntimeContext> {
   const instanceId = makeInstanceId(userId);
@@ -141,67 +156,6 @@ export async function ensureDefaultProjectForUser(
   return getProjectRuntimeContext(instanceId);
 }
 
-export async function createInvestAgentInstance(input: {
-  userId: string;
-  displayName: string;
-  instanceName?: string;
-  backend?: AgentBackend;
-  skillBundleId?: string;
-}) {
-  const userId = input.userId.trim();
-  if (!userId || !/^[a-zA-Z0-9_-]{2,64}$/.test(userId)) {
-    throw new Error("INVALID_USER_ID");
-  }
-  const now = new Date().toISOString();
-  const instanceId = makeNamedInstanceId(DEFAULT_PROJECT_ID, userId);
-  const backend = input.backend || "hermes";
-  const skillBundleId = input.skillBundleId?.trim() || INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID;
-  const displayName = input.displayName.trim() || userId;
-
-  await db.insert(users).values({
-    id: userId,
-    displayName,
-    status: "active",
-    createdAt: now,
-    updatedAt: now,
-  }).onConflictDoUpdate({
-    target: users.id,
-    set: {
-      displayName,
-      status: "active",
-      updatedAt: now,
-    },
-  });
-
-  await db.insert(aiProjects).values({
-    id: DEFAULT_PROJECT_ID,
-    name: "投资助手",
-    type: "investment-assistant",
-    status: "active",
-    description: "默认投资助手项目类型",
-    createdAt: now,
-    updatedAt: now,
-  }).onConflictDoNothing();
-
-  await db.insert(aiInstances).values({
-    id: instanceId,
-    projectId: DEFAULT_PROJECT_ID,
-    ownerUserId: userId,
-    name: input.instanceName?.trim() || `${displayName}的投资助手`,
-    status: "active",
-    backend,
-    skillBundleId,
-    config: JSON.stringify({
-      distributionMode: "dedicated",
-      createdFrom: "platform",
-    }),
-    createdAt: now,
-    updatedAt: now,
-  });
-
-  return getProjectRuntimeContext(instanceId);
-}
-
 export async function ensureBuiltInAiProjects() {
   const now = new Date().toISOString();
 
@@ -214,11 +168,6 @@ export async function ensureBuiltInAiProjects() {
     createdAt: now,
     updatedAt: now,
   }).onConflictDoNothing();
-
-  await db
-    .update(aiInstances)
-    .set({ skillBundleId: INVEST_AGENT_PRIMARY_CUSTOM_SKILL_BUNDLE_ID, updatedAt: now })
-    .where(eq(aiInstances.id, DEFAULT_INSTANCE_ID));
 }
 
 export async function getProjectRuntimeContext(projectIdOrInstanceId: string): Promise<AiProjectRuntimeContext> {

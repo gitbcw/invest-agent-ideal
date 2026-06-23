@@ -202,7 +202,6 @@ export function renderDashboardPage(): string {
       <div class="sidebar-label">设置</div>
       <a data-page="signals" onclick="switchPage('signals')"><span class="nav-icon">&#9881;</span> 信号配置</a>
       <a data-page="patrol" onclick="switchPage('patrol')"><span class="nav-icon">&#9881;</span> 巡检设置</a>
-      <a href="/platform"><span class="nav-icon">&#9881;</span> 项目绑定</a>
     </nav>
   </aside>
 
@@ -232,7 +231,6 @@ export function renderDashboardPage(): string {
               <option value="invest-agent-primary">主用户投资助手</option>
             </select>
           </div>
-          <a class="btn btn-gray" href="/platform">平台总览</a>
         </div>
       </div>
 
@@ -787,12 +785,10 @@ function renderWorkbenchStrip() {
   const due = (D.dueViewpoints || []).length;
   const open = (D.openViewpoints || []).length;
   const candidates = (D.methodCandidates || []).filter(x => x.status === 'proposed').length;
-  const tasks = (D.pendingTasks || []).length;
   const reviews = (D.recentPlans || []).length;
   el.innerHTML = [
     workbenchTile('待验证观点', due + '/' + open, due ? '已有观点到复盘日期，需要判断有效、失效或继续观察。' : '暂无到期观点，后续复盘继续积累。'),
     workbenchTile('方法候选', candidates, candidates ? '有实例展开候选等待确认、拒绝或吸收。' : '当前没有待处理方法候选。'),
-    workbenchTile('待确认任务', tasks, tasks ? '有对话中生成的草案等待用户确认。' : '当前没有待确认草案。'),
     workbenchTile('复盘记录', reviews, reviews ? '最近复盘已沉淀，可展开阅读完整内容。' : '暂无已保存复盘记录。'),
   ].join('');
 }
@@ -835,7 +831,6 @@ function renderWorkbenchLoopList() {
 
 function renderMethodCandidateList() {
   const candidates = D.methodCandidates || [];
-  const pendingTasks = D.pendingTasks || [];
   const rows = [];
   rows.push(...candidates.slice(0, 4).map(item => ({
     badge: '<span class="badge ' + (item.status === 'proposed' ? 'badge-yellow' : item.status === 'confirmed' ? 'badge-green' : 'badge-gray') + '">' + H(methodStatusLabel(item.status)) + '</span>',
@@ -843,13 +838,7 @@ function renderMethodCandidateList() {
     body: item.proposedChange || item.reason || '-',
     meta: [sourceTypeLabel(item.sourceType), shortTime(item.createdAt)].filter(Boolean).join(' · '),
   })));
-  rows.push(...pendingTasks.slice(0, 3).map(task => ({
-    badge: '<span class="badge badge-info">待确认</span>',
-    title: task.title || task.type || '对话任务',
-    body: task.summary || task.resultSummary || task.targetOperation || '-',
-    meta: shortTime(task.createdAt),
-  })));
-  if (!rows.length) return '<div class="empty-hint">暂无方法候选或待确认任务</div>';
+  if (!rows.length) return '<div class="empty-hint">暂无方法候选</div>';
   return '<div class="workbench-list">' + rows.map(renderWorkbenchItem).join('') + '</div>';
 }
 

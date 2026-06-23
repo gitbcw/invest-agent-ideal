@@ -8,7 +8,7 @@
  *   - 加沙箱审计(工作包 4)
  *   - 加双写过渡(工作包 4)
  *
- * 工作包 3 引入基础设施,工作包 4 各 handler / conversation-tasks / sandbox 接入。
+ * 工作包 3 引入基础设施,工作包 4 各 handler / sandbox 接入。
  */
 
 import { existsSync } from "node:fs";

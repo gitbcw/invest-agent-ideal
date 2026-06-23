@@ -1,5 +1,5 @@
 import type { SandboxContext, SandboxPermission } from "../lib/sandbox-context.js";
-import { getProjectTypeManifest } from "./project-types.js";
+import { ALLOWED_SANDBOX_TOOLS } from "./project-registry.js";
 
 export type ToolId =
   | "invest.dashboard.read"
@@ -184,8 +184,7 @@ export function assertSandboxToolAllowed(context: SandboxContext, toolId: ToolId
     throw new Error("SANDBOX_TOOL_UNKNOWN");
   }
 
-  const manifest = getProjectTypeManifest(context.projectType);
-  if (manifest.id !== context.projectType || !manifest.allowedTools.includes(toolId)) {
+  if (!ALLOWED_SANDBOX_TOOLS.includes(toolId)) {
     throw new Error("SANDBOX_TOOL_NOT_ALLOWED");
   }
 

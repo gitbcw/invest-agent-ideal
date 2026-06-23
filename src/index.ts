@@ -2,9 +2,8 @@ import { startServer } from "./server.js";
 import { initDb } from "./db/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/index.js";
 import { logger } from "./lib/logger.js";
-import { disposeCodexAcp, startCodexAcp } from "./acp/codex-stdio-agent.js";
-import { disposeHermesAcp, startHermesAcpIfEnabled } from "./acp/hermes-stdio-agent.js";
-import { hermesWeixinMobileManager, weixinMobileManager } from "./channels/weixin-mobile.js";
+import { disposeAllAcp, startDefaultAcp } from "./acp/stdio-agent.js";
+import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { stopPlatformWeixinListeners } from "./routes/platform.js";
 
 async function main() {
@@ -16,11 +15,8 @@ async function main() {
   // 启动 HTTP 服务
   const app = await startServer();
 
-  // 启动 Codex ACP 子进程。会话上下文后续按微信 conversationId 复用。
-  await startCodexAcp();
-
-  // Hermes 作为可选后端链路；默认关闭，不影响当前 Codex 主链路。
-  await startHermesAcpIfEnabled();
+  // 启动当前选中的 ACP backend 子进程(默认 kimi,可通过 settings KV 切换)。会话上下文后续按微信 conversationId 复用。
+  await startDefaultAcp();
 
   // 启动定时任务
   await startScheduler();
@@ -35,9 +31,7 @@ async function main() {
     stopScheduler();
     stopPlatformWeixinListeners();
     weixinMobileManager.stop();
-    hermesWeixinMobileManager.stop();
-    disposeCodexAcp();
-    disposeHermesAcp();
+    disposeAllAcp();
     await app.close();
     logger.info("✅ 投资选股智能体已停止");
     process.exit(0);

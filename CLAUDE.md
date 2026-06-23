@@ -26,7 +26,7 @@ npm run db:migrate   # 执行数据库迁移
 
 微信桥接状态默认保存在本项目 `./.state/openclaw-weixin/`，也可通过 `INVEST_AGENT_WEIXIN_STATE_DIR` 覆盖。不要让本项目和全局 Claude Code 微信桥接共用同一个 `~/.openclaw` 登录态目录。
 
-> **Hermes 退出主链路**：2026-06-21 工作包 2 已完成清退。主链路统一由 Codex ACP 兜底，不再感知 `hermesProfile`。`/api/hermes/*` 实验路由和 `src/acp/hermes-stdio-agent.ts` 保留作考古，不要在主链路重新引入依赖。详见 `docs/ideal-refactor-plan.md`。
+> **Hermes 退出主链路**：2026-06-21 工作包 2 已完成清退,2026-06-23 进一步删除 `src/acp/hermes-stdio-agent.ts` 与 `/api/hermes/*` 实验路由。主链路统一由 Codex ACP 兜底,不再感知 `hermesProfile`。`BypassWeixinMobileBridge`(原名 `HermesWeixinMobileBridge`)也于 2026-06-23 范围收缩 WP A2 删除,主链路只剩单一 `InvestAgentMobileBridge`。DB 字段 `backend==="hermes"` 保留作历史 push job 兼容,运行时降级主桥。详见 `docs/ideal-refactor-plan.md` 与 `docs/scope-contraction-plan.md`。
 
 ## 架构：消息处理主链路
 
@@ -41,15 +41,20 @@ npm run db:migrate   # 执行数据库迁移
 
 主动提醒反向链路：`scheduler/alert-check.ts` 定时巡检（间隔可调）→ 触发后通过微信推送或落入 `/acp/alerts` 轮询队列。
 
-> Hermes 实验路由保留作考古，入口仍为 `/api/hermes/*`（默认关闭），但**不参与产品主链路**，不要在此基础上扩展新功能。
+> **2026-06-23 范围收缩**:本项目定位明确为"少数几个投资客户的精品投资助手",不再承载多产品 AI 平台 / 饮食推荐 / 旁路桥 / 对话草案 / 多 bundle 抽象。WP A1+A2+A3+C 全部收尾:
+> - 主链路微信桥只剩 `InvestAgentMobileBridge`(主桥);`backend==="hermes"` 字符串保留作 push-queue 历史 job 兼容,运行时降级主桥
+> - `src/platform/` 简化为 `project-registry.ts`(实例查询)+ `tool-registry.ts`(sandbox 工具白名单),不再有 project-type manifest / skill-bundle catalog
+> - 技能包 prompt 固化为 `src/acp/skill-bundle-prompt.ts`,只有一套投资助手技能
+> - `/platform` 后台页 + `/api/platform/*` admin REST 已下线;`src/routes/platform.ts` 只保留 weixin 工厂和自动恢复
+> - DB 表 `ai_projects` / `ai_instances` / `investment_profiles` / `conversation_tasks` 保留作考古,数据不迁出
 
 ## 关键文件
 
 | 文件 | 职责 |
 |------|------|
 | `src/acp/agent.ts` | ACP 入口；当前职责是把消息代理到本机 Codex ACP |
-| `src/acp/codex-stdio-agent.ts` | Codex ACP stdio 托管器；随服务启停，按 conversationId 复用 Codex session |
-| `src/acp/hermes-stdio-agent.ts` | **@deprecated** Hermes ACP 后端托管器；主链路已不再使用，仅 `/api/hermes/*` 实验路由保留 |
+| `src/acp/stdio-agent.ts` | 多 backend(kimi/claude/codex)ACP stdio 托管器;随服务启停,按 conversationId 复用 session |
+| `src/acp/skill-bundle-prompt.ts` | 固定投资助手技能包 prompt(单产品定位下不再需要 bundle 切换) |
 | `src/services/deepseek.ts` | DeepSeek API 封装，支持 light（flash）和 deep（pro+thinking）两种模式 |
 | `src/services/stock.ts` | 腾讯行情 API：实时报价、日 K、股票搜索 |
 | `src/services/stock-resolver.ts` | 股票名称/代码模糊解析 |
