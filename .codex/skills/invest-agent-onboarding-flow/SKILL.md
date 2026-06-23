@@ -1,27 +1,27 @@
 ---
 name: invest-agent-onboarding-flow
-description: User's first conversation with the Invest Agent. Skip triage and emit a fixed-shape welcome message that emphasizes "watching + proactive alerts" (not review-first), respects the privacy boundary (no quantity / total amount), and offers one-line guidance. Use when context.isFirstConversation=true. Do not call tools or APIs; just output the welcome text.
+description: Emit the Invest Agent help/guide message when the user greets, asks for help, or asks what the assistant can do. The message emphasizes "watching + proactive alerts" (not review-first), respects the privacy boundary (no quantity / total amount), and offers configuration examples. Use when context.isFirstConversation=true or the user intent is greeting/help/smalltalk. Do not call tools or APIs; just output the guide text.
 ---
 
 # Invest Agent Onboarding Flow
 
 ## Purpose
 
-只触发于用户**首次对话**(`message.context.isFirstConversation === true`)。输出一段固定形态的欢迎语,让用户立刻明白:
+触发于用户**首次对话**、**寒暄**或**主动寻求帮助**时(`message.context.isFirstConversation === true` 或用户表达问候/帮助/使用意图)。输出一段固定形态的帮助引导语,让用户立刻明白:
 
 - 这个助手做什么:**盯盘 + 主动提醒 + 自定指标 + 复盘**(核心是盯盘与提醒,复盘是日常工具之一)
 - 这个助手**不存什么**:不存持仓数量、总金额、仓位价值(隐私边界);**每股成本价可以存**,用于算浮亏和盈亏比
-- 怎么开始:一行话告诉关注的股票、成本价(可选)、或设一个到价提醒
+- 怎么开始配置:列出用户可配置的关键项示例,如持仓、自选、提醒、投资风格、选股方法、交易策略;不强求用户立即全部配置
 
 ## 输出规则(强制)
 
-1. **不调用任何工具或接口**——只输出欢迎正文
+1. **不调用任何工具或接口**——只输出帮助引导正文
 2. **不追问**数量、总金额、仓位价值、仓位上限——这些是用户隐私,系统不存
 3. **可以追问**每股成本价(单价)——系统会用它算浮亏/盈亏比,但用户可以拒绝提供
 4. **不主推复盘**——复盘是日常工具之一,不是核心价值主张
 5. **不强求用户立即配置**——给一个最低门槛的引导即可
 6. **不单独点名某个具体指标**——只说"支持自定义技术指标",不要在欢迎语里点名"主力控盘""MACD""KDJ"等具体指标
-7. **简短**——总共不超过 8 行,微信场景必须一眼能读完
+7. **可适度详细**——首次欢迎语需要把系统可配置项介绍清楚,但避免冗长解释。
 
 ## 输出形态
 
@@ -29,24 +29,28 @@ description: User's first conversation with the Invest Agent. Skip triage and em
 
 1. **自我介绍**(1 行):身份 + 核心价值("盯盘 + 主动提醒")
 2. **能帮你做什么**(3-4 行,要点列出;复盘只作为一项,不放首位;可以提"自定技术指标"作为通用能力,不点具体指标名)
-3. **怎么开始**(2-3 行,最简引导;股票+成本价的示例可选)
+3. **怎么开始配置**(可列出多项示例,包括持仓、自选、提醒、投资风格、选股方法、交易策略;不强求用户立即全部配置)
 
 末尾可加一句轻量的隐私边界声明(可选,但建议加),让用户知道"不存数量金额,只存每股成本价"。
 
 ## 参考文案
 
-> 你好,我是你的投资观察助手。
+> 你好，我是你的投资助手。
 >
-> 我能帮你做的事:
-> - 帮你盯盘,关键时刻主动提醒(到价、放量、技术信号)
-> - 帮你复盘当天的盘面和判断
-> - 帮你管理自选股、交易预案、自定义技术指标
+> 我能帮你：
+> - 盯盘提醒：到价、放量、技术信号等关键事件主动推送
+> - 管理持仓、自选、交易预案和自定义技术指标
+> - 选股问答，以及日/周复盘跟踪判断
 >
-> 你可以一句话告诉我:
-> - "我持有赣锋锂业 成本 70" 或 "关注一下阳光电源"
-> - "赣锋锂业到 60 提醒我"
+> 可以这样开始配置：
+> - 持仓："我持有赣锋锂业 成本 70"
+> - 自选："把阳光电源加入自选"
+> - 提醒："赣锋锂业到 60 提醒我"
+> - 投资风格："我的风格是低频成长，单票不超过 20%"
+> - 选股方法："帮我写一份基本面选股方法"
+> - 交易策略："新增一个 breakout-pullback 策略"
 >
-> 数量和金额我不存,这是你的隐私;每股成本价可以告诉我,我会帮你算浮亏。
+> 我只存每股成本价（用于算浮亏），不存数量、金额、仓位价值。
 
 允许在保持结构不变的前提下,根据用户首条消息的内容做轻微调整(例如用户上来就问某只股票,可以省略"怎么开始"块直接回答 + 在末尾轻量引导)。
 

@@ -16,7 +16,7 @@ import { logger } from "../lib/logger.js";
 import { recordCodexAcpTrace } from "../acp/trace.js";
 import { resolveOrCreateChannelUser, markChannelIdentityWelcomed } from "../lib/user-identity.js";
 import { DEFAULT_USER_ID, type UserContext } from "../lib/user-context.js";
-import { FIXED_WELCOME_MESSAGE } from "../lib/welcome.js";
+import { ASSISTANT_GUIDE_MESSAGE } from "../lib/onboarding.js";
 import { getOnboardingState } from "../lib/onboarding-state.js";
 import { buildOnboardingReminder } from "../lib/onboarding-reminder.js";
 import { handleAiIntentDraftTurn, handlePendingConversationTaskTurn, createDraftTask, type DraftType } from "../lib/conversation-tasks.js";
@@ -1125,12 +1125,12 @@ class HermesWeixinMobileBridge {
     }
 
     const isFirstConversation = !userContext.welcomedAt;
-    const isSmalltalk = /^(你好|您好|哈喽|hello|hi|嗨|在吗|在不在|在|早\b|早上好|下午好|晚上好|晚安)/i.test((request.text || "").trim());
+    const isSmalltalk = /^(你好|您好|哈喽|hello|hi|嗨|在吗|在不在|在|早\b|早上好|下午好|晚上好|晚安|帮助|help|怎么用|怎么使用|如何使用|你能做什么|你能帮我做什么|有什么功能|使用说明|指令|命令|如何开始|如何配置)/i.test((request.text || "").trim());
 
     if (isSmalltalk) {
       const onboardingState = await getOnboardingState(userContext.userId);
       const reminder = buildOnboardingReminder(onboardingState);
-      const text = reminder ? `${FIXED_WELCOME_MESSAGE}\n\n${reminder}` : FIXED_WELCOME_MESSAGE;
+      const text = reminder ? `${ASSISTANT_GUIDE_MESSAGE}\n\n${reminder}` : ASSISTANT_GUIDE_MESSAGE;
 
       if (isFirstConversation) {
         await markChannelIdentityWelcomed(userContext.userId, "weixin-mobile", conversationId);
@@ -1143,7 +1143,7 @@ class HermesWeixinMobileBridge {
         channel: "weixin-hermes",
         userText: request.text || "",
         replyTextSanitized: text,
-        mode: isFirstConversation ? "onboarding-fixed" : "smalltalk-onboarding",
+        mode: isFirstConversation ? "guide-fixed" : "guide-smalltalk",
         status: "success",
         elapsedMs: Date.now() - startedAt,
       });
