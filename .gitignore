@@ -11,3 +11,4 @@ workspaces/
 .backup/
 .agents/
 eval-reports/
+.tmp/
