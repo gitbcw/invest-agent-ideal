@@ -68,23 +68,35 @@ export async function rememberWeixinTurn(userContext: UserContext, userText: str
   }
 }
 
-export async function loadRecentWeixinMemory(userContext: UserContext, limit = MEMORY_LIMIT): Promise<ConversationMessage[]> {
-  const instanceId = userContext.instanceId ?? DEFAULT_INSTANCE_ID;
-  if (ACTIVE_BACKEND === "workspace") {
-    return loadRecentFromWorkspace(userContext.userId, instanceId, userContext.conversationId, limit);
-  }
-  return loadRecentFromSQLite(userContext, instanceId, limit);
+export interface WeixinMemoryLoadOptions {
+  scope?: "user_instance" | "conversation";
 }
 
-async function loadRecentFromSQLite(userContext: UserContext, instanceId: string, limit: number): Promise<ConversationMessage[]> {
+export async function loadRecentWeixinMemory(
+  userContext: UserContext,
+  limit = MEMORY_LIMIT,
+  options: WeixinMemoryLoadOptions = {}
+): Promise<ConversationMessage[]> {
+  const instanceId = userContext.instanceId ?? DEFAULT_INSTANCE_ID;
+  const conversationId = options.scope === "conversation" ? userContext.conversationId : undefined;
+  if (ACTIVE_BACKEND === "workspace") {
+    return loadRecentFromWorkspace(userContext.userId, instanceId, conversationId, limit);
+  }
+  return loadRecentFromSQLite(userContext, instanceId, conversationId, limit);
+}
+
+async function loadRecentFromSQLite(userContext: UserContext, instanceId: string, conversationId: string | undefined, limit: number): Promise<ConversationMessage[]> {
+  const filters = [
+    eq(chatHistory.userId, userContext.userId),
+    eq(chatHistory.instanceId, instanceId),
+  ];
+  if (conversationId) {
+    filters.push(eq(chatHistory.conversationId, conversationId));
+  }
   const rows = await db
     .select()
     .from(chatHistory)
-    .where(and(
-      eq(chatHistory.userId, userContext.userId),
-      eq(chatHistory.instanceId, instanceId),
-      eq(chatHistory.conversationId, userContext.conversationId ?? "")
-    ))
+    .where(and(...filters))
     .orderBy(desc(chatHistory.createdAt), desc(chatHistory.id))
     .limit(limit);
 

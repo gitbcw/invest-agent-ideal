@@ -8,7 +8,7 @@ const context = {
   userId: "sandbox-smoke-user",
   role: "user",
   channel: "weixin-mobile",
-  backend: "hermes",
+  backend: "kimi",
   conversationId: "sandbox-smoke-conversation",
   permissions: ["read:self", "write:self"],
 };

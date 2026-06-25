@@ -3,6 +3,7 @@ import { settings } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 
 const SETTINGS_KEY = "signal_config";
+const DEFAULT_DISABLED_MIGRATION_KEY = "signal_config_default_disabled_migrated";
 
 export interface SignalItem {
   key: string;
@@ -17,49 +18,49 @@ const DEFAULT_SIGNALS: SignalItem[] = [
     key: "price_change",
     name: "涨跌幅异动",
     description: "股价涨跌幅超过阈值时触发",
-    enabled: true,
+    enabled: false,
     params: { threshold: 3 },
   },
   {
     key: "near_support",
     name: "接近预案支撑位",
     description: "股价接近交易预案支撑位时触发",
-    enabled: true,
+    enabled: false,
     params: {},
   },
   {
     key: "near_resistance",
     name: "接近预案压力位",
     description: "股价接近交易预案压力位时触发",
-    enabled: true,
+    enabled: false,
     params: {},
   },
   {
     key: "near_target",
     name: "接近预案目标位",
     description: "股价接近交易预案目标位时触发",
-    enabled: true,
+    enabled: false,
     params: {},
   },
   {
     key: "stop_loss",
     name: "跌破预案止损位",
     description: "股价跌破交易预案止损位时触发",
-    enabled: true,
+    enabled: false,
     params: {},
   },
   {
     key: "breakout_with_volume",
     name: "放量突破预案压力位",
     description: "放量突破交易预案压力位，量比配合判断",
-    enabled: true,
+    enabled: false,
     params: { volumeThreshold: 1.5 },
   },
   {
     key: "break_support",
     name: "跌破预案支撑位",
     description: "跌破交易预案支撑位，配合量能状态判断",
-    enabled: true,
+    enabled: false,
     params: {},
   },
   {
@@ -108,49 +109,49 @@ const DEFAULT_SIGNALS: SignalItem[] = [
     key: "volume_price_divergence",
     name: "盘中放量滞涨/滞跌",
     description: "分时1分钟K线：成交量超过均量倍数且振幅极小，可能为主力吸筹或派发",
-    enabled: true,
+    enabled: false,
     params: { volumeMultiplier: 3, priceRangePercent: 0.5 },
   },
   {
     key: "ma_breakout_above",
     name: "突破X日均线",
     description: "收盘价由下而上穿越X日均线（含 MA5/10/20/60，可在参数中指定周期）",
-    enabled: true,
+    enabled: false,
     params: { period: 20 },
   },
   {
     key: "ma_breakout_below",
     name: "跌破X日均线",
     description: "收盘价由上而下穿越X日均线",
-    enabled: true,
+    enabled: false,
     params: { period: 20 },
   },
   {
     key: "macd_golden_cross",
     name: "MACD 金叉",
     description: "DIF 由下上穿 DEA，短期转多信号",
-    enabled: true,
+    enabled: false,
     params: {},
   },
   {
     key: "macd_death_cross",
     name: "MACD 死叉",
     description: "DIF 由上下穿 DEA，短期转空信号",
-    enabled: true,
+    enabled: false,
     params: {},
   },
   {
     key: "kdj_oversold",
     name: "KDJ 超卖反弹",
     description: "KDJ 在超卖区(D 值低于阈值)出现 K 上穿 D",
-    enabled: true,
+    enabled: false,
     params: { threshold: 20 },
   },
   {
     key: "kdj_overbought",
     name: "KDJ 超买回落",
     description: "KDJ 在超买区(D 值高于阈值)出现 K 下穿 D",
-    enabled: true,
+    enabled: false,
     params: { threshold: 80 },
   },
 ];
@@ -171,7 +172,7 @@ export async function getSignalConfig(): Promise<SignalItem[]> {
         merged.push({ ...def });
       }
     }
-    return merged;
+    return migrateDefaultSignalsToDisabled(merged);
   } catch {
     return [...DEFAULT_SIGNALS];
   }
@@ -181,6 +182,23 @@ async function saveSignalConfig(config: SignalItem[]): Promise<void> {
   const value = JSON.stringify(config);
   await db.insert(settings).values({ key: SETTINGS_KEY, value })
     .onConflictDoUpdate({ target: settings.key, set: { value } });
+}
+
+async function migrateDefaultSignalsToDisabled(config: SignalItem[]): Promise<SignalItem[]> {
+  const marker = await db.select().from(settings).where(eq(settings.key, DEFAULT_DISABLED_MIGRATION_KEY)).limit(1);
+  if (marker.length > 0) return config;
+
+  const defaultKeys = new Set(DEFAULT_SIGNALS.map((signal) => signal.key));
+  let changed = false;
+  const migrated = config.map((signal) => {
+    if (!defaultKeys.has(signal.key) || !signal.enabled) return signal;
+    changed = true;
+    return { ...signal, enabled: false };
+  });
+  if (changed) await saveSignalConfig(migrated);
+  await db.insert(settings).values({ key: DEFAULT_DISABLED_MIGRATION_KEY, value: new Date().toISOString() })
+    .onConflictDoUpdate({ target: settings.key, set: { value: new Date().toISOString() } });
+  return migrated;
 }
 
 export interface SignalConfigInput {

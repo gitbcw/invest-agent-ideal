@@ -1,7 +1,36 @@
-import { eq } from "drizzle-orm";
+import { rm } from "node:fs/promises";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { aiInstances, aiProjects, users } from "../db/schema.js";
+import {
+  agentTraces,
+  aiInstances,
+  aiProjects,
+  alertEvents,
+  alertRules,
+  alertSignalStates,
+  alerts,
+  channelIdentities,
+  channelIdentityInstances,
+  chatHistory,
+  codexAcpTraces,
+  conversationTasks,
+  dailyPlans,
+  indicatorResults,
+  investmentProfiles,
+  methodChangeCandidates,
+  methodologyProfiles,
+  pendingSandboxConfirmations,
+  portfolio,
+  pushJobs,
+  reviewViewpoints,
+  sandboxAuditLogs,
+  stockPlans,
+  tradeActions,
+  users,
+  watchlist,
+} from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
+import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { SandboxPermission } from "../lib/sandbox-context.js";
 
 export const INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID = "invest-agent-default";
@@ -57,9 +86,8 @@ export interface AiProjectRuntimeContext {
   ownerUserId: string;
   name: string;
   status: string;
-  backend: "codex" | "hermes";
+  backend: "codex";
   skillBundleId: string;
-  hermesProfile: string;
   permissions: SandboxPermission[];
   dashboardType: string;
   allowedTools: readonly string[];
@@ -67,6 +95,8 @@ export interface AiProjectRuntimeContext {
   config: Record<string, unknown>;
   strategySkillId?: string;
   instanceExpansionPath?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 function suffix(value: string) {
@@ -78,8 +108,8 @@ function makeInstanceId(userId: string) {
   return `${DEFAULT_PROJECT_ID}-${userId}`.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
 }
 
-function parseBackend(value: string): "codex" | "hermes" {
-  return value === "codex" ? "codex" : "hermes";
+function parseBackend(_value: string): "codex" {
+  return "codex";
 }
 
 function parseConfig(value?: string | null): Record<string, unknown> {
@@ -104,7 +134,6 @@ function runtimeContextFromInstance(instance: typeof aiInstances.$inferSelect): 
     status: instance.status,
     backend: parseBackend(instance.backend),
     skillBundleId: instance.skillBundleId || INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID,
-    hermesProfile: String(config.hermesProfile || "invest-agent"),
     permissions: [...DEFAULT_SANDBOX_PERMISSIONS],
     dashboardType: "invest-agent",
     allowedTools: ALLOWED_SANDBOX_TOOLS,
@@ -112,12 +141,14 @@ function runtimeContextFromInstance(instance: typeof aiInstances.$inferSelect): 
     config,
     strategySkillId: typeof config.strategySkillId === "string" ? String(config.strategySkillId) : undefined,
     instanceExpansionPath: typeof config.instanceExpansionPath === "string" ? String(config.instanceExpansionPath) : undefined,
+    createdAt: instance.createdAt,
+    updatedAt: instance.updatedAt,
   };
 }
 
 export async function ensureDefaultProjectForUser(
   userId: string,
-  backend: "codex" | "hermes" = "hermes",
+  backend: "codex" = "codex",
   displayName?: string
 ): Promise<AiProjectRuntimeContext> {
   const instanceId = makeInstanceId(userId);
@@ -153,7 +184,85 @@ export async function ensureDefaultProjectForUser(
     updatedAt: now,
   }).onConflictDoNothing();
 
+  await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
+
   return getProjectRuntimeContext(instanceId);
+}
+
+export async function createInvestAgentInstance(input: {
+  userId: string;
+  displayName?: string;
+  instanceName?: string;
+  backend?: "codex";
+}) {
+  const userId = input.userId.trim();
+  if (!/^[a-zA-Z0-9_-]{2,64}$/.test(userId)) {
+    throw new Error("INVALID_USER_ID");
+  }
+  const displayName = input.displayName?.trim() || userId;
+  const project = await ensureDefaultProjectForUser(userId, input.backend || "codex", displayName);
+  const instanceName = input.instanceName?.trim();
+  if (instanceName && instanceName !== project.name) {
+    const now = new Date().toISOString();
+    await db
+      .update(aiInstances)
+      .set({ name: instanceName, updatedAt: now })
+      .where(eq(aiInstances.id, project.instanceId));
+    return getProjectRuntimeContext(project.instanceId);
+  }
+  return project;
+}
+
+export async function deleteInvestAgentInstance(instanceId: string) {
+  if (!instanceId || instanceId === DEFAULT_INSTANCE_ID) {
+    throw new Error("CANNOT_DELETE_PRIMARY_INSTANCE");
+  }
+  const project = await getProjectRuntimeContext(instanceId);
+  const userId = project.ownerUserId;
+  const instanceIdValue = project.instanceId;
+
+  const identityRows = await db
+    .select({ id: channelIdentities.id })
+    .from(channelIdentities)
+    .where(eq(channelIdentities.userId, userId));
+  const identityIds = identityRows.map((row) => row.id);
+
+  await db.transaction((tx) => {
+    tx.delete(channelIdentityInstances).where(eq(channelIdentityInstances.instanceId, instanceIdValue)).run();
+    for (const id of identityIds) {
+      tx.delete(channelIdentityInstances).where(eq(channelIdentityInstances.channelIdentityId, id)).run();
+    }
+    tx.delete(channelIdentities).where(eq(channelIdentities.userId, userId)).run();
+
+    tx.delete(portfolio).where(and(eq(portfolio.userId, userId), eq(portfolio.instanceId, instanceIdValue))).run();
+    tx.delete(watchlist).where(and(eq(watchlist.userId, userId), eq(watchlist.instanceId, instanceIdValue))).run();
+    tx.delete(alerts).where(and(eq(alerts.userId, userId), eq(alerts.instanceId, instanceIdValue))).run();
+    tx.delete(stockPlans).where(and(eq(stockPlans.userId, userId), eq(stockPlans.instanceId, instanceIdValue))).run();
+    tx.delete(chatHistory).where(and(eq(chatHistory.userId, userId), eq(chatHistory.instanceId, instanceIdValue))).run();
+    tx.delete(dailyPlans).where(and(eq(dailyPlans.userId, userId), eq(dailyPlans.instanceId, instanceIdValue))).run();
+    tx.delete(investmentProfiles).where(and(eq(investmentProfiles.userId, userId), eq(investmentProfiles.instanceId, instanceIdValue))).run();
+    tx.delete(methodologyProfiles).where(and(eq(methodologyProfiles.userId, userId), eq(methodologyProfiles.instanceId, instanceIdValue))).run();
+    tx.delete(methodChangeCandidates).where(and(eq(methodChangeCandidates.userId, userId), eq(methodChangeCandidates.instanceId, instanceIdValue))).run();
+    tx.delete(reviewViewpoints).where(and(eq(reviewViewpoints.userId, userId), eq(reviewViewpoints.instanceId, instanceIdValue))).run();
+    tx.delete(alertEvents).where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceIdValue))).run();
+    tx.delete(alertSignalStates).where(and(eq(alertSignalStates.userId, userId), eq(alertSignalStates.instanceId, instanceIdValue))).run();
+    tx.delete(tradeActions).where(and(eq(tradeActions.userId, userId), eq(tradeActions.instanceId, instanceIdValue))).run();
+    tx.delete(codexAcpTraces).where(and(eq(codexAcpTraces.userId, userId), eq(codexAcpTraces.instanceId, instanceIdValue))).run();
+    tx.delete(indicatorResults).where(and(eq(indicatorResults.userId, userId), eq(indicatorResults.instanceId, instanceIdValue))).run();
+    tx.delete(alertRules).where(and(eq(alertRules.userId, userId), eq(alertRules.instanceId, instanceIdValue))).run();
+    tx.delete(sandboxAuditLogs).where(and(eq(sandboxAuditLogs.userId, userId), eq(sandboxAuditLogs.instanceId, instanceIdValue))).run();
+    tx.delete(pendingSandboxConfirmations).where(and(eq(pendingSandboxConfirmations.userId, userId), eq(pendingSandboxConfirmations.instanceId, instanceIdValue))).run();
+    tx.delete(conversationTasks).where(and(eq(conversationTasks.userId, userId), eq(conversationTasks.instanceId, instanceIdValue))).run();
+    tx.delete(pushJobs).where(and(eq(pushJobs.userId, userId), eq(pushJobs.instanceId, instanceIdValue))).run();
+    tx.delete(agentTraces).where(eq(agentTraces.userId, userId)).run();
+
+    tx.delete(aiInstances).where(eq(aiInstances.id, instanceIdValue)).run();
+    tx.delete(users).where(eq(users.id, userId)).run();
+  });
+
+  await rm(resolveWorkspacePath(userId), { recursive: true, force: true });
+
+  return { userId, instanceId: instanceIdValue };
 }
 
 export async function ensureBuiltInAiProjects() {
@@ -176,9 +285,11 @@ export async function getProjectRuntimeContext(projectIdOrInstanceId: string): P
   throw new Error(`AI_PROJECT_NOT_FOUND:${projectIdOrInstanceId}`);
 }
 
-export async function listProjectRuntimeContexts(params: { ownerUserId?: string } = {}): Promise<AiProjectRuntimeContext[]> {
+export async function listProjectRuntimeContexts(params: { ownerUserId?: string; includeArchived?: boolean } = {}): Promise<AiProjectRuntimeContext[]> {
   const rows = params.ownerUserId
     ? await db.select().from(aiInstances).where(eq(aiInstances.ownerUserId, params.ownerUserId)).orderBy(aiInstances.name)
     : await db.select().from(aiInstances).orderBy(aiInstances.name);
-  return rows.map(runtimeContextFromInstance);
+  return rows
+    .filter((row) => params.includeArchived || row.status !== "archived")
+    .map(runtimeContextFromInstance);
 }

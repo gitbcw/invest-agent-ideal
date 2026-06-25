@@ -48,7 +48,7 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     const today = new Date().toISOString().slice(0, 10);
     const runtimeContexts = await listProjectRuntimeContexts({ ownerUserId: userId });
     const defaultProject = userId === DEFAULT_USER_ID
-      ? await ensureDefaultProjectForUser(userId, "hermes")
+      ? await ensureDefaultProjectForUser(userId)
       : runtimeContexts.find((project) => project.projectType === "invest-agent");
     const currentProject =
       runtimeContexts.find((project) => project.projectId === requestedInstanceId || project.instanceId === requestedInstanceId) ||
@@ -294,7 +294,7 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     });
     const created = await db.select().from(users).where(eq(users.id, userId)).limit(1);
     if (!created[0]) return reply.status(500).send({ ok: false, error: "用户创建失败" });
-    await ensureDefaultAiInstanceForUser(userId, "hermes");
+    await ensureDefaultAiInstanceForUser(userId);
     return { ok: true, user: created[0], existed: false };
   }));
 

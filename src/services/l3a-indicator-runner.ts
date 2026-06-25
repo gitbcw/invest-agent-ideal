@@ -113,13 +113,10 @@ let cachedWorkspacePath: string | null = null;
 
 async function resolveWorkspacePath(): Promise<string> {
   if (cachedWorkspacePath) return cachedWorkspacePath;
-  // 通过 ensureWorkspace 后的标准路径推导
-  // 与 alert-check.ts loadPriorityConfig 中保持一致
   const { ensureWorkspace } = await import("../lib/workspace.js");
   const { DEFAULT_USER_ID } = await import("../lib/user-context.js");
-  await ensureWorkspace({ userId: DEFAULT_USER_ID });
-  // ensureWorkspace 把 primary 工作空间同步到 <cwd>/workspaces/primary
-  cachedWorkspacePath = join(process.cwd(), "workspaces", DEFAULT_USER_ID);
+  const workspace = await ensureWorkspace({ userId: DEFAULT_USER_ID });
+  cachedWorkspacePath = workspace.path;
   return cachedWorkspacePath;
 }
 

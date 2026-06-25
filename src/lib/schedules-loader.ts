@@ -15,20 +15,34 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { resolveWorkspacePath } from "./workspace.js";
 import { logger } from "./logger.js";
+import { beijingDateKey, beijingNow, isAshareTradingDay } from "./market-calendar.js";
+
+export { beijingDateKey, beijingNow };
 
 export interface ScheduleEntry {
   enabled: boolean;
   auto_run?: boolean;
   default_time?: string;
+  trading_days_only?: boolean;
 }
 
 export interface SchedulesYaml {
   timezone?: string;
+  run_policy?: {
+    automatic_by_default?: boolean;
+    manual_trigger_allowed?: boolean;
+    skip_automatic_if_manual_report_exists?: boolean;
+    refresh_requires_user_confirmation?: boolean;
+  };
   daily_review?: ScheduleEntry;
   weekly_review?: ScheduleEntry;
   monthly_review?: ScheduleEntry;
   company_financial_analysis?: ScheduleEntry & { trigger?: string };
-  market_watch?: ScheduleEntry & { default_windows?: string[] };
+  market_watch?: ScheduleEntry & {
+    default_windows?: string[];
+    custom_frequency?: number | string | null;
+    only_push_on_exception?: boolean;
+  };
 }
 
 const DOW_TOKENS: Record<string, number> = {
@@ -70,12 +84,6 @@ export function readSchedules(userId: string): SchedulesYaml {
   }
 }
 
-/** 北京时间当前时刻 (用于命中判断的统一基准)。 */
-export function beijingNow(date = new Date()): Date {
-  const utc = date.getTime() + date.getTimezoneOffset() * 60000;
-  return new Date(utc + 8 * 3600000);
-}
-
 interface BjClock {
   hour: number;
   minute: number;
@@ -86,6 +94,10 @@ interface BjClock {
 function bjClock(now = new Date()): BjClock {
   const bj = beijingNow(now);
   return { hour: bj.getHours(), minute: bj.getMinutes(), day: bj.getDay(), dayOfMonth: bj.getDate() };
+}
+
+export function isBeijingTradingDay(now = new Date()): boolean {
+  return isAshareTradingDay(now);
 }
 
 function parseTimePart(token: string): { hour: number; minute: number } | null {
@@ -117,6 +129,7 @@ function parseDayOfMonth(token: string): number | null {
 /** 判断某 schedule 条目是否在当前 bj 分钟命中。default_time 缺失则返回 false。 */
 export function entryHitsNow(entry: ScheduleEntry | undefined, now = new Date()): boolean {
   if (!entry || entry.enabled === false || entry.auto_run === false) return false;
+  if (entry.trading_days_only === true && !isBeijingTradingDay(now)) return false;
   const time = entry.default_time?.trim();
   if (!time) return false;
   const parts = time.split(/\s+/);

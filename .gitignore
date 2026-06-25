@@ -8,3 +8,6 @@ logs/
 *.log
 reviews/
 workspaces/
+.backup/
+.agents/
+eval-reports/

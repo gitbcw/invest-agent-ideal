@@ -15,9 +15,9 @@ const steps = [
     args: ["scripts/convergence-responsibility-scan.mjs"],
   },
   {
-    name: "strategy skill structure scan",
+    name: "golden test set lint",
     command: "node",
-    args: ["scripts/strategy-skill-structure-scan.mjs"],
+    args: ["tests/golden/run.mjs"],
   },
   {
     name: "strategy instance expansion smoke",

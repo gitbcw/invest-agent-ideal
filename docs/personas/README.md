@@ -58,7 +58,7 @@
 挑完不合理点 + 输出完,**不追问"你裁决一下"**。用户的沉默 = 同意 = 进入执行:
 
 - 涉及 prompt/skill → 直接改 `.codex/skills/*/SKILL.md` 或 `src/prompts/*`
-- 涉及代码逻辑 → 写进 `docs/ideal-refactor-plan.md`
+- 涉及代码逻辑 → 写进当前 source-of-truth 文档或对应任务记录；历史方案只放 `docs/archive/`
 - 涉及产品设计 → 写进本目录 README 的"待解决问题"
 - 改完之后**重跑同画像**,对比效果
 
@@ -66,8 +66,8 @@
 
 > 这里列出"还没改、但已识别"的产品问题,改完后划掉。
 
-- [x] **识别首次对话 + 欢迎语重构**(2026-06-22 落地)
-  - `channelIdentities.welcomedAt` 字段判首次,Bridge 检测到首次对话时跳过 triage + 注入 onboarding marker,Codex 调 `invest-agent-onboarding-flow` skill 输出固定形态欢迎语
+- [x] **首次对话交给 workspace 处理**(2026-06-25 调整)
+  - Bridge 只解析用户和 workspace，不再跳过 triage 或注入 onboarding marker；冷启动话术由 workspace `AGENTS.md` 和 `.codex/skills` 决定。
   - 欢迎语突出"盯盘 + 主动提醒",不主推复盘;明确不存成本/数量(隐私边界)
 - [x] **持仓成本/数量隐私边界**(2026-06-22 A1 落地)
   - portfolio schema 删除 `buyPrice`/`quantity` 字段,handlers / 草案 / dashboard / yaml 全链路清理
@@ -76,5 +76,5 @@
 ## 跟其他文档的关系
 
 - 跟 `docs/composite-indicator-system.md` 等技术 RFC 平行,互不替代
-- 画像报告发现的问题,涉及代码 → 写进 `docs/ideal-refactor-plan.md`;涉及 prompt → 改 `.codex/skills/*/SKILL.md`
+- 画像报告发现的问题,涉及代码 → 写进当前 source-of-truth 文档或对应任务记录;涉及 prompt → 改 workspace `.codex/skills/*/SKILL.md`
 - 跟 `templates/workspace/config/onboarding.yaml` 配合:画像验证 onboarding 设计是否真生效

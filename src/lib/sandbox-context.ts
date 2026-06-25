@@ -25,7 +25,7 @@ export interface SandboxContext {
   instanceExpansionPath?: string;
   role: SandboxRole;
   channel: SandboxChannel;
-  backend?: "codex" | "hermes";
+  backend?: UserContext["backend"];
   conversationId?: string;
   externalUserId?: string;
   channelAccountId?: string;

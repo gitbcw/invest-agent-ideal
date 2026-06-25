@@ -2,438 +2,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import QRCode from "qrcode";
-import { createAgent, isDailyReviewRequest } from "../acp/agent.js";
-import { getCurrentAcpAgent } from "../acp/stdio-agent.js";
-import { buildAcpPromptContext } from "../acp/prompt-context-builder.js";
+import { createAgent } from "../acp/agent.js";
+import { clearCodexAcpSessions } from "../acp/stdio-agent.js";
 import { db, initDb } from "../db/index.js";
 import { channelIdentities, channelIdentityInstances } from "../db/schema.js";
-import { buildDailyReviewContext } from "../handlers/review.js";
 import { config } from "../lib/config.js";
 import { sanitizeCustomerText } from "../lib/customer-output.js";
-import { formatUnknownError } from "../lib/errors.js";
 import { logger } from "../lib/logger.js";
-import { recordCodexAcpTrace } from "../acp/trace.js";
-import { resolveOrCreateChannelUser, markChannelIdentityWelcomed } from "../lib/user-identity.js";
-import { DEFAULT_USER_ID, type UserContext } from "../lib/user-context.js";
-import { ASSISTANT_GUIDE_MESSAGE } from "../lib/onboarding.js";
-import { getOnboardingState } from "../lib/onboarding-state.js";
-import { buildOnboardingReminder } from "../lib/onboarding-reminder.js";
-import { applyFastAlertSet } from "../lib/fast-alert-set.js";
+import { resolveOrCreateChannelUser } from "../lib/user-identity.js";
+import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import { and, desc, eq } from "drizzle-orm";
-import { callDeepSeek } from "../services/deepseek.js";
-import { handleAlertTool } from "../handlers/alert.js";
-import { handleMonitorTool } from "../handlers/monitor.js";
-import { handlePlanTool } from "../handlers/plan.js";
-import { handlePortfolio, handlePortfolioTool } from "../handlers/portfolio.js";
-import { handleWatchlist } from "../handlers/watchlist.js";
-import { handleWatchlistTool } from "../handlers/watchlist.js";
-import { handleReviewRecordsTool } from "../handlers/review-records.js";
-import { handleTradeLogTool } from "../handlers/trade-log.js";
-import { handleTradingStrategyTool } from "../handlers/trading-strategy.js";
-import { formatAlerts, runAlertCheck } from "../scheduler/alert-check.js";
-import {
-  extractRecentStockRefs,
-  formatRecentMemoryForPrompt,
-  hasContextReference,
-  inferReferencedStockCount,
-  loadRecentWeixinMemory,
-  rememberWeixinTurn,
-} from "../lib/weixin-conversation-memory.js";
+import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
 
-type WeixinBackend = "codex" | "hermes";
+type WeixinBackend = "codex";
 
 type LoginStage = "idle" | "waiting_scan" | "scanned" | "connected" | "error";
-
-const FAST_ADMIN_TIMEOUT_MS = 8000;
-const FAST_ADMIN_SYSTEM_PROMPT = [
-  "你是投资助手微信入口的快速管理员和工具路由器。",
-  "你的任务是判断用户消息是否可以由确定性工具直接处理，还是必须交给复杂研究模型。",
-  "只输出 JSON，不要 Markdown，不要解释。",
-  "",
-  "可用工具：",
-  "- portfolio.query：查看持仓、仓位、持有股票",
-  "- portfolio.add：把明确给出的股票，或上下文里刚提到的股票，加入持有股票池",
-  "- portfolio.remove：把明确给出的股票，或上下文里刚提到的股票，移出持有股票池",
-  "- watchlist.query：查看自选、自选股、自选池",
-  "- alerts.query：查看提醒、提醒列表、预警规则",
-  "- plans.query：查看预案、交易预案（某只股票的具体支撑/压力/目标/止损计划）",
-  "- strategies.query：查看**交易策略**(用户在 trading_strategies.yaml 里定义的可执行策略模板,如突破回踩/趋势中继)。",
-  "  重要区分：**交易策略 ≠ 交易预案**。策略是规则模板(可重复用于多只股票),预案是某只股票的具体计划。",
-  "  用户说\"我有哪些交易策略\"\"查看交易策略\"\"策略列表\"时必须走 strategies.query,不要走 plans.query。",
-  "- trade_log.query：查看交易日志、操作记录、买卖记录、持仓变更记录",
-  "- review_records.query：查看复盘记录、历史复盘、最近复盘、复盘存档",
-  "- monitor.overview：查看监控、巡检、整体状态、概览",
-  "- alerts.check：手动巡检、看看有没有新提醒",
-  "- alert.set：设置股票到价提醒（直接写库，不需要用户确认）",
-  "- watchlist.add：把明确给出的股票，或上下文里刚提到的股票，加入自选池",
-  "- watchlist.remove：把明确给出的股票，或上下文里刚提到的股票，移出自选池",
-  "- smalltalk.reply：寒暄、能力介绍、问可以做什么",
-  "",
-  "如果是确定性工具任务，输出：",
-  "{\"route\":\"tool\",\"tool\":\"portfolio.query\",\"confidence\":\"high\"}",
-  "",
-  "如果是设置到价提醒，输出：",
-  "{\"route\":\"tool\",\"tool\":\"alert.set\",\"stockName\":\"股票名称或空\",\"stockCode\":\"6位代码或空\",\"direction\":\"above 或 below\",\"price\":数字,\"confidence\":\"high\"}",
-  "如果是涨跌幅百分比提醒，例如“上涨5%提醒我”，tool 仍用 alert.set，但必须输出 percent:true，price 为百分比数字。",
-  "如果用户一次给多个股票设置同一类提醒，必须输出 alerts 数组，不要只取第一只：",
-  "{\"route\":\"tool\",\"tool\":\"alert.set\",\"alerts\":[{\"stockName\":\"股票A\",\"direction\":\"above\",\"price\":3,\"percent\":true},{\"stockName\":\"股票B\",\"direction\":\"above\",\"price\":3,\"percent\":true}],\"confidence\":\"high\"}",
-  "如果是加入/移出自选，输出：",
-  "{\"route\":\"tool\",\"tool\":\"watchlist.add\",\"stocks\":[{\"name\":\"股票名称\"},{\"code\":\"6位代码\"}],\"useRecentStocks\":false,\"confidence\":\"high\"}",
-  "如果用户说“上面这几个/刚才那几个/它们/全部加入自选”，输出 useRecentStocks:true；如果说这3个，输出 count:3。",
-  "如果是加入/移出持仓，输出：",
-  "{\"route\":\"tool\",\"tool\":\"portfolio.add\",\"stocks\":[{\"name\":\"股票名称\"},{\"code\":\"6位代码\"}],\"useRecentStocks\":false,\"confidence\":\"high\"}",
-  "持仓池只代表当前持有标的范围，不强制要求成本和数量；如果用户只是说持有某股票，可以直接用 portfolio.add。",
-  "如果是简单寒暄或能力介绍，输出：",
-  "{\"route\":\"tool\",\"tool\":\"smalltalk.reply\",\"reply\":\"简短客户回复\",\"confidence\":\"high\"}",
-  "",
-  "如果是非投资相关请求(写诗、讲笑话、写代码、翻译、闲聊新闻、生活建议、情感问题等),输出：",
-  "{\"route\":\"reject\",\"reply\":\"礼貌拒绝+说明只处理投资相关问题\",\"confidence\":\"high\"}",
-  "reject 规则:用户请求明显与投资/股票/持仓/复盘/策略无关时必须 reject,不要尝试执行也不要引导到其他话题。",
-  "边界:个股/行业/宏观市场讨论属于投资相关,不要 reject;能力介绍/寒暄走 smalltalk.reply 不要 reject。",
-  "",
-  "如果是复杂任务，输出：",
-  "{\"route\":\"complex\",\"reason\":\"需要分析/研究/复盘/策略判断\"}",
-  "",
-  "复杂任务包括：行业/公司/个股分析、选股、生成复盘、风险评估、估值、策略讨论、为什么、怎么看、值不值得买。",
-  "如果用户只是查看、查询、列出已有数据，必须走工具，不要判为复杂。",
-  "如果用户说查看复盘记录/历史复盘/最近复盘，必须走 review_records.query，不要生成复盘。",
-  "alert.set 也支持技术指标触发提醒,需要输出 indicator 字段:",
-  "- 「突破 X 日线 / 跌破 X 日线 / X 日均线上方下方」 → indicator=ma_breakout_above 或 ma_breakout_below,period=X(默认 20)",
-  "- 「MACD 金叉 / 死叉」 → indicator=macd_golden_cross 或 macd_death_cross",
-  "- 「KDJ 超卖反弹 / 超买回落」 → indicator=kdj_oversold 或 kdj_overbought,kdjThreshold 默认 20/80",
-  "技术指标提醒 schema:{\"route\":\"tool\",\"tool\":\"alert.set\",\"indicator\":\"ma_breakout_above\",\"period\":20,\"stockName\":\"股票名称\",\"confidence\":\"high\"}",
-  "技术指标提醒不要输出 price/direction/percent 字段;「X日线」里的数字是 period 参数(周期),绝对不要当作 price。",
-  "复杂指标(如「BOLL 突破」、「RSI 超买」、「顶背离」、「主力控盘」)当前 alert.set 仍不支持,判为 complex。",
-  "如果是「涨跌幅达到 X%」类型的提醒,用 percent:true + price=X,不要用 indicator。",
-  "如果用户表达不清但看起来想查看已有数据，选最接近的查看工具；完全无法判断时输出 {\"route\":\"unknown\",\"reply\":\"我还没判断清楚。你可以直接说：查持仓、查自选、查提醒、查交易日志、查复盘记录，或让我做个股/行业分析。\"}。",
-].join("\n");
-
-type FastAdminAlertIndicator =
-  | "ma_breakout_above"
-  | "ma_breakout_below"
-  | "macd_golden_cross"
-  | "macd_death_cross"
-  | "kdj_oversold"
-  | "kdj_overbought";
-
-interface FastAdminAlertSpec {
-  stockName?: string;
-  stockCode?: string;
-  direction?: "above" | "below";
-  price?: number;
-  percent?: boolean;
-  indicator?: FastAdminAlertIndicator;
-  period?: number;
-  kdjThreshold?: number;
-}
-
-type FastAdminDecision =
-  | { route: "tool"; tool: "portfolio.query" | "watchlist.query" | "alerts.query" | "plans.query" | "strategies.query" | "trade_log.query" | "review_records.query" | "monitor.overview" | "alerts.check"; confidence?: string }
-  | { route: "tool"; tool: "alert.set"; stockName?: string; stockCode?: string; direction?: "above" | "below"; price?: number; percent?: boolean; indicator?: FastAdminAlertIndicator; period?: number; kdjThreshold?: number; alerts?: Array<FastAdminAlertSpec>; confidence?: string }
-  | { route: "tool"; tool: "watchlist.add" | "watchlist.remove" | "portfolio.add" | "portfolio.remove"; stocks?: Array<{ code?: string; name?: string }>; useRecentStocks?: boolean; count?: number; confidence?: string }
-  | { route: "tool"; tool: "smalltalk.reply"; reply?: string; confidence?: string }
-  | { route: "reject"; reply?: string; confidence?: string }
-  | { route: "complex"; reason?: string }
-  | { route: "unknown"; reply?: string };
-
-async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} 超时 ${ms}ms`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-function parseFastAdminDecision(raw: string): FastAdminDecision | null {
-  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0];
-  if (!jsonText) return null;
-  try {
-    const parsed = JSON.parse(jsonText) as Partial<FastAdminDecision>;
-    if (parsed.route === "complex") return { route: "complex", reason: parsed.reason };
-    if (parsed.route === "unknown") return { route: "unknown", reply: parsed.reply };
-    if (parsed.route === "reject") return { route: "reject", reply: (parsed as { reply?: string }).reply, confidence: parsed.confidence };
-    if (parsed.route !== "tool" || typeof parsed.tool !== "string") return null;
-    if (parsed.tool === "alert.set") {
-      const price = Number((parsed as { price?: unknown }).price);
-      const periodRaw = Number((parsed as { period?: unknown }).period);
-      const kdjThresholdRaw = Number((parsed as { kdjThreshold?: unknown }).kdjThreshold);
-      const indicatorRaw = (parsed as { indicator?: unknown }).indicator;
-      const validIndicators: FastAdminAlertIndicator[] = [
-        "ma_breakout_above",
-        "ma_breakout_below",
-        "macd_golden_cross",
-        "macd_death_cross",
-        "kdj_oversold",
-        "kdj_overbought",
-      ];
-      const indicator = validIndicators.includes(indicatorRaw as FastAdminAlertIndicator)
-        ? (indicatorRaw as FastAdminAlertIndicator)
-        : undefined;
-      const alertsPayload = (parsed as { alerts?: Array<Record<string, unknown>> }).alerts;
-      const alerts = Array.isArray(alertsPayload)
-        ? alertsPayload
-          .map((item) => {
-            const itemPrice = Number(item.price);
-            const itemPeriod = Number(item.period);
-            const itemKdj = Number(item.kdjThreshold);
-            const itemInd = item.indicator;
-            return {
-              stockName: typeof item.stockName === "string" ? item.stockName : undefined,
-              stockCode: typeof item.stockCode === "string" ? item.stockCode : undefined,
-              direction: item.direction === "below" ? "below" as const : "above" as const,
-              price: Number.isFinite(itemPrice) ? itemPrice : undefined,
-              percent: Boolean(item.percent),
-              indicator: validIndicators.includes(itemInd as FastAdminAlertIndicator)
-                ? (itemInd as FastAdminAlertIndicator)
-                : undefined,
-              period: Number.isFinite(itemPeriod) ? itemPeriod : undefined,
-              kdjThreshold: Number.isFinite(itemKdj) ? itemKdj : undefined,
-            } as FastAdminAlertSpec;
-          })
-          .filter((item) => (item.stockName || item.stockCode) && (item.price || item.indicator))
-        : undefined;
-      return {
-        route: "tool",
-        tool: "alert.set",
-        stockName: (parsed as { stockName?: string }).stockName,
-        stockCode: (parsed as { stockCode?: string }).stockCode,
-        direction: (parsed as { direction?: "above" | "below" }).direction,
-        price: Number.isFinite(price) ? price : undefined,
-        percent: Boolean((parsed as { percent?: unknown }).percent),
-        indicator,
-        period: Number.isFinite(periodRaw) ? periodRaw : undefined,
-        kdjThreshold: Number.isFinite(kdjThresholdRaw) ? kdjThresholdRaw : undefined,
-        alerts,
-        confidence: parsed.confidence,
-      };
-    }
-    if (parsed.tool === "watchlist.add" || parsed.tool === "watchlist.remove" || parsed.tool === "portfolio.add" || parsed.tool === "portfolio.remove") {
-      const payload = parsed as {
-        stocks?: Array<{ code?: string; name?: string }>;
-        useRecentStocks?: boolean;
-        count?: unknown;
-        confidence?: string;
-      };
-      const count = Number(payload.count);
-      return {
-        route: "tool",
-        tool: parsed.tool,
-        stocks: Array.isArray(payload.stocks) ? payload.stocks.filter((item) => item && (item.code || item.name)) : [],
-        useRecentStocks: Boolean(payload.useRecentStocks),
-        count: Number.isFinite(count) && count > 0 ? count : undefined,
-        confidence: payload.confidence,
-      };
-    }
-    if (parsed.tool === "smalltalk.reply") {
-      return { route: "tool", tool: "smalltalk.reply", reply: (parsed as { reply?: string }).reply, confidence: parsed.confidence };
-    }
-    if (["portfolio.query", "watchlist.query", "alerts.query", "plans.query", "strategies.query", "trade_log.query", "review_records.query", "monitor.overview", "alerts.check"].includes(parsed.tool)) {
-      return { route: "tool", tool: parsed.tool as Exclude<FastAdminDecision & { route: "tool" }, { tool: "alert.set" }>["tool"], confidence: parsed.confidence };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function tryFastAdminTool(userContext: UserContext, text: string): Promise<{ mode: string; text: string } | null> {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-
-  const recentMemory = await loadRecentWeixinMemory(userContext);
-  const recentContext = formatRecentMemoryForPrompt(recentMemory);
-  const history = recentContext
-    ? [{ role: "user" as const, content: `最近对话上下文（用于解析“上面/刚才/它们”等指代，不要把它当成当前用户新请求）：\n${recentContext}` }]
-    : [];
-
-  const raw = await withTimeout(
-    callDeepSeek(trimmed, FAST_ADMIN_SYSTEM_PROMPT, history, {
-      provider: "deepseek",
-      profile: "light",
-      thinking: false,
-      temperature: 0,
-      maxTokens: 500,
-    }),
-    FAST_ADMIN_TIMEOUT_MS,
-    "DeepSeek 快速管理员"
-  );
-  const decision = parseFastAdminDecision(raw);
-  if (!decision) return null;
-  if (decision.route === "complex") return null;
-  if (decision.route === "unknown") {
-    return {
-      mode: "fast-admin-unknown",
-      text: decision.reply || "我还没判断清楚。你可以直接说：查持仓、查自选、查提醒、查交易日志、查复盘记录，或让我做个股/行业分析。",
-    };
-  }
-  if (decision.route === "reject") {
-    return {
-      mode: "fast-admin-reject",
-      text: decision.reply || "抱歉,我只处理投资相关的问题。持仓、自选、提醒、复盘、选股分析这些都可以找我。",
-    };
-  }
-
-  const ctx = { ...userContext, instanceId: userContext.instanceId || "invest-agent-primary" };
-  switch (decision.tool) {
-    case "portfolio.query":
-      return { mode: "fast-admin-portfolio-query", text: await handlePortfolio("我的持仓", ctx) };
-    case "portfolio.add":
-    case "portfolio.remove": {
-      const refs = decision.useRecentStocks || (hasContextReference(trimmed) && !(decision.stocks?.length))
-        ? extractRecentStockRefs(recentMemory, decision.count ?? inferReferencedStockCount(trimmed))
-        : decision.stocks ?? [];
-      if (refs.length === 0) {
-        return { mode: "fast-admin-portfolio-clarify", text: "我还没定位到要处理的持仓标的。你可以直接发股票名称或代码，例如：我持有贵州茅台，或：不再持有 600519。" };
-      }
-      const operation = decision.tool === "portfolio.add" ? "add" : "remove";
-      return {
-        mode: `fast-admin-${decision.tool.replace(".", "-")}`,
-        text: await handlePortfolioTool({ operation, stocks: refs }, ctx),
-      };
-    }
-    case "watchlist.query":
-      return { mode: "fast-admin-watchlist-query", text: await handleWatchlist("自选列表", ctx) };
-    case "watchlist.add":
-    case "watchlist.remove": {
-      const refs = decision.useRecentStocks || (hasContextReference(trimmed) && !(decision.stocks?.length))
-        ? extractRecentStockRefs(recentMemory, decision.count ?? inferReferencedStockCount(trimmed))
-        : decision.stocks ?? [];
-      if (refs.length === 0) {
-        return { mode: "fast-admin-watchlist-clarify", text: "我还没定位到要处理的股票。你可以直接发股票名称或代码，例如：把科大讯飞、中科曙光加入自选。" };
-      }
-      const operation = decision.tool === "watchlist.add" ? "add" : "remove";
-      return {
-        mode: `fast-admin-${decision.tool.replace(".", "-")}`,
-        text: await handleWatchlistTool({ operation, stocks: refs, reason: "来自最近对话，用户确认加入自选" }, ctx),
-      };
-    }
-    case "alerts.query":
-      return { mode: "fast-admin-alert-query", text: await handleAlertTool({ operation: "query" }, ctx) };
-    case "plans.query":
-      return { mode: "fast-admin-plan-query", text: await handlePlanTool({ operation: "query" }, ctx) };
-    case "strategies.query":
-      return { mode: "fast-admin-strategies-query", text: await handleTradingStrategyTool({ operation: "query" }, ctx) };
-    case "trade_log.query":
-      return { mode: "fast-admin-trade-log-query", text: await handleTradeLogTool(ctx) };
-    case "review_records.query":
-      return { mode: "fast-admin-review-records-query", text: await handleReviewRecordsTool(ctx) };
-    case "monitor.overview":
-      return { mode: "fast-admin-monitor-overview", text: await handleMonitorTool({ operation: "overview" }, ctx) };
-    case "alerts.check": {
-      const items = await runAlertCheck({ force: true, userId: ctx.userId, instanceId: ctx.instanceId });
-      return {
-        mode: "fast-admin-alert-check",
-        text: items.length > 0 ? formatAlerts(items) : "当前强制巡检完成：没有触发新的提醒。",
-      };
-    }
-    case "alert.set": {
-      const result = await applyFastAlertSet({
-        userId: userContext.userId,
-        instanceId: userContext.instanceId,
-        rawText: trimmed,
-        single: decision.alerts?.length ? undefined : {
-          stockName: decision.stockName,
-          stockCode: decision.stockCode,
-          direction: decision.direction,
-          price: decision.price,
-          percent: decision.percent,
-          indicator: decision.indicator,
-          period: decision.period,
-          kdjThreshold: decision.kdjThreshold,
-        },
-        batch: decision.alerts?.length ? decision.alerts : undefined,
-      });
-      return { mode: result.mode, text: result.text };
-    }
-    case "smalltalk.reply":
-      return {
-        mode: "fast-admin-smalltalk",
-        text: decision.reply || "我在。你可以直接查持仓、自选、提醒、预案，也可以让我做复盘或选股分析。",
-      };
-    default:
-      return null;
-  }
-}
-
-function normalizeFastText(text: string) {
-  return text.replace(/\s+/g, "").trim();
-}
-
-function isComplexResearchIntent(text: string) {
-  return /分析|调研|研究|选股|筛选|怎么看|值不值得|能不能买|逻辑|风险|复盘|总结|策略|方法论|为什么|行业|题材|概念|财报|估值/.test(text);
-}
-
-function hasReadIntent(text: string) {
-  return /查看|查询|看看|看一下|看下|列一下|列出|列表|情况|有哪些|当前|我的|现在|帮我看/.test(text);
-}
-
-function hasWriteIntent(text: string) {
-  return /买入|卖出|加仓|清仓|录入|新增|加入|添加|设置|更新|修改|调整|移除|删除|取消|关闭|不再/.test(text);
-}
-
-async function tryFastDeterministicReply(userContext: UserContext, text: string): Promise<{ mode: string; text: string } | null> {
-  const raw = text.trim();
-  const compact = normalizeFastText(raw);
-  if (!compact || isComplexResearchIntent(compact)) return null;
-
-  const ctx = { ...userContext, instanceId: userContext.instanceId || "invest-agent-primary" };
-
-  if (
-    (/^(我的|当前)?(持仓|持有股票|持有股票池|仓位)(列表|情况|有哪些)?$/.test(compact) || (/(持仓|持有股票|持有股票池|仓位)/.test(compact) && hasReadIntent(compact))) &&
-    !hasWriteIntent(compact)
-  ) {
-    return { mode: "fast-portfolio-query", text: await handlePortfolio("我的持仓", ctx) };
-  }
-
-  if (
-    (/^(我的|当前)?(自选|自选股|自选池)(列表|情况|有哪些)?$/.test(compact) || (/(自选|自选股|自选池)/.test(compact) && hasReadIntent(compact))) &&
-    !hasWriteIntent(compact)
-  ) {
-    return { mode: "fast-watchlist-query", text: await handleWatchlist("自选列表", ctx) };
-  }
-
-  if (
-    (/^(我的|当前)?(提醒|提醒规则|预警|预警规则)(列表|情况|有哪些)?$/.test(compact) || (/(提醒|提醒规则|预警|预警规则)/.test(compact) && hasReadIntent(compact))) &&
-    !hasWriteIntent(compact)
-  ) {
-    return { mode: "fast-alert-query", text: await handleAlertTool({ operation: "query" }, ctx) };
-  }
-
-  if (
-    (/^(我的|当前)?(预案|交易预案)(列表|情况|有哪些)?$/.test(compact) || (/(预案|交易预案)/.test(compact) && hasReadIntent(compact))) &&
-    !hasWriteIntent(compact)
-  ) {
-    return { mode: "fast-plan-query", text: await handlePlanTool({ operation: "query" }, ctx) };
-  }
-
-  if (/(交易日志|操作记录|买卖记录|持仓变更记录)/.test(compact) && (hasReadIntent(compact) || /^(我的|当前)?(交易日志|操作记录|买卖记录|持仓变更记录)$/.test(compact)) && !hasWriteIntent(compact)) {
-    return { mode: "fast-trade-log-query", text: await handleTradeLogTool(ctx) };
-  }
-
-  if (/(复盘记录|历史复盘|复盘列表|复盘存档|最近复盘)/.test(compact) && (hasReadIntent(compact) || /^(我的|当前)?(复盘记录|历史复盘|复盘列表|复盘存档|最近复盘)$/.test(compact)) && !hasWriteIntent(compact)) {
-    return { mode: "fast-review-records-query", text: await handleReviewRecordsTool(ctx) };
-  }
-
-  if (/^(监控|巡检|看板|概览|状态)(情况|概览|状态)?$/.test(compact) || /^(查看|查询|看看)(监控|巡检|看板|概览|状态)$/.test(compact)) {
-    return { mode: "fast-monitor-overview", text: await handleMonitorTool({ operation: "overview" }, ctx) };
-  }
-
-  if (/^(检查|执行|跑|触发|手动)?(巡检|提醒检查)$/.test(compact) || /^看看有没有(新)?提醒$/.test(compact)) {
-    const items = await runAlertCheck({ force: true, userId: ctx.userId, instanceId: ctx.instanceId });
-    return {
-      mode: "fast-alert-check",
-      text: items.length > 0 ? formatAlerts(items) : "当前强制巡检完成：没有触发新的提醒。",
-    };
-  }
-
-  return null;
-}
 
 interface WeixinLoginSession {
   sessionKey: string;
@@ -484,6 +67,14 @@ const QR_LONG_POLL_TIMEOUT_MS = 35 * 1000;
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
 const WEIXIN_MESSAGE_STATE_FINISH = 2;
+
+interface WeixinProjectBinding {
+  projectId: string;
+  instanceId: string;
+  ownerUserId?: string;
+  ownerDisplayName?: string;
+  sharedUsers?: boolean;
+}
 
 let weixinSdkPromise: Promise<{
   start: (
@@ -634,6 +225,7 @@ async function resolvePushConversation(params: {
       .innerJoin(channelIdentities, eq(channelIdentityInstances.channelIdentityId, channelIdentities.id))
       .where(and(
         eq(channelIdentityInstances.instanceId, instanceId),
+        eq(channelIdentities.userId, userId),
         eq(channelIdentities.channel, "weixin-mobile"),
         eq(channelIdentities.backend, params.backend),
       ))
@@ -803,11 +395,11 @@ async function sendWeixinTextMessage(params: {
 
 class InvestAgentMobileBridge {
   private readonly agent = createAgent();
-  private readonly backgroundJobs = new Set<string>();
 
   constructor(
     private readonly accountId: string,
-    private readonly stateDir = config.weixin.stateDir
+    private readonly stateDir = config.weixin.stateDir,
+    private readonly projectBinding?: WeixinProjectBinding
   ) {}
 
   async chat(request: {
@@ -824,9 +416,8 @@ class InvestAgentMobileBridge {
       externalAccountId: this.accountId,
       conversationId,
       contextToken: request.contextToken,
+      projectBinding: this.projectBinding,
     });
-
-    const isFirstConversation = !userContext.welcomedAt;
 
     if (request.conversationId) {
       saveWeixinAccount(
@@ -846,42 +437,6 @@ class InvestAgentMobileBridge {
       };
     }
 
-    if (isDailyReviewRequest(request.text || "")) {
-      const jobKey = `${this.accountId}:${request.conversationId || "weixin-mobile"}:daily-review`;
-      if (this.backgroundJobs.has(jobKey)) {
-        await recordCodexAcpTrace({
-          userId: userContext.userId,
-          conversationId: request.conversationId || "weixin-mobile",
-          channel: "weixin-mobile",
-          userText: request.text || "",
-          replyTextSanitized: "复盘正在生成中，我会在完成后直接发给你。",
-          mode: "daily-review-ack",
-          status: "success",
-        });
-        return {
-          text: "复盘正在生成中，我会在完成后直接发给你。",
-        };
-      }
-
-      this.backgroundJobs.add(jobKey);
-      this.runBackgroundReview(request, jobKey, userContext).catch((error: unknown) => {
-        logger.error("后台复盘任务异常:", error);
-      });
-      await recordCodexAcpTrace({
-        userId: userContext.userId,
-        conversationId: request.conversationId || "weixin-mobile",
-        channel: "weixin-mobile",
-        userText: request.text || "",
-        replyTextSanitized: "收到，复盘已经开始生成。今天数据和提醒会先整理成事实、推断、操作和验证点，预计几分钟后发给你。",
-        mode: "daily-review-ack",
-        reviewContextSummary: { jobKey, asyncDelivery: true },
-        status: "success",
-      });
-      return {
-        text: "收到，复盘已经开始生成。今天数据和提醒会先整理成事实、推断、操作和验证点，预计几分钟后发给你。",
-      };
-    }
-
     const response = await this.agent.handleMessage({
       id: `wx-${Date.now()}`,
       from: request.conversationId || "weixin-mobile",
@@ -897,86 +452,13 @@ class InvestAgentMobileBridge {
         skillBundleId: userContext.skillBundleId,
         strategySkillId: userContext.strategySkillId,
         instanceExpansionPath: userContext.instanceExpansionPath,
-        isFirstConversation,
+        workspacePath: userContext.workspacePath,
       },
     });
 
-    if (isFirstConversation) {
-      await markChannelIdentityWelcomed(userContext.userId, "weixin-mobile", conversationId);
-    }
-
-    return { text: sanitizeCustomerText(response.content.text ?? "处理完成，但没有生成文本回复。") };
-  }
-
-  private async runBackgroundReview(
-    request: {
-      conversationId: string;
-      text: string;
-      media?: { type: string };
-      contextToken?: string;
-    },
-    jobKey: string,
-    userContext: UserContext
-  ) {
-    const startedAt = Date.now();
-    try {
-      logger.info(`开始后台 Codex 日复盘任务: ${jobKey}`);
-      const response = await this.agent.handleMessage({
-        id: `wx-bg-${Date.now()}`,
-        from: request.conversationId || "weixin-mobile",
-        timestamp: Date.now(),
-        content: { type: "text", text: request.text || "" },
-        context: {
-          channel: "weixin-mobile",
-          conversationId: request.conversationId,
-          userId: userContext.userId,
-          projectId: userContext.projectId,
-          instanceId: userContext.instanceId,
-          projectType: userContext.projectType,
-          skillBundleId: userContext.skillBundleId,
-          strategySkillId: userContext.strategySkillId,
-          instanceExpansionPath: userContext.instanceExpansionPath,
-          asyncDelivery: true,
-        },
-      });
-      const text = sanitizeCustomerText(response.content.text ?? "复盘已完成，但没有生成文本回复。");
-      await this.pushToConversation(request.conversationId, text, request.contextToken);
-      await recordCodexAcpTrace({
-        userId: userContext.userId,
-        conversationId: request.conversationId || "weixin-mobile",
-        channel: "weixin-mobile",
-        userText: request.text || "",
-        replyTextSanitized: text,
-        mode: "daily-review-push",
-        reviewContextSummary: { jobKey, asyncDelivery: true },
-        status: "success",
-        elapsedMs: Date.now() - startedAt,
-      });
-      logger.info(`后台 Codex 日复盘已推送: ${jobKey}`);
-    } catch (error) {
-      logger.error("后台 Codex 日复盘失败:", error);
-      const errorMessage = formatUnknownError(error);
-      await recordCodexAcpTrace({
-        userId: userContext.userId,
-        conversationId: request.conversationId || "weixin-mobile",
-        channel: "weixin-mobile",
-        userText: request.text || "",
-        mode: "daily-review-push",
-        reviewContextSummary: { jobKey, asyncDelivery: true },
-        status: errorMessage.includes("超时") ? "timeout" : "error",
-        errorMessage,
-        elapsedMs: Date.now() - startedAt,
-      });
-      await this.pushToConversation(
-        request.conversationId,
-        "这次复盘生成超时了，我已记录异常，稍后可以重新发起一次。",
-        request.contextToken
-      ).catch((pushError: unknown) => {
-        logger.warn("后台复盘失败提示推送失败:", pushError);
-      });
-    } finally {
-      this.backgroundJobs.delete(jobKey);
-    }
+    const text = response.content.text ?? "处理完成，但没有生成文本回复。";
+    await rememberWeixinTurn(userContext, request.text || "", text);
+    return { text };
   }
 
   private async pushToConversation(conversationId: string, text: string, contextToken?: string) {
@@ -995,7 +477,7 @@ class InvestAgentMobileBridge {
 
   clearSession(conversationId?: string): void {
     if (conversationId) {
-      void getCurrentAcpAgent().then((agent) => agent.clearSession(conversationId));
+      clearCodexAcpSessions(conversationId);
     }
   }
 }
@@ -1020,7 +502,6 @@ export class WeixinMobileManager {
   private readonly projectBinding?: {
     projectId: string;
     instanceId: string;
-    hermesProfile?: string;
     sharedUsers?: boolean;
   };
 
@@ -1034,7 +515,6 @@ export class WeixinMobileManager {
         instanceId: string;
         ownerUserId?: string;
         ownerDisplayName?: string;
-        hermesProfile?: string;
         sharedUsers?: boolean;
       };
     } = {}
@@ -1161,7 +641,7 @@ export class WeixinMobileManager {
     contextToken?: string;
   }): Promise<{ text?: string; accountId: string; conversationId: string }> {
     const accountId = normalizeAccountId(input.accountId || this.state.accountId || `${this.backend}-simulator`);
-    const bridge = new InvestAgentMobileBridge(accountId, this.stateDir);
+    const bridge = new InvestAgentMobileBridge(accountId, this.stateDir, this.projectBinding);
     const response = await bridge.chat({
       conversationId: input.conversationId,
       text: input.text,
@@ -1186,7 +666,7 @@ export class WeixinMobileManager {
 
     const { start } = await loadWeixinSdk(this.stateDir);
     initDb();
-    const bridge = new InvestAgentMobileBridge(account.accountId, this.stateDir);
+    const bridge = new InvestAgentMobileBridge(account.accountId, this.stateDir, this.projectBinding);
     const abortController = new AbortController();
     this.listenerAbortControllers.set(account.accountId, abortController);
 
@@ -1417,4 +897,3 @@ export class WeixinMobileManager {
 }
 
 export const weixinMobileManager = new WeixinMobileManager();
-

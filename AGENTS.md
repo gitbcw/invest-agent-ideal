@@ -4,7 +4,7 @@
 
 Invest Agent is the main investment assistant project. It is a WeChat-first AI investment decision assistant for one primary user in the current Experimental MVP stage.
 
-The current architecture is evolving into a multi AI Project runtime platform. Invest Agent is the first project type and validation sample, not the whole platform. The product-level isolation unit is an AI Project; the current engineering scope field is still `instance_id`, with a long-term direction toward `project_id` semantics.
+The current experimental architecture is intentionally simple: WeChat resolves the user/project/instance/workspace, then forwards the user's message directly to Codex running inside that user's workspace. The product-level isolation unit is the workspace-backed AI Project instance.
 
 The product has three long-term core capabilities:
 
@@ -21,20 +21,22 @@ Prefer the "AGENTS.md + .codex/skills" workflow for investment reasoning:
 - Use code for deterministic execution: data collection, DB reads/writes, stock resolving, alert checks, scheduling, and dashboard APIs.
 - Use skills for investment judgment workflows: review structure, screening reasoning, evidence requirements, risk language, and user-specific decision discipline.
 - Keep the long-running service for GUI, WeChat connection, scheduler, alert push, and local HTTP APIs.
-- Let Codex invoke deterministic service capabilities through skills, usually by calling the local `invest-agent` HTTP API.
+- Let the active ACP backend invoke deterministic service capabilities through skills, usually by calling the local `invest-agent` HTTP API.
 - Keep investment conclusions auditable: facts, inference, action, and future validation signals should be separated.
 - Do not promise returns or imply automatic trading.
 - If data is unavailable, say exactly what is missing instead of filling gaps with invented detail.
 
 ## Runtime Evolution Principle
 
-In the current phase, keep Codex ACP as the primary intelligent backend. Do not expand a full multi-backend runtime abstraction unless the user explicitly asks for that work.
+In the current phase, normal WeChat user messages should use the direct workspace Codex path in `src/acp/agent.ts` and `src/acp/stdio-agent.ts`. The service may pass only minimal channel context: who sent the message, which workspace it belongs to, and that the final text will be sent back to WeChat.
 
-The durable product assets are Skills, sandbox/tool protocols, deterministic service APIs, context building, confirmation workflows, audit, and saved artifacts. Backend choices such as Codex ACP, LangChain, LangGraph, or a future self-built runtime are execution options, not product semantics.
+Do not reintroduce service-level triage, fast-lane classification, onboarding short-circuiting, review intent detection, or context-packet wrapping for normal WeChat messages. If behavior needs to change, update the workspace template, AGENTS.md, skills, or workspace config instead.
 
-> **Hermes 已退出主链路**(2026-06-21 工作包 2):Codex 一律兜底,Hermes 不再作为产品语义的一部分。2026-06-23 进一步删除 `src/acp/hermes-stdio-agent.ts` 与 `/api/hermes/*` 实验路由;`HermesWeixinMobileBridge` 改名为 `BypassWeixinMobileBridge`(并行微信旁路通道)。后续工作包规划见 `docs/ideal-refactor-plan.md`。
+The durable product assets are workspace templates, Skills, sandbox/tool protocols, deterministic service APIs, confirmation workflows, audit, scheduler behavior, and saved artifacts. Backend choices such as Kimi Code ACP, Claude Code ACP, Codex ACP, LangChain, LangGraph, or a future self-built runtime are execution options, not product semantics.
 
-Use Codex as the first-phase complex-reasoning fallback and edge-case absorber. As repeated patterns become clear, move them into Strategy Skills, service tools, sandbox confirmations, evaluation examples, and deterministic fast paths.
+> **Hermes 已退出主链路**(2026-06-21 工作包 2):Hermes 不再作为产品语义的一部分。2026-06-23 进一步删除 `src/acp/hermes-stdio-agent.ts`、`/api/hermes/*` 实验路由、`BypassWeixinMobileBridge` 并行微信旁路通道。历史工作包规划已归档到 `docs/archive/ideal-refactor-plan.md`。
+
+Use workspace-scoped Codex as the complex-reasoning and edge-case absorber. As repeated patterns become clear, move them into workspace skills, service APIs, sandbox confirmations, golden tests, and scheduled Codex tasks.
 
 Profile should remain a runtime compatibility summary or routing/config residue. Do not add new methodology responsibilities to Profile; investment method should live in Strategy Skills: protected skeleton plus instance expansion.
 
@@ -42,7 +44,7 @@ Profile should remain a runtime compatibility summary or routing/config residue.
 
 Use the five-step engineering method for the current convergence phase: question the need, delete obsolete responsibilities, simplify the necessary core, speed up feedback loops, then automate stable checks.
 
-Documentation convergence is part of engineering convergence. Keep only current, agent-useful docs in `docs/`; move historical plans, experiments, test records, migration notes, and superseded decisions to `docs/archive/`. Current source-of-truth docs should describe Codex ACP as the sole main path (Hermes has exited the main path), Profile as compatibility summary, and Strategy Skills as the methodology carrier.
+Documentation convergence is part of engineering convergence. Keep only current, agent-useful docs in `docs/`; move historical plans, experiments, test records, migration notes, and superseded decisions to `docs/archive/`. Current source-of-truth docs should describe the direct WeChat → workspace Codex path, the service-owned scheduler/push/sandbox/API responsibilities, Profile as compatibility summary, and Strategy Skills as the methodology carrier.
 
 ## Source Of Truth
 
@@ -50,10 +52,10 @@ Use these files first:
 
 - `CLAUDE.md`: current runtime architecture, commands, key files, and tool surface.
 - `docs/README.md`: small current document index and project-level consensus.
-- `docs/ideal-refactor-plan.md`: **current** master plan for ideal-shape refactor (workspace model + Codex fallback + DeepSeek triage). Supersedes the historical runtime/convergence/UI strategy docs (now in `docs/archive/`).
 - `docs/table-ownership.md`: SQLite table three-tier ownership (service / workspace / discard).
 - `docs/23-multi-user-sandbox-design.md`: sandbox token, permission, audit, and isolation model.
 - `docs/composite-indicator-system.md`: composite indicator system RFC (5 layers: L1 operators / L2 signals / L3a rule tree / L3b sandbox script) with main-force-control as first use case.
+- `docs/trading-strategy-design.md`: trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation.
 - `docs/02-investment-methodology.md`: user's investment methodology.
 - `docs/04-core-workflows.md`: business workflows across screening, review, alerts, and feedback.
 
@@ -64,7 +66,7 @@ The existing TypeScript review handler works, but its review quality is too shal
 The preferred direction is:
 
 - Keep `src/handlers/review.ts` as the deterministic data collector and runtime integration point.
-- Move review method into `.codex/skills/*review`.
+- Move review method into workspace skills.
 - Save full review artifacts under `reviews/`.
 - Make daily reviews feed weekly reviews, and weekly reviews feed monthly reviews.
 - Include a viewpoint tracking table or equivalent audit trail so future reviews can judge whether earlier views were right, wrong, or unverified.
@@ -72,7 +74,7 @@ The preferred direction is:
 
 ## Current Screening Direction
 
-The existing `src/handlers/screening.ts` is a useful first version, but screening should also become skill-driven.
+Screening should be workspace skill-driven.
 
 The preferred direction is:
 
@@ -104,7 +106,7 @@ In short: the service is the machine room; skills are the operating manual Codex
 
 ## Strategy Plan Drafting (硬约束)
 
-涉及"用 X 策略给 Y 股票出预案""按 X 策略起草计划""出预案"等请求时,**必须**走两道闸门流程(详见 `.codex/skills/invest-agent-strategy-plan-drafting/SKILL.md`):
+涉及"用 X 策略给 Y 股票出预案""按 X 策略起草计划""出预案"等请求时,**必须**走下方两道闸门流程:
 
 1. **第一道闸门(策略匹配)**:确认策略 + 解释为什么该策略匹配这只股票(2-3 句),邀请用户确认。**不能在同一回复里继续起草预案**。
 2. **等用户回复确认**(如"确认""可以""就用这个")。

@@ -27,7 +27,7 @@
 | `codex_acp_traces` | Codex ACP 调用审计 | 系统审计,与用户方法无关 |
 | `sandbox_audit_logs` | 沙箱令牌调用审计 | 合规/安全审计 |
 | `pending_sandbox_confirmations` | 待确认的沙箱操作 | 跨进程状态(微信消息 ↔ 沙箱执行) |
-| `conversation_tasks` | 待执行的会话任务 | 跨进程状态(微信消息 ↔ 沙箱执行) |
+| `conversation_tasks` | 旧会话任务草案表 | 保留作考古；conversation-task 草案系统已于 2026-06-23 删除 |
 | `push_jobs` | 微信推送队列(重试、调度) | 系统调度器职责 |
 | `indicator_definitions` | 指标定义库(系统级) | 平台元数据,owner=system |
 | `alerts` | 旧式提醒规则(legacy) | 已被 `alert_rules` 取代,仅 `alert-rules.ts:139` 一次性读 legacy 做迁移;保留 SQLite 作历史回退 |
@@ -72,7 +72,7 @@
 4. **以上都不是 + 含用户投资判断?** → 工作空间。
 
 边界 case:
-- `alerts` / `alert_rules` / `alert_events` / `alert_signal_states`(WP4.10 决策:全部保留 SQLite):虽含用户配置成分,但调度器每轮巡检高频读 / 大流量写入 / 跨进程协同 / cooldown 去重查询需要 SQL 索引,迁移收益不抵风险。详见 ideal-refactor-plan.md WP4.10。
+- `alerts` / `alert_rules` / `alert_events` / `alert_signal_states`(WP4.10 决策:全部保留 SQLite):虽含用户配置成分,但调度器每轮巡检高频读 / 大流量写入 / 跨进程协同 / cooldown 去重查询需要 SQL 索引,迁移收益不抵风险。历史讨论详见 `docs/archive/ideal-refactor-plan.md` WP4.10。
 - `indicator_results`:既包含用户视角的指标计算结果,也复用 `indicator_definitions` 平台元数据。归到迁移,但平台元数据(定义)留在服务层。
 - `daily_plans`:落 `plans/daily/<date>.yaml`(每 date 一份 yaml,upsert by plan_date)。语义是状态(非事件流),用 yaml 不用 jsonl。
 
@@ -98,14 +98,14 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 - ✅ `stock_plans` 读写 → `config/portfolio.yaml`(stock_plans) — `planBackend`
 - ✅ `trade_actions` 写 → `memory/behavior_events.jsonl`(event_type=action_confirmed)
 - ✅ Dashboard CRUD API(/api/portfolio, /api/watchlist, /api/plans)已切到 backend
-- ✅ 调度器 alert-check / pre-market 已切到 backend 读
+- ✅ 调度器 alert-check / scheduled market-watch 已切到 backend/workspace 配置读；自动 pre-market 推送已删除
 - ✅ monitor / alert / review handler 已切到 backend 读
 - ✅ `daily_plans` 读写 → `plans/daily/<date>.yaml` — `dailyPlanBackend`(2026-06-21 WP4.7)
 - ✅ `method_change_candidates` 读写 → `memory/method_changes.jsonl`(版本快照,append-only) — `methodChangeBackend`(2026-06-21 WP4.9)
 - ✅ `review_viewpoints` 读写 → `memory/review_viewpoints.jsonl`(read-modify-write,按 sourceDate 整组替换) — `reviewViewpointBackend`(2026-06-21 WP4.8)
 
 未完成(残留双轨):
-- 无(WP4.10 已决策:`alerts` / `alert_rules` / `alert_events` / `alert_signal_states` 全部保留 SQLite,详见 ideal-refactor-plan.md WP4.10)
+- 无(WP4.10 已决策:`alerts` / `alert_rules` / `alert_events` / `alert_signal_states` 全部保留 SQLite,详见 `docs/archive/ideal-refactor-plan.md` WP4.10)
 
 已完成(2026-06-21):
 - ✅ `chat_history` 写入路径切到 `memory/behavior_events.jsonl`(event_type=wechat_conversation_turn);SQLite 表保留只读回退,由 `WORKSPACE_BACKEND` 切换

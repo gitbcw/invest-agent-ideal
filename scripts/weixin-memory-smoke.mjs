@@ -5,7 +5,7 @@
  *   1. rememberWeixinTurn 写入
  *   2. loadRecentWeixinMemory 读取
  *   3. 多轮对话顺序正确(最近 N 条)
- *   4. conversationId 过滤(只读当前会话)
+ *   4. 默认按 user/instance 连续读取,显式 conversation scope 才只读当前会话
  *
  *   WORKSPACE_BACKEND=sqlite node scripts/weixin-memory-smoke.mjs
  *   WORKSPACE_BACKEND=workspace node scripts/weixin-memory-smoke.mjs
@@ -68,7 +68,9 @@ assert(recent1[0].content === "茅台", `${MODE}: 最新 user 是茅台`);
 console.log(`\n[mode=${MODE}] conversationId 过滤`);
 const otherCtx = { userId: TEST_USER, instanceId: INSTANCE, conversationId: "conv-other" };
 const other = await loadRecentWeixinMemory(otherCtx, 10);
-assert(other.length === 0, `${MODE}: 其他 conversation 读取为空`);
+assert(other.length === 6, `${MODE}: 默认跨 conversation 读取 user/instance 最近上下文`);
+const otherScoped = await loadRecentWeixinMemory(otherCtx, 10, { scope: "conversation" });
+assert(otherScoped.length === 0, `${MODE}: 显式 conversation scope 时其他 conversation 读取为空`);
 
 console.log(`\n[mode=${MODE}] formatRecentMemoryForPrompt`);
 const formatted = formatRecentMemoryForPrompt(recent1);

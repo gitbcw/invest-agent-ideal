@@ -17,11 +17,14 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { settings } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
+import { config } from "../lib/config.js";
 import { MOBILE_SYSTEM_PROMPT } from "./mobile-prompt.js";
 
 // ─── 类型 ───────────────────────────────────────────────────────────
@@ -59,6 +62,10 @@ export interface AcpBackendDef {
   isDefault?: boolean;
 }
 
+interface AcpBackendOverride {
+  cwd?: string;
+}
+
 export interface AcpBackendStatus {
   id: AcpBackendId;
   label: string;
@@ -76,6 +83,15 @@ export interface AcpBackendStatus {
 
 const DEFAULT_TIMEOUT_MS = 1_800_000;
 
+const DEFAULT_CODEX_ACP_ARGS = [
+  "-c", "sandbox_mode=\"workspace-write\"",
+  "-c", "approval_policy=\"never\"",
+  "-c", "project_trust_level=\"untrusted\"",
+  "-c", "disable_response_storage=true",
+  "-c", "mcp_servers={}",
+  "-c", "plugins={}",
+];
+
 export const ACP_BACKENDS: AcpBackendDef[] = [
   {
     id: "kimi",
@@ -86,7 +102,6 @@ export const ACP_BACKENDS: AcpBackendDef[] = [
       : ["acp"],
     cwd: process.env.KIMI_ACP_CWD || process.cwd(),
     timeoutMs: Number(process.env.KIMI_ACP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-    isDefault: true,
   },
   {
     id: "claude",
@@ -101,12 +116,11 @@ export const ACP_BACKENDS: AcpBackendDef[] = [
   {
     id: "codex",
     label: "Codex",
-    command: process.env.CODEX_ACP_COMMAND || "/Users/combo/.local/bin/codex-acp",
-    args: process.env.CODEX_ACP_ARGS?.trim()
-      ? process.env.CODEX_ACP_ARGS.trim().split(/\s+/)
-      : [],
-    cwd: process.env.CODEX_ACP_CWD || process.cwd(),
-    timeoutMs: Number(process.env.CODEX_ACP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+    command: config.codex.acpCommand,
+    args: config.codex.acpArgs.length > 0 ? config.codex.acpArgs : DEFAULT_CODEX_ACP_ARGS,
+    cwd: config.codex.acpCwd,
+    timeoutMs: config.codex.acpTimeoutMs || DEFAULT_TIMEOUT_MS,
+    isDefault: true,
   },
 ];
 
@@ -139,8 +153,9 @@ export class StdioAcpAgent {
   private lastError: string | undefined;
   private readonly sessions = new Map<string, string>();
   private readonly collectors = new Map<string, ResponseCollector>();
+  private readonly activeConversations = new Set<string>();
 
-  constructor(private readonly def: AcpBackendDef) {}
+  constructor(private readonly def: AcpBackendDef, private readonly override: AcpBackendOverride = {}) {}
 
   get id(): AcpBackendId {
     return this.def.id;
@@ -156,13 +171,17 @@ export class StdioAcpAgent {
       label: this.def.label,
       ready: this.ready,
       command: this.def.command,
-      cwd: this.def.cwd,
+      cwd: this.cwd,
       pid: this.process?.pid,
       sessions: this.sessions.size,
       lastError: this.lastError,
       isCurrent,
       isDefault: Boolean(this.def.isDefault),
     };
+  }
+
+  private get cwd() {
+    return this.override.cwd || this.def.cwd;
   }
 
   async ensureReady(): Promise<ClientSideConnection> {
@@ -181,9 +200,16 @@ export class StdioAcpAgent {
     conversationId: string;
     text: string;
     messageId?: string;
+    timeoutMs?: number;
+    cwd?: string;
   }): Promise<string> {
+    if (this.activeConversations.has(params.conversationId)) {
+      throw new Error("ACP_TURN_BUSY:上一条消息仍在处理中");
+    }
+    this.activeConversations.add(params.conversationId);
     const conn = await this.ensureReady();
-    const sessionId = await this.getOrCreateSession(params.conversationId, conn);
+    const sessionKey = params.cwd ? `${params.conversationId}::${params.cwd}` : params.conversationId;
+    const sessionId = await this.getOrCreateSession(sessionKey, conn, params.cwd);
     const prompt = [{ type: "text" as const, text: params.text }];
     const collector = new ResponseCollector();
     this.collectors.set(sessionId, collector);
@@ -199,7 +225,7 @@ export class StdioAcpAgent {
           messageId: params.messageId,
           prompt,
         }),
-        this.timeoutAfter(this.def.timeoutMs),
+        this.timeoutAfter(params.timeoutMs ?? this.def.timeoutMs),
       ]);
       logger.info(
         `${this.def.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(result)}`
@@ -214,16 +240,18 @@ export class StdioAcpAgent {
       throw error;
     } finally {
       this.collectors.delete(sessionId);
+      this.activeConversations.delete(params.conversationId);
     }
 
     return collector.toText() || "处理完成,但没有生成文本回复。";
   }
 
   clearSession(conversationId: string) {
-    const sessionId = this.sessions.get(conversationId);
-    if (!sessionId) return;
-    this.collectors.delete(sessionId);
-    this.sessions.delete(conversationId);
+    for (const [key, sessionId] of this.sessions) {
+      if (key !== conversationId && !key.startsWith(`${conversationId}::`)) continue;
+      this.collectors.delete(sessionId);
+      this.sessions.delete(key);
+    }
   }
 
   dispose() {
@@ -232,6 +260,7 @@ export class StdioAcpAgent {
     this.connection = null;
     this.sessions.clear();
     this.collectors.clear();
+    this.activeConversations.clear();
 
     if (this.process && !this.process.killed) {
       if (this.process.pid) {
@@ -249,13 +278,15 @@ export class StdioAcpAgent {
   }
 
   private async start(): Promise<ClientSideConnection> {
-    const { command, args, cwd, label } = this.def;
+    const { command, args, label } = this.def;
+    const cwd = this.cwd;
+    const env = this.def.id === "codex" ? buildCodexRuntimeEnv() : process.env;
     logger.info(`启动 ${label} ACP: ${command}${args.length ? ` ${args.join(" ")}` : ""}`);
 
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd,
-      env: process.env,
+      env,
       detached: true,
     });
     this.process = child;
@@ -312,20 +343,20 @@ export class StdioAcpAgent {
     return conn;
   }
 
-  private async getOrCreateSession(conversationId: string, conn: ClientSideConnection) {
-    const existing = this.sessions.get(conversationId);
+  private async getOrCreateSession(sessionKey: string, conn: ClientSideConnection, cwd = this.cwd) {
+    const existing = this.sessions.get(sessionKey);
     if (existing) return existing;
 
     const res = await conn.newSession({
-      cwd: this.def.cwd,
+      cwd,
       mcpServers: [],
       _meta: {
         systemPrompt: { append: MOBILE_SYSTEM_PROMPT },
       },
     });
-    this.sessions.set(conversationId, res.sessionId);
+    this.sessions.set(sessionKey, res.sessionId);
     logger.info(
-      `${this.def.label} ACP 新会话 conversation=${conversationId} session=${res.sessionId}`
+      `${this.def.label} ACP 新会话 key=${sessionKey} cwd=${cwd} session=${res.sessionId}`
     );
     return res.sessionId;
   }
@@ -340,19 +371,80 @@ export class StdioAcpAgent {
   }
 }
 
+function buildCodexRuntimeEnv(): NodeJS.ProcessEnv {
+  const runtimeHome = config.codex.runtimeHome;
+  mkdirSync(runtimeHome, { recursive: true });
+  writeCodexRuntimeConfig(runtimeHome);
+  copyCodexRuntimeFile("auth.json", runtimeHome);
+  copyCodexRuntimeFile("models_cache.json", runtimeHome);
+  copyCodexRuntimeFile("version.json", runtimeHome);
+  return {
+    ...process.env,
+    CODEX_HOME: runtimeHome,
+    HOME: runtimeHome,
+  };
+}
+
+function writeCodexRuntimeConfig(runtimeHome: string) {
+  const configPath = path.join(runtimeHome, "config.toml");
+  const model = process.env.CODEX_RUNTIME_MODEL || "gpt-5.5";
+  const provider = process.env.CODEX_RUNTIME_MODEL_PROVIDER || "codex-ai";
+  const baseUrl = process.env.CODEX_RUNTIME_BASE_URL || "http://47.107.151.70:3000/v1";
+  const wireApi = process.env.CODEX_RUNTIME_WIRE_API || "responses";
+  const reasoningEffort = process.env.CODEX_RUNTIME_REASONING_EFFORT || "medium";
+  const requiresOpenAiAuth = process.env.CODEX_RUNTIME_REQUIRES_OPENAI_AUTH !== "false";
+
+  const content = [
+    "disable_response_storage = true",
+    `model = ${JSON.stringify(model)}`,
+    `model_reasoning_effort = ${JSON.stringify(reasoningEffort)}`,
+    `model_provider = ${JSON.stringify(provider)}`,
+    "",
+    `[model_providers.${provider}]`,
+    `name = ${JSON.stringify(provider)}`,
+    `base_url = ${JSON.stringify(baseUrl)}`,
+    `wire_api = ${JSON.stringify(wireApi)}`,
+    `requires_openai_auth = ${requiresOpenAiAuth ? "true" : "false"}`,
+    "",
+  ].join("\n");
+
+  writeFileSync(configPath, content, "utf-8");
+}
+
+function copyCodexRuntimeFile(fileName: string, runtimeHome: string) {
+  const source = path.join(process.env.CODEX_HOME || path.join(process.env.HOME || "", ".codex"), fileName);
+  const target = path.join(runtimeHome, fileName);
+  if (!existsSync(source) || existsSync(target)) return;
+  try {
+    copyFileSync(source, target);
+  } catch (error) {
+    logger.warn(`Codex runtime file copy failed file=${fileName}: ${(error as Error).message}`);
+  }
+}
+
 // ─── 注册中心 ───────────────────────────────────────────────────────
 
 const instances = new Map<AcpBackendId, StdioAcpAgent>();
+const scopedInstances = new Map<string, StdioAcpAgent>();
 let currentBackendId: AcpBackendId | null = null;
 let settingsLoaded = false;
 
-function getOrCreateInstance(id: AcpBackendId): StdioAcpAgent {
-  const existing = instances.get(id);
+function getOrCreateInstance(id: AcpBackendId, override: AcpBackendOverride = {}): StdioAcpAgent {
+  const scopedKey = override.cwd ? `${id}:${path.resolve(override.cwd)}` : undefined;
+  if (scopedKey) {
+    const existing = scopedInstances.get(scopedKey);
+    if (existing) return existing;
+  }
+  const existing = override.cwd ? undefined : instances.get(id);
   if (existing) return existing;
   const def = ACP_BACKENDS.find((b) => b.id === id);
   if (!def) throw new Error(`未知 ACP backend: ${id}`);
-  const inst = new StdioAcpAgent(def);
-  instances.set(id, inst);
+  const inst = new StdioAcpAgent(def, override);
+  if (scopedKey) {
+    scopedInstances.set(scopedKey, inst);
+  } else {
+    instances.set(id, inst);
+  }
   return inst;
 }
 
@@ -375,6 +467,19 @@ export async function loadCurrentBackendId(): Promise<AcpBackendId> {
 export async function getCurrentAcpAgent(): Promise<StdioAcpAgent> {
   const id = await loadCurrentBackendId();
   return getOrCreateInstance(id);
+}
+
+export function getCodexAcpAgent(workspacePath?: string): StdioAcpAgent {
+  return getOrCreateInstance("codex", workspacePath ? { cwd: workspacePath } : {});
+}
+
+export function clearCodexAcpSessions(conversationId: string) {
+  instances.get("codex")?.clearSession(conversationId);
+  for (const [key, inst] of scopedInstances) {
+    if (key.startsWith("codex:")) {
+      inst.clearSession(conversationId);
+    }
+  }
 }
 
 export async function switchAcpBackend(id: AcpBackendId): Promise<AcpBackendStatus> {

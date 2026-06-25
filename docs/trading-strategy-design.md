@@ -1,6 +1,6 @@
 # 交易策略实体设计(第一版)
 
-> 状态:Draft,2026-06-23
+> 状态:Approved / Implementing,2026-06-23
 > 关联:[ideal-refactor-plan.md](./ideal-refactor-plan.md)、[composite-indicator-system.md](./composite-indicator-system.md)、[04-core-workflows.md](./04-core-workflows.md)
 > 范围:把"交易策略"从隐式字段(`stock_plans.notes` / `investment_profiles`)提为系统一等公民,支撑"策略 → 预案"的单向生成链路。
 

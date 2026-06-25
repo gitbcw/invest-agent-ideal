@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { pushJobs } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
+import { hasActiveWeixinComplexTask } from "../channels/weixin-activity.js";
 
 export type PushBackend = "codex" | "hermes";
 export type PushChannel = "weixin-mobile";
@@ -36,6 +37,9 @@ const RETRY_DELAYS_MS = [
   10 * 60 * 1000,
   30 * 60 * 1000,
 ];
+
+const USER_ACTIVE_DEFER_MS = 2 * 60 * 1000;
+const DEFERABLE_SOURCES = new Set(["scheduler"]);
 
 export async function enqueuePushJob(input: PushJobInput) {
   const now = new Date().toISOString();
@@ -86,6 +90,14 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
   let dead = 0;
 
   for (const job of due) {
+    if (
+      DEFERABLE_SOURCES.has(job.source) &&
+      hasActiveWeixinComplexTask({ userId: job.userId, instanceId: job.instanceId })
+    ) {
+      await deferJob(job.id, USER_ACTIVE_DEFER_MS, "user has active complex analysis");
+      retried += 1;
+      continue;
+    }
     const attempts = job.attempts + 1;
     const attemptAt = new Date().toISOString();
     try {
@@ -127,6 +139,20 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
     logger.info(`推送队列处理完成 due=${due.length} sent=${sent} retry=${retried} dead=${dead}`);
   }
   return { due: due.length, sent, retried, dead };
+}
+
+async function deferJob(id: string, delayMs: number, reason: string) {
+  const now = new Date();
+  const nextRetryAt = new Date(now.getTime() + delayMs).toISOString();
+  await db
+    .update(pushJobs)
+    .set({
+      status: "retry",
+      nextRetryAt,
+      lastError: reason,
+      updatedAt: now.toISOString(),
+    })
+    .where(eq(pushJobs.id, id));
 }
 
 async function markFailed(id: string, attempts: number, maxAttempts: number, errorMessage: string) {

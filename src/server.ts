@@ -10,7 +10,7 @@ import { renderWeixinAdminPage } from "./admin/weixin-page.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { registerSandboxRoutes } from "./routes/sandbox.js";
-import { autoStartPlatformWeixinListeners, projectWeixinManagerForInstance } from "./routes/platform.js";
+import { autoStartPlatformWeixinListeners, projectWeixinManagerForInstance, registerPlatformRoutes } from "./routes/platform.js";
 import { ensureBuiltInIndicatorDefinitions } from "./handlers/indicator-definitions.js";
 import { syncAllLegacyAlertsToAlertRules } from "./handlers/alert-rules.js";
 import { enqueuePushJob, getPushJob, getPushQueueSummary, processDuePushJobs, type PushBackend } from "./services/push-queue.js";
@@ -24,7 +24,7 @@ let pendingAlerts: string[] = [];
 let pushQueueInterval: ReturnType<typeof setInterval> | null = null;
 
 async function sendPushJob(job: { userId: string; backend: PushBackend; message: string; instanceId?: string }) {
-  if (job.instanceId && job.instanceId !== "invest-agent-primary") {
+  if (job.instanceId) {
     try {
       const projectManager = await projectWeixinManagerForInstance(job.instanceId);
       const pushed = await projectManager.pushText(job.message, { userId: job.userId, instanceId: job.instanceId });
@@ -60,6 +60,7 @@ export async function createServer() {
 
   registerDashboardRoutes(app);
   registerSandboxRoutes(app);
+  registerPlatformRoutes(app);
 
   startPushQueueWorker();
 
@@ -67,7 +68,7 @@ export async function createServer() {
   registerPush(async (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => {
     const job = await enqueuePushJob({
       userId: options?.userId,
-      backend: process.env.HERMES_EXPERIMENT_ENABLED === "true" ? "hermes" : "codex",
+      backend: "codex",
       projectId: options?.projectId,
       instanceId: options?.instanceId,
       source: "scheduler",
@@ -261,7 +262,7 @@ export async function createServer() {
       const job = await enqueuePushJob({
         userId,
         instanceId,
-        backend: process.env.HERMES_EXPERIMENT_ENABLED === "true" ? "hermes" : "codex",
+        backend: "codex",
         source: "manual-alert-check",
         message: text,
       });
@@ -282,15 +283,6 @@ export async function createServer() {
     };
   });
 
-  // 手动触发盘前提醒（测试用）
-  app.post("/api/alerts/pre-market", async () => {
-    const { runPreMarketAlert } = await import(
-      "./scheduler/pre-market.js"
-    );
-    const text = await runPreMarketAlert();
-    return { text };
-  });
-
   return app;
 }
 
@@ -307,6 +299,7 @@ export async function startServer() {
     logger.info(`提醒轮询: http://localhost:${config.port}/acp/alerts`);
     logger.info(`微信连接后台: http://localhost:${config.port}/admin/weixin`);
     logger.info(`数据看板: http://localhost:${config.port}/dashboard`);
+    logger.info(`平台实例管理: http://localhost:${config.port}/platform`);
 
     if (process.env.WEIXIN_AUTO_START !== "false" && weixinMobileManager.getState().stage === "connected") {
       weixinMobileManager.ensureListenerStarted().catch((error) => {

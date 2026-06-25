@@ -148,6 +148,7 @@ interface DailyPlanData {
   date: string;
   generatedAt: string;
   items: StockPlanItem[];
+  pushSummary?: string;
 }
 
 interface DailyReviewContextStock extends StockPlanItem {
@@ -403,6 +404,68 @@ function summarizeReview(content: string): string {
     .slice(0, 8)
     .join("\n")
     .slice(0, 1200);
+}
+
+function compactLines(value: string, limit: number): string[] {
+  return value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("|") && !/^[-:| ]+$/.test(line))
+    .filter((line) => !/^#{1,6}\s+/.test(line) && !/^【.+】$/.test(line) && !/^\d{4}-\d{2}-\d{2}\s*(收盘)?复盘$/.test(line))
+    .filter((line) => !/^仅供参考/.test(line))
+    .filter((line) => !/(完整复盘已保存|需要展开|查看今日复盘|已保存复盘内容)/.test(line))
+    .slice(0, limit);
+}
+
+function firstMatchingSection(content: string, patterns: RegExp[], limit: number): string[] {
+  for (const pattern of patterns) {
+    const section = extractSection(content, pattern);
+    const lines = compactLines(section, limit);
+    if (lines.length > 0) return lines;
+  }
+  return [];
+}
+
+function buildWeixinReviewSummary(date: string, content: string): string {
+  const normalized = content.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return "";
+
+  const core = compactLines(summarizeReview(normalized), 4);
+  const fallbackCore = firstMatchingSection(normalized, [/【AI 分析】/, /【持仓情况】/, /【市场概况】/], 4);
+  const alerts = firstMatchingSection(normalized, [/【今日提醒】/, /今日提醒回测/], 4);
+  const tomorrow = firstMatchingSection(normalized, [/【明日关注】/, /【明日交易预案】/, /(?:##\s*)?(?:[一二三四五六七八九十]+[、.．]\s*)?明日操作与观察/, /明日重点/], 6);
+  const confirmations = firstMatchingSection(normalized, [/需要你确认/, /待确认/], 4);
+
+  const lines: string[] = [`【${date} 复盘摘要】`];
+
+  lines.push("", "1. 核心判断");
+  const wholeContentFallback = compactLines(normalized, 4);
+  const coreLines = core.length > 0 ? core : fallbackCore.length > 0 ? fallbackCore : wholeContentFallback;
+  lines.push(...(coreLines.length > 0 ? coreLines.map((line) => `- ${line.replace(/^[-•]\s*/, "")}`) : ["- 今日复盘已生成，核心结论见完整复盘。"]));
+
+  if (alerts.length > 0) {
+    lines.push("", "2. 今日提醒");
+    lines.push(...alerts.map((line) => `- ${line.replace(/^[-•]\s*/, "")}`));
+  }
+
+  if (tomorrow.length > 0) {
+    lines.push("", "3. 明日只看");
+    lines.push(...tomorrow.map((line) => `- ${line.replace(/^[-•]\s*/, "")}`));
+  }
+
+  if (confirmations.length > 0) {
+    lines.push("", "4. 需要你确认");
+    lines.push(...confirmations.map((line) => `- ${line.replace(/^[-•]\s*/, "")}`));
+  }
+
+  lines.push("", "完整复盘已保存。需要展开可以回复「查看今日复盘」。");
+  return lines.join("\n").slice(0, 1200);
+}
+
+export function buildReviewPushSummary(content: string, date = localDateString()): string {
+  const dateMatch = content.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
+  return buildWeixinReviewSummary(dateMatch?.[1] ?? date, content);
 }
 
 function extractSection(content: string, heading: RegExp): string {
@@ -920,13 +983,15 @@ export async function saveSkillDailyReview(input: {
   await mirrorReviewToWorkspace(userId, "daily", date, input.content);
 
   const generatedAt = new Date().toISOString();
+  const pushSummary = input.summary ?? buildWeixinReviewSummary(date, input.content);
   await dailyPlanBackend.upsert(userId, instanceId, {
     planDate: date,
     generatedAt,
-    summary: input.summary ?? input.content.slice(0, 1200),
+    summary: pushSummary,
     content: input.content,
     data: {
       source: "skill",
+      pushSummary,
       savedAt: generatedAt,
       context: input.context ?? null,
     },
@@ -1169,10 +1234,11 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
   parts.push("【主力控盘情况】", "当前未接入可靠的主力控盘/筹码集中度/逐笔成交确定性数据源，本次不据此作判断。", "");
   parts.push("仅供参考，不构成投资建议");
   const reviewText = parts.join("\n");
+  const pushSummary = buildWeixinReviewSummary(today, reviewText);
 
   writeFileSync(filePath, reviewText, "utf-8");
   await mirrorReviewToWorkspace(userId, "daily", today, reviewText);
-  await saveDailyPlan(userId, instanceId, today, reviewText, planData);
+  await saveDailyPlan(userId, instanceId, today, reviewText, { ...planData, pushSummary });
   await syncReviewViewpoints(userId, instanceId, today, reviewText);
   logger.info(`日复盘已生成: ${filePath}`);
 
@@ -1474,7 +1540,7 @@ async function saveDailyPlan(userId: string, instanceId: string, date: string, c
   await dailyPlanBackend.upsert(userId, instanceId, {
     planDate: date,
     generatedAt: data.generatedAt,
-    summary: content,
+    summary: data.pushSummary ?? buildWeixinReviewSummary(date, content),
     content,
     data,
   });
@@ -1646,9 +1712,9 @@ export async function getLatestReviewPushSummary(options: { userId?: string; ins
   const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
   const row = await dailyPlanBackend.getLatest(userId, instanceId);
   if (!row) return null;
-  const content = row.content || row.summary || "";
+  const content = row.content || "";
   if (!content || content.startsWith("Daily plan") || content.startsWith("Experimental")) return null;
-  return content;
+  return row.summary || buildWeixinReviewSummary(row.planDate, content);
 }
 
 export async function getLatestReviewPreMarketContext(options: { userId?: string; instanceId?: string } = {}): Promise<{

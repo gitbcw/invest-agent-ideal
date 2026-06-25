@@ -1,11 +1,12 @@
-import { runAlertCheck, formatAlerts } from "./alert-check.js";
-import { runPreMarketAlert } from "./pre-market.js";
 import { startReviewScheduler, getReviewPushTime } from "./review.js";
 import { logger } from "../lib/logger.js";
 import { db } from "../db/index.js";
 import { aiInstances, alerts, channelIdentities, channelIdentityInstances, portfolio, settings, users, watchlist } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
+import { WorkspaceStore } from "../lib/workspace-store.js";
+import { beijingDateKey, beijingNow, isBeijingTradingDay, readSchedules, type SchedulesYaml } from "../lib/schedules-loader.js";
+import { runScheduledMarketWatchTask } from "../acp/scheduled-tasks.js";
 
 export type PushCallback = (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => Promise<void | boolean>;
 
@@ -13,8 +14,9 @@ const INTERVAL_SETTINGS_KEY = "alert_check_interval_minutes";
 const DEFAULT_INTERVAL_MINUTES = 5;
 
 let pushFn: PushCallback | null = null;
-let intervals: ReturnType<typeof setInterval>[] = [];
 let alertIntervalId: ReturnType<typeof setInterval> | null = null;
+const marketWatchFiredKeys = new Set<string>();
+const runningMarketWatchTasks = new Set<string>();
 
 interface SchedulableScope {
   userId: string;
@@ -34,17 +36,13 @@ function getPushFn(): PushCallback {
 }
 
 async function getSchedulableUserIds(): Promise<string[]> {
-  const [activeUsers, identities] = await Promise.all([
-    db.select({ id: users.id }).from(users).where(eq(users.status, "active")),
-    db
-      .select({ userId: channelIdentities.userId })
-      .from(channelIdentities)
-      .where(eq(channelIdentities.channel, "weixin-mobile")),
-  ]);
-  const active = new Set(activeUsers.map((user) => user.id));
+  const identities = await db
+    .select({ userId: channelIdentities.userId })
+    .from(channelIdentities)
+    .where(eq(channelIdentities.channel, "weixin-mobile"));
   const ids = new Set<string>([DEFAULT_USER_ID]);
   for (const identity of identities) {
-    if (active.has(identity.userId)) ids.add(identity.userId);
+    ids.add(identity.userId);
   }
   return [...ids];
 }
@@ -128,28 +126,34 @@ export async function setAlertInterval(minutes: number): Promise<string> {
   return `巡检间隔已更新为 ${minutes} 分钟`;
 }
 
-function restartAlertInterval(minutes: number) {
+function restartAlertInterval(_minutes: number) {
   if (alertIntervalId !== null) {
     clearInterval(alertIntervalId);
   }
   alertIntervalId = setInterval(async () => {
     try {
+      const now = new Date();
+      const fallbackInterval = await getAlertInterval();
       const scopes = await getSchedulableScopes();
       for (const { userId, instanceId, projectId } of scopes) {
+        const taskKey = `${userId}:${instanceId}`;
         try {
-          const alertItems = await runAlertCheck({ userId, instanceId });
-          if (alertItems.length > 0) {
-            const text = formatAlerts(alertItems);
-            await getPushFn()(text, { userId, projectId, instanceId });
-          }
+          if (runningMarketWatchTasks.has(taskKey)) continue;
+          const hit = await shouldRunMarketWatchTask({ userId, instanceId, projectId }, fallbackInterval, now);
+          if (!hit) continue;
+          runningMarketWatchTasks.add(taskKey);
+          const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId });
+          if (text) await getPushFn()(text, { userId, projectId, instanceId });
         } catch (error) {
           logger.error(`行情巡检失败 (${userId}/${instanceId}):`, error);
+        } finally {
+          runningMarketWatchTasks.delete(taskKey);
         }
       }
     } catch (error) {
       logger.error("行情巡检失败:", error);
     }
-  }, minutes * 60 * 1000);
+  }, 60 * 1000);
 }
 
 /** 启动所有定时任务 */
@@ -159,42 +163,13 @@ export async function startScheduler() {
   const intervalMin = await getAlertInterval();
   restartAlertInterval(intervalMin);
 
-  // 每分钟检查是否到 9:15（开盘前提醒）
-  const preMarketInterval = setInterval(async () => {
-    const now = new Date();
-    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-    const bjTime = new Date(utc + 8 * 3600000);
-    const hour = bjTime.getHours();
-    const minute = bjTime.getMinutes();
-    const day = bjTime.getDay();
-
-    if (day >= 1 && day <= 5 && hour === 9 && minute === 15) {
-      try {
-        const userIds = await getSchedulableUserIds();
-        for (const userId of userIds) {
-          const instanceId = defaultInstanceIdForUser(userId);
-          try {
-            const text = await runPreMarketAlert({ userId, instanceId });
-            if (text) await getPushFn()(text, { userId, instanceId });
-          } catch (error) {
-            logger.error(`开盘前提醒失败 (${userId}):`, error);
-          }
-        }
-      } catch (error) {
-        logger.error("开盘前提醒失败:", error);
-      }
-    }
-  }, 60 * 1000);
-
-  intervals = [preMarketInterval];
-
   // 收盘后日复盘
   startReviewScheduler(async (message: string, options?: { userId?: string }) => {
     await getPushFn()(message, options);
   }, getSchedulableUserIds);
 
   const pushTime = await getReviewPushTime();
-  logger.info(`定时任务已启动（巡检 ${intervalMin}min / 盘前 9:15 / 复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}）`);
+  logger.info(`定时任务已启动（巡检: 每分钟扫描 workspace 配置,默认间隔 ${intervalMin}min / 复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}）`);
 }
 
 /** 停止所有定时任务 */
@@ -203,9 +178,107 @@ export function stopScheduler() {
     clearInterval(alertIntervalId);
     alertIntervalId = null;
   }
-  for (const interval of intervals) {
-    clearInterval(interval);
-  }
-  intervals = [];
   logger.info("定时任务已停止");
+}
+
+async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<boolean> {
+  if (!isAshareMarketWatchTime(now)) return false;
+
+  const schedules = readSchedules(scope.userId);
+  if (schedules.market_watch?.enabled === false || schedules.market_watch?.auto_run === false) return false;
+
+  const watch = await readWatchConfig(scope.userId);
+  if (watch?.mode === "disabled" || watch?.mode === "off") return false;
+
+  const windows = normalizeWatchWindows(watch?.default_check_windows ?? schedules.market_watch?.default_windows);
+  const customInterval = resolveMarketWatchInterval(watch, schedules, fallbackIntervalMinutes, windows.length > 0);
+  const slot = customInterval
+    ? intervalSlot(now, customInterval)
+    : windowSlot(now, windows);
+  if (!slot) return false;
+
+  const key = `${beijingDateKey(now)}:${scope.userId}:${scope.instanceId}:market-watch:${slot}`;
+  if (marketWatchFiredKeys.has(key)) return false;
+  marketWatchFiredKeys.add(key);
+  return true;
+}
+
+async function readWatchConfig(userId: string) {
+  try {
+    return await new WorkspaceStore(userId).readWatch();
+  } catch (error) {
+    logger.warn(`market_watch.readWatch failed user=${userId}: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+function isAshareMarketWatchTime(now: Date) {
+  if (!isBeijingTradingDay(now)) return false;
+  const bj = beijingNow(now);
+  const timeNum = bj.getHours() * 100 + bj.getMinutes();
+  return (timeNum >= 920 && timeNum <= 1130) || (timeNum >= 1300 && timeNum <= 1500);
+}
+
+function normalizeWatchWindows(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") return item.trim();
+      if (!item || typeof item !== "object") return "";
+      const raw = item as Record<string, unknown>;
+      return typeof raw.time === "string" ? raw.time.trim() : "";
+    })
+    .filter((time) => /^(\d{1,2}):(\d{2})$/.test(time));
+}
+
+function resolveMarketWatchInterval(
+  watch: Awaited<ReturnType<typeof readWatchConfig>>,
+  schedules: SchedulesYaml,
+  fallbackIntervalMinutes: number,
+  hasDefaultWindows: boolean,
+) {
+  const raw =
+    readNumberLike((watch as Record<string, unknown> | null)?.check_interval_minutes) ??
+    readNumberLike((watch as Record<string, unknown> | null)?.custom_frequency) ??
+    readNumberLike(schedules.market_watch?.custom_frequency);
+  if (raw != null) return Math.max(1, raw);
+  return hasDefaultWindows ? null : Math.max(1, fallbackIntervalMinutes);
+}
+
+function readNumberLike(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed || trimmed === "default" || trimmed === "默认") return null;
+  if (trimmed.includes("高频")) return 1;
+  if (trimmed.includes("低频")) return 30;
+  const m = /(\d+)/.exec(trimmed);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+function intervalSlot(now: Date, intervalMinutes: number) {
+  const bj = beijingNow(now);
+  const minutes = bj.getHours() * 60 + bj.getMinutes();
+  const morningStart = 9 * 60 + 20;
+  const morningEnd = 11 * 60 + 30;
+  const afternoonStart = 13 * 60;
+  const afternoonEnd = 15 * 60;
+  if (minutes >= morningStart && minutes <= morningEnd) {
+    const elapsed = minutes - morningStart;
+    return elapsed % intervalMinutes === 0 ? `am-${Math.floor(elapsed / intervalMinutes)}` : null;
+  }
+  if (minutes >= afternoonStart && minutes <= afternoonEnd) {
+    const elapsed = minutes - afternoonStart;
+    return elapsed % intervalMinutes === 0 ? `pm-${Math.floor(elapsed / intervalMinutes)}` : null;
+  }
+  return null;
+}
+
+function windowSlot(now: Date, windows: string[]) {
+  if (windows.length === 0) return null;
+  const bj = beijingNow(now);
+  const current = `${String(bj.getHours()).padStart(2, "0")}:${String(bj.getMinutes()).padStart(2, "0")}`;
+  return windows.includes(current) ? current : null;
 }

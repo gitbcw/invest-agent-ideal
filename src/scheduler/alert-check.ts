@@ -14,6 +14,7 @@ import { ensureWorkspace } from "../lib/workspace.js";
 import { WorkspaceStore, type RiskLevel } from "../lib/workspace-store.js";
 import { runL3aIndicatorsForStock } from "../services/l3a-indicator-runner.js";
 import { runL3bIndicatorsForStock } from "../services/l3b-indicator-runner.js";
+import { beijingNow, isBeijingTradingDay } from "../lib/schedules-loader.js";
 
 /** 巡检结果 */
 export interface AlertItem {
@@ -46,6 +47,23 @@ interface ParsedThreshold {
   value?: string | number;
 }
 
+interface MarketWatchWindow {
+  time?: string;
+  name?: string;
+  purpose?: string;
+  enabled?: boolean;
+}
+
+interface MarketWatchPolicy {
+  enabled: boolean;
+  onlyPushOnException: boolean;
+  defaultCheckWindows: MarketWatchWindow[];
+  exceptionRules: string[];
+  nonExceptionRules: string[];
+}
+
+const MARKET_WATCH_WINDOW_TOLERANCE_MINUTES = 3;
+
 /**
  * 行情巡检 — 检查自选股异动
  * A 股开盘期间每 5 分钟调用一次
@@ -53,8 +71,9 @@ interface ParsedThreshold {
 export async function runAlertCheck(options: { force?: boolean; userId?: string; instanceId?: string } = {}): Promise<AlertItem[]> {
   const userId = options.userId ?? DEFAULT_USER_ID;
   const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
-  // 检查是否在交易时间
-  if (!options.force && !isTradingTime()) {
+  const watchPolicy = await loadMarketWatchPolicy(userId);
+  // 检查是否在盯盘窗口
+  if (!options.force && !shouldRunMarketWatchNow(watchPolicy)) {
     return [];
   }
 
@@ -111,7 +130,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
   const priorityCfg = await loadPriorityConfig();
 
   // 加载系统信号配置
-  const [sigPriceChange, sigNearSupport, sigNearResistance, sigNearTarget, sigStopLoss, sigBreakout, sigBreakSupport, , , , , sigCapitalMain, sigCapitalSuperLarge, sigVolPriceDiv, sigMaBreakoutAbove, sigMaBreakoutBelow, sigMacdGoldenCross, sigMacdDeathCross, sigKdjOversold, sigKdjOverbought] =
+  const [sigPriceChange, , , , , sigBreakout, , , , , , sigCapitalMain, sigCapitalSuperLarge, sigVolPriceDiv, sigMaBreakoutAbove, sigMaBreakoutBelow, , , sigKdjOversold, sigKdjOverbought] =
     await Promise.all([
       getSignalSetting("price_change"),
       getSignalSetting("near_support"),
@@ -135,9 +154,11 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       getSignalSetting("kdj_overbought"),
     ]);
 
-  // 资金流数据（仅在有信号启用时查询）
+  const customIndicatorSet = new Set(customAlerts.map((alert) => alert.indicator));
+
+  // 资金流数据（仅在用户显式设置相关提醒时查询）
   let capitalFlowMap = new Map<string, CapitalFlow>();
-  const needCapitalFlow = sigCapitalMain?.enabled || sigCapitalSuperLarge?.enabled;
+  const needCapitalFlow = customIndicatorSet.has("capital_flow_main") || customIndicatorSet.has("capital_flow_super_large");
   if (needCapitalFlow) {
     try {
       capitalFlowMap = await getCapitalFlowBatch(codes);
@@ -151,9 +172,6 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
     list.push(alert);
     customAlertMap.set(alert.stockCode, list);
   }
-  const alertOnlyCodes = new Set(customAlertCodes);
-  for (const item of watchItems) alertOnlyCodes.delete(item.stockCode);
-  for (const pos of positions) alertOnlyCodes.delete(pos.stockCode);
   const planMap = await loadLatestPlanMap(userId, instanceId);
 
   const alertItems: AlertItem[] = [];
@@ -165,11 +183,11 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
     const plan = planMap.get(item.stockCode);
     const relationToPlan = describePlanRelation(quote.price, plan);
     const configured = customAlertMap.get(item.stockCode) ?? [];
+    const hasPriceAlert = hasConfiguredIndicator(configured, "price");
     const priceThreshold = getConfiguredThreshold(configured, "price", Number(sigPriceChange?.params.threshold) || 3);
-    const shouldCheckSystemPriceChange = !alertOnlyCodes.has(item.stockCode) || hasConfiguredIndicator(configured, "price");
 
-    // 涨跌幅异动
-    if (shouldCheckSystemPriceChange && sigPriceChange?.enabled && Math.abs(quote.changePercent) >= priceThreshold) {
+    // 用户显式设置的涨跌幅提醒
+    if (hasPriceAlert && Math.abs(quote.changePercent) >= priceThreshold) {
       const signalKey = `${item.stockCode}:price:${quote.changePercent >= 0 ? "up" : "down"}`;
       const priority = resolvePrioritySync(signalKey, priorityCfg, Math.abs(quote.changePercent));
       alertItems.push({
@@ -185,7 +203,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       });
     }
 
-    if (sigNearSupport?.enabled && plan?.support && quote.price <= plan.support * 1.01) {
+    if (hasConfiguredIndicator(configured, "near_support") && plan?.support && quote.price <= plan.support * 1.01) {
       const signalKey = `${item.stockCode}:near-support`;
       const priority = resolvePrioritySync(signalKey, priorityCfg);
       alertItems.push({
@@ -201,7 +219,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       });
     }
 
-    if (sigNearResistance?.enabled && plan?.resistance && quote.price >= plan.resistance * 0.99) {
+    if (hasConfiguredIndicator(configured, "near_resistance") && plan?.resistance && quote.price >= plan.resistance * 0.99) {
       const signalKey = `${item.stockCode}:near-resistance`;
       const priority = resolvePrioritySync(signalKey, priorityCfg);
       alertItems.push({
@@ -217,7 +235,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       });
     }
 
-    if (sigNearTarget?.enabled && plan?.targetPrice && quote.price >= plan.targetPrice * 0.99) {
+    if (hasConfiguredIndicator(configured, "near_target") && plan?.targetPrice && quote.price >= plan.targetPrice * 0.99) {
       const signalKey = `${item.stockCode}:near-target`;
       const priority = resolvePrioritySync(signalKey, priorityCfg);
       alertItems.push({
@@ -233,7 +251,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       });
     }
 
-    if (sigStopLoss?.enabled && plan?.stopLoss && quote.price <= plan.stopLoss) {
+    if (hasConfiguredIndicator(configured, "stop_loss") && plan?.stopLoss && quote.price <= plan.stopLoss) {
       const signalKey = `${item.stockCode}:stop-loss`;
       const priority = resolvePrioritySync(signalKey, priorityCfg);
       alertItems.push({
@@ -295,8 +313,10 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       const plan = planMap.get(item.stockCode);
       const relationToPlan = describePlanRelation(quote?.price, plan);
 
-      if (sigCapitalMain?.enabled) {
-        const threshold = (Number(sigCapitalMain.params.threshold) || 5000) * 10000;
+      const configured = customAlertMap.get(item.stockCode) ?? [];
+
+      if (hasConfiguredIndicator(configured, "capital_flow_main")) {
+        const threshold = (Number(sigCapitalMain?.params.threshold) || 5000) * 10000;
         if (Math.abs(flow.mainNetInflow) >= threshold) {
           const signalKey = `${item.stockCode}:capital-flow-main`;
           const priority = resolvePrioritySync(signalKey, priorityCfg);
@@ -315,8 +335,8 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
         }
       }
 
-      if (sigCapitalSuperLarge?.enabled) {
-        const threshold = (Number(sigCapitalSuperLarge.params.threshold) || 3000) * 10000;
+      if (hasConfiguredIndicator(configured, "capital_flow_super_large")) {
+        const threshold = (Number(sigCapitalSuperLarge?.params.threshold) || 3000) * 10000;
         if (Math.abs(flow.superLargeNetInflow) >= threshold) {
           const signalKey = `${item.stockCode}:capital-flow-super-large`;
           const priority = resolvePrioritySync(signalKey, priorityCfg);
@@ -368,7 +388,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       const breakoutVolumeThreshold = Number(sigBreakout?.params.volumeThreshold) || 1.5;
 
       if (
-        sigBreakout?.enabled &&
+        hasConfiguredIndicator(configured, "breakout_with_volume") &&
         quote?.price &&
         plan?.resistance &&
         quote.price >= plan.resistance &&
@@ -390,7 +410,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       }
 
       if (
-        sigBreakSupport?.enabled &&
+        hasConfiguredIndicator(configured, "break_support") &&
         quote?.price &&
         plan?.support &&
         quote.price <= plan.support
@@ -423,8 +443,8 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
         // --- MA 突破/跌破 ---
         const customMaAbove = configured.find((a) => a.indicator === "ma_breakout_above");
         const customMaBelow = configured.find((a) => a.indicator === "ma_breakout_below");
-        const checkMaAbove = !!customMaAbove || !!sigMaBreakoutAbove?.enabled;
-        const checkMaBelow = !!customMaBelow || !!sigMaBreakoutBelow?.enabled;
+        const checkMaAbove = !!customMaAbove;
+        const checkMaBelow = !!customMaBelow;
         if (checkMaAbove || checkMaBelow) {
           const periodAbove = customMaAbove
             ? readThresholdParam(customMaAbove.threshold, "period", 20)
@@ -484,14 +504,14 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
         // --- MACD 金叉/死叉 ---
         const customMacdGolden = configured.find((a) => a.indicator === "macd_golden_cross");
         const customMacdDeath = configured.find((a) => a.indicator === "macd_death_cross");
-        if (customMacdGolden || sigMacdGoldenCross?.enabled || customMacdDeath || sigMacdDeathCross?.enabled) {
+        if (customMacdGolden || customMacdDeath) {
           const { dif, dea } = computeMACD(closes);
           if (dif.length >= 2 && dea.length >= 2) {
             const difToday = dif[lastIdx];
             const deaToday = dea[lastIdx];
             const difPrev = dif[prevIdx];
             const deaPrev = dea[prevIdx];
-            if ((customMacdGolden || sigMacdGoldenCross?.enabled) && difPrev <= deaPrev && difToday > deaToday) {
+            if (customMacdGolden && difPrev <= deaPrev && difToday > deaToday) {
               const signalKey = `${item.stockCode}:macd-golden-cross`;
               const priority = resolvePrioritySync(signalKey, priorityCfg);
               alertItems.push({
@@ -506,7 +526,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
                 message: `${item.stockName}(${item.stockCode}) MACD 金叉,DIF ${difToday.toFixed(3)} 上穿 DEA ${deaToday.toFixed(3)},现价 ${closeToday.toFixed(2)}`,
               });
             }
-            if ((customMacdDeath || sigMacdDeathCross?.enabled) && difPrev >= deaPrev && difToday < deaToday) {
+            if (customMacdDeath && difPrev >= deaPrev && difToday < deaToday) {
               const signalKey = `${item.stockCode}:macd-death-cross`;
               const priority = resolvePrioritySync(signalKey, priorityCfg);
               alertItems.push({
@@ -527,14 +547,14 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
         // --- KDJ 超卖/超买 ---
         const customKdjOversold = configured.find((a) => a.indicator === "kdj_oversold");
         const customKdjOverbought = configured.find((a) => a.indicator === "kdj_overbought");
-        if (customKdjOversold || sigKdjOversold?.enabled || customKdjOverbought || sigKdjOverbought?.enabled) {
+        if (customKdjOversold || customKdjOverbought) {
           const { k: kArr, d: dArr } = computeKDJ(klines);
           if (kArr.length >= 2 && dArr.length >= 2) {
             const kToday = kArr[lastIdx];
             const dToday = dArr[lastIdx];
             const kPrev = kArr[prevIdx];
             const dPrev = dArr[prevIdx];
-            if (customKdjOversold || sigKdjOversold?.enabled) {
+            if (customKdjOversold) {
               const th = customKdjOversold
                 ? readThresholdParam(customKdjOversold.threshold, "threshold", 20)
                 : Number(sigKdjOversold?.params.threshold) || 20;
@@ -554,7 +574,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
                 });
               }
             }
-            if (customKdjOverbought || sigKdjOverbought?.enabled) {
+            if (customKdjOverbought) {
               const th = customKdjOverbought
                 ? readThresholdParam(customKdjOverbought.threshold, "threshold", 80)
                 : Number(sigKdjOverbought?.params.threshold) || 80;
@@ -578,71 +598,71 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
         }
       }
 
-      // === L3a 复合指标巡检(2026-06-22) ===
-      // 共享 klines,调用 l3a-indicator-runner 跑 YAML 规则树
-      try {
-        const builtinSignals = new Set<string>(stockSignalCache.get(item.stockCode));
-        // 把本轮新触发的技术指标信号也补进来(上面 push 完成但 stockSignalCache 是循环前快照)
-        for (const ai of alertItems) {
-          if (ai.stockCode !== item.stockCode) continue;
-          const suffix = ai.signalKey.split(":").slice(1).join(":");
-          if (!suffix) continue;
-          const base = suffix.split(":")[0];
-          builtinSignals.add(base.replace(/-/g, "_"));
-        }
-        const l3aTriggered = await runL3aIndicatorsForStock({
-          stockCode: item.stockCode,
-          klines,
-          builtinSignals,
-        });
-        for (const t of l3aTriggered) {
-          const signalKey = `${item.stockCode}:composite:${t.configKey}`;
-          const priority = resolvePrioritySync(signalKey, priorityCfg);
-          const expTag = t.reliability === "experimental" ? "[experimental] " : "";
-          const scoreText = t.score != null ? `,得分 ${(t.score * 100).toFixed(0)}` : "";
-          const notesText = t.notes.length > 0 ? `;${t.notes.join(";")}` : "";
-          alertItems.push({
+      if (hasConfiguredIndicator(configured, "composite")) {
+        try {
+          const builtinSignals = new Set<string>(stockSignalCache.get(item.stockCode));
+          // 把本轮新触发的技术指标信号也补进来(上面 push 完成但 stockSignalCache 是循环前快照)
+          for (const ai of alertItems) {
+            if (ai.stockCode !== item.stockCode) continue;
+            const suffix = ai.signalKey.split(":").slice(1).join(":");
+            if (!suffix) continue;
+            const base = suffix.split(":")[0];
+            builtinSignals.add(base.replace(/-/g, "_"));
+          }
+          const l3aTriggered = await runL3aIndicatorsForStock({
             stockCode: item.stockCode,
-            stockName: item.stockName,
-            type: "indicator",
-            signalKey,
-            relationToPlan,
-            price: quote?.price ?? klines[klines.length - 1]?.close,
-            priority,
-            severity: severityFromPriority(priority),
-            message: `${expTag}${item.stockName}(${item.stockCode}) 触发复合指标「${t.configName}」${scoreText}${notesText}`,
+            klines,
+            builtinSignals,
           });
+          for (const t of l3aTriggered) {
+            const signalKey = `${item.stockCode}:composite:${t.configKey}`;
+            const priority = resolvePrioritySync(signalKey, priorityCfg);
+            const expTag = t.reliability === "experimental" ? "[experimental] " : "";
+            const scoreText = t.score != null ? `,得分 ${(t.score * 100).toFixed(0)}` : "";
+            const notesText = t.notes.length > 0 ? `;${t.notes.join(";")}` : "";
+            alertItems.push({
+              stockCode: item.stockCode,
+              stockName: item.stockName,
+              type: "indicator",
+              signalKey,
+              relationToPlan,
+              price: quote?.price ?? klines[klines.length - 1]?.close,
+              priority,
+              severity: severityFromPriority(priority),
+              message: `${expTag}${item.stockName}(${item.stockCode}) 触发复合指标「${t.configName}」${scoreText}${notesText}`,
+            });
+          }
+        } catch (err) {
+          logger.warn(`L3a 巡检失败 ${item.stockCode}: ${(err as Error).message}`);
         }
-      } catch (err) {
-        logger.warn(`L3a 巡检失败 ${item.stockCode}: ${(err as Error).message}`);
       }
 
-      // === L3b 沙箱脚本巡检(2026-06-22) ===
-      // 只跑 schedule: intraday 的脚本(daily_post_market 默认不进巡检)
-      try {
-        const l3bTriggered = await runL3bIndicatorsForStock({
-          stockCode: item.stockCode,
-          klines,
-        });
-        for (const t of l3bTriggered) {
-          const signalKey = `${item.stockCode}:script:${t.registryKey}:${t.triggeredField}`;
-          const priority = resolvePrioritySync(signalKey, priorityCfg);
-          const expTag = t.reliability === "experimental" ? "[experimental] " : "";
-          const notesText = t.notes.length > 0 ? `;${t.notes.join(";")}` : "";
-          alertItems.push({
+      if (hasConfiguredIndicator(configured, "script")) {
+        try {
+          const l3bTriggered = await runL3bIndicatorsForStock({
             stockCode: item.stockCode,
-            stockName: item.stockName,
-            type: "indicator",
-            signalKey,
-            relationToPlan,
-            price: quote?.price ?? klines[klines.length - 1]?.close,
-            priority,
-            severity: severityFromPriority(priority),
-            message: `${expTag}${item.stockName}(${item.stockCode}) 触发脚本指标「${t.registryName}.${t.triggeredField}」${notesText}`,
+            klines,
           });
+          for (const t of l3bTriggered) {
+            const signalKey = `${item.stockCode}:script:${t.registryKey}:${t.triggeredField}`;
+            const priority = resolvePrioritySync(signalKey, priorityCfg);
+            const expTag = t.reliability === "experimental" ? "[experimental] " : "";
+            const notesText = t.notes.length > 0 ? `;${t.notes.join(";")}` : "";
+            alertItems.push({
+              stockCode: item.stockCode,
+              stockName: item.stockName,
+              type: "indicator",
+              signalKey,
+              relationToPlan,
+              price: quote?.price ?? klines[klines.length - 1]?.close,
+              priority,
+              severity: severityFromPriority(priority),
+              message: `${expTag}${item.stockName}(${item.stockCode}) 触发脚本指标「${t.registryName}.${t.triggeredField}」${notesText}`,
+            });
+          }
+        } catch (err) {
+          logger.warn(`L3b 巡检失败 ${item.stockCode}: ${(err as Error).message}`);
         }
-      } catch (err) {
-        logger.warn(`L3b 巡检失败 ${item.stockCode}: ${(err as Error).message}`);
       }
     } catch {
       logger.warn(`技术指标检查失败: ${item.stockCode}`);
@@ -650,12 +670,14 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
   }
 
   // 放量滞涨/滞跌检查（5分钟K线）
-  if (sigVolPriceDiv?.enabled) {
-    const volMultiplier = Number(sigVolPriceDiv.params.volumeMultiplier) || 3;
-    const priceRangePct = Number(sigVolPriceDiv.params.priceRangePercent) || 0.5;
+  if (customIndicatorSet.has("volume_price_divergence")) {
+    const volMultiplier = Number(sigVolPriceDiv?.params.volumeMultiplier) || 3;
+    const priceRangePct = Number(sigVolPriceDiv?.params.priceRangePercent) || 0.5;
 
     for (const item of items) {
       try {
+        const configured = customAlertMap.get(item.stockCode) ?? [];
+        if (!hasConfiguredIndicator(configured, "volume_price_divergence")) continue;
         const minuteBars = await getMinuteKline(item.stockCode, 48);
         if (minuteBars.length < 10) continue;
 
@@ -689,31 +711,13 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
     }
   }
 
-  const deduped = await filterAndRecordAlerts(userId, instanceId, alertItems, quoteMap);
+  const deduped = await filterAndRecordAlerts(userId, instanceId, alertItems, quoteMap, watchPolicy);
 
   if (deduped.length > 0) {
     logger.info(`巡检发现 ${deduped.length} 条提醒`);
   }
 
   return deduped;
-}
-
-/** 是否在 A 股交易时间 */
-function isTradingTime(): boolean {
-  const now = new Date();
-  // 转为北京时间
-  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-  const bjTime = new Date(utc + 8 * 3600000);
-  const hour = bjTime.getHours();
-  const minute = bjTime.getMinutes();
-  const day = bjTime.getDay();
-
-  // 周末不交易
-  if (day === 0 || day === 6) return false;
-
-  const timeNum = hour * 100 + minute;
-  // 9:30 - 11:30, 13:00 - 15:00
-  return (timeNum >= 930 && timeNum <= 1130) || (timeNum >= 1300 && timeNum <= 1500);
 }
 
 /** 格式化提醒列表为推送文本 */
@@ -871,7 +875,8 @@ async function filterAndRecordAlerts(
   userId: string,
   instanceId: string,
   items: AlertItem[],
-  quoteMap: Map<string, { price: number }>
+  quoteMap: Map<string, { price: number }>,
+  watchPolicy: MarketWatchPolicy
 ): Promise<AlertItem[]> {
   const now = new Date();
   const createdAt = now.toISOString();
@@ -967,7 +972,9 @@ async function filterAndRecordAlerts(
       await upsertActiveSignalState(userId, instanceId, item, createdAt);
     }
     dailyCounts.set(item.stockCode, (dailyCounts.get(item.stockCode) ?? 0) + 1);
-    result.push(item);
+    if (shouldPushAlert(item, watchPolicy)) {
+      result.push(item);
+    }
   }
 
   return result;
@@ -1109,6 +1116,106 @@ function formatWan(yuan: number): string {
   const sign = wan >= 0 ? "" : "-";
   if (abs >= 10000) return `${sign}${(abs / 10000).toFixed(2)}亿`;
   return `${sign}${abs.toFixed(0)}万`;
+}
+
+async function loadMarketWatchPolicy(userId: string): Promise<MarketWatchPolicy> {
+  const fallback: MarketWatchPolicy = {
+    enabled: true,
+    onlyPushOnException: true,
+    defaultCheckWindows: [],
+    exceptionRules: [],
+    nonExceptionRules: [],
+  };
+  try {
+    const store = new WorkspaceStore(userId);
+    const watch = await store.readWatch();
+    if (!watch) return fallback;
+    return {
+      enabled: watch.mode !== "disabled" && watch.mode !== "off",
+      onlyPushOnException: watch.only_push_on_exception !== false,
+      defaultCheckWindows: normalizeWatchWindows(watch.default_check_windows),
+      exceptionRules: normalizeWatchRules(watch.exception_rules),
+      nonExceptionRules: normalizeWatchRules(watch.non_exception_rules),
+    };
+  } catch (error) {
+    logger.warn(`读取 watch.yaml 失败 user=${userId}: ${(error as Error).message}`);
+    return fallback;
+  }
+}
+
+function normalizeWatchWindows(value: unknown): MarketWatchWindow[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") return { time: item.trim() } as MarketWatchWindow;
+      if (!item || typeof item !== "object") return null;
+      const raw = item as Record<string, unknown>;
+      const time = typeof raw.time === "string" ? raw.time.trim() : "";
+      if (!time) return null;
+      return {
+        time,
+        name: typeof raw.name === "string" ? raw.name.trim() : undefined,
+        purpose: typeof raw.purpose === "string" ? raw.purpose.trim() : undefined,
+        enabled: typeof raw.enabled === "boolean" ? raw.enabled : undefined,
+      } satisfies MarketWatchWindow;
+    })
+    .filter((item): item is MarketWatchWindow => Boolean(item));
+}
+
+function normalizeWatchRules(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+}
+
+function shouldRunMarketWatchNow(policy: MarketWatchPolicy, now = new Date()): boolean {
+  if (!policy.enabled) return false;
+  const bj = beijingNow(now);
+  if (!isBeijingTradingDay(now)) return false;
+
+  const windows = policy.defaultCheckWindows.filter((window) => window.enabled !== false);
+  if (windows.length === 0) {
+    const timeNum = bj.getHours() * 100 + bj.getMinutes();
+    return (timeNum >= 920 && timeNum <= 1130) || (timeNum >= 1300 && timeNum <= 1500);
+  }
+
+  return windows.some((window) => isWithinWindow(window.time, bj, MARKET_WATCH_WINDOW_TOLERANCE_MINUTES));
+}
+
+function isWithinWindow(timeText: string | undefined, bj: Date, toleranceMinutes: number): boolean {
+  if (!timeText) return false;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(timeText.trim());
+  if (!m) return false;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return false;
+  const target = new Date(bj);
+  target.setHours(hour, minute, 0, 0);
+  const diffMinutes = Math.abs((bj.getTime() - target.getTime()) / 60000);
+  return diffMinutes <= toleranceMinutes;
+}
+
+function shouldPushAlert(alert: AlertItem, policy: MarketWatchPolicy): boolean {
+  if (!policy.onlyPushOnException) return true;
+  if (alert.priority === "P0") return true;
+  if (matchesAnyRule(alert, policy.nonExceptionRules)) return false;
+  if (alert.priority === "P1") return matchesAnyRule(alert, policy.exceptionRules);
+  return false;
+}
+
+function matchesAnyRule(alert: AlertItem, rules: string[]): boolean {
+  if (rules.length === 0) return false;
+  const haystack = `${alert.stockName} ${alert.message} ${alert.relationToPlan}`.toLowerCase();
+  return rules.some((rule) => {
+    const tokens = extractRuleTokens(rule);
+    return tokens.some((token) => haystack.includes(token.toLowerCase()));
+  });
+}
+
+function extractRuleTokens(rule: string): string[] {
+  return rule
+    .match(/[A-Za-z0-9_.-]+|[\u4e00-\u9fa5]{2,}/g)
+    ?.map((token) => token.trim())
+    .filter((token) => token.length >= 2) ?? [];
 }
 
 // ============ 信号优先级解析(WP3a 2026-06-21) ============

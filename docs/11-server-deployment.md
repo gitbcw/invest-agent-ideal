@@ -254,42 +254,4 @@ npm run cache:clear-indicator -- --apply       # 实际删除
 npm run cache:clear-indicator -- --days 7 --apply
 ```
 
-## 13. Mac mini Hermes 旁路自恢复
 
-当前本机 Hermes 旁路使用 launchd 管理，服务标签：
-
-```text
-local.invest-agent-hermes
-```
-
-对应配置文件：
-
-```text
-scripts/launchd/local.invest-agent-hermes.plist
-```
-
-运行特性：
-
-- `RunAtLoad=true`：Mac mini 登录用户会话加载时自动启动。
-- `KeepAlive=true`：进程异常退出后由 launchd 拉起。
-- 服务端口：`22649`。
-- Hermes Profile：`invest-agent`。
-- 标准输出日志：`logs/hermes-service.out.log`。
-- 错误日志：`logs/hermes-service.err.log`。
-
-常用命令：
-
-```bash
-launchctl kickstart -k gui/$(id -u)/local.invest-agent-hermes
-curl -fsS http://localhost:22649/health
-npm run smoke:hermes-service
-```
-
-验收标准：
-
-- `launchctl print gui/$(id -u)/local.invest-agent-hermes` 显示 `state = running`。
-- `22649 /health` 返回 `status: ok`。
-- `hermesAcp.enabled=true`，profile 为 `invest-agent`。
-- `logs/hermes-service.out.log` 和 `logs/hermes-service.err.log` 存在。
-
-注意：该旁路与主路 `22648` 分离。验证或重启 Hermes 旁路时，不应重启 `22648`。

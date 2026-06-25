@@ -53,8 +53,8 @@ async function resolveWorkspacePath(): Promise<string> {
   if (cachedWorkspacePath) return cachedWorkspacePath;
   const { ensureWorkspace } = await import("../lib/workspace.js");
   const { DEFAULT_USER_ID } = await import("../lib/user-context.js");
-  await ensureWorkspace({ userId: DEFAULT_USER_ID });
-  cachedWorkspacePath = join(process.cwd(), "workspaces", DEFAULT_USER_ID);
+  const workspace = await ensureWorkspace({ userId: DEFAULT_USER_ID });
+  cachedWorkspacePath = workspace.path;
   return cachedWorkspacePath;
 }
 

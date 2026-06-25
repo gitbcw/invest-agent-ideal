@@ -10,7 +10,7 @@
  */
 
 import { ensureWorkspace, resolveWorkspacePath } from "../dist/lib/workspace.js";
-import { readSchedules, entryHitsNow, beijingNow } from "../dist/lib/schedules-loader.js";
+import { readSchedules, entryHitsNow, beijingNow, isBeijingTradingDay, beijingDateKey } from "../dist/lib/schedules-loader.js";
 import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -42,6 +42,8 @@ const schedules = readSchedules(TEST_USER);
 assert(schedules.timezone === "Asia/Shanghai", `timezone 解析正确 (got: ${schedules.timezone})`);
 assert(schedules.daily_review?.enabled === true, "daily_review.enabled = true");
 assert(schedules.daily_review?.default_time === "19:00", `daily_review.default_time = 19:00 (got: ${schedules.daily_review?.default_time})`);
+assert(schedules.daily_review?.trading_days_only === true, "daily_review.trading_days_only = true");
+assert(schedules.run_policy?.skip_automatic_if_manual_report_exists === true, "run_policy.skip_automatic_if_manual_report_exists = true");
 assert(schedules.weekly_review?.default_time === "Saturday 09:00", `weekly_review.default_time (got: ${schedules.weekly_review?.default_time})`);
 assert(schedules.monthly_review?.default_time === "day_1 09:00", `monthly_review.default_time (got: ${schedules.monthly_review?.default_time})`);
 
@@ -53,9 +55,16 @@ console.log("\n[2] entryHitsNow 命中判断");
 const daily19 = { enabled: true, default_time: "19:00" };
 const time19 = new Date("2026-06-22T11:00:00.000Z"); // UTC 11:00 = BJ 19:00
 assert(entryHitsNow(daily19, time19) === true, "daily 19:00 在 BJ 19:00 命中");
+assert(beijingDateKey(time19) === "2026-06-22", "beijingDateKey 使用北京时间日期");
+assert(isBeijingTradingDay(time19) === true, "周一为交易日");
 
 const time20 = new Date("2026-06-22T12:00:00.000Z"); // BJ 20:00
 assert(entryHitsNow(daily19, time20) === false, "daily 19:00 在 BJ 20:00 不命中");
+
+const sunday19 = new Date("2026-06-28T11:00:00.000Z"); // 周日 BJ 19:00
+assert(isBeijingTradingDay(sunday19) === false, "周日不是交易日");
+assert(entryHitsNow({ enabled: true, trading_days_only: true, default_time: "19:00" }, sunday19) === false, "trading_days_only=true 时周日不命中");
+assert(entryHitsNow({ enabled: true, trading_days_only: false, default_time: "19:00" }, sunday19) === true, "trading_days_only=false 时周日可命中");
 
 // weekly "Saturday 09:00" — 2026-06-27 是周六,BJ 09:00 = UTC 01:00
 const weeklySat = { enabled: true, default_time: "Saturday 09:00" };

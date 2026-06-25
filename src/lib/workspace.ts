@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "yaml";
 import { config } from "./config.js";
@@ -23,12 +23,17 @@ export function resolveWorkspacePath(userId: string): string {
   return path.join(config.workspace.root, safe);
 }
 
+function legacyWorkspacePath(userId: string): string {
+  return path.join(process.cwd(), "workspaces", sanitizeUserId(userId));
+}
+
 export function workspaceTemplatePath(): string {
   return config.workspace.templatePath;
 }
 
 export async function ensureWorkspace(identity: WorkspaceIdentity): Promise<EnsureWorkspaceResult> {
   const targetPath = resolveWorkspacePath(identity.userId);
+  await migrateLegacyWorkspaceIfNeeded(identity.userId, targetPath);
   if (existsSync(path.join(targetPath, "AGENTS.md"))) {
     await stampTenantIdentity(targetPath, identity).catch((error) => {
       logger.warn(`workspace.stampTenantIdentity failed (existing) path=${targetPath}: ${error}`);
@@ -47,6 +52,22 @@ export async function ensureWorkspace(identity: WorkspaceIdentity): Promise<Ensu
   });
   logger.info(`workspace.created userId=${identity.userId} path=${targetPath}`);
   return { path: targetPath, created: true };
+}
+
+async function migrateLegacyWorkspaceIfNeeded(userId: string, targetPath: string) {
+  const legacyPath = legacyWorkspacePath(userId);
+  if (path.resolve(legacyPath) === path.resolve(targetPath)) return;
+  if (existsSync(path.join(targetPath, "AGENTS.md"))) return;
+  if (!existsSync(path.join(legacyPath, "AGENTS.md"))) return;
+
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  try {
+    await rename(legacyPath, targetPath);
+  } catch {
+    await cp(legacyPath, targetPath, { recursive: true });
+    await rm(legacyPath, { recursive: true, force: true });
+  }
+  logger.info(`workspace.migrated userId=${userId} from=${legacyPath} to=${targetPath}`);
 }
 
 async function stampTenantIdentity(workspacePath: string, identity: WorkspaceIdentity) {

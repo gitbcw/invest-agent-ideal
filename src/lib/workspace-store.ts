@@ -99,6 +99,8 @@ export interface StrategyYaml {
 export interface WatchYaml {
   mode?: string;
   only_push_on_exception?: boolean;
+  check_interval_minutes?: number;
+  custom_frequency?: number | string | null;
   default_check_windows?: unknown[];
   exception_rules?: unknown[];
   non_exception_rules?: unknown[];
@@ -109,18 +111,6 @@ export interface WatchYaml {
   alert_rules?: unknown[];
   required_output_fields?: string[];
   last_confirmed_at?: string | null;
-}
-
-export interface TriageYaml {
-  confidence_threshold?: number;
-  reject_threshold?: number;
-  max_short_circuit_len?: number;
-  llm?: {
-    profile?: "light" | "deep";
-    temperature?: number;
-    max_tokens?: number;
-  };
-  provider_chain?: ("deepseek" | "doubao" | "stepfun")[];
 }
 
 export type RiskLevel = "P0" | "P1" | "P2";
@@ -174,6 +164,49 @@ export interface TradingStrategy {
   enabled?: boolean;
   created_at?: string;
   updated_at?: string;
+}
+
+export type InvestmentModelStatus = "active" | "draft" | "experimental" | "deprecated";
+
+export interface InvestmentModelRuleSet {
+  rules?: string[];
+  validation_questions?: string[];
+  notes?: string;
+}
+
+/**
+ * 投资模型实体(第一版组合容器)。
+ *
+ * 投资模型是用户投资体系的主对象,承接从选股到交易、复盘、退出的完整闭环。
+ * 交易策略是模型内部的执行模块,通过 trading_strategy_refs 引用。
+ */
+export interface InvestmentModel {
+  key: string;
+  name: string;
+  status?: InvestmentModelStatus;
+  orientation?: {
+    primary_basis?: string;
+    selection_basis?: string;
+    entry_basis?: string;
+    add_position_basis?: string;
+    exit_basis?: string;
+    [key: string]: unknown;
+  };
+  methodology_refs?: string[];
+  trading_strategy_refs?: string[];
+  selection?: InvestmentModelRuleSet;
+  entry?: InvestmentModelRuleSet;
+  add_position?: InvestmentModelRuleSet;
+  exit?: InvestmentModelRuleSet;
+  risk?: InvestmentModelRuleSet;
+  review?: InvestmentModelRuleSet;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface InvestmentModelsYaml {
+  default_model_key?: string;
+  models?: InvestmentModel[];
 }
 
 // ============ 内部工具 ============
@@ -378,13 +411,6 @@ export class WorkspaceStore {
     await writeYaml(path.join(this.root, "config/watch.yaml"), data);
   }
 
-  // ----- triage.yaml -----
-
-  async readTriageConfig(): Promise<TriageYaml | null> {
-    this.ensureReady();
-    return readYaml<TriageYaml>(path.join(this.root, "config/triage.yaml"));
-  }
-
   // ----- risk_taxonomy.yaml -----
 
   async readRiskTaxonomy(): Promise<RiskTaxonomyYaml | null> {
@@ -440,6 +466,65 @@ export class WorkspaceStore {
     if (idx < 0) return false;
     list.splice(idx, 1);
     await writeYaml(path.join(this.root, "config/trading_strategies.yaml"), list);
+    return true;
+  }
+
+  // ----- investment_models.yaml (投资模型:选股 → 交易 → 复盘 → 退出闭环) -----
+
+  async readInvestmentModelsConfig(): Promise<InvestmentModelsYaml> {
+    this.ensureReady();
+    const data = await readYaml<InvestmentModelsYaml>(path.join(this.root, "config/investment_models.yaml"));
+    return data ?? { default_model_key: "user-default", models: [] };
+  }
+
+  async readInvestmentModels(): Promise<InvestmentModel[]> {
+    const data = await this.readInvestmentModelsConfig();
+    return data.models ?? [];
+  }
+
+  async writeInvestmentModel(model: InvestmentModel): Promise<InvestmentModelsYaml> {
+    this.ensureReady();
+    const data = await this.readInvestmentModelsConfig();
+    const list = data.models ?? [];
+    const today = new Date().toISOString().slice(0, 10);
+    const idx = list.findIndex((m) => m.key === model.key);
+    const stamped: InvestmentModel = {
+      ...model,
+      status: model.status ?? list[idx]?.status ?? "active",
+      created_at: model.created_at ?? (idx >= 0 ? list[idx].created_at : today),
+      updated_at: today,
+    };
+    if (idx >= 0) {
+      list[idx] = stamped;
+    } else {
+      list.push(stamped);
+    }
+    const next: InvestmentModelsYaml = {
+      ...data,
+      models: list,
+    };
+    next.default_model_key = list.some((m) => m.key === data.default_model_key)
+      ? data.default_model_key
+      : stamped.key;
+    await writeYaml(path.join(this.root, "config/investment_models.yaml"), next);
+    return next;
+  }
+
+  async removeInvestmentModel(key: string): Promise<boolean> {
+    this.ensureReady();
+    const data = await this.readInvestmentModelsConfig();
+    const list = data.models ?? [];
+    const idx = list.findIndex((m) => m.key === key);
+    if (idx < 0) return false;
+    list.splice(idx, 1);
+    const nextDefault = list.some((m) => m.key === data.default_model_key)
+      ? data.default_model_key
+      : list[0]?.key;
+    await writeYaml(path.join(this.root, "config/investment_models.yaml"), {
+      ...data,
+      default_model_key: nextDefault,
+      models: list,
+    });
     return true;
   }
 

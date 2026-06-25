@@ -10,7 +10,7 @@ import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstan
 // 确保数据库目录存在
 mkdirSync(dirname(config.db.path), { recursive: true });
 
-const sqlite = new Database(config.db.path);
+export const sqlite: any = new Database(config.db.path);
 sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("foreign_keys = ON");
 
@@ -74,7 +74,7 @@ export function initDb() {
       owner_user_id TEXT NOT NULL,
       name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
-      backend TEXT NOT NULL DEFAULT 'hermes',
+      backend TEXT NOT NULL DEFAULT 'codex',
       skill_bundle_id TEXT,
       config TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
@@ -577,7 +577,7 @@ function ensureDefaultAiInstance() {
     .prepare(
       `INSERT OR IGNORE INTO ai_instances (
         id, project_id, owner_user_id, name, status, backend, skill_bundle_id, config, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'active', 'hermes', ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, 'active', 'codex', ?, ?, ?, ?)`
     )
     .run(
       DEFAULT_INSTANCE_ID,
@@ -856,7 +856,7 @@ function backfillHistoricalInstanceAssignments() {
   const insertInstance = sqlite.prepare(
     `INSERT OR IGNORE INTO ai_instances (
       id, project_id, owner_user_id, name, status, backend, skill_bundle_id, config, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'active', 'hermes', ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, 'active', 'codex', ?, ?, ?, ?)`
   );
 
   const transaction = sqlite.transaction(() => {

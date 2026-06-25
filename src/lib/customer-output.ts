@@ -6,7 +6,7 @@ const INTERNAL_TERMS: Array<[RegExp, string]> = [
   [/\b[A-Za-z0-9_-]{80,}\.[A-Za-z0-9_-]{32,}\b/g, "授权信息"],
   [/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, "授权信息"],
   [/^我会按[^\n]*(?:技能|上下文|接口|工具)[^\n]*\n*/g, ""],
-  [/```(?:bash|sh)?[\s\S]*?```/gi, "后台流程已处理"],
+  [/```(?:bash|sh|shell|zsh|console|terminal)\s*[\s\S]*?```/gi, "后台流程已处理"],
   [/curl\s+[^\n]+/gi, "后台流程已处理"],
   [/\b(?:POST|GET|PUT|PATCH|DELETE)\s+\/(?:api|admin|acp|\.well-known)\/[^\s，。；、)）]*/gi, "后台操作"],
   [/\/(?:api|admin|acp|\.well-known)\/[A-Za-z0-9/_?.=&%-]*/g, "后台操作"],
@@ -40,6 +40,11 @@ const INTERNAL_TERMS: Array<[RegExp, string]> = [
   [/\bMCP\b/g, "工具服务"],
   [/invest-agent-daily-review\s*skill/gi, "日复盘流程"],
   [/invest-agent-[A-Za-z0-9_-]+/g, "内部流程"],
+  [/plan\s*:\s*null/gi, "暂无交易预案"],
+  [/\bquoteAvailable\b/g, "行情可用状态"],
+  [/\bchangePercent\b/g, "涨跌幅"],
+  [/可能暂时无法正常触发/g, "需要巡检计算确认"],
+  [/触发可能延迟或条件未满足/g, "需要后续巡检确认条件是否满足"],
   [/\bskill\b/gi, "流程"],
   [/\bskills\b/gi, "流程"],
   [/Skill/g, "流程"],
@@ -60,6 +65,15 @@ const INTERNAL_TERMS: Array<[RegExp, string]> = [
   [/(?:确认|检查)(?:一下)?(?:服务|系统)状态/g, "如需我继续处理，可以再试一次"],
 ];
 
+const INTERNAL_CODE_FENCE_LANGS = new Set([
+  "bash",
+  "sh",
+  "shell",
+  "zsh",
+  "console",
+  "terminal",
+]);
+
 export function redactSensitiveText(text: string) {
   return String(text || "")
     .replace(/Authorization:\s*Bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gi, "Authorization: Bearer [REDACTED]")
@@ -71,7 +85,7 @@ export function redactSensitiveText(text: string) {
 }
 
 export function sanitizeCustomerText(text: string) {
-  let cleaned = extractCustomerVisibleText(redactSensitiveText(String(text || "")));
+  let cleaned = preserveCustomerCodeFences(extractCustomerVisibleText(redactSensitiveText(String(text || ""))));
   for (const [pattern, replacement] of INTERNAL_TERMS) {
     cleaned = cleaned.replace(pattern, replacement);
   }
@@ -80,6 +94,27 @@ export function sanitizeCustomerText(text: string) {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function preserveCustomerCodeFences(text: string) {
+  return text.replace(/```([A-Za-z0-9_-]*)\s*\n([\s\S]*?)```/g, (full, rawLang: string, body: string) => {
+    const lang = rawLang.toLowerCase();
+    if (INTERNAL_CODE_FENCE_LANGS.has(lang) || looksLikeInternalCommandBlock(body)) {
+      return full;
+    }
+    return body.trim();
+  });
+}
+
+function looksLikeInternalCommandBlock(body: string) {
+  return body
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .some((line) =>
+      /^(?:curl|npm|pnpm|yarn|node|tsx|tsc|sqlite3|launchctl|pm2)\b/.test(line) ||
+      /\b(?:localhost|127\.0\.0\.1):\d+\b/.test(line)
+    );
 }
 
 function extractCustomerVisibleText(text: string) {
@@ -101,12 +136,15 @@ function extractCustomerVisibleText(text: string) {
 
 function findFinalAnswerStart(text: string) {
   const markers = [
+    /【\d{4}-\d{2}-\d{2}[^】]*复盘摘要】/,
+    /【\d{4}-\d{2}-\d{2}[^】]*完整复盘】/,
+    /【\d{4}-\d{2}-\d{2}[^】]*复盘】/,
+    /当前持有\s*\d+\s*只[，,][^\n]*(?:涨跌|变化|如下)/,
     /已(?:经)?(?:加到|加入|添加到|添加进)自选(?:股|池)?[:：]?/,
     /已(?:经)?添加[\s\S]{0,80}?到自选(?:股|池)?[:：]?/,
     /已(?:经)?(?:完成|处理完成|更新|保存|设置|删除|移除)[:：]?/,
     /处理结果[:：]/,
     /结论[:：]/,
-    /【\d{4}-\d{2}-\d{2}[^】]*复盘】/,
   ];
 
   const starts = markers

@@ -10,17 +10,18 @@
  * 时间判断一律走北京时间(schedules.yaml 模板默认 Asia/Shanghai)。
  */
 
-import { generateDailyReview, generateWeeklyReview, getLatestReviewPushSummary } from "../handlers/review.js";
+import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { logger } from "../lib/logger.js";
 import type { PushCallback } from "./index.js";
 import { db } from "../db/index.js";
 import { settings } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { DEFAULT_USER_ID } from "../lib/user-context.js";
+import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
-import { readSchedules, entryHitsNow, beijingNow } from "../lib/schedules-loader.js";
+import { readSchedules, entryHitsNow, beijingNow, beijingDateKey } from "../lib/schedules-loader.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { runScheduledReviewTask } from "../acp/scheduled-tasks.js";
 
 const PUSH_TIME_KEY = "review_push_time";
 const DEFAULT_HOUR = 21;
@@ -66,8 +67,14 @@ function hasWorkspace(userId: string): boolean {
   return existsSync(join(resolveWorkspacePath(userId), "AGENTS.md"));
 }
 
-function shouldFire(kind: ReviewKind, userId: string, now: Date): boolean {
-  const dateKey = beijingNow(now).toISOString().slice(0, 10);
+async function hasExistingDailyReview(userId: string, dateKey: string): Promise<boolean> {
+  const row = await dailyPlanBackend.get(userId, DEFAULT_INSTANCE_ID, dateKey).catch(() => null);
+  return Boolean(row);
+}
+
+async function shouldFire(kind: ReviewKind, userId: string, now: Date): Promise<boolean> {
+  if (kind === "daily" && !isAfterDailyReviewScanStart(now)) return false;
+  const dateKey = beijingDateKey(now);
   const dedupeKey = `${dateKey}:${kind}:${userId}`;
   if (firedKeys.has(dedupeKey)) return false;
 
@@ -77,6 +84,12 @@ function shouldFire(kind: ReviewKind, userId: string, now: Date): boolean {
     if (kind === "daily") hit = entryHitsNow(schedules.daily_review, now);
     else if (kind === "weekly") hit = entryHitsNow(schedules.weekly_review, now);
     else if (kind === "monthly") hit = entryHitsNow(schedules.monthly_review, now);
+    if (hit && kind === "daily" && schedules.run_policy?.skip_automatic_if_manual_report_exists !== false) {
+      if (await hasExistingDailyReview(userId, dateKey)) {
+        logger.info(`跳过自动日复盘 user=${userId} date=${dateKey}: 当日已有复盘记录`);
+        hit = false;
+      }
+    }
   } else if (userId === DEFAULT_USER_ID && kind === "daily") {
     const clock = beijingNow(now);
     hit = clock.getHours() === fallbackHour && clock.getMinutes() === fallbackMinute;
@@ -91,21 +104,18 @@ function shouldFire(kind: ReviewKind, userId: string, now: Date): boolean {
 
 async function fire(kind: ReviewKind, userId: string, pushFn: PushCallback): Promise<void> {
   try {
-    if (kind === "daily") {
-      await generateDailyReview({ userId });
-      const summary = await getLatestReviewPushSummary({ userId });
-      if (summary) await pushFn(summary, { userId });
-    } else if (kind === "weekly") {
-      const text = await generateWeeklyReview({ userId });
-      const head = text.split("\n").slice(0, 5).join("\n");
-      await pushFn(`【周复盘已生成】\n${head}\n\n完整内容已落盘 workspace/reports/weekly/。`, { userId });
-    } else if (kind === "monthly") {
-      // monthly 当前没有独立的 generate 函数;先推一条提示,后续补 generateMonthlyReview。
-      await pushFn("【月复盘】当前尚未接入独立的月复盘生成函数,请通过 Dashboard 或 Codex 触发。", { userId });
-    }
+    const instanceId = defaultInstanceIdForUser(userId);
+    const text = await runScheduledReviewTask({ userId, instanceId }, kind);
+    if (text) await pushFn(text, { userId, instanceId });
   } catch (error) {
     logger.error(`复盘触发失败 kind=${kind} user=${userId}: ${error}`);
   }
+}
+
+function isAfterDailyReviewScanStart(now: Date): boolean {
+  const bj = beijingNow(now);
+  const timeNum = bj.getHours() * 100 + bj.getMinutes();
+  return timeNum >= 1500;
 }
 
 /**
@@ -125,7 +135,7 @@ export async function startReviewScheduler(
       const userIds = await getUserIds();
       for (const userId of userIds) {
         for (const kind of ["daily", "weekly", "monthly"] as ReviewKind[]) {
-          if (shouldFire(kind, userId, now)) {
+          if (await shouldFire(kind, userId, now)) {
             logger.info(`触发 ${kind} 复盘 user=${userId}`);
             await fire(kind, userId, pushFn);
           }

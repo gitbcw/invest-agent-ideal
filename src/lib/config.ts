@@ -1,6 +1,13 @@
 import "dotenv/config";
 import path from "node:path";
 
+const repoRoot = process.cwd();
+const defaultRuntimeDataRoot = path.resolve(repoRoot, "../../my-data/projects/invest-agent-ideal");
+
+function defaultWorkspaceRoot() {
+  return path.join(defaultRuntimeDataRoot, "workspaces");
+}
+
 export type LlmProvider = "deepseek" | "stepfun" | "doubao";
 
 export const config = {
@@ -53,17 +60,7 @@ export const config = {
       : [],
     acpCwd: process.env.CODEX_ACP_CWD || process.cwd(),
     acpTimeoutMs: Number(process.env.CODEX_ACP_TIMEOUT_MS) || 1800000,
-  },
-
-  hermes: {
-    enabled: process.env.HERMES_EXPERIMENT_ENABLED === "true",
-    profile: process.env.HERMES_PROFILE || "invest-agent",
-    acpCommand: process.env.HERMES_ACP_COMMAND || "/Users/combo/.local/bin/hermes",
-    acpArgs: process.env.HERMES_ACP_ARGS?.trim()
-      ? process.env.HERMES_ACP_ARGS.trim().split(/\s+/)
-      : ["-p", process.env.HERMES_PROFILE || "invest-agent", "acp", "--accept-hooks"],
-    acpCwd: process.env.HERMES_ACP_CWD || process.cwd(),
-    acpTimeoutMs: Number(process.env.HERMES_ACP_TIMEOUT_MS) || 1800000,
+    runtimeHome: path.resolve(process.env.CODEX_RUNTIME_HOME || path.join(defaultRuntimeDataRoot, "codex-home")),
   },
 
   weixin: {
@@ -76,7 +73,7 @@ export const config = {
   },
 
   workspace: {
-    root: path.resolve(process.env.WORKSPACE_ROOT || "./workspaces"),
+    root: path.resolve(process.env.WORKSPACE_ROOT || defaultWorkspaceRoot()),
     templatePath: path.resolve(process.env.WORKSPACE_TEMPLATE_PATH || "./templates/workspace"),
   },
 };

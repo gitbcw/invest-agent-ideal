@@ -1,5 +1,9 @@
 import { searchStock } from "./stock.js";
 
+const STOCK_NAME_ALIASES: Record<string, { code: string; name: string }> = {
+  赣峰锂业: { code: "002460", name: "赣锋锂业" },
+};
+
 export interface StockRef {
   code?: string;
   name?: string;
@@ -45,6 +49,21 @@ export async function resolveStockRefDetails(refs: StockRef[]): Promise<{ resolv
 
     if (!ref.name) {
       unresolved.push(ref);
+      continue;
+    }
+
+    const alias = STOCK_NAME_ALIASES[ref.name.trim()];
+    if (alias) {
+      if (!codes.includes(alias.code)) {
+        codes.push(alias.code);
+        resolved.push({
+          input: ref,
+          code: alias.code,
+          name: alias.name,
+          confidence: "high",
+          candidates: [alias],
+        });
+      }
       continue;
     }
 

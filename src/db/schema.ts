@@ -55,7 +55,7 @@ export const aiInstances = sqliteTable("ai_instances", {
   ownerUserId: text("owner_user_id").notNull(),
   name: text("name").notNull(),
   status: text("status").notNull().default("active"),
-  backend: text("backend").notNull().default("hermes"),
+  backend: text("backend").notNull().default("codex"),
   skillBundleId: text("skill_bundle_id"),
   config: text("config").notNull().default("{}"),
   createdAt: text("created_at").notNull(),

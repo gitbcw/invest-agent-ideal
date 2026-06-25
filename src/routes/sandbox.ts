@@ -780,9 +780,9 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, date: date ?? new Date().toISOString().slice(0, 10), content, summary: content.slice(0, 1200) };
   }));
 
-  app.post("/api/sandbox/alerts/check", sandboxSafe("invest.alert.check", async (ctx) => {
+  app.post<{ Body: { force?: boolean } }>("/api/sandbox/alerts/check", sandboxSafe("invest.alert.check", async (ctx, request) => {
     const { runAlertCheck, formatAlerts } = await import("../scheduler/alert-check.js");
-    const items = await runAlertCheck({ userId: ctx.userId, instanceId: ctx.instanceId });
+    const items = await runAlertCheck({ force: request.body?.force === true, userId: ctx.userId, instanceId: ctx.instanceId });
     return { ok: true, userId: ctx.userId, count: items.length, alerts: items, text: items.length > 0 ? formatAlerts(items) : "当前无提醒" };
   }));
 

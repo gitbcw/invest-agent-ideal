@@ -11,10 +11,10 @@ Read these first, in this order:
 | Document | Why It Exists |
 | --- | --- |
 | [../AGENTS.md](../AGENTS.md) | Project operating instructions for agents |
-| [ideal-refactor-plan.md](./ideal-refactor-plan.md) | **Current master plan** (2026-06-21): workspace model, Codex fallback, DeepSeek triage, 7 work packages with milestone roadmap. Supersedes historical runtime/convergence/UI strategy docs |
 | [table-ownership.md](./table-ownership.md) | SQLite table three-tier ownership (service / workspace / discard), the truth source for workspace migration boundaries |
 | [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md) | Sandbox token, permission, audit, and isolation model. Kept in root because table-ownership only covers table boundaries, not the underlying sandbox security model |
 | [composite-indicator-system.md](./composite-indicator-system.md) | Composite indicator system RFC (2026-06-22): L1 operators / L2 signals / L3a rule tree / L3b sandbox script, with main-force-control as first use case |
+| [investment-model-design.md](./investment-model-design.md) | Investment model v1: user-facing container for selection, trading, risk, review, and exit loops |
 | [trading-strategy-design.md](./trading-strategy-design.md) | Trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation, three trigger scenarios, review boundary |
 | [04-core-workflows.md](./04-core-workflows.md) | Core product loops: monitoring, alerts, reviews, screening, feedback |
 | [02-investment-methodology.md](./02-investment-methodology.md) | User investment methodology reference |
@@ -24,8 +24,10 @@ Read these first, in this order:
 
 - The product is a WeChat-first AI investment decision assistant and the first AI Project type in a broader runtime platform.
 - The durable product assets are Skills, Strategy Skill skeleton plus instance expansion, sandbox/tool protocols, deterministic service APIs, context building, confirmation workflows, audit, and saved artifacts.
-- Codex ACP is the current primary intelligent backend.
-- Hermes is optional: useful for experiments, comparison, and fallback validation, but not product semantics.
+- WeChat user messages now follow the direct workspace path: WeChat bridge resolves user/project/instance/workspace, then forwards the raw user message plus minimal channel context to Codex running with that workspace as cwd.
+- The service must not classify normal WeChat messages into review/onboarding/fast-lane intents. Those behaviors belong in the workspace template, AGENTS.md, skills, and user config.
+- ACP backend registry still exists for non-WeChat/admin paths and operational fallback. The WeChat direct path uses Codex scoped to the target workspace.
+- Hermes exited the main path on 2026-06-21; `src/acp/hermes-stdio-agent.ts`, `/api/hermes/*`, and the `BypassWeixinMobileBridge` parallel channel were deleted on 2026-06-23. Only the `backend === "hermes"` string remains in legacy push jobs for compatibility.
 - Profile is a runtime compatibility summary and routing residue only. Do not add methodology responsibility to Profile.
 - Investment method lives in Strategy Skills: protected skeleton plus instance expansion candidates.
 - The service owns deterministic execution: SQLite, market data, dashboard/workbench APIs, WeChat bridge, scheduler, alert push, sandbox, audit, and confirmation.
@@ -34,8 +36,9 @@ Read these first, in this order:
 - Full reviews, viewpoint validation, statistics, method candidates, and visible system value belong in the Investment Workbench.
 - Historical docs in `docs/archive/` should not steer new implementation unless a current source-of-truth doc explicitly points to them.
 - **Workspace model is the keystone** (2026-06-21 master plan): each user gets a copy of `templates/workspace/`, all private artifacts land in workspace yaml/jsonl/md, SQLite only keeps platform-level system responsibilities. Table-level boundaries are defined in [table-ownership.md](./table-ownership.md).
-- **DeepSeek triage layer is planned** (work package 1, not yet shipped): DeepSeek light classifies intent before Codex; deterministic / light_chat / complex three-way routing with multi-provider fallback. See [ideal-refactor-plan.md](./ideal-refactor-plan.md) section IV for details.
 - **Composite indicator system 5-layer architecture is shipped** (2026-06-22): L1 operators / L2 signals / L3a rule tree (YAML) / L3b sandbox script (isolated-vm) / acknowledgement gate. Main-force-control (ZZLKP) is the first customer use case end-to-end verified. See [composite-indicator-system.md](./composite-indicator-system.md) for the RFC.
+- **Investment model is the user-facing configuration center** (2026-06-24): onboarding should converge from scattered "style / methodology / trading strategy" setup to "configure your investment model". Each user has a default model; methods and trading strategies are components inside that model. See [investment-model-design.md](./investment-model-design.md).
+- **Scheduled tasks remain service-owned**: the scheduler scans workspace `config/watch.yaml` / `config/schedules.yaml` every minute, invokes workspace-scoped Codex for market-watch and review tasks, then pushes concise results when configured.
 
 ## Keep Or Archive Rule
 
@@ -58,8 +61,16 @@ Historical docs live under [archive/](./archive/). They are intentionally exclud
 
 ### 2026-06-22 WP6 doc convergence
 
-The following root docs were moved to `docs/archive/` because their content is fully covered by `ideal-refactor-plan.md`:
+The following root docs were moved to `docs/archive/` during the earlier WP6 convergence:
 
-- `38-runtime-skill-evolution-strategy.md` — Codex ACP main path decision, now restated in ideal-refactor-plan.md section I
+- `38-runtime-skill-evolution-strategy.md` — historical Codex ACP main path decision
 - `39-invest-agent-ui-workbench-strategy.md` — Dashboard → Investment Workbench product vision, not yet started; preserved as future UI reference
-- `40-engineering-convergence-plan.md` — pre-refactor 5-step convergence plan, superseded by ideal-refactor-plan.md work packages 0-6
+- `40-engineering-convergence-plan.md` — pre-refactor 5-step convergence plan
+
+### 2026-06-23 scope contraction
+
+`scope-contraction-plan.md` was archived after WP A1/A2/A3/C completed. The deletions (diet product line, BypassWeixinMobileBridge, conversation-task draft system, platform multi-project framework flattening) are summarized in `CLAUDE.md` and `AGENTS.md`; the detailed plan is preserved only as archaeology.
+
+### 2026-06-25 direct workspace cleanup
+
+`ideal-refactor-plan.md` and `ai-tool-planner-design.md` were archived after the experimental branch converged on the simpler direct workspace path. The previous DeepSeek triage, fast lane, shared context packet, and service-level tool planner direction is now historical only.
