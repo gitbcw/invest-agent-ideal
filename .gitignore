@@ -12,3 +12,7 @@ workspaces/
 .agents/
 eval-reports/
 .tmp/
+.hermes/
+__pycache__/
+*.pyc
+*.pyo
