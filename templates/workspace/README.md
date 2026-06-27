@@ -1,85 +1,51 @@
-# 投资助手工作空间模板
+# AI 投资助手模板工程
 
-> 本目录是 **模板**。真实用户工作空间由平台在用户接入时复制本目录得到,
-> 路径形如 `<WORKSPACE_ROOT>/<userId>/`。
+这是一个面向固定上班在职员工的低打扰 AI 投资助手模板。用户通过微信完成持仓录入、投资风格设定、分析方法维护、复盘能力配置和智能盯盘设置；系统基于用户确认后的记忆和知识库执行日复盘、周复盘、月复盘、公司财务分析、盘中异常提醒和投资问答。
 
-## 模板结构
+在 SaaS 形态下，外层平台为每个用户创建独立项目沙箱，并通过 Hermes 连接微信和模型。当前工程只维护本项目内的投资记忆、数据契约、技能协议、报告和审计记录。
 
-```text
-.
-├── AGENTS.md                    # 工作空间模型、边界、原则(中文)
-├── README.md                    # 本文件
-├── config/                      # 21 份用户可改的 yaml 协议
-│   ├── tenant.yaml              # 空间身份、Codex 兜底、路由层、任务幂等
-│   ├── paths.yaml               # 全部文件位置锚点
-│   ├── data_contracts.yaml      # 数据字段和事件类型契约
-│   ├── decision_policy.yaml     # 操作建议和确认规则
-│   ├── evidence_policy.yaml     # 证据等级和来源冲突
-│   ├── risk_taxonomy.yaml       # 风险分类和 P0/P1/P2 口径
-│   ├── interaction_policy.yaml  # 微信交互和低打扰
-│   ├── notification.yaml        # 通知策略和工作时间
-│   ├── schedules.yaml           # 日/周/月/财报/盯盘调度
-│   ├── portfolio.yaml           # 持仓、现金、观察仓、账户
-│   ├── strategy.yaml            # 投资风格、规则、边界
-│   ├── watch.yaml               # 智能盯盘规则
-│   ├── selection.yaml           # 观察池和选股产品策略
-│   ├── observation_pool.yaml    # 候选观察池
-│   ├── style_packs.yaml         # 默认风格包
-│   ├── skills.yaml              # 各 skill 启用和必须遵守的协议
-│   ├── sources.yaml             # 信息源和可靠性
-│   ├── privacy.yaml             # 隐私、安全和审计
-│   ├── onboarding.yaml          # 冷启动分层
-│   ├── product_metrics.yaml     # 产品成功指标
-│   └── mvp.yaml                 # MVP 优先级
-├── knowledge/                   # 协议文档和方法骨架
-│   ├── decision_protocol.md     # 决策记录和复盘协议
-│   ├── watch_protocol.md        # 盯盘协议
-│   ├── selection_protocol.md    # 选股协议
-│   ├── source_audit.md          # 来源审计协议
-│   ├── privacy_and_tenant_isolation.md
-│   ├── product_metrics_protocol.md
-│   └── methods/                 # 方法骨架(占位,用户后续补充)
-│       ├── fundamental.md
-│       ├── technical.md
-│       ├── macro.md
-│       └── risk.md
-├── memory/                      # 事件流(完全空的 jsonl)
-│   ├── audit_events.jsonl
-│   ├── behavior_events.jsonl
-│   ├── change_log.jsonl
-│   ├── decisions.jsonl          # 观点记录(供周/月复盘回看)
-│   ├── feedback.jsonl
-│   ├── method_changes.jsonl
-│   ├── source_events.jsonl
-│   └── task_runs.jsonl
-├── reports/                     # 报告产物(目录占位)
-│   ├── daily/
-│   ├── weekly/
-│   ├── monthly/
-│   ├── company/
-│   ├── alerts/
-│   └── metrics/
-├── financials/                  # 公司财报缓存(目录占位)
-│   └── companies/
-└── schemas/                     # JSON Schema(用于 jsonl 校验)
-    └── jsonl/
-        ├── audit_event.schema.json
-        ├── behavior_event.schema.json
-        ├── decision_record.schema.json
-        ├── source_event.schema.json
-        └── task_run.schema.json
+产品目标不是给用户制造更多信息，而是过滤噪音、维持纪律、释放精力，让用户在关键时刻看见风险和机会，平时少盯盘、少冲动、少重复分析。
+
+当前模板已包含一个最小可执行内核，位于 `src/invest_assistant/`：支持任务编排、安全 JSONL 写入、数据源接口、日复盘降级报告和产品指标统计。真实行情、公告、财报和微信会话由外层 Hermes 与数据 provider 继续接入。
+
+## 快速使用流程
+
+1. 首次使用时，通过微信录入当前持仓和观察仓。
+2. 系统整理识别结果，用户确认后写入 `config/portfolio.yaml`。
+3. 用户选择默认风格包，或通过微信描述自己的投资风格。
+4. 用户描述基本面、技术面、宏观和风控方法，系统整理后确认写入 `knowledge/methods/`。
+5. 用户确认日复盘、周复盘、月复盘、公司财务分析和智能盯盘的自动执行时间。
+5. 系统按配置输出简报到微信，完整报告落盘到 `reports/`。
+
+## MVP 运行入口
+
+```powershell
+$env:PYTHONPATH="src"
+python -m invest_assistant.cli daily-review --date 2026-06-12
+python -m invest_assistant.cli metrics --period 2026-06
 ```
 
-## 与 jr-backend 模板的差异
+未配置真实行情源时，系统会生成降级报告，不输出精确价格、盈亏或交易确认单。
 
-- **`config/tenant.yaml`**:删除 Hermes 段(主链路已退出),新增 `codex` 段(复杂推理兜底)和 `routing` 段(国产模型路由层 + 边界控制)。
-- **`config/paths.yaml`**:新增 `runtime` 段,声明 `invest-agent-ideal` 长驻服务的职责边界(模板不再内嵌 Python 内核)。
-- **`knowledge/methods/*.md`**:全部为占位骨架,用户后续通过微信或确认单补充。
-- **`memory/*.jsonl`**:完全空,无页眉。
-- **不复用**:原模板的 `skills/`、`.codex/skills/`、`src/invest_assistant/`、`pyproject.toml`、`requirements.txt` — 这些在本项目已有等价物。
+## 关键原则
 
-## 谁来实例化
+- 所有长期记忆变更必须二次确认。
+- 微信只推简报，完整报告落盘。
+- 智能盯盘只在异常触发时推送。
+- 日复盘默认工作日 19:00 自动执行，侧重价格和仓位。
+- 周复盘默认周六 09:00 自动执行，加入风险雷达。
+- 月复盘默认每月 1 号复盘上月，加入未来走势判断。
+- 公司财务分析加入基本面预警。
+- 工作时间只推 P0 重大事项，P1 晚间汇总，P2 仅记录。
+- 日复盘必须明确“今日是否需要操作”。
+- 交易建议必须先给操作确认单。
+- 周复盘提供“周末 10 分钟投资会议”。
+- 系统会识别追高、频繁短线询问、风格漂移等用户行为风险。
+- 用户主动触发后，同周期自动任务默认不重复执行。
+- 方法迭代必须用户确认后才能写入知识库。
+- 投资结论必须区分事实、推断、规则触发和不确定性。
+- 关键观点必须有数据来源、数据截止时间、置信度和缺失项。
+- 普通涨跌、未核验传闻和重复触发不应打断用户。
+- 辅助选股只做观察池、候选排雷和买入等待区，不做“今日推荐股票”。
 
-`invest-agent-ideal` 服务在用户首次接入时调用 `ensureWorkspace(userId)`,把本目录复制到 `<WORKSPACE_ROOT>/<userId>/`,然后注入用户身份字段(workspace.tenant_id / user_id / project_id)。
-
-具体 API 见工作包 0b(`src/lib/workspace.ts`)。
+详细说明见 [AI投资助手模板项目说明.md](docs/AI投资助手模板项目说明.md) 和 [MVP可执行产品架构.md](docs/MVP可执行产品架构.md)。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "周复盘"
+  short_description: "回测本周日复盘观点并生成下周执行建议"
+  default_prompt: "使用周复盘技能，汇总 reports/daily 和 memory/decisions.jsonl，生成本周复盘并保存到 reports/weekly。"

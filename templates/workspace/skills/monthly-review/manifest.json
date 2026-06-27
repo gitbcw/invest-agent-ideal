@@ -1,0 +1,8 @@
+{
+  "name": "monthly-review",
+  "description": "默认每月 1 号自动复盘上月并输出未来走势判断",
+  "triggers": ["月复盘", "本月总结", "月度复盘"],
+  "inputs": ["reports/weekly", "reports/daily", "memory", "config/strategy.yaml"],
+  "outputs": ["reports/monthly/YYYY-MM.md", "memory/method_changes.jsonl"],
+  "requires_confirmation_for_memory_write": false
+}

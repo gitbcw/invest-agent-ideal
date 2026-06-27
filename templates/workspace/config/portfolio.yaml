@@ -14,7 +14,8 @@ holdings: []
 #   market: "A股/H股/ETF/基金/商品"
 #   account: "账户或券商，可为空"
 #   currency: "CNY/HKD/USD"
-#   cost_price: 70.0          # 每股成本价(单价),用于浮亏/盈亏比计算;可不填
+#   cost: 0
+#   shares: 0
 #   market_value: null
 #   weight: null
 #   target_weight: null
@@ -24,8 +25,6 @@ holdings: []
 #   invalidation_signals: []
 #   liquidity_notes: ""
 #   notes: ""
-# 隐私边界:系统只存"每股成本价(单价)",用于算浮亏比例和盈亏比;
-# 数量、总金额、仓位价值属于用户隐私,不存储。
 
 watchlist: []
 # 示例结构：

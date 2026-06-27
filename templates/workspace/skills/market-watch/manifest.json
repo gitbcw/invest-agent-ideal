@@ -1,0 +1,8 @@
+{
+  "name": "market-watch",
+  "description": "基于日复盘观察点和盘中异常触发低噪音提醒",
+  "triggers": ["智能盯盘", "盘中提醒", "异动提醒", "设置盯盘"],
+  "inputs": ["config/watch.yaml", "config/notification.yaml", "config/portfolio.yaml", "config/strategy.yaml", "reports/daily", "memory/decisions.jsonl"],
+  "outputs": ["reports/alerts/YYYY-MM-DD.md"],
+  "requires_confirmation_for_memory_write": false
+}

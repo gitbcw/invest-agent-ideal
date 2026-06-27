@@ -1,0 +1,8 @@
+{
+  "name": "wechat-onboarding",
+  "description": "首次使用和长期记忆变更确认流程",
+  "triggers": ["开始使用", "录入持仓", "更新持仓", "调整风格", "设置助手"],
+  "inputs": ["AGENTS.md", "config/portfolio.yaml", "config/strategy.yaml", "config/style_packs.yaml", "config/notification.yaml", "config/decision_policy.yaml", "config/paths.yaml"],
+  "outputs": ["config/portfolio.yaml", "config/strategy.yaml", "config/notification.yaml", "config/decision_policy.yaml", "memory/change_log.jsonl"],
+  "requires_confirmation_for_memory_write": true
+}

@@ -1,0 +1,8 @@
+{
+  "name": "investment-qa",
+  "description": "只回答投资市场相关问题，并引用用户记忆和知识库",
+  "triggers": ["问答", "怎么看", "帮我分析", "为什么"],
+  "inputs": ["AGENTS.md", "config", "knowledge", "reports"],
+  "outputs": [],
+  "requires_confirmation_for_memory_write": true
+}

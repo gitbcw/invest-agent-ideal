@@ -1,4 +1,3 @@
-# 工作空间路径锚点。被 AGENTS.md 和路由层/Codex 加载,统一约定文件位置。
 root: "."
 memory_entry: "AGENTS.md"
 portfolio: "config/portfolio.yaml"
@@ -30,9 +29,7 @@ knowledge:
   privacy_protocol: "knowledge/privacy_and_tenant_isolation.md"
   product_metrics_protocol: "knowledge/product_metrics_protocol.md"
   selection_protocol: "knowledge/selection_protocol.md"
-
-plans:
-  daily: "plans/daily"  # WP4.7:日级预案/复盘产物,每 date 一份 yaml
+  capability_extension_protocol: "knowledge/capability_extension_protocol.md"
 
 reports:
   daily: "reports/daily"
@@ -50,7 +47,6 @@ memory:
   decisions: "memory/decisions.jsonl"
   feedback: "memory/feedback.jsonl"
   method_changes: "memory/method_changes.jsonl"
-  review_viewpoints: "memory/review_viewpoints.jsonl"
   behavior_events: "memory/behavior_events.jsonl"
   source_events: "memory/source_events.jsonl"
   audit_events: "memory/audit_events.jsonl"
@@ -59,19 +55,5 @@ memory:
 schemas:
   jsonl: "schemas/jsonl"
 
-# Node.js 长驻服务(invest-agent-ideal)负责的运行时边界。
-# 服务只处理状态化、时间化和系统级职责;投资判断、风格、方法、记忆沉淀都在工作空间内。
 runtime:
-  host_service: "invest-agent-ideal"
-  host_service_repo: "../../"
-  host_service_responsibilities:
-    - "微信登录、消息桥接和推送"
-    - "调度器和盘中巡检"
-    - "市场数据和公告抓取"
-    - "SQLite 持久层(用户身份、绑定、aiProjects 注册、市场缓存、沙箱审计、推送任务、跟踪记录)"
-    - "沙箱令牌签发与验证"
-    - "仪表盘 GUI"
-    - "本地 HTTP API"
-  host_service_not_responsible_for:
-    - "持仓结构、风格规则、方法、复盘产物(已迁移到工作空间 yaml/jsonl)"
-    - "投资判断和方法论推理(由 Codex ACP 在工作空间内完成)"
+  package: "src/invest_assistant"

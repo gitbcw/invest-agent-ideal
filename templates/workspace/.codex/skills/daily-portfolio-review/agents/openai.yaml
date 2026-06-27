@@ -1,0 +1,4 @@
+interface:
+  display_name: "日复盘"
+  short_description: "基于用户配置的持仓、策略、分析方法和最新行情生成每日复盘"
+  default_prompt: "使用日复盘技能，读取 config 和 knowledge 中的用户配置，生成今日复盘简报并将完整报告保存到 reports/daily。"
