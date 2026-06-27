@@ -617,7 +617,7 @@ function extractViewpointResolutions(content: string): Array<{
   resolution: string;
 }> {
   const lines = content.replace(/\r\n/g, "\n").split("\n");
-  // WP5.2:新增"日复盘观点回测/周观点回测"标题,兼容周复盘 Codex 输出。
+  // WP5.2:新增"日复盘观点回测/周观点回测"标题,兼容周复盘 agent 输出。
   const headingIndex = lines.findIndex((line) => /^#{0,3}\s*(?:[一二三四五六七八九十]+[、.．]\s*)?【?(?:上一轮观点回测|观点回测表|历史观点回测|日复盘观点回测|周观点回测)】?\s*$/.test(line.trim()));
   if (headingIndex < 0) return [];
 
@@ -718,7 +718,7 @@ async function getWeeklyViewpointSummary(userId: string, instanceId: string, wee
       open: counts.open ?? 0,
     },
     // WP5.2:透出 invalidationSignals/confidence/expectedReviewDate/reason/action,
-    // 让 Codex 在周复盘里自行调 get_quote/get_kline 拉行情,根据失效信号和验证条件判定 hit/miss。
+    // 让 agent 在周复盘里自行调 get_quote/get_kline 拉行情,根据失效信号和验证条件判定 hit/miss。
     rows: rows.map((item) => ({
       sourceDate: item.sourceDate,
       id: item.viewpointId,
@@ -748,9 +748,9 @@ async function getDailyReviewCoverage(userId: string, instanceId: string, startD
  * WP5.6:周/月复盘行为纠偏统计。
  *
  * 读 memory/behavior_events.jsonl,按时间范围筛,按 event_type 聚合计数 + 最近 30 条 action_confirmed 详情。
- * Codex 看 detail 自行识别追高/频繁短线/规则外请求模式(代码不做"模式识别",信任 agent)。
+ * agent 看 detail 自行识别追高/频繁短线/规则外请求模式(代码不做"模式识别",信任 agent)。
  *
- * sqlite 模式无 behavior_events 返回 available=false,Codex 在报告里说明"数据缺失"。
+ * sqlite 模式无 behavior_events 返回 available=false,agent 在报告里说明"数据缺失"。
  */
 async function collectBehaviorStats(
   userId: string,
@@ -764,7 +764,7 @@ async function collectBehaviorStats(
   actionConfirmedCount: number;
   conversationTurnCount: number;
   outOfScopeCount: number;
-  /** action_confirmed 详情(按时间排序,最多 30 条),Codex 据此识别追高/频繁短线 */
+  /** action_confirmed 详情(按时间排序,最多 30 条),agent 据此识别追高/频繁短线 */
   recentActions: Array<{
     occurred_at: string;
     code: string | null;
@@ -859,7 +859,7 @@ function formatWeeklyViewpointSummary(summary: Awaited<ReturnType<typeof getWeek
     }
   }
 
-  // WP5.2:对 open/pending 观点展开回测字段,让 Codex 拿到完整判定依据(失效信号 + 验证条件 + 行动建议)
+  // WP5.2:对 open/pending 观点展开回测字段,让 agent 拿到完整判定依据(失效信号 + 验证条件 + 行动建议)
   const backtestCandidates = summary.rows.filter((r) => r.status === "open" || r.status === "pending");
   if (backtestCandidates.length > 0) {
     lines.push("", "### 待回测观点详情(状态 open/pending)", "");
@@ -918,8 +918,8 @@ export async function buildMonthlyReviewContext(options: { userId?: string; inst
     .orderBy(desc(alertEvents.createdAt));
   const viewpointSummary = await getWeeklyViewpointSummary(userId, instanceId, monthStart, monthEnd);
   const dailyReviews = await getDailyReviewCoverage(userId, instanceId, monthStart, monthEnd);
-  // WP5.3:月复盘归因需要看到本月已有的 proposed 方法候选,避免 Codex 在月复盘中重复提议同一改动。
-  // 决策:不加 status filter,让 Codex 看到 proposed/confirmed/rejected 全部,确认语义后自己判断是否重新提议。
+  // WP5.3:月复盘归因需要看到本月已有的 proposed 方法候选,避免 agent 在月复盘中重复提议同一改动。
+  // 决策:不加 status filter,让 agent 看到 proposed/confirmed/rejected 全部,确认语义后自己判断是否重新提议。
   const methodChangeProposals = await methodChangeBackend.list(userId, instanceId, { limit: 30 });
   // WP5.6:月复盘行为纠偏统计
   const behaviorStats = await collectBehaviorStats(userId, instanceId, monthStart, monthEnd);
@@ -947,7 +947,7 @@ export async function buildMonthlyReviewContext(options: { userId?: string; inst
     alertSummary: formatAlertSummary(monthAlerts),
     viewpointSummary,
     viewpointSummaryText: formatWeeklyViewpointSummary(viewpointSummary),
-    // WP5.3:本月方法候选全量(含 proposed/confirmed/rejected),Codex 据此判断是否提议新候选
+    // WP5.3:本月方法候选全量(含 proposed/confirmed/rejected),agent 据此判断是否提议新候选
     methodChangeProposals: methodChangeProposals.map((r) => ({
       id: r.id,
       sourceType: r.sourceType,

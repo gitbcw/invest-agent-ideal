@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "../db/index.js";
-import { alertRules, alerts, alertEvents, codexAcpTraces, indicatorResults, portfolio, stockPlans, users, watchlist } from "../db/schema.js";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { alertRules, alerts, alertEvents, codexAcpTraces, indicatorResults, users } from "../db/schema.js";
+import { and, desc, eq } from "drizzle-orm";
 import { getSignalConfig, handleSignalConfigTool } from "../handlers/signal-config.js";
 import { getAlertInterval, setAlertInterval } from "../scheduler/index.js";
 import { renderDashboardPage } from "../admin/dashboard-page.js";
@@ -101,11 +101,11 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     }
     const instanceId = currentProject.instanceId;
 
-    const [holdings, watchItems, plans, legacyAlertRules, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, reviewViewpointRows, openViewpoints, dueViewpoints, methodCandidates, signals, indicators, interval, allUsers] =
+    const [portfolioRows, watchlistRows, planRows, legacyAlertRules, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, reviewViewpointRows, openViewpoints, dueViewpoints, methodCandidates, signals, indicators, interval, allUsers] =
       await Promise.all([
-        db.select().from(portfolio).where(and(eq(portfolio.userId, userId), eq(portfolio.instanceId, instanceId), isNull(portfolio.sellDate))),
-        db.select().from(watchlist).where(and(eq(watchlist.userId, userId), eq(watchlist.instanceId, instanceId))),
-        db.select().from(stockPlans).where(and(eq(stockPlans.userId, userId), eq(stockPlans.instanceId, instanceId))),
+        portfolioBackend.listActive(userId, instanceId),
+        watchlistBackend.list(userId, instanceId),
+        planBackend.list(userId, instanceId),
         db.select().from(alerts).where(and(eq(alerts.userId, userId), eq(alerts.instanceId, instanceId))),
         db.select().from(alertRules).where(and(eq(alertRules.userId, userId), eq(alertRules.instanceId, instanceId))),
         db.select().from(indicatorResults).where(and(eq(indicatorResults.userId, userId), eq(indicatorResults.instanceId, instanceId))).orderBy(desc(indicatorResults.calculatedAt)).limit(50),
@@ -143,6 +143,45 @@ export function registerDashboardRoutes(app: FastifyInstance) {
         getAlertInterval(),
         db.select().from(users).orderBy(users.displayName),
       ]);
+    const holdings = portfolioRows.map((h) => ({
+      id: h.rowId,
+      userId: h.userId ?? userId,
+      instanceId: h.instanceId ?? instanceId,
+      stockCode: h.code,
+      stockName: h.name,
+      buyDate: h.buyDate,
+      buyPrice: h.costPrice ?? null,
+      sellPrice: h.sellPrice ?? null,
+      sellDate: h.sellDate ?? null,
+      status: h.status,
+    }));
+    const watchItems = watchlistRows.map((w) => ({
+      id: w.rowId,
+      userId: w.userId ?? userId,
+      instanceId: w.instanceId ?? instanceId,
+      stockCode: w.code,
+      stockName: w.name,
+      addedAt: w.addedAt,
+      reason: w.reason ?? null,
+      source: w.source ?? "manual",
+    }));
+    const plans = planRows.map((p) => ({
+      id: p.rowId,
+      userId: p.userId ?? userId,
+      instanceId: p.instanceId ?? instanceId,
+      stockCode: p.code,
+      stockName: p.name,
+      support: p.support ?? null,
+      resistance: p.resistance ?? null,
+      targetPrice: p.targetPrice ?? null,
+      stopLoss: p.stopLoss ?? null,
+      notes: p.notes ?? null,
+      watchConditions: typeof p.watchConditions === "string" ? p.watchConditions : JSON.stringify(p.watchConditions ?? null),
+      linkedAlertRuleIds: JSON.stringify(p.linkedAlertRuleIds ?? []),
+      planType: p.planType ?? "manual",
+      strategyKey: p.strategyKey ?? null,
+      updatedAt: p.updatedAt,
+    }));
 
     const todayEvents = recentEvents.filter((e) => e.eventDate === today);
 
@@ -594,8 +633,8 @@ export function registerDashboardRoutes(app: FastifyInstance) {
 
   app.post<{ Body: { backend: AcpBackendId } }>("/api/acp-backends/switch", safe(async (request, reply) => {
     const { backend } = request.body ?? {};
-    if (!["kimi", "claude", "codex"].includes(backend)) {
-      return reply.status(400).send({ ok: false, error: "backend 必须是 kimi / claude / codex" });
+    if (backend !== "hermes") {
+      return reply.status(400).send({ ok: false, error: "backend 必须是 hermes" });
     }
     const status = await switchAcpBackend(backend);
     return { ok: true, status, backends: (await listAcpBackends()).backends };

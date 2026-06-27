@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "../db/index.js";
-import { alertEvents, alertRules, alerts, codexAcpTraces, indicatorResults, investmentProfiles, methodologyProfiles, portfolio, stockPlans, watchlist } from "../db/schema.js";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { alertEvents, alertRules, alerts, codexAcpTraces, indicatorResults, investmentProfiles, methodologyProfiles } from "../db/schema.js";
+import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
-import { ACTIVE_BACKEND } from "../lib/data-backend.js";
+import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
 import { WorkspaceStore, type StrategyYaml } from "../lib/workspace-store.js";
@@ -42,6 +42,54 @@ function parseJsonText(value: string | null | undefined, fallback: unknown) {
   } catch {
     return fallback;
   }
+}
+
+function serializeHolding(row: Awaited<ReturnType<typeof portfolioBackend.listActive>>[number], userId: string, instanceId: string) {
+  return {
+    id: row.rowId,
+    userId: row.userId ?? userId,
+    instanceId: row.instanceId ?? instanceId,
+    stockCode: row.code,
+    stockName: row.name,
+    buyDate: row.buyDate,
+    buyPrice: row.costPrice ?? null,
+    sellPrice: row.sellPrice ?? null,
+    sellDate: row.sellDate ?? null,
+    status: row.status,
+  };
+}
+
+function serializeWatchItem(row: Awaited<ReturnType<typeof watchlistBackend.list>>[number], userId: string, instanceId: string) {
+  return {
+    id: row.rowId,
+    userId: row.userId ?? userId,
+    instanceId: row.instanceId ?? instanceId,
+    stockCode: row.code,
+    stockName: row.name,
+    addedAt: row.addedAt,
+    reason: row.reason ?? null,
+    source: row.source ?? "manual",
+  };
+}
+
+function serializePlan(row: Awaited<ReturnType<typeof planBackend.list>>[number], userId: string, instanceId: string) {
+  return {
+    id: row.rowId,
+    userId: row.userId ?? userId,
+    instanceId: row.instanceId ?? instanceId,
+    stockCode: row.code,
+    stockName: row.name,
+    support: row.support ?? null,
+    resistance: row.resistance ?? null,
+    targetPrice: row.targetPrice ?? null,
+    stopLoss: row.stopLoss ?? null,
+    notes: row.notes ?? null,
+    watchConditions: typeof row.watchConditions === "string" ? row.watchConditions : JSON.stringify(row.watchConditions ?? null),
+    linkedAlertRuleIds: JSON.stringify(row.linkedAlertRuleIds ?? []),
+    planType: row.planType ?? "manual",
+    strategyKey: row.strategyKey ?? null,
+    updatedAt: row.updatedAt,
+  };
 }
 
 function serializeInvestmentProfile(row: typeof investmentProfiles.$inferSelect | undefined) {
@@ -264,11 +312,11 @@ export function registerSandboxRoutes(app: FastifyInstance) {
 
   app.get("/api/sandbox/dashboard", sandboxSafe("invest.dashboard.read", async (ctx) => {
     const today = new Date().toISOString().slice(0, 10);
-    const [holdings, watchItems, plans, legacyAlertRules, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, methodChangeRows, investmentProfile, methodologyProfile] =
+    const [portfolioRows, watchlistRows, planRows, legacyAlertRules, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, methodChangeRows, investmentProfile, methodologyProfile] =
       await Promise.all([
-        db.select().from(portfolio).where(and(eq(portfolio.userId, ctx.userId), eq(portfolio.instanceId, ctx.instanceId), isNull(portfolio.sellDate))),
-        db.select().from(watchlist).where(and(eq(watchlist.userId, ctx.userId), eq(watchlist.instanceId, ctx.instanceId))),
-        db.select().from(stockPlans).where(and(eq(stockPlans.userId, ctx.userId), eq(stockPlans.instanceId, ctx.instanceId))),
+        portfolioBackend.listActive(ctx.userId, ctx.instanceId),
+        watchlistBackend.list(ctx.userId, ctx.instanceId),
+        planBackend.list(ctx.userId, ctx.instanceId),
         db.select().from(alerts).where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId))),
         db.select().from(alertRules).where(and(eq(alertRules.userId, ctx.userId), eq(alertRules.instanceId, ctx.instanceId))),
         db.select().from(indicatorResults).where(and(eq(indicatorResults.userId, ctx.userId), eq(indicatorResults.instanceId, ctx.instanceId))).orderBy(desc(indicatorResults.calculatedAt)).limit(50),
@@ -283,11 +331,14 @@ export function registerSandboxRoutes(app: FastifyInstance) {
         })(),
         db.select().from(codexAcpTraces).where(and(eq(codexAcpTraces.userId, ctx.userId), eq(codexAcpTraces.instanceId, ctx.instanceId))).orderBy(desc(codexAcpTraces.createdAt)).limit(20),
         // WP4.9:method_change_candidates 走 backend。
-        // 只回最近 7 天的 proposed 候选,避免老候选当作"待确认操作"污染 Codex 上下文。
+        // 只回最近 7 天的 proposed 候选,避免老候选当作"待确认操作"污染 agent 上下文。
         methodChangeBackend.list(ctx.userId, ctx.instanceId, { status: "proposed", limit: 20, maxAgeDays: 7 }),
         loadInvestmentProfile(ctx),
         loadMethodologyProfile(ctx),
       ]);
+    const holdings = portfolioRows.map((row) => serializeHolding(row, ctx.userId, ctx.instanceId));
+    const watchItems = watchlistRows.map((row) => serializeWatchItem(row, ctx.userId, ctx.instanceId));
+    const plans = planRows.map((row) => serializePlan(row, ctx.userId, ctx.instanceId));
     const todayEvents = recentEvents.filter((event) => event.eventDate === today);
     return {
       ok: true,
@@ -588,17 +639,14 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     if (codes.length === 0) return reply.status(400).send({ ok: false, error: `未找到股票：${unresolved[0]?.name ?? code}` });
 
     const stockCode = codes[0];
-    const existing = await db.select().from(watchlist).where(and(eq(watchlist.userId, ctx.userId), eq(watchlist.instanceId, ctx.instanceId), eq(watchlist.stockCode, stockCode))).limit(1);
-    if (existing.length > 0) return { ok: false, error: `${existing[0].stockName}(${stockCode}) 已在自选池中`, userId: ctx.userId };
+    const existing = await watchlistBackend.find(ctx.userId, ctx.instanceId, stockCode);
+    if (existing) return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: ctx.userId };
 
     const quotes = await getQuote([stockCode]);
     const stockName = quotes[0]?.name || name || stockCode;
-    await db.insert(watchlist).values({
-      userId: ctx.userId,
-      instanceId: ctx.instanceId,
-      stockCode,
-      stockName,
-      addedAt: new Date().toISOString(),
+    await watchlistBackend.add(ctx.userId, ctx.instanceId, {
+      code: stockCode,
+      name: stockName,
       reason: normalizeWatchlistReason(reason || "AI 助手根据对话加入"),
       source: "ai_conversation",
     });
@@ -615,18 +663,18 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.post<{ Body: { code: string; userId?: string; confirmationId?: string } }>("/api/sandbox/watchlist/remove", sandboxSafe("invest.watchlist.write", async (ctx, request, reply) => {
     const { code } = request.body ?? {};
     if (!code) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
-    const existing = await db.select().from(watchlist).where(and(eq(watchlist.userId, ctx.userId), eq(watchlist.instanceId, ctx.instanceId), eq(watchlist.stockCode, code))).limit(1);
-    if (existing.length === 0) return { ok: false, error: `${code} 不在自选池中`, userId: ctx.userId };
+    const existing = await watchlistBackend.find(ctx.userId, ctx.instanceId, code);
+    if (!existing) return { ok: false, error: `${code} 不在自选池中`, userId: ctx.userId };
     if (await requireConfirmation(ctx, request, reply, "watchlist.remove", "watchlist", code)) return;
-    await db.delete(watchlist).where(and(eq(watchlist.userId, ctx.userId), eq(watchlist.instanceId, ctx.instanceId), eq(watchlist.stockCode, code)));
+    await watchlistBackend.remove(ctx.userId, ctx.instanceId, code);
     await audit(ctx, {
       operation: "watchlist.remove",
       resourceType: "watchlist",
       resourceId: code,
       requestBody: request.body,
-      resultSummary: `removed ${existing[0].stockName}(${code})`,
+      resultSummary: `removed ${existing.name}(${code})`,
     });
-    return { ok: true, userId: ctx.userId, message: `已移除 ${existing[0].stockName}(${code})` };
+    return { ok: true, userId: ctx.userId, message: `已移除 ${existing.name}(${code})` };
   }));
 
   app.post<{ Body: { stockCode: string; stockName?: string; support?: number; resistance?: number; targetPrice?: number; stopLoss?: number; notes?: string; watchConditions?: PlanWatchConditionInput[]; linkedAlertRuleIds?: number[]; planType?: string; strategyKey?: string | null; userId?: string } }>("/api/sandbox/plans/set", sandboxSafe("invest.plan.write", async (ctx, request, reply) => {
@@ -634,36 +682,28 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     if (!stockCode) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
     const quotes = await getQuote([stockCode]);
     const name = stockName || quotes[0]?.name || stockCode;
-    const existing = await db.select().from(stockPlans).where(and(eq(stockPlans.userId, ctx.userId), eq(stockPlans.instanceId, ctx.instanceId), eq(stockPlans.stockCode, stockCode))).limit(1);
-    const values = {
-      userId: ctx.userId,
-      instanceId: ctx.instanceId,
-      stockCode,
-      stockName: name,
-      support: support !== undefined ? support : (existing[0]?.support ?? null),
-      resistance: resistance !== undefined ? resistance : (existing[0]?.resistance ?? null),
-      targetPrice: targetPrice !== undefined ? targetPrice : (existing[0]?.targetPrice ?? null),
-      stopLoss: stopLoss !== undefined ? stopLoss : (existing[0]?.stopLoss ?? null),
-      notes: notes !== undefined ? notes : (existing[0]?.notes ?? null),
-      watchConditions: watchConditions !== undefined ? JSON.stringify(watchConditions) : (existing[0]?.watchConditions ?? null),
-      linkedAlertRuleIds: linkedAlertRuleIds !== undefined ? JSON.stringify(linkedAlertRuleIds) : (existing[0]?.linkedAlertRuleIds ?? null),
-      planType: planType ?? existing[0]?.planType ?? "manual",
-      strategyKey: strategyKey !== undefined ? strategyKey : (existing[0]?.strategyKey ?? null),
-      updatedAt: new Date().toISOString(),
-    };
-    if (existing.length > 0) {
-      await db.update(stockPlans).set(values).where(and(eq(stockPlans.userId, ctx.userId), eq(stockPlans.instanceId, ctx.instanceId), eq(stockPlans.stockCode, stockCode)));
-    } else {
-      await db.insert(stockPlans).values(values);
-    }
+    const existing = await planBackend.find(ctx.userId, ctx.instanceId, stockCode);
+    await planBackend.upsert(ctx.userId, ctx.instanceId, {
+      code: stockCode,
+      name,
+      support: support !== undefined ? support : (existing?.support ?? null),
+      resistance: resistance !== undefined ? resistance : (existing?.resistance ?? null),
+      targetPrice: targetPrice !== undefined ? targetPrice : (existing?.targetPrice ?? null),
+      stopLoss: stopLoss !== undefined ? stopLoss : (existing?.stopLoss ?? null),
+      notes: notes !== undefined ? notes : (existing?.notes ?? null),
+      watchConditions: watchConditions !== undefined ? watchConditions : existing?.watchConditions,
+      linkedAlertRuleIds: linkedAlertRuleIds !== undefined ? linkedAlertRuleIds.map(String) : existing?.linkedAlertRuleIds,
+      planType: planType ?? existing?.planType ?? "manual",
+      strategyKey: strategyKey !== undefined ? strategyKey : (existing?.strategyKey ?? null),
+    });
     await audit(ctx, {
       operation: "plans.set",
       resourceType: "stock_plan",
       resourceId: stockCode,
       requestBody: request.body,
-      resultSummary: `${existing.length > 0 ? "updated" : "created"} ${name}(${stockCode})`,
+      resultSummary: `${existing ? "updated" : "created"} ${name}(${stockCode})`,
     });
-    return { ok: true, userId: ctx.userId, message: `${name}(${stockCode}) 预案已${existing.length > 0 ? "更新" : "创建"}` };
+    return { ok: true, userId: ctx.userId, message: `${name}(${stockCode}) 预案已${existing ? "更新" : "创建"}` };
   }));
 
   app.post<{ Body: { stockCode: string; stockName?: string; conditions: PlanWatchConditionInput[]; userId?: string } }>("/api/sandbox/plans/watch-conditions", sandboxSafe("invest.plan.write", async (ctx, request, reply) => {
@@ -684,18 +724,18 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.post<{ Body: { stockCode: string; userId?: string; confirmationId?: string } }>("/api/sandbox/plans/remove", sandboxSafe("invest.plan.write", async (ctx, request, reply) => {
     const { stockCode } = request.body ?? {};
     if (!stockCode) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
-    const existing = await db.select().from(stockPlans).where(and(eq(stockPlans.userId, ctx.userId), eq(stockPlans.instanceId, ctx.instanceId), eq(stockPlans.stockCode, stockCode))).limit(1);
-    if (existing.length === 0) return { ok: false, error: `${stockCode} 暂无预案`, userId: ctx.userId };
+    const existing = await planBackend.find(ctx.userId, ctx.instanceId, stockCode);
+    if (!existing) return { ok: false, error: `${stockCode} 暂无预案`, userId: ctx.userId };
     if (await requireConfirmation(ctx, request, reply, "plans.remove", "stock_plan", stockCode)) return;
-    await db.delete(stockPlans).where(and(eq(stockPlans.userId, ctx.userId), eq(stockPlans.instanceId, ctx.instanceId), eq(stockPlans.stockCode, stockCode)));
+    await planBackend.remove(ctx.userId, ctx.instanceId, stockCode);
     await audit(ctx, {
       operation: "plans.remove",
       resourceType: "stock_plan",
       resourceId: stockCode,
       requestBody: request.body,
-      resultSummary: `removed ${existing[0].stockName}(${stockCode})`,
+      resultSummary: `removed ${existing.name}(${stockCode})`,
     });
-    return { ok: true, userId: ctx.userId, message: `已删除 ${existing[0].stockName}(${stockCode}) 的预案` };
+    return { ok: true, userId: ctx.userId, message: `已删除 ${existing.name}(${stockCode}) 的预案` };
   }));
 
   // ─── 交易策略 CRUD(workspace/config/trading_strategies.yaml) ───
@@ -794,7 +834,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     let pushed = false;
     let pushJobId: string | undefined;
     if (items.length > 0) {
-      const backend = "codex" satisfies PushBackend;
+      const backend = "hermes" satisfies PushBackend;
       const job = await enqueuePushJob({
         userId: ctx.userId,
         projectId: ctx.projectId,
@@ -817,7 +857,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       operation: "alerts.check_and_push",
       resourceType: "alert_check",
       requestBody: request.body,
-      resultSummary: `backend=${ctx.backend ?? "codex"}; count=${items.length}; pushed=${pushed}; pushJobId=${pushJobId ?? "-"}`,
+        resultSummary: `backend=${ctx.backend ?? "hermes"}; count=${items.length}; pushed=${pushed}; pushJobId=${pushJobId ?? "-"}`,
     });
     return { ok: true, userId: ctx.userId, count: items.length, pushed, pushJobId, alerts: items, text };
   }));

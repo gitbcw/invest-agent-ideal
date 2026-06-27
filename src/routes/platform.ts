@@ -1,16 +1,18 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { and, count, desc, eq, isNull } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { renderPlatformPage } from "../admin/platform-page.js";
 import { db } from "../db/index.js";
-import { alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, portfolio, stockPlans, users, watchlist } from "../db/schema.js";
+import { alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, users } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { createInvestAgentInstance, deleteInvestAgentInstance, getProjectRuntimeContext, listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { WeixinMobileManager } from "../channels/weixin-mobile.js";
 import { config } from "../lib/config.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
+import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
+import { disposeAcpForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
 
 const projectWeixinManagers = new Map<string, WeixinMobileManager>();
 
@@ -72,8 +74,28 @@ export function stopPlatformWeixinListeners() {
   }
 }
 
+function deletePlatformWeixinManager(instanceId: string) {
+  const manager = projectWeixinManagers.get(instanceId);
+  if (!manager) return;
+  try {
+    manager.stop();
+  } catch (error) {
+    logger.warn(`Platform 项目微信监听停止失败: ${instanceId} ${(error as Error).message}`);
+  }
+  projectWeixinManagers.delete(instanceId);
+}
+
 function stableSuffix(value?: string | null) {
   return createHash("sha256").update(String(value || "")).digest("hex").slice(0, 10);
+}
+
+async function safePrivateAssetCount(label: string, project: AiProjectRuntimeContext, loader: () => Promise<unknown[]>): Promise<number> {
+  try {
+    return (await loader()).length;
+  } catch (error) {
+    logger.warn(`Platform private asset count skipped label=${label} user=${project.ownerUserId} instance=${project.instanceId}: ${(error as Error).message}`);
+    return 0;
+  }
 }
 
 async function channelBindingsForProject(project: AiProjectRuntimeContext) {
@@ -138,9 +160,9 @@ async function summarizeInstance(project: AiProjectRuntimeContext) {
       .where(eq(codexAcpTraces.instanceId, project.instanceId))
       .orderBy(desc(codexAcpTraces.createdAt))
       .limit(5),
-    db.select({ count: count() }).from(portfolio).where(and(eq(portfolio.userId, project.ownerUserId), eq(portfolio.instanceId, project.instanceId), isNull(portfolio.sellDate))),
-    db.select({ count: count() }).from(watchlist).where(and(eq(watchlist.userId, project.ownerUserId), eq(watchlist.instanceId, project.instanceId))),
-    db.select({ count: count() }).from(stockPlans).where(and(eq(stockPlans.userId, project.ownerUserId), eq(stockPlans.instanceId, project.instanceId))),
+    safePrivateAssetCount("portfolio", project, () => portfolioBackend.listActive(project.ownerUserId, project.instanceId)),
+    safePrivateAssetCount("watchlist", project, () => watchlistBackend.list(project.ownerUserId, project.instanceId)),
+    safePrivateAssetCount("plan", project, () => planBackend.list(project.ownerUserId, project.instanceId)),
     db.select({ count: count() }).from(alertRules).where(and(eq(alertRules.userId, project.ownerUserId), eq(alertRules.instanceId, project.instanceId))),
   ]);
 
@@ -181,9 +203,9 @@ async function summarizeInstance(project: AiProjectRuntimeContext) {
     channelBindings,
     traceCount: traceRows[0]?.count ?? 0,
     recentTraces: recentTraceRows,
-    holdingCount: holdingRows[0]?.count ?? 0,
-    watchlistCount: watchlistRows[0]?.count ?? 0,
-    planCount: planRows[0]?.count ?? 0,
+    holdingCount: holdingRows,
+    watchlistCount: watchlistRows,
+    planCount: planRows,
     alertRuleCount: alertRuleRows[0]?.count ?? 0,
   };
 }
@@ -224,7 +246,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
         userId,
         displayName: request.body?.displayName,
         instanceName: request.body?.instanceName,
-        backend: "codex",
+        backend: "hermes",
       });
       return {
         ok: true,
@@ -245,11 +267,14 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     if (project.instanceId === "invest-agent-primary") {
       return reply.status(400).send({ ok: false, error: "主实例不能删除" });
     }
-    projectWeixinManager(project).stop();
+    deletePlatformWeixinManager(project.instanceId);
+    const workspacePath = resolveWorkspacePath(project.ownerUserId);
+    const disposedAcpCount = disposeAcpForWorkspace(workspacePath);
     const deleted = await deleteInvestAgentInstance(project.instanceId);
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
+      disposedAcpCount,
       deleted,
     };
   }));
@@ -306,10 +331,12 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       tenantId: project.ownerUserId,
       projectId: project.instanceId,
     });
+    const hermesHome = await ensureHermesRuntimeForWorkspace(workspace.path);
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
       workspace,
+      hermesHome,
       instance: await summarizeInstance(project),
     };
   }));

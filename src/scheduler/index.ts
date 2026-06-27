@@ -1,9 +1,9 @@
-import { startReviewScheduler, getReviewPushTime } from "./review.js";
+import { startReviewScheduler, stopReviewScheduler, getReviewPushTime } from "./review.js";
 import { logger } from "../lib/logger.js";
 import { db } from "../db/index.js";
-import { aiInstances, alerts, channelIdentities, channelIdentityInstances, portfolio, settings, users, watchlist } from "../db/schema.js";
+import { aiInstances, alerts, channelIdentities, channelIdentityInstances, settings, users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
+import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { beijingDateKey, beijingNow, isBeijingTradingDay, readSchedules, type SchedulesYaml } from "../lib/schedules-loader.js";
 import { runScheduledMarketWatchTask } from "../acp/scheduled-tasks.js";
@@ -35,18 +35,6 @@ function getPushFn(): PushCallback {
   return pushFn;
 }
 
-async function getSchedulableUserIds(): Promise<string[]> {
-  const identities = await db
-    .select({ userId: channelIdentities.userId })
-    .from(channelIdentities)
-    .where(eq(channelIdentities.channel, "weixin-mobile"));
-  const ids = new Set<string>([DEFAULT_USER_ID]);
-  for (const identity of identities) {
-    ids.add(identity.userId);
-  }
-  return [...ids];
-}
-
 function scopeKey(scope: SchedulableScope) {
   return `${scope.userId}\n${scope.instanceId}`;
 }
@@ -63,7 +51,7 @@ async function getSchedulableScopes(): Promise<SchedulableScope[]> {
   const scopes = new Map<string, SchedulableScope>();
   addScope(scopes, { userId: DEFAULT_USER_ID, instanceId: DEFAULT_INSTANCE_ID, projectId: DEFAULT_PROJECT_ID });
 
-  const [activeUsers, instances, identityInstances, enabledAlerts, watchItems, positions] = await Promise.all([
+  const [activeUsers, instances, identityInstances, enabledAlerts] = await Promise.all([
     db.select({ id: users.id }).from(users).where(eq(users.status, "active")),
     db
       .select({ userId: aiInstances.ownerUserId, instanceId: aiInstances.id, projectId: aiInstances.projectId })
@@ -79,8 +67,6 @@ async function getSchedulableScopes(): Promise<SchedulableScope[]> {
       .innerJoin(channelIdentities, eq(channelIdentityInstances.channelIdentityId, channelIdentities.id))
       .where(eq(channelIdentities.channel, "weixin-mobile")),
     db.select({ userId: alerts.userId, instanceId: alerts.instanceId }).from(alerts).where(eq(alerts.enabled, true)),
-    db.select({ userId: watchlist.userId, instanceId: watchlist.instanceId }).from(watchlist),
-    db.select({ userId: portfolio.userId, instanceId: portfolio.instanceId }).from(portfolio),
   ]);
 
   const activeUserIds = new Set(activeUsers.map((user) => user.id));
@@ -93,13 +79,6 @@ async function getSchedulableScopes(): Promise<SchedulableScope[]> {
   for (const scope of enabledAlerts) {
     if (activeUserIds.has(scope.userId)) addScope(scopes, scope);
   }
-  for (const scope of watchItems) {
-    if (activeUserIds.has(scope.userId)) addScope(scopes, scope);
-  }
-  for (const scope of positions) {
-    if (activeUserIds.has(scope.userId)) addScope(scopes, scope);
-  }
-
   return [...scopes.values()];
 }
 
@@ -164,9 +143,9 @@ export async function startScheduler() {
   restartAlertInterval(intervalMin);
 
   // 收盘后日复盘
-  startReviewScheduler(async (message: string, options?: { userId?: string }) => {
+  startReviewScheduler(async (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => {
     await getPushFn()(message, options);
-  }, getSchedulableUserIds);
+  }, getSchedulableScopes);
 
   const pushTime = await getReviewPushTime();
   logger.info(`定时任务已启动（巡检: 每分钟扫描 workspace 配置,默认间隔 ${intervalMin}min / 复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}）`);
@@ -178,6 +157,7 @@ export function stopScheduler() {
     clearInterval(alertIntervalId);
     alertIntervalId = null;
   }
+  stopReviewScheduler();
   logger.info("定时任务已停止");
 }
 

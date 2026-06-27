@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import QRCode from "qrcode";
 import { createAgent } from "../acp/agent.js";
-import { clearCodexAcpSessions } from "../acp/stdio-agent.js";
+import { clearAcpSessions } from "../acp/stdio-agent.js";
 import { db, initDb } from "../db/index.js";
 import { channelIdentities, channelIdentityInstances } from "../db/schema.js";
 import { config } from "../lib/config.js";
@@ -14,7 +14,7 @@ import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import { and, desc, eq } from "drizzle-orm";
 import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
 
-type WeixinBackend = "codex";
+type WeixinBackend = "hermes";
 
 type LoginStage = "idle" | "waiting_scan" | "scanned" | "connected" | "error";
 
@@ -67,6 +67,7 @@ const QR_LONG_POLL_TIMEOUT_MS = 35 * 1000;
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
 const WEIXIN_MESSAGE_STATE_FINISH = 2;
+const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 500;
 
 interface WeixinProjectBinding {
   projectId: string;
@@ -393,6 +394,42 @@ async function sendWeixinTextMessage(params: {
   }
 }
 
+function splitWeixinText(text: string, limit = WEIXIN_TEXT_CHUNK_LIMIT): string[] {
+  const clean = String(text || "").trim();
+  if (!clean) return ["处理完成"];
+  if (clean.length <= limit) return [clean];
+
+  const chunks: string[] = [];
+  let rest = clean;
+  while (rest.length > limit) {
+    let cut = findWeixinChunkCut(rest, limit);
+    if (cut <= 0) cut = limit;
+    const chunk = rest.slice(0, cut).trim();
+    if (chunk) chunks.push(chunk);
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest.trim()) chunks.push(rest.trim());
+  return chunks;
+}
+
+function findWeixinChunkCut(text: string, limit: number) {
+  const slice = text.slice(0, limit);
+  const boundaries = [
+    slice.lastIndexOf("\n\n"),
+    slice.lastIndexOf("\n"),
+    slice.lastIndexOf("。"),
+    slice.lastIndexOf("！"),
+    slice.lastIndexOf("？"),
+    slice.lastIndexOf("；"),
+    slice.lastIndexOf(";"),
+    slice.lastIndexOf(". "),
+    slice.lastIndexOf(" "),
+  ].filter((index) => index > Math.floor(limit * 0.55));
+  const best = boundaries.length > 0 ? Math.max(...boundaries) : -1;
+  if (best < 0) return limit;
+  return best + (slice[best] === "\n" || slice[best] === " " ? 0 : 1);
+}
+
 class InvestAgentMobileBridge {
   private readonly agent = createAgent();
 
@@ -411,7 +448,7 @@ class InvestAgentMobileBridge {
     const conversationId = request.conversationId || `weixin-mobile-${this.accountId}`;
     const userContext = await resolveOrCreateChannelUser({
       channel: "weixin-mobile",
-      backend: "codex",
+      backend: "hermes",
       externalUserId: conversationId,
       externalAccountId: this.accountId,
       conversationId,
@@ -458,26 +495,37 @@ class InvestAgentMobileBridge {
 
     const text = response.content.text ?? "处理完成，但没有生成文本回复。";
     await rememberWeixinTurn(userContext, request.text || "", text);
-    return { text };
+    const chunks = splitWeixinText(text);
+    if (chunks.length > 1) {
+      setTimeout(() => {
+        this.pushToConversation(conversationId, chunks.slice(1), request.contextToken).catch((error) => {
+          logger.warn(`微信分片补发失败: ${(error as Error).message}`);
+        });
+      }, 1200);
+    }
+    return { text: chunks[0] };
   }
 
-  private async pushToConversation(conversationId: string, text: string, contextToken?: string) {
+  private async pushToConversation(conversationId: string, text: string | string[], contextToken?: string) {
     const account = resolveWeixinAccount(this.accountId, this.stateDir);
     if (!account.configured || !account.token) {
       throw new Error(`账号 ${this.accountId} 未配置 token，无法推送后台复盘结果`);
     }
-    await sendWeixinTextMessage({
-      baseUrl: account.baseUrl,
-      token: account.token,
-      to: conversationId,
-      text,
-      contextToken: contextToken || account.lastContextToken,
-    });
+    const chunks = Array.isArray(text) ? text : splitWeixinText(text);
+    for (const chunk of chunks) {
+      await sendWeixinTextMessage({
+        baseUrl: account.baseUrl,
+        token: account.token,
+        to: conversationId,
+        text: chunk,
+        contextToken: contextToken || account.lastContextToken,
+      });
+    }
   }
 
   clearSession(conversationId?: string): void {
     if (conversationId) {
-      clearCodexAcpSessions(conversationId);
+      clearAcpSessions(conversationId);
     }
   }
 }
@@ -485,7 +533,7 @@ class InvestAgentMobileBridge {
 export class WeixinMobileManager {
   private state: WeixinConnectState = {
     enabled: false,
-    backend: "codex",
+    backend: "hermes",
     stage: "idle",
     stateDir: resolveWeixinStateDir(),
     message: "未连接微信",
@@ -519,7 +567,7 @@ export class WeixinMobileManager {
       };
     } = {}
   ) {
-    this.backend = this.options.backend ?? "codex";
+    this.backend = this.options.backend ?? "hermes";
     this.stateDir = this.options.stateDir ?? config.weixin.stateDir;
     this.label = this.options.label ?? "微信";
     this.projectBinding = this.options.projectBinding;
@@ -709,13 +757,16 @@ export class WeixinMobileManager {
         continue;
       }
 
-      await sendWeixinTextMessage({
-        baseUrl: account.baseUrl,
-        token: account.token,
-        to: target.conversationId,
-        text: sanitizeCustomerText(message),
-        contextToken: target.contextToken,
-      });
+      const chunks = splitWeixinText(sanitizeCustomerText(message));
+      for (const chunk of chunks) {
+        await sendWeixinTextMessage({
+          baseUrl: account.baseUrl,
+          token: account.token,
+          to: target.conversationId,
+          text: chunk,
+          contextToken: target.contextToken,
+        });
+      }
       this.withState({
         accountId: account.accountId,
         lastConversationId: target.conversationId,

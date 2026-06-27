@@ -32,6 +32,7 @@ import {
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { SandboxPermission } from "../lib/sandbox-context.js";
+import { ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
 
 export const INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID = "invest-agent-default";
 
@@ -86,7 +87,7 @@ export interface AiProjectRuntimeContext {
   ownerUserId: string;
   name: string;
   status: string;
-  backend: "codex";
+  backend: "hermes";
   skillBundleId: string;
   permissions: SandboxPermission[];
   dashboardType: string;
@@ -108,8 +109,8 @@ function makeInstanceId(userId: string) {
   return `${DEFAULT_PROJECT_ID}-${userId}`.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
 }
 
-function parseBackend(_value: string): "codex" {
-  return "codex";
+function parseBackend(_value: string): "hermes" {
+  return "hermes";
 }
 
 function parseConfig(value?: string | null): Record<string, unknown> {
@@ -148,7 +149,7 @@ function runtimeContextFromInstance(instance: typeof aiInstances.$inferSelect): 
 
 export async function ensureDefaultProjectForUser(
   userId: string,
-  backend: "codex" = "codex",
+  backend: "hermes" = "hermes",
   displayName?: string
 ): Promise<AiProjectRuntimeContext> {
   const instanceId = makeInstanceId(userId);
@@ -193,24 +194,63 @@ export async function createInvestAgentInstance(input: {
   userId: string;
   displayName?: string;
   instanceName?: string;
-  backend?: "codex";
+  backend?: "hermes";
 }) {
   const userId = input.userId.trim();
   if (!/^[a-zA-Z0-9_-]{2,64}$/.test(userId)) {
     throw new Error("INVALID_USER_ID");
   }
-  const displayName = input.displayName?.trim() || userId;
-  const project = await ensureDefaultProjectForUser(userId, input.backend || "codex", displayName);
-  const instanceName = input.instanceName?.trim();
-  if (instanceName && instanceName !== project.name) {
-    const now = new Date().toISOString();
-    await db
-      .update(aiInstances)
-      .set({ name: instanceName, updatedAt: now })
-      .where(eq(aiInstances.id, project.instanceId));
-    return getProjectRuntimeContext(project.instanceId);
+  const instanceId = makeInstanceId(userId);
+  const [existingUser, existingInstance] = await Promise.all([
+    db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1),
+    db.select({ id: aiInstances.id }).from(aiInstances).where(eq(aiInstances.id, instanceId)).limit(1),
+  ]);
+  try {
+    const displayName = input.displayName?.trim() || userId;
+    const project = await ensureDefaultProjectForUser(userId, input.backend || "hermes", displayName);
+    const workspacePath = resolveWorkspacePath(userId);
+    await ensureHermesRuntimeForWorkspace(workspacePath);
+    const instanceName = input.instanceName?.trim();
+    if (instanceName && instanceName !== project.name) {
+      const now = new Date().toISOString();
+      await db
+        .update(aiInstances)
+        .set({ name: instanceName, updatedAt: now })
+        .where(eq(aiInstances.id, project.instanceId));
+      return getProjectRuntimeContext(project.instanceId);
+    }
+    return project;
+  } catch (error) {
+    await rollbackCreatedInvestAgentInstance({
+      userId,
+      instanceId,
+      createdUser: existingUser.length === 0,
+      createdInstance: existingInstance.length === 0,
+    }).catch((rollbackError) => {
+      // 如果补偿也失败,保留原始错误,把补偿失败写日志便于人工清理。
+      console.warn(`rollbackCreatedInvestAgentInstance failed user=${userId}:`, rollbackError);
+    });
+    throw error;
   }
-  return project;
+}
+
+async function rollbackCreatedInvestAgentInstance(input: {
+  userId: string;
+  instanceId: string;
+  createdUser: boolean;
+  createdInstance: boolean;
+}) {
+  await db.transaction((tx) => {
+    if (input.createdInstance) {
+      tx.delete(aiInstances).where(eq(aiInstances.id, input.instanceId)).run();
+    }
+    if (input.createdUser) {
+      tx.delete(users).where(eq(users.id, input.userId)).run();
+    }
+  });
+  if (input.createdInstance && input.createdUser) {
+    await rm(resolveWorkspacePath(input.userId), { recursive: true, force: true });
+  }
 }
 
 export async function deleteInvestAgentInstance(instanceId: string) {

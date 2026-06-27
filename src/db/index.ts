@@ -37,7 +37,7 @@ export function initDb() {
     CREATE TABLE IF NOT EXISTS channel_accounts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       channel TEXT NOT NULL,
-      backend TEXT NOT NULL DEFAULT 'codex',
+      backend TEXT NOT NULL DEFAULT 'hermes',
       external_account_id TEXT NOT NULL,
       state_dir TEXT,
       display_name TEXT,
@@ -74,7 +74,7 @@ export function initDb() {
       owner_user_id TEXT NOT NULL,
       name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
-      backend TEXT NOT NULL DEFAULT 'codex',
+      backend TEXT NOT NULL DEFAULT 'hermes',
       skill_bundle_id TEXT,
       config TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
@@ -425,7 +425,7 @@ export function initDb() {
       project_id TEXT NOT NULL DEFAULT 'invest-agent',
       instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
       channel TEXT NOT NULL DEFAULT 'weixin-mobile',
-      backend TEXT NOT NULL DEFAULT 'codex',
+      backend TEXT NOT NULL DEFAULT 'hermes',
       source TEXT NOT NULL DEFAULT 'scheduler',
       message TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
@@ -441,6 +441,7 @@ export function initDb() {
   `);
   ensureDefaultUser();
   ensureDefaultAiInstance();
+  normalizeRuntimeBackendToHermes();
   migrateWatchlistForUsers();
   migrateStockPlansForUsers();
   migrateAlertSignalStatesForUsers();
@@ -577,7 +578,7 @@ function ensureDefaultAiInstance() {
     .prepare(
       `INSERT OR IGNORE INTO ai_instances (
         id, project_id, owner_user_id, name, status, backend, skill_bundle_id, config, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'active', 'codex', ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, 'active', 'hermes', ?, ?, ?, ?)`
     )
     .run(
       DEFAULT_INSTANCE_ID,
@@ -589,6 +590,28 @@ function ensureDefaultAiInstance() {
       now,
       now
     );
+}
+
+function normalizeRuntimeBackendToHermes() {
+  const migrationKey = "runtime_backend_hermes_v1";
+  if (hasMigration(migrationKey)) return;
+  const legacyBackends = ["codex", "kimi", "claude"];
+  const placeholders = legacyBackends.map(() => "?").join(",");
+
+  const transaction = sqlite.transaction(() => {
+    sqlite
+      .prepare(`UPDATE settings SET value = 'hermes' WHERE key = 'acp_backend' AND value IN (${placeholders})`)
+      .run(...legacyBackends);
+    for (const table of ["ai_instances", "channel_accounts", "push_jobs"]) {
+      if (!hasTable(table) || !hasColumn(table, "backend")) continue;
+      sqlite.prepare(`UPDATE ${table} SET backend = 'hermes' WHERE backend IN (${placeholders})`).run(...legacyBackends);
+    }
+    if (hasTable("channel_identities") && hasColumn("channel_identities", "backend")) {
+      sqlite.prepare(`UPDATE channel_identities SET backend = 'hermes' WHERE backend IN (${placeholders})`).run(...legacyBackends);
+    }
+    markMigration(migrationKey);
+  });
+  transaction();
 }
 
 function migrateWatchlistForUsers() {
@@ -856,7 +879,7 @@ function backfillHistoricalInstanceAssignments() {
   const insertInstance = sqlite.prepare(
     `INSERT OR IGNORE INTO ai_instances (
       id, project_id, owner_user_id, name, status, backend, skill_bundle_id, config, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'active', 'codex', ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, 'active', 'hermes', ?, ?, ?, ?)`
   );
 
   const transaction = sqlite.transaction(() => {

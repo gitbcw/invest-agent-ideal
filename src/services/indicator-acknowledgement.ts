@@ -7,7 +7,7 @@
  *   - 校验函数对 L3a 和 L3b 通用,通过 AcknowledgeableConfig 接口适配
  *
  * 注意:本模块只是"门禁"——读取已有字段判断是否通过。
- * 告知流程本身(贴 data_source_notes 给用户、收集肯定词)由 Codex 在
+ * 告知流程本身(贴 data_source_notes 给用户、收集肯定词)由 Hermes agent 在
  * `.codex/skills/invest-agent-indicator-creation/SKILL.md` 流程里完成。
  */
 
@@ -113,9 +113,9 @@ function isValidIsoTimestamp(s: string): boolean {
 }
 
 /**
- * 生成 data_source_notes 模板,供 Codex 创建指标时使用。
+ * 生成 data_source_notes 模板,供 Hermes agent 创建指标时使用。
  *
- * Codex 在 SKILL.md 流程里调用这个 helper 拿到模板,填好后贴给用户确认。
+ * Hermes agent 在 SKILL.md 流程里调用这个 helper 拿到模板,填好后贴给用户确认。
  */
 export function buildDataSourceNotesTemplate(
   missing: string[],

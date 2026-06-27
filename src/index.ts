@@ -15,7 +15,7 @@ async function main() {
   // 启动 HTTP 服务
   const app = await startServer();
 
-  // 启动当前选中的 ACP backend 子进程(默认 kimi,可通过 settings KV 切换)。会话上下文后续按微信 conversationId 复用。
+  // 启动 Hermes ACP backend 子进程。会话上下文后续按微信 conversationId 复用。
   await startDefaultAcp();
 
   // 启动定时任务

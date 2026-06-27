@@ -9,7 +9,7 @@ const ERROR_LIMIT = 1200;
 
 type TraceStatus = "success" | "timeout" | "error";
 
-export interface CodexAcpTraceInput {
+export interface AcpTraceInput {
   userId?: string;
   projectId?: string;
   instanceId?: string;
@@ -37,7 +37,7 @@ function truncate(value: unknown, limit = TEXT_LIMIT) {
   return `${text.slice(0, limit)}\n...[truncated ${text.length - limit} chars]`;
 }
 
-export async function recordCodexAcpTrace(input: CodexAcpTraceInput) {
+export async function recordAcpTrace(input: AcpTraceInput) {
   try {
     await db.insert(codexAcpTraces).values({
       userId: truncate(input.userId, 120) ?? DEFAULT_USER_ID,
@@ -60,6 +60,6 @@ export async function recordCodexAcpTrace(input: CodexAcpTraceInput) {
       createdAt: new Date().toISOString(),
     });
   } catch (error) {
-    logger.warn("Codex ACP trace 写入失败:", error);
+    logger.warn("ACP trace 写入失败:", error);
   }
 }

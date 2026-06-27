@@ -3,14 +3,15 @@ import type { AcpMessage, AcpResponse } from "./protocol.js";
 import { textResponse } from "./protocol.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
-import { getCodexAcpAgent, getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
+import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
 import { sanitizeCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
-import { recordCodexAcpTrace } from "./trace.js";
+import { recordAcpTrace } from "./trace.js";
 import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import type { UserContext } from "../lib/user-context.js";
 
-const WEIXIN_DIRECT_CODEX_TIMEOUT_MS = Number(process.env.WEIXIN_DIRECT_CODEX_TIMEOUT_MS) || 600_000;
+const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
+  Number(process.env.WEIXIN_DIRECT_ACP_TIMEOUT_MS) || 600_000;
 
 export interface AcpAgent {
   agentId: string;
@@ -52,7 +53,7 @@ export function createAgent(): AcpAgent {
       try {
         const userChannel: UserContext["channel"] =
           channel === "weixin-mobile" || channel === "dashboard" || channel === "api" ? channel : "api";
-        const activeBackend = userChannel === "weixin-mobile" ? "codex" : await loadCurrentBackendId();
+        const activeBackend = await loadCurrentBackendId();
         const userContext: UserContext = {
           userId,
           projectId: message.context?.projectId ? String(message.context.projectId) : undefined,
@@ -67,18 +68,16 @@ export function createAgent(): AcpAgent {
           conversationId,
         };
         const promptText = buildChannelForwardPrompt(text, userContext);
-        const acpAgent = userChannel === "weixin-mobile"
-          ? getCodexAcpAgent(userContext.workspacePath)
-          : await getCurrentAcpAgent();
+        const acpAgent = await getCurrentAcpAgent(userContext.workspacePath);
         const reply = await acpAgent.chat({
           conversationId,
           text: promptText,
           messageId: randomUUID(),
-          timeoutMs: userChannel === "weixin-mobile" ? WEIXIN_DIRECT_CODEX_TIMEOUT_MS : undefined,
+          timeoutMs: userChannel === "weixin-mobile" ? WEIXIN_DIRECT_ACP_TIMEOUT_MS : undefined,
           cwd: userChannel === "weixin-mobile" ? userContext.workspacePath : undefined,
         });
         const cleaned = sanitizeCustomerText(reply);
-        await recordCodexAcpTrace({
+        await recordAcpTrace({
           userId,
           projectId: userContext.projectId,
           instanceId: userContext.instanceId,
@@ -95,10 +94,10 @@ export function createAgent(): AcpAgent {
         });
         return textResponse(cleaned);
       } catch (error) {
-        logger.error("转发 Codex ACP 失败:", error);
+        logger.error("转发 Hermes ACP 失败:", error);
         const errorMessage = formatUnknownError(error);
         const isBusy = errorMessage.includes("ACP_TURN_BUSY") || errorMessage.includes("turn.agent_busy");
-        await recordCodexAcpTrace({
+        await recordAcpTrace({
           userId,
           projectId: message.context?.projectId ? String(message.context.projectId) : undefined,
           instanceId: message.context?.instanceId ? String(message.context.instanceId) : undefined,

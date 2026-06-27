@@ -33,7 +33,7 @@ import { workspacePlanBackend } from "./workspace-plan-backend.js";
 export type BackendKind = "sqlite" | "workspace";
 
 export const ACTIVE_BACKEND: BackendKind =
-  process.env.WORKSPACE_BACKEND === "workspace" ? "workspace" : "sqlite";
+  process.env.WORKSPACE_BACKEND === "sqlite" ? "sqlite" : "workspace";
 
 export function isWorkspaceBackend(): boolean {
   return ACTIVE_BACKEND === "workspace";

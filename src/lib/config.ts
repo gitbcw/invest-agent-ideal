@@ -53,14 +53,14 @@ export const config = {
     agentName: process.env.ACP_AGENT_NAME || "投资选股助手",
   },
 
-  codex: {
-    acpCommand: process.env.CODEX_ACP_COMMAND || "/Users/combo/.local/bin/codex-acp",
-    acpArgs: process.env.CODEX_ACP_ARGS?.trim()
-      ? process.env.CODEX_ACP_ARGS.trim().split(/\s+/)
-      : [],
-    acpCwd: process.env.CODEX_ACP_CWD || process.cwd(),
-    acpTimeoutMs: Number(process.env.CODEX_ACP_TIMEOUT_MS) || 1800000,
-    runtimeHome: path.resolve(process.env.CODEX_RUNTIME_HOME || path.join(defaultRuntimeDataRoot, "codex-home")),
+  hermes: {
+    acpCommand: process.env.HERMES_ACP_COMMAND || "/Users/combo/.local/bin/hermes",
+    acpArgs: process.env.HERMES_ACP_ARGS?.trim()
+      ? process.env.HERMES_ACP_ARGS.trim().split(/\s+/)
+      : ["acp", "--accept-hooks"],
+    acpCwd: process.env.HERMES_ACP_CWD || process.cwd(),
+    acpTimeoutMs: Number(process.env.HERMES_ACP_TIMEOUT_MS) || 1800000,
+    sourceHome: path.resolve(process.env.HERMES_SOURCE_HOME || path.join(process.env.HOME || "", ".hermes")),
   },
 
   weixin: {

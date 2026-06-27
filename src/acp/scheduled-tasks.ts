@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getCodexAcpAgent } from "./stdio-agent.js";
+import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
-import { recordCodexAcpTrace } from "./trace.js";
+import { recordAcpTrace } from "./trace.js";
 import { sanitizeCustomerText } from "../lib/customer-output.js";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
@@ -18,7 +18,8 @@ import {
   saveSkillDailyReview,
 } from "../handlers/review.js";
 
-const SCHEDULED_CODEX_TIMEOUT_MS = Number(process.env.SCHEDULED_CODEX_TIMEOUT_MS) || 600_000;
+const SCHEDULED_ACP_TIMEOUT_MS =
+  Number(process.env.SCHEDULED_ACP_TIMEOUT_MS) || 600_000;
 
 export interface ScheduledScope {
   userId: string;
@@ -35,7 +36,7 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
     userContext,
   });
   const promptText = buildMarketWatchTaskPrompt(promptContext.sandboxToken, userContext);
-  const reply = await runCodexTask({
+  const reply = await runAcpTask({
     userContext,
     promptText,
     conversationId: userContext.conversationId!,
@@ -67,7 +68,7 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
     reviewContext,
     userContext,
   });
-    const reply = await runCodexTask({
+    const reply = await runAcpTask({
       userContext,
       promptText: promptContext.promptText,
       conversationId: userContext.conversationId!,
@@ -89,7 +90,7 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
         generatedAt: reviewContext.generatedAt,
         stocks: reviewContext.stocks.map((stock) => ({ code: stock.code, name: stock.name, pool: stock.pool })),
         alertCount: reviewContext.alerts.length,
-        source: "scheduled-codex",
+        source: "scheduled-hermes",
       },
     });
     return summary;
@@ -119,7 +120,7 @@ async function buildScheduledUserContext(scope: ScheduledScope, taskName: string
     instanceId,
     projectType: "invest-agent",
     channel: "api",
-    backend: "codex",
+    backend: await loadCurrentBackendId(),
     conversationId: `scheduler:${taskName}:${userId}:${instanceId}`,
     workspacePath: workspace.path,
   };
@@ -139,7 +140,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
     ].join("\n"),
     userContext,
   });
-  const reply = await runCodexTask({
+  const reply = await runAcpTask({
     userContext,
     promptText: promptContext.promptText,
     conversationId: userContext.conversationId!,
@@ -151,7 +152,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
   return sanitizeCustomerText(reply);
 }
 
-async function runCodexTask(input: {
+async function runAcpTask(input: {
   userContext: UserContext;
   promptText: string;
   conversationId: string;
@@ -163,14 +164,14 @@ async function runCodexTask(input: {
 }) {
   const startedAt = Date.now();
   try {
-    const reply = await getCodexAcpAgent(input.userContext.workspacePath).chat({
+    const reply = await (await getCurrentAcpAgent(input.userContext.workspacePath)).chat({
       conversationId: input.conversationId,
       text: input.promptText,
       messageId: input.messageId,
-      timeoutMs: SCHEDULED_CODEX_TIMEOUT_MS,
+      timeoutMs: SCHEDULED_ACP_TIMEOUT_MS,
       cwd: input.userContext.workspacePath,
     });
-    await recordCodexAcpTrace({
+    await recordAcpTrace({
       userId: input.userContext.userId,
       projectId: input.userContext.projectId,
       instanceId: input.userContext.instanceId,
@@ -190,8 +191,8 @@ async function runCodexTask(input: {
     });
     return reply;
   } catch (error) {
-    logger.error(`后台 Codex 任务失败 mode=${input.mode} user=${input.userContext.userId}:`, error);
-    await recordCodexAcpTrace({
+    logger.error(`后台 Hermes ACP 任务失败 mode=${input.mode} user=${input.userContext.userId}:`, error);
+    await recordAcpTrace({
       userId: input.userContext.userId,
       projectId: input.userContext.projectId,
       instanceId: input.userContext.instanceId,
@@ -228,7 +229,7 @@ function buildMarketWatchTaskPrompt(sandboxToken: string, userContext: UserConte
     "输出契约：",
     "- 若没有需要推送的 P0/P1 异常，必须只输出：NO_PUSH",
     "- 若需要推送，只输出微信正文，500 字以内，包含事实、推断、触发规则、用户是否需要确认。",
-    "- 不要提到 Codex、workspace、sandbox、curl、接口、后台任务或本地路径。",
+    "- 不要提到 Hermes、workspace、sandbox、curl、接口、后台任务或本地路径。",
     `当前用户: ${userContext.userId}`,
     `当前实例: ${userContext.instanceId}`,
   ].join("\n");

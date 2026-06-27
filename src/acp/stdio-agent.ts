@@ -1,10 +1,8 @@
 /**
  * 通用 stdio ACP agent + 多后端注册中心。
  *
- * 现在支持三个 ACP 后端:
- *   - kimi    (默认) ~/.kimi-code/bin/kimi acp
- *   - claude  ~/.nvm/.../claude-agent-acp
- *   - codex   ~/.local/bin/codex-acp
+ * 现在统一使用 Hermes stdio ACP 后端:
+ *   - hermes  ~/.local/bin/hermes acp --accept-hooks
  *
  * 三者都遵循 Agent Client Protocol v1,本类负责统一托管:
  *   - 子进程生命周期
@@ -17,7 +15,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { eq } from "drizzle-orm";
@@ -50,7 +48,7 @@ type RequestPermissionRequest = {
   options: Array<{ optionId: string }>;
 };
 
-export type AcpBackendId = "kimi" | "claude" | "codex";
+export type AcpBackendId = "hermes";
 
 export interface AcpBackendDef {
   id: AcpBackendId;
@@ -83,43 +81,14 @@ export interface AcpBackendStatus {
 
 const DEFAULT_TIMEOUT_MS = 1_800_000;
 
-const DEFAULT_CODEX_ACP_ARGS = [
-  "-c", "sandbox_mode=\"workspace-write\"",
-  "-c", "approval_policy=\"never\"",
-  "-c", "project_trust_level=\"untrusted\"",
-  "-c", "disable_response_storage=true",
-  "-c", "mcp_servers={}",
-  "-c", "plugins={}",
-];
-
 export const ACP_BACKENDS: AcpBackendDef[] = [
   {
-    id: "kimi",
-    label: "Kimi Code",
-    command: process.env.KIMI_ACP_COMMAND || "/Users/combo/.kimi-code/bin/kimi",
-    args: process.env.KIMI_ACP_ARGS?.trim()
-      ? process.env.KIMI_ACP_ARGS.trim().split(/\s+/)
-      : ["acp"],
-    cwd: process.env.KIMI_ACP_CWD || process.cwd(),
-    timeoutMs: Number(process.env.KIMI_ACP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-  },
-  {
-    id: "claude",
-    label: "Claude Code",
-    command: process.env.CLAUDE_ACP_COMMAND || "claude-agent-acp",
-    args: process.env.CLAUDE_ACP_ARGS?.trim()
-      ? process.env.CLAUDE_ACP_ARGS.trim().split(/\s+/)
-      : [],
-    cwd: process.env.CLAUDE_ACP_CWD || process.cwd(),
-    timeoutMs: Number(process.env.CLAUDE_ACP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-  },
-  {
-    id: "codex",
-    label: "Codex",
-    command: config.codex.acpCommand,
-    args: config.codex.acpArgs.length > 0 ? config.codex.acpArgs : DEFAULT_CODEX_ACP_ARGS,
-    cwd: config.codex.acpCwd,
-    timeoutMs: config.codex.acpTimeoutMs || DEFAULT_TIMEOUT_MS,
+    id: "hermes",
+    label: "Hermes",
+    command: config.hermes.acpCommand,
+    args: config.hermes.acpArgs,
+    cwd: config.hermes.acpCwd,
+    timeoutMs: config.hermes.acpTimeoutMs || DEFAULT_TIMEOUT_MS,
     isDefault: true,
   },
 ];
@@ -280,7 +249,7 @@ export class StdioAcpAgent {
   private async start(): Promise<ClientSideConnection> {
     const { command, args, label } = this.def;
     const cwd = this.cwd;
-    const env = this.def.id === "codex" ? buildCodexRuntimeEnv() : process.env;
+    const env = await buildHermesRuntimeEnv(cwd);
     logger.info(`启动 ${label} ACP: ${command}${args.length ? ` ${args.join(" ")}` : ""}`);
 
     const child = spawn(command, args, {
@@ -371,55 +340,58 @@ export class StdioAcpAgent {
   }
 }
 
-function buildCodexRuntimeEnv(): NodeJS.ProcessEnv {
-  const runtimeHome = config.codex.runtimeHome;
-  mkdirSync(runtimeHome, { recursive: true });
-  writeCodexRuntimeConfig(runtimeHome);
-  copyCodexRuntimeFile("auth.json", runtimeHome);
-  copyCodexRuntimeFile("models_cache.json", runtimeHome);
-  copyCodexRuntimeFile("version.json", runtimeHome);
+async function buildHermesRuntimeEnv(workspacePath: string): Promise<NodeJS.ProcessEnv> {
+  const hermesHome = path.join(workspacePath, ".hermes");
+  await ensureHermesHome(hermesHome);
   return {
     ...process.env,
-    CODEX_HOME: runtimeHome,
-    HOME: runtimeHome,
+    HERMES_HOME: hermesHome,
   };
 }
 
-function writeCodexRuntimeConfig(runtimeHome: string) {
-  const configPath = path.join(runtimeHome, "config.toml");
-  const model = process.env.CODEX_RUNTIME_MODEL || "gpt-5.5";
-  const provider = process.env.CODEX_RUNTIME_MODEL_PROVIDER || "codex-ai";
-  const baseUrl = process.env.CODEX_RUNTIME_BASE_URL || "http://47.107.151.70:3000/v1";
-  const wireApi = process.env.CODEX_RUNTIME_WIRE_API || "responses";
-  const reasoningEffort = process.env.CODEX_RUNTIME_REASONING_EFFORT || "medium";
-  const requiresOpenAiAuth = process.env.CODEX_RUNTIME_REQUIRES_OPENAI_AUTH !== "false";
-
-  const content = [
-    "disable_response_storage = true",
-    `model = ${JSON.stringify(model)}`,
-    `model_reasoning_effort = ${JSON.stringify(reasoningEffort)}`,
-    `model_provider = ${JSON.stringify(provider)}`,
-    "",
-    `[model_providers.${provider}]`,
-    `name = ${JSON.stringify(provider)}`,
-    `base_url = ${JSON.stringify(baseUrl)}`,
-    `wire_api = ${JSON.stringify(wireApi)}`,
-    `requires_openai_auth = ${requiresOpenAiAuth ? "true" : "false"}`,
-    "",
-  ].join("\n");
-
-  writeFileSync(configPath, content, "utf-8");
+async function ensureHermesHome(hermesHome: string): Promise<void> {
+  mkdirSync(hermesHome, { recursive: true });
+  // config.yaml / .env 改用符号链接,这样 ~/.hermes/ 的全局改动立即对所有 workspace 生效。
+  // hermes 子进程只读这两个文件,不存在并发写,符号链接安全。
+  for (const file of ["config.yaml", ".env"]) {
+    const source = path.join(config.hermes.sourceHome, file);
+    const target = path.join(hermesHome, file);
+    if (!existsSync(source)) continue;
+    try {
+      let needReplace = true;
+      try {
+        const stat = lstatSync(target);
+        if (stat.isSymbolicLink()) {
+          const linkTarget = readlinkSync(target).toString();
+          if (linkTarget === source) needReplace = false;
+        }
+      } catch {
+        // lstatSync 抛错说明 target 不存在,继续走创建分支
+      }
+      if (needReplace) {
+        if (existsSync(target)) rmSync(target, { force: true });
+        symlinkSync(source, target);
+      }
+    } catch (error) {
+      logger.warn(`Hermes config symlink failed file=${file}: ${(error as Error).message}`);
+    }
+  }
+  // auth.json 仍用 copy 方式 — hermes 运行时可能刷新 token,多 workspace 共享会并发写冲突。
+  const authSource = path.join(config.hermes.sourceHome, "auth.json");
+  const authTarget = path.join(hermesHome, "auth.json");
+  if (existsSync(authSource) && !existsSync(authTarget)) {
+    try {
+      copyFileSync(authSource, authTarget);
+    } catch (error) {
+      logger.warn(`Hermes auth copy failed: ${(error as Error).message}`);
+    }
+  }
 }
 
-function copyCodexRuntimeFile(fileName: string, runtimeHome: string) {
-  const source = path.join(process.env.CODEX_HOME || path.join(process.env.HOME || "", ".codex"), fileName);
-  const target = path.join(runtimeHome, fileName);
-  if (!existsSync(source) || existsSync(target)) return;
-  try {
-    copyFileSync(source, target);
-  } catch (error) {
-    logger.warn(`Codex runtime file copy failed file=${fileName}: ${(error as Error).message}`);
-  }
+export async function ensureHermesRuntimeForWorkspace(workspacePath: string): Promise<string> {
+  const hermesHome = path.join(workspacePath, ".hermes");
+  await ensureHermesHome(hermesHome);
+  return hermesHome;
 }
 
 // ─── 注册中心 ───────────────────────────────────────────────────────
@@ -450,36 +422,46 @@ function getOrCreateInstance(id: AcpBackendId, override: AcpBackendOverride = {}
 
 export async function loadCurrentBackendId(): Promise<AcpBackendId> {
   if (settingsLoaded) {
-    return currentBackendId ?? ACP_BACKENDS.find((b) => b.isDefault)?.id ?? "kimi";
+    return currentBackendId ?? "hermes";
   }
   const row = await db
     .select()
     .from(settings)
     .where(eq(settings.key, SETTINGS_KEY))
     .limit(1);
-  const fromSettings = row[0]?.value as AcpBackendId | undefined;
+  const fromSettings = row[0]?.value as string | undefined;
   const valid = ACP_BACKENDS.find((b) => b.id === fromSettings);
-  currentBackendId = valid ? valid.id : (ACP_BACKENDS.find((b) => b.isDefault)?.id ?? "kimi");
+  currentBackendId = valid ? valid.id : "hermes";
   settingsLoaded = true;
   return currentBackendId;
 }
 
-export async function getCurrentAcpAgent(): Promise<StdioAcpAgent> {
+export async function getCurrentAcpAgent(workspacePath?: string): Promise<StdioAcpAgent> {
   const id = await loadCurrentBackendId();
-  return getOrCreateInstance(id);
+  return getOrCreateInstance(id, workspacePath ? { cwd: workspacePath } : {});
 }
 
-export function getCodexAcpAgent(workspacePath?: string): StdioAcpAgent {
-  return getOrCreateInstance("codex", workspacePath ? { cwd: workspacePath } : {});
-}
-
-export function clearCodexAcpSessions(conversationId: string) {
-  instances.get("codex")?.clearSession(conversationId);
-  for (const [key, inst] of scopedInstances) {
-    if (key.startsWith("codex:")) {
-      inst.clearSession(conversationId);
-    }
+export function clearAcpSessions(conversationId: string) {
+  for (const inst of instances.values()) {
+    inst.clearSession(conversationId);
   }
+  for (const inst of scopedInstances.values()) {
+    inst.clearSession(conversationId);
+  }
+}
+
+export function disposeAcpForWorkspace(workspacePath: string): number {
+  const resolved = path.resolve(workspacePath);
+  let disposed = 0;
+  for (const [key, inst] of [...scopedInstances.entries()]) {
+    const [, ...cwdParts] = key.split(":");
+    const cwd = cwdParts.join(":");
+    if (path.resolve(cwd) !== resolved) continue;
+    inst.dispose();
+    scopedInstances.delete(key);
+    disposed += 1;
+  }
+  return disposed;
 }
 
 export async function switchAcpBackend(id: AcpBackendId): Promise<AcpBackendStatus> {
@@ -548,4 +530,8 @@ export function disposeAllAcp(): void {
     inst.dispose();
   }
   instances.clear();
+  for (const inst of scopedInstances.values()) {
+    inst.dispose();
+  }
+  scopedInstances.clear();
 }

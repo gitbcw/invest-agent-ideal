@@ -33,9 +33,6 @@ async function sendPushJob(job: { userId: string; backend: PushBackend; message:
       logger.warn(`项目实例微信推送失败，尝试全局通道: ${(error as Error).message}`);
     }
   }
-  if (job.backend === "hermes") {
-    logger.warn(`push job 的 backend="hermes" 旁路微信通道已下线,降级到主桥推送`);
-  }
   return weixinMobileManager.pushText(job.message, { userId: job.userId, instanceId: job.instanceId });
 }
 
@@ -68,7 +65,7 @@ export async function createServer() {
   registerPush(async (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => {
     const job = await enqueuePushJob({
       userId: options?.userId,
-      backend: "codex",
+      backend: "hermes",
       projectId: options?.projectId,
       instanceId: options?.instanceId,
       source: "scheduler",
@@ -87,7 +84,7 @@ export async function createServer() {
       agentId: agent.agentId,
       capabilities: agent.capabilities,
       acpBackends: { backends },
-      codexAcp: backends.find((b) => b.id === "codex") ?? null,
+      hermesAcp: backends.find((b) => b.id === "hermes") ?? null,
       pendingAlerts: pendingAlerts.length,
       pushQueue: await getPushQueueSummary(),
       timestamp: new Date().toISOString(),
@@ -182,19 +179,35 @@ export async function createServer() {
   });
 
   // 简单测试端点（不经过 ACP，直接对话）
-  app.post<{ Body: { message: string } }>(
+  app.post<{ Body: { message: string; userId?: string; workspacePath?: string; channel?: "weixin-mobile" | "dashboard" | "api" } }>(
     "/api/chat",
     async (request, reply) => {
-      const { message } = request.body;
+      const { message, userId, workspacePath, channel } = request.body;
       if (!message) {
         return reply.status(400).send({ error: "message is required" });
       }
 
+      let resolvedWorkspacePath = workspacePath;
+      if (!resolvedWorkspacePath && userId) {
+        const { ensureWorkspace } = await import("./lib/workspace.js");
+        const resolved = await ensureWorkspace({ userId, projectId: "invest-agent" });
+        resolvedWorkspacePath = resolved.path;
+      }
+
       const acpMessage: AcpMessage = {
         id: `test-${Date.now()}`,
-        from: "test",
+        from: userId || "test",
         timestamp: Date.now(),
         content: { type: "text", text: message },
+        ...(userId || resolvedWorkspacePath || channel
+          ? {
+              context: {
+                userId: userId || "test",
+                ...(resolvedWorkspacePath ? { workspacePath: resolvedWorkspacePath } : {}),
+                ...(channel ? { channel } : {}),
+              },
+            }
+          : {}),
       };
 
       const response = await agent.handleMessage(acpMessage);
@@ -262,7 +275,7 @@ export async function createServer() {
       const job = await enqueuePushJob({
         userId,
         instanceId,
-        backend: "codex",
+        backend: "hermes",
         source: "manual-alert-check",
         message: text,
       });

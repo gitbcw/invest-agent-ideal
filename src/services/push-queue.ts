@@ -6,7 +6,7 @@ import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { hasActiveWeixinComplexTask } from "../channels/weixin-activity.js";
 
-export type PushBackend = "codex" | "hermes";
+export type PushBackend = "hermes";
 export type PushChannel = "weixin-mobile";
 
 export interface PushJobInput {
@@ -49,7 +49,7 @@ export async function enqueuePushJob(input: PushJobInput) {
     projectId: input.projectId || DEFAULT_PROJECT_ID,
     instanceId: input.instanceId || DEFAULT_INSTANCE_ID,
     channel: input.channel || "weixin-mobile",
-    backend: input.backend || "codex",
+    backend: input.backend || "hermes",
     source: input.source || "scheduler",
     message: input.message,
     status: "pending",
