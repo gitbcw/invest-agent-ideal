@@ -1,16 +1,16 @@
 # 服务器部署说明
 
-本文档用于把当前单客户 Experimental MVP 部署到服务器，并通过浏览器访问微信连接后台。
+本文档用于把当前单客户 Experimental MVP 部署到服务器，并通过浏览器访问统一看板完成微信连接与巡检/复盘运维。
 
 ## 1. 部署目标
 
 部署完成后，服务器上应提供：
 
 - `http://<server>:22648/health`
-- `http://<server>:22648/admin/weixin`
+- `http://<server>:22648/dashboard`
 - `http://<server>:22648/api/weixin/status`
 
-用户通过浏览器打开 `/admin/weixin`，点击“连接微信”，扫码绑定微信，然后由服务端自动启动消息监听。
+用户通过浏览器打开 `/dashboard`，在“微信连接”区域点击“连接微信”，扫码绑定微信，然后由服务端自动启动消息监听。
 
 ## 2. 当前部署形态
 
@@ -133,7 +133,7 @@ curl http://127.0.0.1:22648/health
 浏览器访问：
 
 ```text
-http://<server>:22648/admin/weixin
+http://<server>:22648/dashboard
 ```
 
 ### 6.3 微信状态
@@ -144,14 +144,14 @@ curl http://127.0.0.1:22648/api/weixin/status
 
 ## 7. 首次绑定微信
 
-1. 打开 `/admin/weixin`
+1. 打开 `/dashboard`
 2. 点击“连接微信”
 3. 页面显示二维码
 4. 用客户微信扫码并确认
 5. 页面状态进入 `connected`
 6. 若未自动监听，点击“启动监听”
 
-绑定成功后，微信状态会保存在服务器本地，后续服务重启后会自动恢复监听。
+绑定成功后，微信状态会保存在服务器本地，后续服务重启后会自动恢复监听。当前调度器会继续按 workspace `config/schedules.yaml` 和 `config/watch.yaml` 扫描自动巡检与复盘。
 
 ## 8. 数据与状态目录
 
@@ -184,7 +184,7 @@ INVEST_AGENT_WEIXIN_STATE_DIR=./.state
 如果服务器不直接暴露 22648，可用 Nginx 或 Caddy 反代，例如：
 
 ```text
-https://agent.example.com/admin/weixin
+https://agent.example.com/dashboard
 ```
 
 建议生产环境最终走 HTTPS。
@@ -215,7 +215,13 @@ pm2 stop invest-agent
 curl http://127.0.0.1:22648/api/weixin/status
 ```
 
-## 11. 当前已知限制
+## 11. 当前运行说明
+
+- 当前统一使用 Hermes stdio ACP 作为工作空间推理后端。
+- 盘中巡检与日/周/月复盘都由服务侧 scheduler 触发，再进入当前用户的 workspace。
+- 自动复盘去重已按 `userId + instanceId + period` 生效；同一实例下若用户已手动生成同周期报告，自动任务默认不重复生成。
+
+## 12. 当前已知限制
 
 - 单客户版本，只支持一个微信账号绑定。
 - 微信状态保存在本机目录，不是数据库多租户方案。
@@ -230,7 +236,7 @@ curl http://127.0.0.1:22648/api/weixin/status
 npm run smoke
 ```
 
-并确认本地 `/admin/weixin` 能显示二维码、能绑定微信、能收到消息。
+并确认本地 `/dashboard` 能显示二维码、能绑定微信、能收到消息。
 
 ### 12.1 复合指标系统 5 套 smoke(2026-06-22 落地)
 
@@ -253,5 +259,3 @@ npm run cache:clear-indicator                  # 默认 dry-run,30 天阈值
 npm run cache:clear-indicator -- --apply       # 实际删除
 npm run cache:clear-indicator -- --days 7 --apply
 ```
-
-

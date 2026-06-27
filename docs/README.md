@@ -14,6 +14,7 @@ Read these first, in this order:
 | [table-ownership.md](./table-ownership.md) | SQLite table three-tier ownership (service / workspace / discard), the truth source for workspace migration boundaries |
 | [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md) | Sandbox token, permission, audit, and isolation model. Kept in root because table-ownership only covers table boundaries, not the underlying sandbox security model |
 | [composite-indicator-system.md](./composite-indicator-system.md) | Composite indicator system RFC (2026-06-22): L1 operators / L2 signals / L3a rule tree / L3b sandbox script, with main-force-control as first use case |
+| [watch-runtime-design-note.md](./watch-runtime-design-note.md) | Discussion note (2026-06-26): service-owned scheduler + workspace executable watch rules/scripts; not yet an implementation decision |
 | [investment-model-design.md](./investment-model-design.md) | Investment model v1: user-facing container for selection, trading, risk, review, and exit loops |
 | [trading-strategy-design.md](./trading-strategy-design.md) | Trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation, three trigger scenarios, review boundary |
 | [04-core-workflows.md](./04-core-workflows.md) | Core product loops: monitoring, alerts, reviews, screening, feedback |
@@ -24,10 +25,9 @@ Read these first, in this order:
 
 - The product is a WeChat-first AI investment decision assistant and the first AI Project type in a broader runtime platform.
 - The durable product assets are Skills, Strategy Skill skeleton plus instance expansion, sandbox/tool protocols, deterministic service APIs, context building, confirmation workflows, audit, and saved artifacts.
-- WeChat user messages now follow the direct workspace path: WeChat bridge resolves user/project/instance/workspace, then forwards the raw user message plus minimal channel context to Codex running with that workspace as cwd.
+- WeChat user messages now follow the direct workspace path: WeChat bridge resolves user/project/instance/workspace, then forwards the raw user message plus minimal channel context to Hermes stdio ACP running with that workspace as cwd.
 - The service must not classify normal WeChat messages into review/onboarding/fast-lane intents. Those behaviors belong in the workspace template, AGENTS.md, skills, and user config.
-- ACP backend registry still exists for non-WeChat/admin paths and operational fallback. The WeChat direct path uses Codex scoped to the target workspace.
-- Hermes exited the main path on 2026-06-21; `src/acp/hermes-stdio-agent.ts`, `/api/hermes/*`, and the `BypassWeixinMobileBridge` parallel channel were deleted on 2026-06-23. Only the `backend === "hermes"` string remains in legacy push jobs for compatibility.
+- Hermes stdio ACP is the unified runtime backend. Codex is no longer registered as an invest-agent runtime backend; historical `codex_acp_traces` storage names are compatibility residue only.
 - Profile is a runtime compatibility summary and routing residue only. Do not add methodology responsibility to Profile.
 - Investment method lives in Strategy Skills: protected skeleton plus instance expansion candidates.
 - The service owns deterministic execution: SQLite, market data, dashboard/workbench APIs, WeChat bridge, scheduler, alert push, sandbox, audit, and confirmation.
@@ -38,7 +38,7 @@ Read these first, in this order:
 - **Workspace model is the keystone** (2026-06-21 master plan): each user gets a copy of `templates/workspace/`, all private artifacts land in workspace yaml/jsonl/md, SQLite only keeps platform-level system responsibilities. Table-level boundaries are defined in [table-ownership.md](./table-ownership.md).
 - **Composite indicator system 5-layer architecture is shipped** (2026-06-22): L1 operators / L2 signals / L3a rule tree (YAML) / L3b sandbox script (isolated-vm) / acknowledgement gate. Main-force-control (ZZLKP) is the first customer use case end-to-end verified. See [composite-indicator-system.md](./composite-indicator-system.md) for the RFC.
 - **Investment model is the user-facing configuration center** (2026-06-24): onboarding should converge from scattered "style / methodology / trading strategy" setup to "configure your investment model". Each user has a default model; methods and trading strategies are components inside that model. See [investment-model-design.md](./investment-model-design.md).
-- **Scheduled tasks remain service-owned**: the scheduler scans workspace `config/watch.yaml` / `config/schedules.yaml` every minute, invokes workspace-scoped Codex for market-watch and review tasks, then pushes concise results when configured.
+- **Scheduled tasks remain service-owned**: the scheduler scans workspace `config/watch.yaml` / `config/schedules.yaml` every minute, invokes workspace-scoped Hermes for market-watch and review tasks, then pushes concise results when configured.
 
 ## Keep Or Archive Rule
 

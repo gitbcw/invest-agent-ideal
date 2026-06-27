@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-微信入口的 AI 投资决策助手，实验分支当前采用极简主链路：微信消息解析出用户、实例和 workspace 后，直接转发给在该 workspace 中运行的 Codex。服务层不再做普通微信消息的 triage、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Dashboard、行情数据、巡检、提醒、sandbox/API、落库和微信推送。
+微信入口的 AI 投资决策助手，实验分支当前采用极简主链路：微信消息解析出用户、实例和 workspace 后，直接转发给在该 workspace 中运行的 Hermes stdio ACP 后端。服务层不再做普通微信消息的 triage、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Dashboard、行情数据、巡检、提醒、sandbox/API、落库和微信推送。
 
 ## 常用命令
 
@@ -22,11 +22,11 @@ npm run db:migrate   # 执行数据库迁移
 
 ## 环境配置
 
-复制 `.env.example` 为 `.env`。数据库为 SQLite，路径 `./data/invest-agent.db`。微信消息进入智能后端时由服务直接启动 workspace-scoped Codex ACP 子进程，不需要单独手动启动 ACP HTTP endpoint。
+复制 `.env.example` 为 `.env`。数据库为 SQLite，路径 `./data/invest-agent.db`。微信消息进入智能后端时由服务直接启动 workspace-scoped Hermes ACP 子进程，不需要单独手动启动 ACP HTTP endpoint。
 
 微信桥接状态默认保存在本项目 `./.state/openclaw-weixin/`，也可通过 `INVEST_AGENT_WEIXIN_STATE_DIR` 覆盖。不要让本项目和全局 Claude Code 微信桥接共用同一个 `~/.openclaw` 登录态目录。
 
-> **Hermes 退出主链路**：2026-06-21 工作包 2 已完成清退,2026-06-23 进一步删除 `src/acp/hermes-stdio-agent.ts` 与 `/api/hermes/*` 实验路由。主链路不再感知 `hermesProfile`。`BypassWeixinMobileBridge`(原名 `HermesWeixinMobileBridge`)也于 2026-06-23 范围收缩 WP A2 删除。DB 字段 `backend==="hermes"` 保留作历史 push job 兼容,运行时降级主桥。历史规划详见 `docs/archive/ideal-refactor-plan.md` 与 `docs/archive/scope-contraction-plan.md`。
+> **运行时语义纠正(2026-06-26)**：当前统一使用 Hermes stdio ACP 作为 workspace 后端承接。Codex 不再作为 invest-agent 产品运行时 backend 注册或默认选项；历史 `codex_acp_traces` 表名仅作为兼容存储保留。
 
 ## 架构：消息处理主链路
 
@@ -34,16 +34,16 @@ npm run db:migrate   # 执行数据库迁移
 用户微信消息 → weixin-agent-sdk → InvestAgentMobileBridge
   → 解析 user / project / instance / workspace
   → AcpAgent.handleMessage()
-  → workspace-scoped Codex ACP session(cwd = 用户 workspace)
-  → Codex 使用 workspace 的 AGENTS.md + .codex/skills 进行推理和工具调用
-  → Codex 按需调用 invest-agent 的 sandbox / Dashboard / 行情等确定性 API
+  → workspace-scoped Hermes ACP session(cwd = 用户 workspace)
+  → Hermes 使用 workspace 的 AGENTS.md + .codex/skills 进行推理和工具调用
+  → Hermes 按需调用 invest-agent 的 sandbox / Dashboard / 行情等确定性 API
   → 响应返回微信
 ```
 
-主动提醒反向链路：`scheduler/index.ts` 每分钟扫描 workspace 的 `config/watch.yaml` / `config/schedules.yaml` → 命中后调用 workspace-scoped Codex 执行巡检或复盘 → 触发后通过微信推送队列发送。
+主动提醒反向链路：`scheduler/index.ts` 每分钟扫描 workspace 的 `config/watch.yaml` / `config/schedules.yaml` → 命中后调用 workspace-scoped Hermes 执行巡检或复盘 → 触发后通过微信推送队列发送。
 
 > **2026-06-23 范围收缩**:本项目定位明确为"少数几个投资客户的精品投资助手",不再承载多产品 AI 平台 / 饮食推荐 / 旁路桥 / 对话草案 / 多 bundle 抽象。WP A1+A2+A3+C 全部收尾:
-> - 主链路微信桥只剩 `InvestAgentMobileBridge`(主桥);`backend==="hermes"` 字符串保留作 push-queue 历史 job 兼容,运行时降级主桥
+> - 主链路微信桥只剩 `InvestAgentMobileBridge`(主桥);`backend==="hermes"` 是当前唯一运行时后端标识
 > - `src/platform/` 简化为 `project-registry.ts`(实例查询)+ `tool-registry.ts`(sandbox 工具白名单),不再有 project-type manifest / skill-bundle catalog
 > - 技能说明以 workspace 模板中的 `AGENTS.md` 和 `.codex/skills` 为准；服务层不再注入固定 skill-bundle prompt
 > - `/platform` 后台页 + `/api/platform/*` admin REST 已下线;`src/routes/platform.ts` 只保留 weixin 工厂和自动恢复
@@ -53,8 +53,8 @@ npm run db:migrate   # 执行数据库迁移
 
 | 文件 | 职责 |
 |------|------|
-| `src/acp/agent.ts` | ACP 入口；微信消息只添加最小通道上下文并代理到 workspace-scoped Codex |
-| `src/acp/stdio-agent.ts` | 多 backend ACP stdio 托管器；微信直通路径使用按 workspace cwd 隔离的 Codex session |
+| `src/acp/agent.ts` | ACP 入口；微信消息只添加最小通道上下文并代理到 workspace-scoped Hermes |
+| `src/acp/stdio-agent.ts` | Hermes stdio ACP 托管器；微信直通路径使用按 workspace cwd 隔离的 Hermes session |
 | `src/services/deepseek.ts` | DeepSeek API 封装，支持 light（flash）和 deep（pro+thinking）两种模式 |
 | `src/services/stock.ts` | 腾讯行情 API：实时报价、日 K、股票搜索 |
 | `src/services/stock-resolver.ts` | 股票名称/代码模糊解析 |
@@ -75,7 +75,7 @@ npm run db:migrate   # 执行数据库迁移
 
 ## 服务保留的确定性能力
 
-这些能力应保留在本项目中，供 Dashboard、巡检和未来 Codex 工具调用使用。
+这些能力应保留在本项目中，供 Dashboard、巡检和未来 Hermes 工具调用使用。
 
 **持仓与自选：**
 - `query_holding_pool` / `add_holding_stocks` / `remove_holding_stocks`
@@ -94,7 +94,7 @@ npm run db:migrate   # 执行数据库迁移
 - `/api/reviews/daily` / `/api/reviews/query`：复盘数据收集、生成入口和 artifact 查询。复盘方法与输出纪律应优先沉淀到 workspace 内 skills。
 
 **交易策略实体(第一版):**
-- `workspace/config/trading_strategies.yaml` 装用户多份策略(每份含 key/name/applicability/body/enabled);与 `strategy.yaml`(整体投资风格)平级,不合并。workspace 模板不内置示例,由用户/Codex 自建
+- `workspace/config/trading_strategies.yaml` 装用户多份策略(每份含 key/name/applicability/body/enabled);与 `strategy.yaml`(整体投资风格)平级,不合并。workspace 模板不内置示例,由用户/Hermes 自建
 - `/api/strategies` / `/api/sandbox/strategies/*`:策略 CRUD endpoint
 - `stock_plans.strategy_key` 是策略 → 预案的溯源软引用(可空,策略删除不级联清理)
 - 策略推荐 + 预案起草按 `AGENTS.md` 的 Strategy Plan Drafting 流程,两道闸门(策略匹配 + 预案起草),不做 AI 自主落库
@@ -106,7 +106,7 @@ npm run db:migrate   # 执行数据库迁移
 
 ## Dashboard CRUD API
 
-Dashboard 可直接操作数据，不经过 Codex：
+Dashboard 可直接操作数据，不经过 Hermes：
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -132,11 +132,11 @@ Dashboard 可直接操作数据，不经过 Codex：
 | 实时行情 | 腾讯行情 API | 最新价、涨跌幅、成交量、换手率 |
 | 日 K 线 | 腾讯行情 API | 120 日历史，计算 MA/MACD/量比 |
 | 资金流向 | 东方财富 emdatah5 | 主力/超大单/大单/中单/小单净流入 |
-| L1 筹码分布 | 自研近似模型 | `src/services/chip-distribution.ts` 提供 `computeChipDistribution` / `winner`（reliability=experimental，需走告知协议）；workspace 沙箱脚本示例已移除，需要时由用户/Codex 自建 |
+| L1 筹码分布 | 自研近似模型 | `src/services/chip-distribution.ts` 提供 `computeChipDistribution` / `winner`（reliability=experimental，需走告知协议）；workspace 沙箱脚本示例已移除，需要时由用户/Hermes 自建 |
 
 ## 复合指标系统（5 层）
 
-服务侧 L1 算子、L3a/L3b 引擎和告知协议门禁完整保留在 `src/services/`，workspace 模板不内置示例 yaml/ts，需要时由用户/Codex 在 workspace 内自建。完整 RFC 见 `docs/composite-indicator-system.md`。
+服务侧 L1 算子、L3a/L3b 引擎和告知协议门禁完整保留在 `src/services/`，workspace 模板不内置示例 yaml/ts，需要时由用户/Hermes 在 workspace 内自建。完整 RFC 见 `docs/composite-indicator-system.md`。
 
 | 层 | 形态 | 落点 | 适用 |
 |---|---|---|---|
@@ -157,11 +157,11 @@ Dashboard 可直接操作数据，不经过 Codex：
 ## 设计原则
 
 1. 不恢复旧关键词路由，也不恢复/扩展自研 Agent Runtime。
-2. Codex 是对话总控。invest-agent 只做确定性查询、落库、巡检和推送。
+2. Hermes 是对话总控。invest-agent 只做确定性查询、落库、巡检和推送。
 3. 用户不需要记指令，不需要提供股票代码。股票名称通过 `stock-resolver` 解析。
 4. 不确定时追问；能从上下文判断时不多余确认。
 5. 投资输出必须说明不确定性，不承诺收益，不自动交易。
-6. 定性推理和工作流应沉淀到 workspace 模板的 `AGENTS.md` 与 `skills/`(Codex 在 workspace 内读取)。
+6. 定性推理和工作流应沉淀到 workspace 模板的 `AGENTS.md` 与 `skills/`(Hermes 在 workspace 内读取)。
 7. `agent_traces` 是旧 Runtime 历史表，可保留数据，不作为当前对话追踪方案。
 
 ## 数据库

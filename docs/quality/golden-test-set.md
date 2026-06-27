@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | L0 结构校验 | `npm run eval:golden` | 校验黄金集格式、case 覆盖、期望断言和 fixture 一致性,不调用模型 |
 | L1 确定性 smoke | `npm run verify:convergence` | 校验服务、workspace、后端抽象、只读微信路径等确定性能力 |
-| L2 真实通道评测 | `npm run eval:conversation` | 走真实微信模拟入口 + workspace-scoped Codex,生成结果报告,人工或 AI 复评 |
+| L2 真实通道评测 | `npm run eval:conversation` | 走真实微信模拟入口 + workspace-scoped Hermes stdio ACP,生成结果报告,人工或 AI 复评 |
 | L3 专项推理评测 | `npm run eval:strategy-recommendation` | 专门评估策略推荐等可量化推理能力,依赖对应推理端点 |
 
 ## 当前黄金集
@@ -53,7 +53,7 @@
 
 `eval:golden` 必须始终通过。它是测试集资产自身的健康检查。
 
-`eval:conversation` 的输出报告不自动判分。当前阶段由 Codex/人工读取 `eval-reports/<中文场景名>.md` 后判定。
+`eval:conversation` 的输出报告不自动判分。当前阶段由人工或当前 ACP 运行时复读 `eval-reports/<中文场景名>.md` 后判定。
 
 报告按场景覆盖保存，只保留每个场景最新一份人工审计稿；同场景包含多条 case 时会写在同一个中文报告里。对应 JSON 文件用于后续机器复评。
 

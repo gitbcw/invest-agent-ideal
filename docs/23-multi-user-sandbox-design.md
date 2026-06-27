@@ -2,7 +2,7 @@
 
 ## 背景与意图
 
-当前系统已经从单用户投资助手演进出可复用的平台沙箱能力。早期 Hermes 旁路验证了微信后端链路、可靠推送和 trace 能力；当前主路径应理解为 Codex ACP + sandbox token。业务数据正在从单用户模型迁移到多用户/多 AI Project 模型，系统已经具备 `users`、`channel_identities`、多张业务表的 `user_id` 字段，以及微信会话到业务用户的自动映射。
+当前系统已经从单用户投资助手演进出可复用的平台沙箱能力。当前主路径应理解为 Hermes stdio ACP + sandbox token。业务数据正在从单用户模型迁移到多用户/多 AI Project 模型，系统已经具备 `users`、`channel_identities`、多张业务表的 `user_id` 字段，以及微信会话到业务用户的自动映射。
 
 但这还不是完整沙箱。真正的沙箱目标不是让 AI “记得传正确 userId”，而是让服务端强制保证：AI 即使幻觉、误调用、伪造参数，也只能影响当前微信用户自己的数据，不能读写其他用户，也不能修改全局运行配置。
 
@@ -11,9 +11,9 @@
 ### 已具备的隔离能力
 
 - 微信消息进入时会通过 `channel_identities` 映射到内部 `userId`。
-- `watchlist`、`portfolio`、`stock_plans`、`daily_plans`、`alert_events`、`alert_signal_states`、`indicator_results`、`codex_acp_traces` 等核心业务表已具备 `user_id`。
+- `watchlist`、`portfolio`、`stock_plans`、`daily_plans`、`alert_events`、`alert_signal_states`、`indicator_results`、`codex_acp_traces` 等核心业务表已具备 `user_id`，调度与推送链路的实际运行 scope 已进一步收敛到 `user_id + instance_id`。
 - Dashboard 聚合查询、持仓、自选、预案、复盘、巡检等路径已经部分按 `userId` 过滤。
-- Codex ACP、微信通道和 Dashboard/Workbench 之间已经形成了通道概念。
+- Hermes ACP、微信通道和 Dashboard/Workbench 之间已经形成了通道概念。
 
 ### 尚未具备的沙箱能力
 
@@ -69,7 +69,7 @@ interface SandboxContext {
   userId: string;
   role: SandboxRole;
   channel: SandboxChannel;
-  backend?: "codex";
+  backend?: "hermes";
   conversationId?: string;
   externalUserId?: string;
   channelAccountId?: string;
@@ -88,7 +88,7 @@ Token 内容绑定：
 - `userId`
 - `role=user`
 - `channel=weixin-mobile`
-- `backend=codex`
+- `backend=hermes`
 - `conversationId`
 - `externalUserId`
 - `permissions`
@@ -141,7 +141,7 @@ Authorization: Bearer <sandboxToken>
 
 #### 系统态 API/函数
 
-scheduler 不走 HTTP token，可直接创建 `SandboxContext{role:"system"}` 或直接调用 handler，但必须显式传 `userId`。scheduler 的用户枚举来自 `users/channel_identities`，不是 AI 输入。
+scheduler 不走 HTTP token，可直接创建 `SandboxContext{role:"system"}` 或直接调用 handler，但必须显式传 `userId + instanceId`。scheduler 的 scope 枚举来自 `users`、`ai_instances`、`channel_identity_instances` 和启用中的提醒规则，不是 AI 输入。
 
 ### 4. AI 调用方式调整
 
@@ -290,7 +290,7 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 1. 在 `buildMobilePrompt` 中加入 sandbox token 的内部执行说明。
 2. 修改 `.codex/skills/invest-agent-service-tools/SKILL.md`，所有微信/ACP 示例使用 Bearer token。
 3. 从 prompt 中删除“调用 API 必须传 userId=xxx”的表述，改为“使用提供的 sandbox token；不要传 userId”。
-4. Codex ACP 链路生成对应 token。
+4. Hermes ACP 链路生成对应 token。
 5. trace 记录 sandbox token id、userId、permissions。
 
 验收：
@@ -348,7 +348,7 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
   - 缓解：skill 文档只暴露 sandbox API；旧 API 标注 admin-only。
 
 - 风险：scheduler 和微信推送仍有全局遗留队列。
-  - 缓解：scheduler 内部直接按 userId 调 handler；废弃或 user-scope `/acp/alerts`。
+  - 缓解：scheduler 内部直接按 `userId + instanceId` 调 handler；废弃或 user-scope `/acp/alerts`。
 
 - 风险：多用户共享全局信号配置是否合理。
   - 缓解：短期全局信号只允许 admin 修改；长期可增加 user-level override。

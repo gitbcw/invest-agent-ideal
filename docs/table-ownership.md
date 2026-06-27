@@ -24,7 +24,7 @@
 | `ai_projects` | AI 项目类型注册表 | 平台元数据,跨用户 |
 | `ai_instances` | 项目实例注册 | 平台元数据 + 路由依据 |
 | `settings` | 系统级 KV(signal_config、巡检间隔、复盘模板) | 平台默认值,跨用户共享 |
-| `codex_acp_traces` | Codex ACP 调用审计 | 系统审计,与用户方法无关 |
+| `codex_acp_traces` | ACP 调用审计(历史表名保留) | 系统审计,与用户方法无关 |
 | `sandbox_audit_logs` | 沙箱令牌调用审计 | 合规/安全审计 |
 | `pending_sandbox_confirmations` | 待确认的沙箱操作 | 跨进程状态(微信消息 ↔ 沙箱执行) |
 | `conversation_tasks` | 旧会话任务草案表 | 保留作考古；conversation-task 草案系统已于 2026-06-23 删除 |
@@ -56,7 +56,7 @@
 
 | 表 | 丢弃理由 |
 |---|---|
-| `chat_history` | Codex ACP 自带会话状态;微信侧的会话记忆已切到 `memory/behavior_events.jsonl`(event_type=wechat_conversation_turn) |
+| `chat_history` | 历史会话状态;微信侧的会话记忆已切到 `memory/behavior_events.jsonl`(event_type=wechat_conversation_turn) |
 | `agent_traces` | 旧自研 Runtime 历史表,`src/` 中已 0 引用,只有 docs/archive 提及 |
 
 > `agent_traces` 当前 `src/` 引用计数为 0,可立即停止写入并冻结数据。
@@ -116,7 +116,7 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 已完成(2026-06-21):
 - ✅ `investment_profiles` / `methodology_profiles` 读写 → `config/strategy.yaml` + `knowledge/methods/*.md`(当时由 `profile-context.ts` / `conversation-tasks.ts:applyInvestmentProfileTask` / `sandbox.ts:/api/sandbox/profiles*` 切到 WorkspaceStore,通过 `WORKSPACE_BACKEND` 切换)
   - 字段舍弃:`customStyle`、`notificationPolicy`、`decisionPolicy`、`sourcePolicy`(运行时无消费,语义已被 yaml 其他字段覆盖)
-  - 2026-06-22 后续清理(方向 B 重构):`src/lib/profile-context.ts` 已删除,prompt 注入路径不再走"代码预拉数据塞 prompt",而是 Codex 直接通过 `/api/sandbox/profiles` / `/api/sandbox/reviews/*` 等 API 自取。`sandbox.ts` 不受影响,继续直连 WorkspaceStore。
+  - 2026-06-22 后续清理(方向 B 重构):`src/lib/profile-context.ts` 已删除,prompt 注入路径不再走"代码预拉数据塞 prompt",而是 ACP agent 直接通过 `/api/sandbox/profiles` / `/api/sandbox/reviews/*` 等 API 自取。`sandbox.ts` 不受影响,继续直连 WorkspaceStore。
   - 2026-06-23 范围收缩 WP A3:`src/lib/conversation-tasks.ts` 整文件删除,所有 Draft 中间层下线,`conversation_tasks` 表保留作考古。
 
 切换方式:环境变量 `WORKSPACE_BACKEND=workspace` 开启 workspace 模式,默认仍走 SQLite。
@@ -161,6 +161,6 @@ SQLite 数据库继续保留在 `./data/invest-agent.db`,需要查时直接 `sql
 
 ## 与 sandbox 的边界
 
-工作空间内的 yaml/jsonl 写入,**不走沙箱审计**(用户自己写自己的工作空间)。只有当 Codex ACP 通过沙箱 API 调用本服务、再由本服务回写工作空间时,才记录 `sandbox_audit_logs`(在服务层)。
+工作空间内的 yaml/jsonl 写入,**不走沙箱审计**(用户自己写自己的工作空间)。只有当 ACP agent 通过沙箱 API 调用本服务、再由本服务回写工作空间时,才记录 `sandbox_audit_logs`(在服务层)。
 
 这个边界来自 `docs/23-multi-user-sandbox-design.md` 的"工作空间是用户私有领域,沙箱只审计跨域调用"。
