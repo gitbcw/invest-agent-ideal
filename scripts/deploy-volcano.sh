@@ -4,7 +4,7 @@ set -euo pipefail
 HOST="${HOST:-118.145.115.197}"
 DEPLOY_USER="${DEPLOY_USER:-claude}"
 REMOTE_DIR="${REMOTE_DIR:-~/invest-agent}"
-PORT="${PORT:-22648}"
+PORT="${PORT:-22655}"
 
 echo "[deploy] sync to ${DEPLOY_USER}@${HOST}:${REMOTE_DIR}"
 rsync -avz \

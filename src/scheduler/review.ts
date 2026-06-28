@@ -5,7 +5,7 @@
  *   - 每分钟扫描所有 schedulable scope 的 workspace/config/schedules.yaml
  *   - 命中 daily_review / weekly_review / monthly_review 时触发对应 generate 函数,推送摘要到 IM
  *   - DEFAULT_USER_ID 无 workspace 时,回退到 settings 表的 review_push_time(默认 21:30,仅 daily)
- *   - 同一 (date, kind, userId, instanceId) 只跑一次(进程内 Set 去重)
+ *   - 同一 (date, kind, userId, instanceId) 通过 scheduled_task_runs 持久化抢锁,跨进程只跑一次
  *
  * 时间判断一律走北京时间(schedules.yaml 模板默认 Asia/Shanghai)。
  */
@@ -22,6 +22,7 @@ import { readSchedules, entryHitsNow, beijingNow, beijingDateKey } from "../lib/
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { runScheduledReviewTask } from "../acp/scheduled-tasks.js";
+import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/scheduled-task-runs.js";
 
 const PUSH_TIME_KEY = "review_push_time";
 const DEFAULT_HOUR = 21;
@@ -29,9 +30,7 @@ const DEFAULT_MINUTE = 30;
 
 type ReviewKind = "daily" | "weekly" | "monthly";
 
-const firedKeys = new Set<string>();
 let reviewIntervalId: ReturnType<typeof setInterval> | null = null;
-let cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
 
 let fallbackHour = DEFAULT_HOUR;
 let fallbackMinute = DEFAULT_MINUTE;
@@ -83,8 +82,6 @@ async function hasExistingDailyReview(scope: ReviewScope, dateKey: string): Prom
 async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date): Promise<boolean> {
   if (kind === "daily" && !isAfterDailyReviewScanStart(now)) return false;
   const dateKey = beijingDateKey(now);
-  const dedupeKey = `${dateKey}:${kind}:${scope.userId}:${scope.instanceId}`;
-  if (firedKeys.has(dedupeKey)) return false;
 
   let hit = false;
   if (hasWorkspace(scope.userId)) {
@@ -103,20 +100,48 @@ async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date): Prom
     hit = clock.getHours() === fallbackHour && clock.getMinutes() === fallbackMinute;
   }
 
-  if (hit) {
-    firedKeys.add(dedupeKey);
-    return true;
-  }
-  return false;
+  return hit;
 }
 
-async function fire(kind: ReviewKind, scope: ReviewScope, pushFn: PushCallback): Promise<void> {
+export async function triggerReviewNow(
+  kind: ReviewKind,
+  scope: ReviewScope,
+  pushFn: PushCallback,
+  now = new Date(),
+  options: { manualReason?: string } = {},
+): Promise<{ taskKey: string; skipped: boolean; pushJobId?: string }> {
+  const dateKey = beijingDateKey(now);
+  const projectId = scope.projectId ?? DEFAULT_PROJECT_ID;
+  const reasonSuffix = options.manualReason ? `:${options.manualReason}` : "";
+  const taskKey = `${dateKey}:${kind}-review:${scope.userId}:${scope.instanceId}${reasonSuffix}`;
+  const claimed = await claimScheduledTaskRun({
+    taskKey,
+    taskType: `${kind}-review`,
+    scheduledFor: dateKey,
+    userId: scope.userId,
+    projectId,
+    instanceId: scope.instanceId,
+  });
+  if (!claimed) {
+    logger.info(`跳过 ${kind} 复盘 user=${scope.userId} instance=${scope.instanceId}: task 已被其他进程领取`);
+    return { taskKey, skipped: true };
+  }
+
   try {
-    const projectId = scope.projectId ?? DEFAULT_PROJECT_ID;
     const text = await runScheduledReviewTask({ userId: scope.userId, instanceId: scope.instanceId, projectId }, kind);
-    if (text) await pushFn(text, { userId: scope.userId, projectId, instanceId: scope.instanceId });
+    const pushResult = text
+      ? await pushFn(text, { userId: scope.userId, projectId, instanceId: scope.instanceId })
+      : undefined;
+    const pushJobId = typeof pushResult === "string" ? pushResult : undefined;
+    await finishScheduledTaskRun(taskKey, { status: "success", pushJobId });
+    return { taskKey, skipped: false, pushJobId };
   } catch (error) {
     logger.error(`复盘触发失败 kind=${kind} user=${scope.userId} instance=${scope.instanceId}: ${error}`);
+    await finishScheduledTaskRun(taskKey, {
+      status: "error",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
 }
 
@@ -149,7 +174,7 @@ export async function startReviewScheduler(
         for (const kind of ["daily", "weekly", "monthly"] as ReviewKind[]) {
           if (await shouldFire(kind, scope, now)) {
             logger.info(`触发 ${kind} 复盘 user=${scope.userId} instance=${scope.instanceId}`);
-            await fire(kind, scope, pushFn);
+            await triggerReviewNow(kind, scope, pushFn, now);
           }
         }
       }
@@ -158,14 +183,6 @@ export async function startReviewScheduler(
     }
   }, 60 * 1000);
 
-  // 进程内 dedupe 集合按天清理,避免长期增长
-  cleanupIntervalId = setInterval(() => {
-    const todayKey = beijingNow().toISOString().slice(0, 10);
-    for (const key of firedKeys) {
-      if (!key.startsWith(todayKey)) firedKeys.delete(key);
-    }
-  }, 60 * 60 * 1000);
-
   logger.info(`复盘调度器已启动(workspace schedules.yaml + DEFAULT 用户兜底 ${fallbackHour}:${String(fallbackMinute).padStart(2, "0")})`);
 }
 
@@ -173,9 +190,5 @@ export function stopReviewScheduler() {
   if (reviewIntervalId !== null) {
     clearInterval(reviewIntervalId);
     reviewIntervalId = null;
-  }
-  if (cleanupIntervalId !== null) {
-    clearInterval(cleanupIntervalId);
-    cleanupIntervalId = null;
   }
 }

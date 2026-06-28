@@ -438,6 +438,21 @@ export function initDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+      task_key TEXT PRIMARY KEY,
+      task_type TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      scheduled_for TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'claimed',
+      claimed_at TEXT NOT NULL,
+      finished_at TEXT,
+      error_message TEXT,
+      push_job_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
   ensureDefaultUser();
   ensureDefaultAiInstance();
@@ -492,6 +507,9 @@ export function initDb() {
   ensureColumn("channel_identities", "welcomed_at", "TEXT");
   ensureColumn("push_jobs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("push_jobs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("scheduled_task_runs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("scheduled_task_runs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("scheduled_task_runs", "push_job_id", "TEXT");
   ensureColumn("indicator_results", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("indicator_results", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("stock_plans", "watch_conditions", "TEXT");
@@ -551,6 +569,8 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_push_jobs_user_time ON push_jobs(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_instance_status ON push_jobs(instance_id, status, next_retry_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_backend_status ON push_jobs(backend, status, next_retry_at);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_scope_time ON scheduled_task_runs(instance_id, user_id, task_type, scheduled_for);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status, scheduled_for);
   `);
   logger.info("数据库初始化完成");
 }

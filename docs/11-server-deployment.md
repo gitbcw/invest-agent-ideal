@@ -6,9 +6,11 @@
 
 部署完成后，服务器上应提供：
 
-- `http://<server>:22648/health`
-- `http://<server>:22648/dashboard`
-- `http://<server>:22648/api/weixin/status`
+- `http://<server>:22655/health`
+- `http://<server>:22655/dashboard`
+- `http://<server>:22655/api/weixin/status`
+
+当前默认端口统一为 `22655`。`22648` / `22652` 不再作为本项目默认端口使用。
 
 用户通过浏览器打开 `/dashboard`，在“微信连接”区域点击“连接微信”，扫码绑定微信，然后由服务端自动启动消息监听。
 
@@ -31,7 +33,7 @@
 - npm
 - PM2（推荐）
 - 可写磁盘目录
-- 可开放 22648 端口，或通过 Nginx/Caddy 反向代理
+- 可开放 22655 端口，或通过 Nginx/Caddy 反向代理
 
 ## 4. 必备文件
 
@@ -79,7 +81,7 @@ npm install
 至少确认：
 
 ```env
-PORT=22648
+PORT=22655
 NODE_ENV=production
 DB_PATH=./data/invest-agent.db
 DEEPSEEK_API_KEY=...
@@ -125,7 +127,7 @@ npm start
 ### 6.1 健康检查
 
 ```bash
-curl http://127.0.0.1:22648/health
+curl http://127.0.0.1:22655/health
 ```
 
 ### 6.2 管理后台
@@ -133,13 +135,13 @@ curl http://127.0.0.1:22648/health
 浏览器访问：
 
 ```text
-http://<server>:22648/dashboard
+http://<server>:22655/dashboard
 ```
 
 ### 6.3 微信状态
 
 ```bash
-curl http://127.0.0.1:22648/api/weixin/status
+curl http://127.0.0.1:22655/api/weixin/status
 ```
 
 ## 7. 首次绑定微信
@@ -181,7 +183,7 @@ INVEST_AGENT_WEIXIN_STATE_DIR=./.state
 
 ## 9. 端口与反向代理
 
-如果服务器不直接暴露 22648，可用 Nginx 或 Caddy 反代，例如：
+如果服务器不直接暴露 22655，可用 Nginx 或 Caddy 反代，例如：
 
 ```text
 https://agent.example.com/dashboard
@@ -212,7 +214,7 @@ pm2 stop invest-agent
 ### 查看微信状态
 
 ```bash
-curl http://127.0.0.1:22648/api/weixin/status
+curl http://127.0.0.1:22655/api/weixin/status
 ```
 
 ## 11. 当前运行说明

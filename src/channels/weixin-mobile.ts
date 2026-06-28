@@ -392,6 +392,11 @@ async function sendWeixinTextMessage(params: {
     const text = await response.text().catch(() => "(unreadable)");
     throw new Error(`微信主动推送失败: ${response.status} ${text.slice(0, 300)}`);
   }
+
+  const responseText = await response.text().catch(() => "");
+  logger.info(
+    `微信主动推送已提交 to=${params.to} contextToken=${params.contextToken ? "yes" : "no"} status=${response.status} body=${responseText.slice(0, 300)}`
+  );
 }
 
 function splitWeixinText(text: string, limit = WEIXIN_TEXT_CHUNK_LIMIT): string[] {
@@ -756,6 +761,10 @@ export class WeixinMobileManager {
       if (!target.conversationId || !account.token) {
         continue;
       }
+
+      logger.info(
+        `微信主动推送命中 account=${account.accountId} user=${options.userId || DEFAULT_USER_ID} instance=${options.instanceId || "-"} conversation=${target.conversationId} contextToken=${target.contextToken ? "yes" : "no"} chunks=${splitWeixinText(sanitizeCustomerText(message)).length}`
+      );
 
       const chunks = splitWeixinText(sanitizeCustomerText(message));
       for (const chunk of chunks) {

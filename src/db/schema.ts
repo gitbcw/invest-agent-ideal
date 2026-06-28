@@ -432,3 +432,19 @@ export const pushJobs = sqliteTable("push_jobs", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const scheduledTaskRuns = sqliteTable("scheduled_task_runs", {
+  taskKey: text("task_key").primaryKey(),
+  taskType: text("task_type").notNull(),
+  userId: text("user_id").notNull().default("primary"),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  instanceId: text("instance_id").notNull().default("invest-agent-primary"),
+  scheduledFor: text("scheduled_for").notNull(),
+  status: text("status").notNull().default("claimed"),
+  claimedAt: text("claimed_at").notNull(),
+  finishedAt: text("finished_at"),
+  errorMessage: text("error_message"),
+  pushJobId: text("push_job_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});

@@ -11,7 +11,7 @@ function defaultWorkspaceRoot() {
 export type LlmProvider = "deepseek" | "stepfun" | "doubao";
 
 export const config = {
-  port: Number(process.env.PORT) || 22648,
+  port: Number(process.env.PORT) || 22655,
   nodeEnv: process.env.NODE_ENV || "development",
 
   llm: {

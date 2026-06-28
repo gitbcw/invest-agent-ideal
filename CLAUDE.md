@@ -17,8 +17,10 @@ npm run db:generate  # Drizzle 迁移文件生成
 npm run db:migrate   # 执行数据库迁移
 ```
 
-统一看板：`http://localhost:22648/dashboard`（含持仓/自选/预案/提醒/信号/巡检/微信连接）
-健康检查：`curl http://localhost:22648/health`
+统一看板：`http://localhost:22655/dashboard`（含持仓/自选/预案/提醒/信号/巡检/微信连接）
+健康检查：`curl http://localhost:22655/health`
+
+本地只保留 `22655` 作为默认 invest-agent-ideal 服务端口。`22648` / `22652` 不应再作为本项目默认启动端口使用。
 
 ## 环境配置
 
@@ -46,8 +48,14 @@ npm run db:migrate   # 执行数据库迁移
 > - 主链路微信桥只剩 `InvestAgentMobileBridge`(主桥);`backend==="hermes"` 是当前唯一运行时后端标识
 > - `src/platform/` 简化为 `project-registry.ts`(实例查询)+ `tool-registry.ts`(sandbox 工具白名单),不再有 project-type manifest / skill-bundle catalog
 > - 技能说明以 workspace 模板中的 `AGENTS.md` 和 `.codex/skills` 为准；服务层不再注入固定 skill-bundle prompt
-> - `/platform` 后台页 + `/api/platform/*` admin REST 已下线;`src/routes/platform.ts` 只保留 weixin 工厂和自动恢复
+> - `/platform` 当前保留为轻量实例管理与实例级微信运维入口；复杂平台化抽象仍已删除，`src/routes/platform.ts` 主要负责实例查询、workspace ensure 和实例级 weixin 管理
 > - DB 表 `ai_projects` / `ai_instances` / `investment_profiles` / `conversation_tasks` 保留作考古,数据不迁出
+
+> **2026-06-28 阶段一验收更新**:
+> - 主用户实例 `invest-agent-primary` 已完成一轮真实验收
+> - `POST /api/testing/scheduler/trigger` 可立即触发 `daily-review` / `market-watch`
+> - `daily-review` 已真实推送到主用户手机
+> - `market-watch` 在无异常时已正确返回 `NO_PUSH` 并记为 `skipped`
 
 ## 关键文件
 

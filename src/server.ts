@@ -4,7 +4,7 @@ import { createAgent } from "./acp/agent.js";
 import type { AcpMessage, AcpResponse } from "./acp/protocol.js";
 import { config } from "./lib/config.js";
 import { logger } from "./lib/logger.js";
-import { registerPush } from "./scheduler/index.js";
+import { listSchedulableScopes, registerPush, triggerScheduledMarketWatchNow, triggerScheduledReviewNow } from "./scheduler/index.js";
 import { listAcpBackends } from "./acp/stdio-agent.js";
 import { renderWeixinAdminPage } from "./admin/weixin-page.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
@@ -16,6 +16,9 @@ import { syncAllLegacyAlertsToAlertRules } from "./handlers/alert-rules.js";
 import { enqueuePushJob, getPushJob, getPushQueueSummary, processDuePushJobs, type PushBackend } from "./services/push-queue.js";
 import { ensureBuiltInAiProjects } from "./platform/project-registry.js";
 import { instanceIdFromRequest, userIdFromRequest } from "./lib/user-context.js";
+import { db } from "./db/index.js";
+import { codexAcpTraces, pushJobs, scheduledTaskRuns } from "./db/schema.js";
+import { and, desc, eq } from "drizzle-orm";
 
 const agent = createAgent();
 
@@ -73,6 +76,7 @@ export async function createServer() {
     });
     logger.info(`提醒已进入推送队列 job=${job.id} user=${job.userId} backend=${job.backend}`);
     await processDuePushJobs(sendPushJob, { limit: 5 });
+    return job.id;
   });
 
   // 健康检查
@@ -293,6 +297,75 @@ export async function createServer() {
       alerts: items,
       text,
       state: weixinMobileManager.getState(),
+    };
+  });
+
+  app.get("/api/testing/scheduler/scopes", async () => {
+    return {
+      scopes: await listSchedulableScopes(),
+    };
+  });
+
+  app.post<{
+    Body: {
+      task: "daily-review" | "weekly-review" | "monthly-review" | "market-watch";
+      userId?: string;
+      instanceId?: string;
+      manualReason?: string;
+      now?: string;
+    };
+  }>("/api/testing/scheduler/trigger", async (request, reply) => {
+    const task = request.body?.task;
+    if (!task) {
+      return reply.status(400).send({ ok: false, error: "task is required" });
+    }
+    const userId = userIdFromRequest(request);
+    const instanceId = instanceIdFromRequest(request, userId);
+    const now = request.body?.now ? new Date(request.body.now) : new Date();
+    if (Number.isNaN(now.getTime())) {
+      return reply.status(400).send({ ok: false, error: "now must be a valid ISO datetime" });
+    }
+    const manualReason = request.body?.manualReason?.trim() || "manual-acceptance";
+
+    const scope = { userId, instanceId };
+    const result = task === "market-watch"
+      ? await triggerScheduledMarketWatchNow(scope, now, { manualReason })
+      : await triggerScheduledReviewNow(task.replace("-review", "") as "daily" | "weekly" | "monthly", scope, now, { manualReason });
+
+    const [taskRun] = await db
+      .select()
+      .from(scheduledTaskRuns)
+      .where(eq(scheduledTaskRuns.taskKey, result.taskKey))
+      .limit(1);
+
+    const [trace] = await db
+      .select()
+      .from(codexAcpTraces)
+      .where(and(
+        eq(codexAcpTraces.userId, userId),
+        eq(codexAcpTraces.instanceId, instanceId),
+        eq(codexAcpTraces.conversationId, `scheduler:${task === "market-watch" ? "market-watch" : `${task.replace("-review", "")}-review`}:${userId}:${instanceId}`),
+      ))
+      .orderBy(desc(codexAcpTraces.createdAt))
+      .limit(1);
+
+    const [pushJob] = result.pushJobId
+      ? await db.select().from(pushJobs).where(eq(pushJobs.id, result.pushJobId)).limit(1)
+      : [];
+
+    return {
+      ok: true,
+      task,
+      userId,
+      instanceId,
+      manualReason,
+      now: now.toISOString(),
+      skipped: result.skipped,
+      taskKey: result.taskKey,
+      pushJobId: result.pushJobId,
+      taskRun,
+      trace,
+      pushJob,
     };
   });
 

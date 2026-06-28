@@ -15,6 +15,9 @@ Read these first, in this order:
 | [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md) | Sandbox token, permission, audit, and isolation model. Kept in root because table-ownership only covers table boundaries, not the underlying sandbox security model |
 | [composite-indicator-system.md](./composite-indicator-system.md) | Composite indicator system RFC (2026-06-22): L1 operators / L2 signals / L3a rule tree / L3b sandbox script, with main-force-control as first use case |
 | [watch-runtime-design-note.md](./watch-runtime-design-note.md) | Discussion note (2026-06-26): service-owned scheduler + workspace executable watch rules/scripts; not yet an implementation decision |
+| [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md) | Phased implementation plan (2026-06-28): stage 1 reliable review/scheduled push, stage 2 deterministic rule watch, stage 3 news/event rough filter + Agent judgment |
+| [watch-runtime-stage1-implementation-brief.md](./watch-runtime-stage1-implementation-brief.md) | Stage 1 implementation brief (2026-06-28): current scheduler/review/push status, gaps, smoke tests, observability, and acceptance checklist |
+| [watch-runtime-stage1-runbook.md](./watch-runtime-stage1-runbook.md) | Stage 1 manual acceptance runbook for the primary user investment assistant instance |
 | [investment-model-design.md](./investment-model-design.md) | Investment model v1: user-facing container for selection, trading, risk, review, and exit loops |
 | [trading-strategy-design.md](./trading-strategy-design.md) | Trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation, three trigger scenarios, review boundary |
 | [04-core-workflows.md](./04-core-workflows.md) | Core product loops: monitoring, alerts, reviews, screening, feedback |
@@ -39,6 +42,7 @@ Read these first, in this order:
 - **Composite indicator system 5-layer architecture is shipped** (2026-06-22): L1 operators / L2 signals / L3a rule tree (YAML) / L3b sandbox script (isolated-vm) / acknowledgement gate. Main-force-control (ZZLKP) is the first customer use case end-to-end verified. See [composite-indicator-system.md](./composite-indicator-system.md) for the RFC.
 - **Investment model is the user-facing configuration center** (2026-06-24): onboarding should converge from scattered "style / methodology / trading strategy" setup to "configure your investment model". Each user has a default model; methods and trading strategies are components inside that model. See [investment-model-design.md](./investment-model-design.md).
 - **Scheduled tasks remain service-owned**: the scheduler scans workspace `config/watch.yaml` / `config/schedules.yaml` every minute, invokes workspace-scoped Hermes for market-watch and review tasks, then pushes concise results when configured.
+- **Stage 1 acceptance should use the controllable scheduler trigger**: manual acceptance for the primary investment assistant instance should use `POST /api/testing/scheduler/trigger` on `localhost:22655`, not "edit to next minute and wait". A first real acceptance pass was completed on 2026-06-28: `daily-review` reached the primary user's phone, and `market-watch` correctly returned `NO_PUSH` without sending noise.
 
 ## Keep Or Archive Rule
 

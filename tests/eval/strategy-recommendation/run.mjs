@@ -36,7 +36,7 @@ if (!existsSync(fixturesPath) || !existsSync(expectedPath)) {
 const fixtures = parse(readFileSync(fixturesPath, "utf-8"));
 const expected = parse(readFileSync(expectedPath, "utf-8"));
 
-const baseUrl = process.env.INVEST_AGENT_BASE_URL || "http://localhost:22648";
+const baseUrl = process.env.INVEST_AGENT_BASE_URL || "http://localhost:22655";
 const sandboxToken = process.env.INVEST_AGENT_SANDBOX_TOKEN;
 
 if (!sandboxToken) {

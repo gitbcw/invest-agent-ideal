@@ -235,7 +235,7 @@ function buildMarketWatchTaskPrompt(sandboxToken: string, userContext: UserConte
   ].join("\n");
 }
 
-function sanitizeScheduledReply(reply: string) {
+export function sanitizeScheduledReply(reply: string) {
   const cleaned = sanitizeCustomerText(reply).trim();
   if (/^NO_PUSH[。.!！\s]*$/i.test(cleaned)) return "NO_PUSH";
   if (/^(当前无提醒|暂无提醒|无提醒|无需推送|没有需要推送)/.test(cleaned)) return "NO_PUSH";

@@ -5,7 +5,7 @@ module.exports = {
       script: "dist/index.js",
       env: {
         NODE_ENV: "production",
-        PORT: 22652,
+        PORT: 22655,
         WEIXIN_AUTO_START: "true",
         INVEST_AGENT_WEIXIN_STATE_DIR: "./.state",
       },

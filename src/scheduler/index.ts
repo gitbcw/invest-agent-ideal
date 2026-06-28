@@ -1,4 +1,4 @@
-import { startReviewScheduler, stopReviewScheduler, getReviewPushTime } from "./review.js";
+import { startReviewScheduler, stopReviewScheduler, getReviewPushTime, triggerReviewNow, type ReviewScope } from "./review.js";
 import { logger } from "../lib/logger.js";
 import { db } from "../db/index.js";
 import { aiInstances, alerts, channelIdentities, channelIdentityInstances, settings, users } from "../db/schema.js";
@@ -7,8 +7,9 @@ import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { beijingDateKey, beijingNow, isBeijingTradingDay, readSchedules, type SchedulesYaml } from "../lib/schedules-loader.js";
 import { runScheduledMarketWatchTask } from "../acp/scheduled-tasks.js";
+import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/scheduled-task-runs.js";
 
-export type PushCallback = (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => Promise<void | boolean>;
+export type PushCallback = (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => Promise<void | boolean | string>;
 
 const INTERVAL_SETTINGS_KEY = "alert_check_interval_minutes";
 const DEFAULT_INTERVAL_MINUTES = 5;
@@ -21,6 +22,10 @@ const runningMarketWatchTasks = new Set<string>();
 interface SchedulableScope {
   userId: string;
   instanceId: string;
+  projectId?: string;
+}
+
+interface ManualScheduledTriggerScope extends ReviewScope {
   projectId?: string;
 }
 
@@ -82,6 +87,10 @@ async function getSchedulableScopes(): Promise<SchedulableScope[]> {
   return [...scopes.values()];
 }
 
+export async function listSchedulableScopes() {
+  return getSchedulableScopes();
+}
+
 /** 从数据库读取巡检间隔（分钟） */
 export async function getAlertInterval(): Promise<number> {
   const rows = await db.select().from(settings).where(eq(settings.key, INTERVAL_SETTINGS_KEY)).limit(1);
@@ -115,18 +124,48 @@ function restartAlertInterval(_minutes: number) {
       const fallbackInterval = await getAlertInterval();
       const scopes = await getSchedulableScopes();
       for (const { userId, instanceId, projectId } of scopes) {
-        const taskKey = `${userId}:${instanceId}`;
+        const runningKey = `${userId}:${instanceId}`;
         try {
-          if (runningMarketWatchTasks.has(taskKey)) continue;
+          if (runningMarketWatchTasks.has(runningKey)) continue;
           const hit = await shouldRunMarketWatchTask({ userId, instanceId, projectId }, fallbackInterval, now);
           if (!hit) continue;
-          runningMarketWatchTasks.add(taskKey);
-          const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId });
-          if (text) await getPushFn()(text, { userId, projectId, instanceId });
+          const runKey = hit.taskKey;
+          const claimed = await claimScheduledTaskRun({
+            taskKey: runKey,
+            taskType: "market-watch",
+            scheduledFor: hit.scheduledFor,
+            userId,
+            projectId,
+            instanceId,
+          });
+          if (!claimed) {
+            logger.info(`跳过盘中巡检 user=${userId} instance=${instanceId} slot=${hit.slot}: task 已被其他进程领取`);
+            continue;
+          }
+          runningMarketWatchTasks.add(runningKey);
+          try {
+            const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId });
+            if (text) {
+              const pushResult = await getPushFn()(text, { userId, projectId, instanceId });
+              await finishScheduledTaskRun(runKey, {
+                status: "success",
+                pushJobId: typeof pushResult === "string" ? pushResult : undefined,
+              });
+            } else {
+              logger.info(`盘中巡检无推送 user=${userId} instance=${instanceId}`);
+              await finishScheduledTaskRun(runKey, { status: "skipped" });
+            }
+          } catch (error) {
+            await finishScheduledTaskRun(runKey, {
+              status: "error",
+              errorMessage: error instanceof Error ? error.message : String(error),
+            });
+            throw error;
+          }
         } catch (error) {
           logger.error(`行情巡检失败 (${userId}/${instanceId}):`, error);
         } finally {
-          runningMarketWatchTasks.delete(taskKey);
+          runningMarketWatchTasks.delete(runningKey);
         }
       }
     } catch (error) {
@@ -161,26 +200,83 @@ export function stopScheduler() {
   logger.info("定时任务已停止");
 }
 
-async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<boolean> {
-  if (!isAshareMarketWatchTime(now)) return false;
+async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<{ taskKey: string; scheduledFor: string; slot: string } | null> {
+  if (!isAshareMarketWatchTime(now)) return null;
 
   const schedules = readSchedules(scope.userId);
-  if (schedules.market_watch?.enabled === false || schedules.market_watch?.auto_run === false) return false;
+  if (schedules.market_watch?.enabled === false || schedules.market_watch?.auto_run === false) return null;
 
   const watch = await readWatchConfig(scope.userId);
-  if (watch?.mode === "disabled" || watch?.mode === "off") return false;
+  if (watch?.mode === "disabled" || watch?.mode === "off") return null;
 
   const windows = normalizeWatchWindows(watch?.default_check_windows ?? schedules.market_watch?.default_windows);
   const customInterval = resolveMarketWatchInterval(watch, schedules, fallbackIntervalMinutes, windows.length > 0);
   const slot = customInterval
     ? intervalSlot(now, customInterval)
     : windowSlot(now, windows);
-  if (!slot) return false;
+  if (!slot) return null;
 
-  const key = `${beijingDateKey(now)}:${scope.userId}:${scope.instanceId}:market-watch:${slot}`;
-  if (marketWatchFiredKeys.has(key)) return false;
+  const dateKey = beijingDateKey(now);
+  const key = `${dateKey}:market-watch:${scope.userId}:${scope.instanceId}:${slot}`;
+  if (marketWatchFiredKeys.has(key)) return null;
   marketWatchFiredKeys.add(key);
-  return true;
+  logger.info(`命中盘中巡检 user=${scope.userId} instance=${scope.instanceId} slot=${slot}`);
+  return { taskKey: key, scheduledFor: `${dateKey}:${slot}`, slot };
+}
+
+export async function triggerScheduledMarketWatchNow(
+  scope: ManualScheduledTriggerScope,
+  now = new Date(),
+  options: { manualReason?: string } = {},
+) {
+  const userId = scope.userId.trim();
+  const instanceId = scope.instanceId.trim();
+  const projectId = scope.projectId ?? DEFAULT_PROJECT_ID;
+  const bj = beijingNow(now);
+  const manualReason = options.manualReason ?? "manual-trigger";
+  const slot = `manual-${String(bj.getHours()).padStart(2, "0")}${String(bj.getMinutes()).padStart(2, "0")}`;
+  const dateKey = beijingDateKey(now);
+  const taskKey = `${dateKey}:market-watch:${userId}:${instanceId}:${slot}:${manualReason}`;
+  const claimed = await claimScheduledTaskRun({
+    taskKey,
+    taskType: "market-watch",
+    scheduledFor: `${dateKey}:${slot}`,
+    userId,
+    projectId,
+    instanceId,
+  });
+  if (!claimed) {
+    logger.info(`跳过盘中巡检 user=${userId} instance=${instanceId} reason=${manualReason}: task 已被其他进程领取`);
+    return { taskKey, skipped: true };
+  }
+
+  try {
+    const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId });
+    if (!text) {
+      logger.info(`盘中巡检无推送 user=${userId} instance=${instanceId} reason=${manualReason}`);
+      await finishScheduledTaskRun(taskKey, { status: "skipped" });
+      return { taskKey, skipped: true };
+    }
+    const pushResult = await getPushFn()(text, { userId, projectId, instanceId });
+    const pushJobId = typeof pushResult === "string" ? pushResult : undefined;
+    await finishScheduledTaskRun(taskKey, { status: "success", pushJobId });
+    return { taskKey, skipped: false, pushJobId };
+  } catch (error) {
+    await finishScheduledTaskRun(taskKey, {
+      status: "error",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+export async function triggerScheduledReviewNow(
+  kind: "daily" | "weekly" | "monthly",
+  scope: ManualScheduledTriggerScope,
+  now = new Date(),
+  options: { manualReason?: string } = {},
+) {
+  return triggerReviewNow(kind, scope, getPushFn(), now, options);
 }
 
 async function readWatchConfig(userId: string) {
