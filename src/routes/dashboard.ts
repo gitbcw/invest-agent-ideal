@@ -690,8 +690,8 @@ export function registerDashboardRoutes(app: FastifyInstance) {
 
   app.post<{ Body: { backend: AcpBackendId } }>("/api/acp-backends/switch", safe(async (request, reply) => {
     const { backend } = request.body ?? {};
-    if (backend !== "hermes") {
-      return reply.status(400).send({ ok: false, error: "backend 必须是 hermes" });
+    if (backend !== "hermes" && backend !== "codex") {
+      return reply.status(400).send({ ok: false, error: "backend 必须是 hermes 或 codex" });
     }
     const status = await switchAcpBackend(backend);
     return { ok: true, status, backends: (await listAcpBackends()).backends };

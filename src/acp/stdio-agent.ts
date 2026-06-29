@@ -1,8 +1,9 @@
 /**
  * 通用 stdio ACP agent + 多后端注册中心。
  *
- * 现在统一使用 Hermes stdio ACP 后端:
+ * 当前支持 Hermes / Codex stdio ACP 后端:
  *   - hermes  ~/.local/bin/hermes acp --accept-hooks
+ *   - codex   ~/.local/bin/codex-acp
  *
  * 三者都遵循 Agent Client Protocol v1,本类负责统一托管:
  *   - 子进程生命周期
@@ -48,7 +49,7 @@ type RequestPermissionRequest = {
   options: Array<{ optionId: string }>;
 };
 
-export type AcpBackendId = "hermes";
+export type AcpBackendId = "hermes" | "codex";
 
 export interface AcpBackendDef {
   id: AcpBackendId;
@@ -90,6 +91,14 @@ export const ACP_BACKENDS: AcpBackendDef[] = [
     cwd: config.hermes.acpCwd,
     timeoutMs: config.hermes.acpTimeoutMs || DEFAULT_TIMEOUT_MS,
     isDefault: true,
+  },
+  {
+    id: "codex",
+    label: "Codex",
+    command: config.codex.acpCommand,
+    args: config.codex.acpArgs,
+    cwd: config.codex.acpCwd,
+    timeoutMs: config.codex.acpTimeoutMs || DEFAULT_TIMEOUT_MS,
   },
 ];
 
@@ -249,7 +258,7 @@ export class StdioAcpAgent {
   private async start(): Promise<ClientSideConnection> {
     const { command, args, label } = this.def;
     const cwd = this.cwd;
-    const env = await buildHermesRuntimeEnv(cwd);
+    const env = await buildRuntimeEnvForBackend(this.def.id, cwd);
     logger.info(`启动 ${label} ACP: ${command}${args.length ? ` ${args.join(" ")}` : ""}`);
 
     const child = spawn(command, args, {
@@ -349,6 +358,15 @@ async function buildHermesRuntimeEnv(workspacePath: string): Promise<NodeJS.Proc
   };
 }
 
+async function buildCodexRuntimeEnv(workspacePath: string): Promise<NodeJS.ProcessEnv> {
+  const codexHome = path.join(workspacePath, ".codex");
+  await ensureCodexHome(codexHome);
+  return {
+    ...process.env,
+    CODEX_HOME: codexHome,
+  };
+}
+
 async function ensureHermesHome(hermesHome: string): Promise<void> {
   mkdirSync(hermesHome, { recursive: true });
   // config.yaml / .env 改用符号链接,这样 ~/.hermes/ 的全局改动立即对所有 workspace 生效。
@@ -388,10 +406,56 @@ async function ensureHermesHome(hermesHome: string): Promise<void> {
   }
 }
 
+function buildRuntimeEnvForBackend(id: AcpBackendId, workspacePath: string): Promise<NodeJS.ProcessEnv> {
+  return id === "codex" ? buildCodexRuntimeEnv(workspacePath) : buildHermesRuntimeEnv(workspacePath);
+}
+
 export async function ensureHermesRuntimeForWorkspace(workspacePath: string): Promise<string> {
   const hermesHome = path.join(workspacePath, ".hermes");
   await ensureHermesHome(hermesHome);
   return hermesHome;
+}
+
+export async function ensureCodexRuntimeForWorkspace(workspacePath: string): Promise<string> {
+  const codexHome = path.join(workspacePath, ".codex");
+  await ensureCodexHome(codexHome);
+  return codexHome;
+}
+
+async function ensureCodexHome(codexHome: string): Promise<void> {
+  mkdirSync(codexHome, { recursive: true });
+  for (const file of ["config.toml", "mcp.json"]) {
+    const source = path.join(config.codex.sourceHome, file);
+    const target = path.join(codexHome, file);
+    if (!existsSync(source)) continue;
+    try {
+      let needReplace = true;
+      try {
+        const stat = lstatSync(target);
+        if (stat.isSymbolicLink()) {
+          const linkTarget = readlinkSync(target).toString();
+          if (linkTarget === source) needReplace = false;
+        }
+      } catch {
+        // target missing
+      }
+      if (needReplace) {
+        if (existsSync(target)) rmSync(target, { force: true });
+        symlinkSync(source, target);
+      }
+    } catch (error) {
+      logger.warn(`Codex config symlink failed file=${file}: ${(error as Error).message}`);
+    }
+  }
+  const authSource = path.join(config.codex.sourceHome, "auth.json");
+  const authTarget = path.join(codexHome, "auth.json");
+  if (existsSync(authSource) && !existsSync(authTarget)) {
+    try {
+      copyFileSync(authSource, authTarget);
+    } catch (error) {
+      logger.warn(`Codex auth copy failed: ${(error as Error).message}`);
+    }
+  }
 }
 
 // ─── 注册中心 ───────────────────────────────────────────────────────
@@ -422,7 +486,7 @@ function getOrCreateInstance(id: AcpBackendId, override: AcpBackendOverride = {}
 
 export async function loadCurrentBackendId(): Promise<AcpBackendId> {
   if (settingsLoaded) {
-    return currentBackendId ?? "hermes";
+    return currentBackendId ?? "codex";
   }
   const row = await db
     .select()
@@ -431,7 +495,7 @@ export async function loadCurrentBackendId(): Promise<AcpBackendId> {
     .limit(1);
   const fromSettings = row[0]?.value as string | undefined;
   const valid = ACP_BACKENDS.find((b) => b.id === fromSettings);
-  currentBackendId = valid ? valid.id : "hermes";
+  currentBackendId = valid ? valid.id : "codex";
   settingsLoaded = true;
   return currentBackendId;
 }

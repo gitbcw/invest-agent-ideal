@@ -18,8 +18,18 @@ const projectWeixinManagers = new Map<string, WeixinMobileManager>();
 
 function projectWeixinManager(project: AiProjectRuntimeContext) {
   const existing = projectWeixinManagers.get(project.instanceId);
-  if (existing) return existing;
+  if (existing) {
+    const state = existing.getState();
+    if (state.backend === project.backend) return existing;
+    try {
+      existing.stop();
+    } catch (error) {
+      logger.warn(`Platform 项目微信监听重建失败: ${project.instanceId} ${(error as Error).message}`);
+    }
+    projectWeixinManagers.delete(project.instanceId);
+  }
   const manager = new WeixinMobileManager({
+    backend: project.backend,
     stateDir: path.join(config.weixin.stateDir, "project-weixin", project.instanceId.replace(/[^a-zA-Z0-9_-]/g, "-")),
     label: `${project.name}微信`,
     projectBinding: {
@@ -246,7 +256,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
         userId,
         displayName: request.body?.displayName,
         instanceName: request.body?.instanceName,
-        backend: "hermes",
+        backend: config.acp.backend,
       });
       return {
         ok: true,

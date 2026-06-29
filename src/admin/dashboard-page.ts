@@ -466,13 +466,14 @@ export function renderDashboardPage(): string {
             <div class="form-row">
               <span class="form-label">推理后端</span>
               <select class="form-input form-input-sm" id="acpBackendSelect" style="min-width:200px">
-                <option value="hermes">Hermes(默认)</option>
+              <option value="hermes">Hermes</option>
+              <option value="codex">Codex</option>
               </select>
               <button class="btn btn-blue" onclick="doSwitchAcpBackend()">切换</button>
               <span id="acpBackendBadge" class="badge badge-gray">loading</span>
             </div>
             <div id="acpBackendStatus" class="text-xs text-gray-500 mt-3"></div>
-            <p class="text-xs text-gray-500 mt-2">当前统一使用 Hermes stdio 后端。保存操作会重启当前 Hermes 子进程。</p>
+            <p class="text-xs text-gray-500 mt-2">切换后会重启当前 ACP 子进程。</p>
           </div>
         </div>
         <div class="card mt-4">
@@ -1273,7 +1274,7 @@ async function loadAcpBackends() {
 
 async function doSwitchAcpBackend() {
   const v = document.getElementById('acpBackendSelect').value;
-  if (v !== 'hermes') { toast('请选择有效的后端', false); return; }
+  if (v !== 'hermes' && v !== 'codex') { toast('请选择有效的后端', false); return; }
   const res = await api('/api/acp-backends/switch', { backend: v });
   if (res) {
     toast('已切换到 ' + v, true);

@@ -18,7 +18,7 @@ import {
 import { InvestAgentMobileBridge } from "./weixin-message-bridge.js";
 import { fetchWeixinQRCode, isLoginFresh, pollWeixinQRStatus, type WeixinLoginSession } from "./weixin-login-flow.js";
 
-type WeixinBackend = "hermes";
+type WeixinBackend = "hermes" | "codex";
 type LoginStage = "idle" | "waiting_scan" | "scanned" | "connected" | "error";
 
 interface WeixinConnectState {
@@ -187,7 +187,7 @@ function findWeixinChunkCut(text: string, limit: number) {
 export class WeixinMobileManager {
   private state: WeixinConnectState = {
     enabled: false,
-    backend: "hermes",
+    backend: config.acp.backend,
     stage: "idle",
     stateDir: resolveWeixinStateDir(),
     message: "未连接微信",

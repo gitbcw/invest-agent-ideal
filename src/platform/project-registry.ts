@@ -32,7 +32,7 @@ import {
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { SandboxPermission } from "../lib/sandbox-context.js";
-import { ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
+import { ensureHermesRuntimeForWorkspace, ensureCodexRuntimeForWorkspace } from "../acp/stdio-agent.js";
 
 export const INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID = "invest-agent-default";
 
@@ -87,7 +87,7 @@ export interface AiProjectRuntimeContext {
   ownerUserId: string;
   name: string;
   status: string;
-  backend: "hermes";
+  backend: "hermes" | "codex";
   skillBundleId: string;
   permissions: SandboxPermission[];
   dashboardType: string;
@@ -109,8 +109,8 @@ function makeInstanceId(userId: string) {
   return `${DEFAULT_PROJECT_ID}-${userId}`.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
 }
 
-function parseBackend(_value: string): "hermes" {
-  return "hermes";
+function parseBackend(value: string): "hermes" | "codex" {
+  return value === "codex" ? "codex" : "hermes";
 }
 
 function parseConfig(value?: string | null): Record<string, unknown> {
@@ -149,7 +149,7 @@ function runtimeContextFromInstance(instance: typeof aiInstances.$inferSelect): 
 
 export async function ensureDefaultProjectForUser(
   userId: string,
-  backend: "hermes" = "hermes",
+  backend: "hermes" | "codex" = "codex",
   displayName?: string
 ): Promise<AiProjectRuntimeContext> {
   const instanceId = makeInstanceId(userId);
@@ -185,7 +185,17 @@ export async function ensureDefaultProjectForUser(
     updatedAt: now,
   }).onConflictDoNothing();
 
+  await db
+    .update(aiInstances)
+    .set({ backend, updatedAt: now })
+    .where(eq(aiInstances.id, instanceId));
+
   await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
+  if (backend === "codex") {
+    await ensureCodexRuntimeForWorkspace(resolveWorkspacePath(userId));
+  } else {
+    await ensureHermesRuntimeForWorkspace(resolveWorkspacePath(userId));
+  }
 
   return getProjectRuntimeContext(instanceId);
 }
@@ -194,7 +204,7 @@ export async function createInvestAgentInstance(input: {
   userId: string;
   displayName?: string;
   instanceName?: string;
-  backend?: "hermes";
+  backend?: "hermes" | "codex";
 }) {
   const userId = input.userId.trim();
   if (!/^[a-zA-Z0-9_-]{2,64}$/.test(userId)) {
@@ -207,9 +217,13 @@ export async function createInvestAgentInstance(input: {
   ]);
   try {
     const displayName = input.displayName?.trim() || userId;
-    const project = await ensureDefaultProjectForUser(userId, input.backend || "hermes", displayName);
+    const project = await ensureDefaultProjectForUser(userId, input.backend || "codex", displayName);
     const workspacePath = resolveWorkspacePath(userId);
-    await ensureHermesRuntimeForWorkspace(workspacePath);
+    if ((input.backend || "hermes") === "codex") {
+      await ensureCodexRuntimeForWorkspace(workspacePath);
+    } else {
+      await ensureHermesRuntimeForWorkspace(workspacePath);
+    }
     const instanceName = input.instanceName?.trim();
     if (instanceName && instanceName !== project.name) {
       const now = new Date().toISOString();
@@ -232,6 +246,15 @@ export async function createInvestAgentInstance(input: {
     });
     throw error;
   }
+}
+
+export async function syncInstanceBackend(instanceId: string, backend: "hermes" | "codex") {
+  const now = new Date().toISOString();
+  await db
+    .update(aiInstances)
+    .set({ backend, updatedAt: now })
+    .where(eq(aiInstances.id, instanceId));
+  return getProjectRuntimeContext(instanceId);
 }
 
 async function rollbackCreatedInvestAgentInstance(input: {

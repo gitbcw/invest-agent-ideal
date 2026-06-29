@@ -68,7 +68,7 @@ export async function createServer() {
   registerPush(async (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => {
     const job = await enqueuePushJob({
       userId: options?.userId,
-      backend: "hermes",
+      backend: config.acp.backend,
       projectId: options?.projectId,
       instanceId: options?.instanceId,
       source: "scheduler",
@@ -88,7 +88,7 @@ export async function createServer() {
       agentId: agent.agentId,
       capabilities: agent.capabilities,
       acpBackends: { backends },
-      hermesAcp: backends.find((b) => b.id === "hermes") ?? null,
+      activeAcpBackend: backends.find((b) => b.id === config.acp.backend) ?? null,
       pendingAlerts: pendingAlerts.length,
       pushQueue: await getPushQueueSummary(),
       timestamp: new Date().toISOString(),

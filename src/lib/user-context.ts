@@ -1,7 +1,7 @@
 export const DEFAULT_USER_ID = "primary";
 export const DEFAULT_PROJECT_ID = "invest-agent";
 export const DEFAULT_INSTANCE_ID = "invest-agent-primary";
-export type RuntimeBackend = "hermes";
+export type RuntimeBackend = "hermes" | "codex";
 
 export interface UserContext {
   userId: string;

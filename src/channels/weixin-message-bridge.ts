@@ -139,7 +139,7 @@ export class InvestAgentMobileBridge {
     const conversationId = request.conversationId || `weixin-mobile-${this.accountId}`;
     const userContext = await resolveOrCreateChannelUser({
       channel: "weixin-mobile",
-      backend: "hermes",
+      backend: config.acp.backend,
       externalUserId: conversationId,
       externalAccountId: this.accountId,
       conversationId,
