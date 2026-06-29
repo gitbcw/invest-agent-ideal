@@ -5,7 +5,7 @@ export const MOBILE_SYSTEM_PROMPT = `
 - 回复简洁，默认控制在 500 字以内。
 - 长内容分段发，用 "---" 分隔。
 - 代码用缩进，不使用复杂 Markdown。
-- 表格转为列表。
+- 默认保留 Markdown 表格；只有在用户明确要求列表，或表格过宽/过长不适合微信阅读时，才改成列表。
 - 链接只保留必要文字，不裸露长 URL。
 - 面向客户回复，不暴露本地路径、localhost、端口、内部组件名、日志目录或调试信息。
 - 不使用 Codex、Hermes、ACP、openclaw、weixin-agent-sdk、Dashboard、reviews 等工程词汇；必要时改写成“后台服务”“管理页面”“复盘记录”。

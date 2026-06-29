@@ -51,9 +51,11 @@ export async function resolveOrCreateChannelUser(params: {
     .limit(1);
 
   if (existing[0]) {
+    const bindingUserId = projectBinding?.sharedUsers ? existing[0].userId : projectBinding?.ownerUserId || existing[0].userId;
     await db
       .update(channelIdentities)
       .set({
+        userId: bindingUserId,
         backend: params.backend,
         externalAccountId: params.externalAccountId ?? existing[0].externalAccountId,
         lastConversationId: params.conversationId ?? existing[0].lastConversationId,
@@ -61,7 +63,6 @@ export async function resolveOrCreateChannelUser(params: {
         updatedAt: now,
       })
       .where(eq(channelIdentities.id, existing[0].id));
-    const bindingUserId = projectBinding?.sharedUsers ? existing[0].userId : projectBinding?.ownerUserId || existing[0].userId;
     const instance = await ensureDefaultInstanceForChannelIdentity(existing[0].id, bindingUserId, params.backend, projectBinding);
     await ensureWorkspace({ userId: bindingUserId, tenantId: bindingUserId, projectId: instance.projectId });
     return {

@@ -121,6 +121,30 @@ class ResponseCollector {
   toText() {
     return this.chunks.join("").trim();
   }
+
+  stats() {
+    let adjacentDuplicateChunks = 0;
+    for (let i = 1; i < this.chunks.length; i += 1) {
+      if (this.chunks[i] && this.chunks[i] === this.chunks[i - 1]) {
+        adjacentDuplicateChunks += 1;
+      }
+    }
+    const text = this.toText();
+    return {
+      chunks: this.chunks.length,
+      chars: text.length,
+      adjacentDuplicateChunks,
+      repeatedSuffixChars: estimateRepeatedSuffixChars(text),
+    };
+  }
+}
+
+function estimateRepeatedSuffixChars(text: string) {
+  for (let len = Math.floor(text.length / 2); len >= 40; len -= 1) {
+    const tail = text.slice(-len);
+    if (text.slice(0, -len).endsWith(tail)) return len;
+  }
+  return 0;
 }
 
 export class StdioAcpAgent {
@@ -206,7 +230,7 @@ export class StdioAcpAgent {
         this.timeoutAfter(params.timeoutMs ?? this.def.timeoutMs),
       ]);
       logger.info(
-        `${this.def.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(result)}`
+        `${this.def.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(result)} responseStats=${JSON.stringify(collector.stats())}`
       );
     } catch (error) {
       if (error instanceof Error && error.message.includes("请求超时")) {

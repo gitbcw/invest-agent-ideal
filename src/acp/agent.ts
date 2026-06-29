@@ -4,7 +4,7 @@ import { textResponse } from "./protocol.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
-import { sanitizeCustomerText } from "../lib/customer-output.js";
+import { dedupeRepeatedCustomerText, sanitizeCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { recordAcpTrace } from "./trace.js";
 import { DEFAULT_USER_ID } from "../lib/user-context.js";
@@ -112,7 +112,8 @@ export function createAgent(): AcpAgent {
           userContext,
           originalText: text,
         });
-        const cleaned = sanitizeCustomerText(postProcessed.finalReply);
+        const deduped = dedupeRepeatedCustomerText(postProcessed.finalReply);
+        const cleaned = sanitizeCustomerText(deduped);
         await recordAcpTrace({
           userId,
           projectId: userContext.projectId,

@@ -4,6 +4,7 @@
   "private": true,
   "description": "投资选股智能体 - ACP Agent",
   "scripts": {
+    "postinstall": "node scripts/patch-weixin-agent-sdk.mjs",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
