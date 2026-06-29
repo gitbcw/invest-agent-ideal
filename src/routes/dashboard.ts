@@ -22,6 +22,7 @@ import { ensureDefaultAiInstanceForUser } from "../lib/user-identity.js";
 import { ensureDefaultProjectForUser, listProjectRuntimeContexts } from "../platform/project-registry.js";
 import { portfolioBackend, watchlistBackend, planBackend } from "../lib/data-backend.js";
 import { listAcpBackends, switchAcpBackend, type AcpBackendId } from "../acp/stdio-agent.js";
+import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
 
 export function registerDashboardRoutes(app: FastifyInstance) {
   const safe = (handler: (request: any, reply: any) => Promise<any>) =>
@@ -603,6 +604,62 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     await db.delete(alerts).where(and(eq(alerts.userId, userId), eq(alerts.instanceId, instanceId), eq(alerts.id, id)));
     await deleteMirroredAlertRule(userId, existing[0].stockCode, existing[0].indicator, instanceId);
     return { ok: true, message: `已删除 ${existing[0].stockCode} 的${indicatorNames[existing[0].indicator] || existing[0].indicator}提醒` };
+  }));
+
+  app.get("/api/watch-rules/catalog", safe(async () => {
+    return { ok: true, items: listWatchRuleCatalog() };
+  }));
+
+  app.get<{ Querystring: { userId?: string; instanceId?: string } }>("/api/watch-rules", safe(async (request) => {
+    const { userId, instanceId } = requestScope(request);
+    const items = await listWatchRules(userId, instanceId);
+    return { ok: true, userId, instanceId, items };
+  }));
+
+  app.post<{ Body: Record<string, unknown> }>("/api/watch-rules/validate", safe(async (request, reply) => {
+    const { userId, instanceId } = requestScope(request);
+    const validation = await validateWatchRule({ ...request.body, userId, instanceId });
+    if (!validation.ok) return reply.status(400).send({ ok: false, errors: validation.errors });
+    return { ok: true, userId, instanceId, validation };
+  }));
+
+  app.post<{ Body: Record<string, unknown> }>("/api/watch-rules", safe(async (request, reply) => {
+    const { userId, instanceId } = requestScope(request);
+    const rule = await createWatchRule({
+      ...(request.body as any),
+      userId,
+      instanceId,
+      source: { kind: "dashboard_api" },
+    });
+    return reply.status(201).send({ ok: true, userId, instanceId, rule });
+  }));
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/watch-rules/:id", safe(async (request, reply) => {
+    const { userId, instanceId } = requestScope(request);
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
+    const rule = await updateWatchRule(id, {
+      ...(request.body as any),
+      source: { kind: "dashboard_api" },
+    }, userId, instanceId);
+    return { ok: true, userId, instanceId, rule };
+  }));
+
+  app.delete<{ Params: { id: string }; Querystring: { userId?: string; instanceId?: string } }>("/api/watch-rules/:id", safe(async (request, reply) => {
+    const { userId, instanceId } = requestScope(request);
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
+    const removed = await deleteWatchRule(id, userId, instanceId);
+    if (!removed) return reply.status(404).send({ ok: false, error: "规则不存在" });
+    return { ok: true, userId, instanceId };
+  }));
+
+  app.post<{ Params: { id: string }; Body: { userId?: string; instanceId?: string } }>("/api/watch-rules/:id/dry-run", safe(async (request, reply) => {
+    const { userId, instanceId } = requestScope(request);
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
+    const result = await dryRunWatchRuleById(id, userId, instanceId);
+    return { ok: true, userId, instanceId, result };
   }));
 
   // ─── 信号配置 ───

@@ -2,7 +2,7 @@
 
 日期: 2026-06-28
 
-状态: 讨论稿,阶段一已完成首轮主用户真实验收
+状态: 阶段方案,阶段一已完成首轮主用户真实验收,阶段二设计已收敛
 
 关联文档:
 
@@ -107,6 +107,15 @@
 
 把能被程序明确判断的盯盘条件落到服务层,避免这类高频判断每次调用 Agent。
 
+这一阶段的核心设计决策已经明确:
+
+- 规则能力目录由服务层维护。
+- 规则实例由服务层 API 创建、修改、停用、删除。
+- Workspace 不作为高频变更的规则 schema 主承载面。
+- Workspace skill 负责"理解用户想盯什么",再调用服务层 API 完成落库和启停。
+
+也就是说,阶段二不是继续扩展 `watch.yaml` 去承载越来越多机器规则,而是让 Workspace 通过稳定 API 使用服务层规则运行时。
+
 典型规则包括:
 
 - 股价大于某个值。
@@ -124,13 +133,15 @@
 
 本阶段覆盖:
 
-- 定义服务层通用 Primitive。
-- 读取 workspace 中的结构化规则配置。
+- 定义服务层通用 Primitive 与规则目录。
+- 提供服务层规则目录查询 API。
+- 提供服务层规则实例 CRUD / 校验 / dry-run API。
 - 使用行情、K 线、持仓、自选、预案等确定性数据执行规则。
 - 生成标准化 alert candidate。
 - 按 priority、cooldown、once-per-trading-day 去重。
 - 将触发结果写入 `alert_events` 或对应运行记录。
 - 对 P0/P1 结果决定是否推送或是否交给 Agent 整理文案。
+- 让 Workspace skill 能先发现"当前系统支持哪些规则类型",再决定如何引导用户创建规则。
 
 建议第一批 Primitive:
 
@@ -144,14 +155,160 @@
 | `breakout_with_volume` | 放量突破压力位 |
 | `break_support` | 跌破支撑位 |
 
-### 4.3 与 Agent 的边界
+建议阶段二最小首发集,优先收敛到 3 个:
+
+| Primitive | 第一阶段实现建议 |
+| --- | --- |
+| `price_cross` | 必做 |
+| `ma_cross` | 必做 |
+| `near_plan_level` | 必做 |
+
+`volume_ratio`、`breakout_with_volume`、`break_support` 可以作为阶段二后续批次,不要求与首发同时上线。
+
+### 4.3 规则目录与实例分层
+
+阶段二要把"规则能力"和"用户实际启用的规则"分开:
+
+| 层级 | 归属 | 说明 |
+| --- | --- | --- |
+| 规则目录 catalog | 服务层 | 系统当前支持哪些 rule type、每种规则需要哪些参数、有哪些默认值和示例 |
+| 规则实例 instances | 服务层(SQLite) | 某个用户/实例当前真的在运行哪些监控规则 |
+| 用户意图理解 | Workspace skill | 把自然语言需求映射成可用规则类型与参数 |
+| 高频执行 | 服务层 scheduler | 每轮巡检执行实例化规则,记录命中、去重、推送 |
+
+这样做的原因是:
+
+- 新增一种规则能力时,优先改服务层目录与执行器,不需要频繁改 workspace schema。
+- Workspace skill 只需要学会"先看目录,再发起调用",而不是硬编码所有规则类型。
+- 调度器高频读写、去重、事件记录继续留在 SQLite,符合 `docs/table-ownership.md` 的现有边界。
+
+### 4.4 推荐 API 契约
+
+API 命名不必逐字照搬,但职责边界建议固定。
+
+#### 4.4.1 规则目录
+
+- `GET /api/watch-rules/catalog`
+  - 返回当前支持的规则类型清单
+  - 每个条目至少包含:
+    - `key`
+    - `label`
+    - `status`
+    - `description`
+    - `targetScopes` (`holding` / `watchlist` / `plan` / `manual`)
+    - `paramsSchema`
+    - `defaults`
+    - `examples`
+    - `cooldownCapabilities`
+    - `supportsDryRun`
+
+目录返回示意:
+
+```json
+[
+  {
+    "key": "price_cross",
+    "label": "价格阈值触发",
+    "status": "active",
+    "targetScopes": ["holding", "watchlist", "manual"],
+    "paramsSchema": {
+      "operator": { "type": "enum", "required": true, "options": [">=", "<="] },
+      "value": { "type": "number", "required": true },
+      "cooldownMinutes": { "type": "number", "required": false, "default": 240 }
+    },
+    "examples": [
+      {
+        "stockCode": "600036",
+        "params": { "operator": ">=", "value": 46.5, "cooldownMinutes": 240 }
+      }
+    ]
+  }
+]
+```
+
+#### 4.4.2 规则实例
+
+- `GET /api/watch-rules?userId=&instanceId=`
+- `POST /api/watch-rules`
+- `PATCH /api/watch-rules/:id`
+- `DELETE /api/watch-rules/:id`
+- `POST /api/watch-rules/validate`
+- `POST /api/watch-rules/:id/dry-run`
+
+实例创建最小字段建议:
+
+```json
+{
+  "userId": "primary",
+  "instanceId": "invest-agent-primary",
+  "ruleType": "ma_cross",
+  "stockCode": "600036",
+  "stockName": "招商银行",
+  "targetScope": "watchlist",
+  "params": {
+    "period": 20,
+    "direction": "break_above"
+  },
+  "cooldown": {
+    "mode": "cooldown",
+    "minutes": 240
+  },
+  "notification": {
+    "priority": "P1",
+    "push": true
+  },
+  "source": {
+    "kind": "workspace_skill",
+    "requestId": "..."
+  }
+}
+```
+
+### 4.5 Workspace skill 的责任边界
+
+阶段二最重要的不是"把配置文件改得更复杂",而是让 Workspace skill 学会稳定地使用服务层规则系统。
+
+Workspace skill 负责:
+
+- 读取规则目录 API。
+- 判断用户需求是否属于当前可支持的明确规则。
+- 询问缺失参数,比如阈值、均线周期、作用股票、冷却时间。
+- 在必要时要求用户确认。
+- 调用规则实例 API 完成创建/更新/停用/删除。
+- 在用户追问时解释"为什么是这个规则"、"它什么时候会触发"。
+
+Workspace skill 不负责:
+
+- 自己维护一套本地规则类型枚举。
+- 每 5 分钟执行一次高频行情判断。
+- 绕过服务层直接把结构化规则写进 workspace 文件并指望 scheduler 自己发现。
+
+### 4.6 服务层责任边界
+
+服务层负责:
+
+- 规则目录注册与版本演进。
+- 参数校验与 dry-run。
+- SQLite 持久化。
+- 高频巡检执行。
+- 触发事件记录、去重、cooldown、push、审计。
+- 与持仓、自选、预案、行情、K 线等确定性数据打通。
+
+服务层不负责:
+
+- 理解用户口语里的含糊表达。
+- 生成高自由度投资方法论。
+- 替用户做主观新闻判断。
+
+### 4.7 与 Agent 的边界
 
 本阶段 Agent 不负责高频判断条件是否触发。
 
 Agent 可以负责:
 
 - 把用户自然语言提醒需求整理成结构化规则草案。
-- 等用户确认后写入 workspace。
+- 调用服务层目录 API 先确认有哪些可用规则类型。
+- 等用户确认后调用服务层规则实例 API。
 - 对服务层触发结果做更自然的微信解释。
 - 帮用户调整规则,但不能绕过确认直接启用高影响规则。
 
@@ -164,7 +321,21 @@ Agent 可以负责:
 - 记录事件。
 - 调用推送或必要时调用 Agent。
 
-### 4.4 不做
+### 4.8 数据归属决策
+
+阶段二建议继续遵循当前项目边界:
+
+- `alert_rules` / `alert_events` / `alert_signal_states` 继续留在 SQLite。
+- `watch.yaml` 继续保留为"盘中窗口、模式、说明性规则、人工备注"等低频配置。
+- 不把 `watch.yaml` 升级成高频结构化规则数据库。
+
+原因:
+
+- 调度器高频读取、事件写入、去重查询、本来就更适合 SQL。
+- 如果每新增一种规则能力都要改 workspace schema,会让 Workspace 变成高频演进面,这和当前想要的稳定边界相反。
+- 用户真正频繁变化的是"我要不要新增某个规则实例",这更适合 API + SQLite,而不是 YAML 人工结构扩展。
+
+### 4.9 不做
 
 本阶段不做:
 
@@ -172,15 +343,55 @@ Agent 可以负责:
 - 主观事件是否实质性利多/利空的 Agent 判断。
 - 任意复杂自然语言规则直接运行。
 - 复杂脚本型 watch evaluator 的完整开放。
+- 每新增规则类型都同步修改 Workspace 配置 schema。
 
-### 4.5 验收标准
+### 4.10 验收标准
 
 - 用户设置明确价格阈值后,服务层能在价格触发时产生提醒事件。
 - 用户设置均线突破/跌破规则后,服务层能用 K 线计算并判断。
+- 用户通过 Workspace skill 提出规则需求时,skill 会先读取服务层目录,而不是写死规则枚举。
+- 新增一类规则能力时,无需修改 Workspace 配置文件 schema 即可被 skill 发现并使用。
 - 同一规则在 cooldown 内不会重复打扰。
 - 未触发时不调用 Agent。
 - 触发记录包含事实、规则、数据时间、priority、dedupe key。
 - Dashboard 或日志能看出"为什么触发"或"为什么未触发"。
+- 针对主用户 `primary / invest-agent-primary` 的规则创建、dry-run、触发、推送链路可完成真实验收。
+
+### 4.11 建议实施顺序
+
+1. 先定义规则目录注册结构和最小 3 个 primitive。
+2. 再补规则实例 CRUD / validate / dry-run API。
+3. 让 scheduler 新增"读取规则实例并执行"主路径。
+4. 再让 Workspace skill 改为"先读目录,再调 API"。
+5. 最后补 dashboard 的只读展示,再决定是否做编辑界面。
+
+### 4.12 当前落地进展
+
+2026-06-28 当前代码已完成阶段二的第一段服务层落地:
+
+- 已新增服务层规则目录:
+  - `GET /api/watch-rules/catalog`
+  - `GET /api/sandbox/watch-rules/catalog`
+- 已新增规则实例 API:
+  - `GET /api/watch-rules`
+  - `POST /api/watch-rules`
+  - `PATCH /api/watch-rules/:id`
+  - `DELETE /api/watch-rules/:id`
+  - `POST /api/watch-rules/validate`
+  - `POST /api/watch-rules/:id/dry-run`
+  - sandbox 对应接口同名挂在 `/api/sandbox/watch-rules*`
+- 已让 scheduler 接入阶段二最小三类规则:
+  - `price_cross`
+  - `ma_cross`
+  - `near_plan_level`
+- 已补服务层烟测:
+  - `npm run smoke:stage2-watch-rules`
+
+当前仍未完成的部分:
+
+- Workspace skill 还没有正式改为"先读取目录,再通过 API 创建规则实例"。
+- Dashboard 还没有新的专用 watch-rules 操作界面,当前只有 API。
+- 主用户 `primary / invest-agent-primary` 的真实盘中触发验收还需要单独做一轮。
 
 ## 5. 阶段三:新闻/事件类主观盯盘
 
@@ -259,16 +470,17 @@ Agent 可以负责:
 
 1. 先验收并补强现有 scheduler、复盘、盘中固定窗口推送链路。
 2. 梳理阶段一失败模式:未触发、重复触发、Agent 超时、推送失败、artifact 未保存。
-3. 再定义阶段二 watch rule contract 和 Primitive 输出格式。
-4. 先落一个最小规则集合:价格阈值 + 均线突破/跌破 + cooldown。
-5. 将用户新增明确提醒规则导向结构化配置。
+3. 再定义阶段二服务层规则目录、规则实例 API 和 Primitive 输出格式。
+4. 先落一个最小规则集合:价格阈值 + 均线突破/跌破 + 预案位接近 + cooldown。
+5. 将 Workspace skill 改为通过 API 发现并管理规则实例。
 6. 稳定后再设计阶段三的信息源、正则粗筛和 Agent 主观判断协议。
 
 ## 8. 关键原则
 
 - 高频判断优先服务层执行。
 - 低频总结、解释、主观判断优先 Agent 执行。
-- 用户规则属于 workspace,平台只沉淀通用 Primitive。
+- 规则能力目录属于服务层,高频规则实例运行时也属于服务层。
+- Workspace skill 通过稳定 API 使用规则系统,而不是频繁扩展 workspace schema。
 - 每次推送都要能回溯触发原因。
 - 未触发时不制造陪伴型噪音。
 - 数据缺失时明确记录缺失,不能让 Agent 补想象。
@@ -276,12 +488,12 @@ Agent 可以负责:
 
 ## 9. 待讨论问题
 
-1. 阶段二结构化规则最终放在 `config/watch_rules.yaml`,还是继续放在 `config/watch.yaml` 的某个字段下?
+1. 阶段二新规则实例是直接扩展现有 `alert_rules`,还是新建专用 `watch_rule_instances` 表?
 2. 阶段二 P1 事件是立即推送,还是只进入晚间汇总?
 3. 阶段二触发后是否默认调用 Agent 整理微信文案,还是服务层先生成模板文案?
-4. SQLite `alerts` / `alert_rules` 在阶段二是作为 legacy 兼容读取,还是开始迁移为 workspace 规则?
+4. 规则目录是静态代码注册,还是支持部分数据库驱动扩展?
 5. 阶段三新闻源从哪里来,先接公告/财报/研报/新闻中的哪一类?
-6. 阶段三粗筛规则由用户 workspace 配置,还是先由平台提供默认模板?
+6. 阶段三粗筛规则由平台默认模板提供,还是允许用户后续自定义?
 
 ## 10. 执行代理提示
 

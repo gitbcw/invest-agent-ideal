@@ -92,6 +92,7 @@ npm run db:migrate   # 执行数据库迁移
 **监控与提醒：**
 - `query_monitor_overview`：聚合监控全貌
 - `query_alert_rules` / `set_alert_rule` / `remove_alert_rule`：提醒规则管理
+- `GET /api/watch-rules/catalog` / `POST /api/watch-rules` / `PATCH /api/watch-rules/:id` / `DELETE /api/watch-rules/:id`：阶段二明确规则盯盘 API（服务层主通路）
 - `set_alert_interval`：巡检间隔调整（分钟，持久化）
 
 **信号配置：**
@@ -130,6 +131,10 @@ Dashboard 可直接操作数据，不经过 Hermes：
 | `/api/alerts/set` | POST | 创建提醒规则 |
 | `/api/alerts/toggle` | POST | 启停提醒 |
 | `/api/alerts/remove` | POST | 删除提醒 |
+| `/api/watch-rules/catalog` | GET | 查询阶段二明确规则目录 |
+| `/api/watch-rules` | GET/POST | 查询或创建阶段二明确规则 |
+| `/api/watch-rules/:id` | PATCH/DELETE | 更新或删除阶段二明确规则 |
+| `/api/watch-rules/:id/dry-run` | POST | 对单条阶段二明确规则做 dry-run |
 | `/api/signals/update` | POST | 切换信号开关/参数 |
 | `/api/interval/set` | POST | 设置巡检间隔 |
 

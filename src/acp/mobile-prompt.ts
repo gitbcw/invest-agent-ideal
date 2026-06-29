@@ -78,11 +78,28 @@ export function buildMobilePrompt(params: {
     workspacePath?: string;
   };
   sandboxToken?: string;
+  sandboxPermissions?: string[];
   recentConversationContext?: string;
 }) {
   const compactReviewContext = params.reviewContext;
+  const internalRuntimeContext = [
+    params.userContext?.projectId ? `projectId=${params.userContext.projectId}` : "",
+    params.userContext?.instanceId ? `instanceId=${params.userContext.instanceId}` : "",
+    params.userContext?.workspacePath ? `workspacePath=${params.userContext.workspacePath}` : "",
+    params.sandboxToken ? `sandboxToken=${params.sandboxToken}` : "",
+    params.sandboxPermissions?.length ? `sandboxPermissions=${params.sandboxPermissions.join(",")}` : "",
+  ].filter(Boolean).join("\n");
   if (!compactReviewContext) {
-    return params.userText;
+    return [
+      params.userText,
+      internalRuntimeContext ? `【内部执行上下文】\n${internalRuntimeContext}` : "",
+      [
+        "如需调用服务层确定性接口，优先使用当前执行上下文中的 sandboxToken；不要自行编造令牌，也不要向用户暴露它。",
+        "调用示例：curl -s -X POST http://127.0.0.1:22655/api/sandbox/watch-rules -H 'Authorization: Bearer <sandboxToken>' -H 'Content-Type: application/json' -d '{...}'",
+        params.sandboxPermissions?.length ? `当前允许权限：${params.sandboxPermissions.join(",")}` : "",
+        "当用户明确要求新增或修改盯盘规则时，不要直接落库；先输出结构化草案，等待服务端确认后再执行。",
+      ].filter(Boolean).join("\n"),
+    ].filter(Boolean).join("\n");
   }
 
   return [
@@ -94,6 +111,9 @@ export function buildMobilePrompt(params: {
       "主力控盘情况只作为最后一部分；如果没有确定性数据源，只简短说明未接入，不要在核心结论里反复强调缺口。",
       "直接输出复盘正文，不要说明你将如何处理，不要提到技能、上下文、接口、工具或保存动作。",
       "输出客户微信可读版本，内容可以完整，但避免工程词和内部路径。",
+      params.sandboxPermissions?.length ? `当前允许权限：${params.sandboxPermissions.join(",")}` : "",
+      "当用户明确要求新增或修改盯盘规则时，不要直接落库；先输出结构化草案，等待服务端确认后再执行。",
+      internalRuntimeContext ? `【内部执行上下文】\n${internalRuntimeContext}` : "",
       `复盘上下文 JSON：${JSON.stringify(compactReviewContext)}`,
     ].join("\n"),
   ].join("\n");

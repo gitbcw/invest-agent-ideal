@@ -15,6 +15,7 @@ import { WorkspaceStore, type RiskLevel } from "../lib/workspace-store.js";
 import { runL3aIndicatorsForStock } from "../services/l3a-indicator-runner.js";
 import { runL3bIndicatorsForStock } from "../services/l3b-indicator-runner.js";
 import { beijingNow, isBeijingTradingDay } from "../lib/schedules-loader.js";
+import { listWatchRules, dryRunWatchRule, type WatchRuleRecord } from "../services/watch-rules.js";
 
 /** 巡检结果 */
 export interface AlertItem {
@@ -711,6 +712,18 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
     }
   }
 
+  const stage2Rules = (await listWatchRules(userId, instanceId)).filter((rule) => rule.enabled);
+  for (const rule of stage2Rules) {
+    try {
+      const evaluated = await dryRunWatchRule(rule);
+      if (!evaluated.triggered) continue;
+      const item = buildStage2AlertItem(rule, evaluated, planMap);
+      if (item) alertItems.push(item);
+    } catch (error) {
+      logger.warn(`阶段二规则执行失败 rule=${rule.id} stock=${rule.stockCode}: ${(error as Error).message}`);
+    }
+  }
+
   const deduped = await filterAndRecordAlerts(userId, instanceId, alertItems, quoteMap, watchPolicy);
 
   if (deduped.length > 0) {
@@ -847,6 +860,80 @@ function readThresholdParam(thresholdJson: string, param: string, fallback: numb
   } catch {
     return fallback;
   }
+}
+
+function buildStage2AlertItem(
+  rule: WatchRuleRecord,
+  evaluated: Awaited<ReturnType<typeof dryRunWatchRule>>,
+  planMap: Map<string, PlanItem>
+): AlertItem | null {
+  const relationToPlan = describePlanRelation(
+    typeof evaluated.facts.currentPrice === "number" ? evaluated.facts.currentPrice : undefined,
+    planMap.get(rule.stockCode)
+  );
+  const priority = rule.notification.priority;
+  const severity = severityFromPriority(priority);
+
+  if (rule.ruleType === "price_cross") {
+    const operator = String(rule.params.operator);
+    const threshold = Number(rule.params.value);
+    const currentPrice = Number(evaluated.facts.currentPrice);
+    const signalKey = `${rule.stockCode}:watch-rule:price-cross:${operator}:${threshold}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "price",
+      signalKey,
+      relationToPlan,
+      price: currentPrice,
+      priority,
+      severity,
+      message: `${rule.stockName}(${rule.stockCode}) 触发价格规则：现价 ${currentPrice} ${operator} ${threshold}`,
+    };
+  }
+
+  if (rule.ruleType === "ma_cross") {
+    const period = Number(rule.params.period);
+    const direction = String(rule.params.direction);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const maToday = Number(evaluated.facts.maToday);
+    const signalKey = `${rule.stockCode}:watch-rule:ma-cross:${direction}:${period}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      message: `${rule.stockName}(${rule.stockCode}) 触发均线规则：${direction === "break_above" ? "突破" : "跌破"} ${period} 日均线，现价 ${closeToday.toFixed(2)}，MA${period} ${maToday.toFixed(2)}`,
+    };
+  }
+
+  const levelType = String(rule.params.levelType);
+  const levelValue = Number(evaluated.facts.levelValue);
+  const currentPrice = Number(evaluated.facts.currentPrice);
+  const tolerancePercent = Number(rule.params.tolerancePercent ?? 1);
+  const signalKey = `${rule.stockCode}:watch-rule:near-plan-level:${levelType}`;
+  const levelLabel = levelType === "support"
+    ? "支撑位"
+    : levelType === "resistance"
+      ? "压力位"
+      : levelType === "target"
+        ? "目标位"
+        : "止损位";
+  return {
+    stockCode: rule.stockCode,
+    stockName: rule.stockName,
+    type: "indicator",
+    signalKey,
+    relationToPlan,
+    price: currentPrice,
+    priority,
+    severity,
+    message: `${rule.stockName}(${rule.stockCode}) 接近预案${levelLabel} ${levelValue}，现价 ${currentPrice}，容差 ${tolerancePercent}%`,
+  };
 }
 
 const MAX_DAILY_PER_STOCK = 8;

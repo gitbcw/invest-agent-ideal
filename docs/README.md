@@ -14,8 +14,8 @@ Read these first, in this order:
 | [table-ownership.md](./table-ownership.md) | SQLite table three-tier ownership (service / workspace / discard), the truth source for workspace migration boundaries |
 | [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md) | Sandbox token, permission, audit, and isolation model. Kept in root because table-ownership only covers table boundaries, not the underlying sandbox security model |
 | [composite-indicator-system.md](./composite-indicator-system.md) | Composite indicator system RFC (2026-06-22): L1 operators / L2 signals / L3a rule tree / L3b sandbox script, with main-force-control as first use case |
-| [watch-runtime-design-note.md](./watch-runtime-design-note.md) | Discussion note (2026-06-26): service-owned scheduler + workspace executable watch rules/scripts; not yet an implementation decision |
-| [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md) | Phased implementation plan (2026-06-28): stage 1 reliable review/scheduled push, stage 2 deterministic rule watch, stage 3 news/event rough filter + Agent judgment |
+| [watch-runtime-design-note.md](./watch-runtime-design-note.md) | Earlier discussion note (2026-06-26). Useful as background, but some workspace-rule ideas were superseded by the stage 2 API-first direction |
+| [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md) | Current source for staged watch runtime delivery (2026-06-28): stage 1 accepted, stage 2 service-owned rule catalog/API, stage 3 news/event rough filter + Agent judgment |
 | [watch-runtime-stage1-implementation-brief.md](./watch-runtime-stage1-implementation-brief.md) | Stage 1 implementation brief (2026-06-28): current scheduler/review/push status, gaps, smoke tests, observability, and acceptance checklist |
 | [watch-runtime-stage1-runbook.md](./watch-runtime-stage1-runbook.md) | Stage 1 manual acceptance runbook for the primary user investment assistant instance |
 | [investment-model-design.md](./investment-model-design.md) | Investment model v1: user-facing container for selection, trading, risk, review, and exit loops |
@@ -43,6 +43,8 @@ Read these first, in this order:
 - **Investment model is the user-facing configuration center** (2026-06-24): onboarding should converge from scattered "style / methodology / trading strategy" setup to "configure your investment model". Each user has a default model; methods and trading strategies are components inside that model. See [investment-model-design.md](./investment-model-design.md).
 - **Scheduled tasks remain service-owned**: the scheduler scans workspace `config/watch.yaml` / `config/schedules.yaml` every minute, invokes workspace-scoped Hermes for market-watch and review tasks, then pushes concise results when configured.
 - **Stage 1 acceptance should use the controllable scheduler trigger**: manual acceptance for the primary investment assistant instance should use `POST /api/testing/scheduler/trigger` on `localhost:22655`, not "edit to next minute and wait". A first real acceptance pass was completed on 2026-06-28: `daily-review` reached the primary user's phone, and `market-watch` correctly returned `NO_PUSH` without sending noise.
+- **Stage 2 now prefers service-owned watch rule APIs over workspace schema churn**: rule capability discovery, validation, CRUD, dry-run, scheduler execution, dedupe, and event recording should stay service-owned; Workspace skill should discover capabilities through API and call them instead of relying on frequent `watch.yaml` schema changes.
+- **Stage 2 service-layer foundation is now landed** (2026-06-28): the repository now contains watch-rule catalog APIs, CRUD / validate / dry-run APIs, and scheduler execution for `price_cross`, `ma_cross`, and `near_plan_level`. Workspace skill integration and real-user trigger acceptance still remain to be finished.
 
 ## Keep Or Archive Rule
 

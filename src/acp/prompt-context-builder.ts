@@ -42,6 +42,7 @@ export async function buildAcpPromptContext(input: {
     reviewContext: compactReviewContext,
     userContext: input.userContext,
     sandboxToken,
+    sandboxPermissions: sandboxContext.permissions,
     recentConversationContext: input.recentConversationContext ?? formatContextPacketForPrompt(contextPacket),
   });
 

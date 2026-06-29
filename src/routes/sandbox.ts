@@ -17,6 +17,7 @@ import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, listPendingSandboxConfirmations } from "../lib/sandbox-confirmation.js";
 import { deleteMirroredAlertRule, disableMirroredAlertRule, syncLegacyAlertToAlertRule } from "../handlers/alert-rules.js";
 import { enqueuePushJob, getPushJob, processDuePushJobs, type PushBackend } from "../services/push-queue.js";
+import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
 
 function normalizeWatchlistReason(reason: string) {
   return reason.replace(/观察池/g, "自选池").trim();
@@ -956,5 +957,99 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       resultSummary: `removed ${existing[0].stockCode} ${existing[0].indicator}`,
     });
     return { ok: true, userId: ctx.userId, message: `已删除 ${existing[0].stockCode} 的${indicatorNames[existing[0].indicator] || existing[0].indicator}提醒` };
+  }));
+
+  app.get("/api/sandbox/watch-rules/catalog", sandboxSafe("invest.alert.read", async (ctx) => {
+    await audit(ctx, {
+      operation: "watch_rules.catalog",
+      resourceType: "watch_rule_catalog",
+      resultSummary: "list catalog",
+    });
+    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, items: listWatchRuleCatalog() };
+  }));
+
+  app.get("/api/sandbox/watch-rules", sandboxSafe("invest.alert.read", async (ctx) => {
+    const items = await listWatchRules(ctx.userId, ctx.instanceId);
+    await audit(ctx, {
+      operation: "watch_rules.list",
+      resourceType: "watch_rule",
+      resultSummary: `count=${items.length}`,
+    });
+    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, items };
+  }));
+
+  app.post<{ Body: Record<string, unknown> }>("/api/sandbox/watch-rules/validate", sandboxSafe("invest.alert.read", async (ctx, request, reply) => {
+    const validation = await validateWatchRule({ ...request.body, userId: ctx.userId, instanceId: ctx.instanceId });
+    await audit(ctx, {
+      operation: "watch_rules.validate",
+      resourceType: "watch_rule",
+      requestBody: request.body,
+      resultSummary: validation.ok ? "ok" : `errors=${validation.errors.join("|")}`,
+    });
+    if (!validation.ok) return reply.status(400).send({ ok: false, userId: ctx.userId, instanceId: ctx.instanceId, errors: validation.errors });
+    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, validation };
+  }));
+
+  app.post<{ Body: Record<string, unknown> }>("/api/sandbox/watch-rules", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
+    const rule = await createWatchRule({
+      ...(request.body as any),
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      source: { kind: "sandbox_api", actor: "workspace_skill" },
+    });
+    await audit(ctx, {
+      operation: "watch_rules.create",
+      resourceType: "watch_rule",
+      resourceId: String(rule.id),
+      requestBody: request.body,
+      resultSummary: `created ${rule.ruleType} ${rule.stockCode}`,
+    });
+    return reply.status(201).send({ ok: true, userId: ctx.userId, instanceId: ctx.instanceId, rule });
+  }));
+
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/sandbox/watch-rules/:id", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
+    const rule = await updateWatchRule(id, {
+      ...(request.body as any),
+      source: { kind: "sandbox_api", actor: "workspace_skill" },
+    }, ctx.userId, ctx.instanceId);
+    await audit(ctx, {
+      operation: "watch_rules.update",
+      resourceType: "watch_rule",
+      resourceId: String(rule.id),
+      requestBody: request.body,
+      resultSummary: `updated ${rule.ruleType} ${rule.stockCode}`,
+    });
+    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, rule };
+  }));
+
+  app.delete<{ Params: { id: string }; Body: { confirmationId?: string } }>("/api/sandbox/watch-rules/:id", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
+    if (await requireConfirmation(ctx, request, reply, "watch_rules.remove", "watch_rule", String(id))) return;
+    const removed = await deleteWatchRule(id, ctx.userId, ctx.instanceId);
+    if (!removed) return reply.status(404).send({ ok: false, error: "规则不存在", userId: ctx.userId, instanceId: ctx.instanceId });
+    await audit(ctx, {
+      operation: "watch_rules.remove",
+      resourceType: "watch_rule",
+      resourceId: String(id),
+      requestBody: request.body,
+      resultSummary: `removed ${id}`,
+    });
+    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId };
+  }));
+
+  app.post<{ Params: { id: string } }>("/api/sandbox/watch-rules/:id/dry-run", sandboxSafe("invest.alert.read", async (ctx, request, reply) => {
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
+    const result = await dryRunWatchRuleById(id, ctx.userId, ctx.instanceId);
+    await audit(ctx, {
+      operation: "watch_rules.dry_run",
+      resourceType: "watch_rule",
+      resourceId: String(id),
+      resultSummary: `triggered=${result.triggered}`,
+    });
+    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, result };
   }));
 }
