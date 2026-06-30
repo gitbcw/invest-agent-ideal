@@ -307,6 +307,18 @@ export function initDb() {
       status TEXT NOT NULL,
       error_message TEXT,
       elapsed_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      thought_tokens INTEGER,
+      cached_read_tokens INTEGER,
+      cached_write_tokens INTEGER,
+      total_tokens INTEGER,
+      context_window_used INTEGER,
+      context_window_size INTEGER,
+      cost_amount REAL,
+      cost_currency TEXT,
+      usage_source TEXT,
+      usage_raw TEXT,
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS indicator_definitions (
@@ -456,7 +468,7 @@ export function initDb() {
   `);
   ensureDefaultUser();
   ensureDefaultAiInstance();
-  normalizeRuntimeBackendToHermes();
+  normalizeRuntimeBackendToCodex();
   migrateWatchlistForUsers();
   migrateStockPlansForUsers();
   migrateAlertSignalStatesForUsers();
@@ -498,6 +510,18 @@ export function initDb() {
   ensureColumn("codex_acp_traces", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("codex_acp_traces", "sandbox_token_id", "TEXT");
   ensureColumn("codex_acp_traces", "sandbox_permissions", "TEXT");
+  ensureColumn("codex_acp_traces", "input_tokens", "INTEGER");
+  ensureColumn("codex_acp_traces", "output_tokens", "INTEGER");
+  ensureColumn("codex_acp_traces", "thought_tokens", "INTEGER");
+  ensureColumn("codex_acp_traces", "cached_read_tokens", "INTEGER");
+  ensureColumn("codex_acp_traces", "cached_write_tokens", "INTEGER");
+  ensureColumn("codex_acp_traces", "total_tokens", "INTEGER");
+  ensureColumn("codex_acp_traces", "context_window_used", "INTEGER");
+  ensureColumn("codex_acp_traces", "context_window_size", "INTEGER");
+  ensureColumn("codex_acp_traces", "cost_amount", "REAL");
+  ensureColumn("codex_acp_traces", "cost_currency", "TEXT");
+  ensureColumn("codex_acp_traces", "usage_source", "TEXT");
+  ensureColumn("codex_acp_traces", "usage_raw", "TEXT");
   ensureColumn("sandbox_audit_logs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("sandbox_audit_logs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("pending_sandbox_confirmations", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
@@ -598,7 +622,7 @@ function ensureDefaultAiInstance() {
     .prepare(
       `INSERT OR IGNORE INTO ai_instances (
         id, project_id, owner_user_id, name, status, backend, skill_bundle_id, config, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'active', 'hermes', ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, 'active', 'codex', ?, ?, ?, ?)`
     )
     .run(
       DEFAULT_INSTANCE_ID,
@@ -612,22 +636,22 @@ function ensureDefaultAiInstance() {
     );
 }
 
-function normalizeRuntimeBackendToHermes() {
-  const migrationKey = "runtime_backend_hermes_v1";
+function normalizeRuntimeBackendToCodex() {
+  const migrationKey = "runtime_backend_codex_v1";
   if (hasMigration(migrationKey)) return;
-  const legacyBackends = ["codex", "kimi", "claude"];
+  const legacyBackends = ["hermes", "kimi", "claude"];
   const placeholders = legacyBackends.map(() => "?").join(",");
 
   const transaction = sqlite.transaction(() => {
     sqlite
-      .prepare(`UPDATE settings SET value = 'hermes' WHERE key = 'acp_backend' AND value IN (${placeholders})`)
+      .prepare(`UPDATE settings SET value = 'codex' WHERE key = 'acp_backend' AND value IN (${placeholders})`)
       .run(...legacyBackends);
     for (const table of ["ai_instances", "channel_accounts", "push_jobs"]) {
       if (!hasTable(table) || !hasColumn(table, "backend")) continue;
-      sqlite.prepare(`UPDATE ${table} SET backend = 'hermes' WHERE backend IN (${placeholders})`).run(...legacyBackends);
+      sqlite.prepare(`UPDATE ${table} SET backend = 'codex' WHERE backend IN (${placeholders})`).run(...legacyBackends);
     }
     if (hasTable("channel_identities") && hasColumn("channel_identities", "backend")) {
-      sqlite.prepare(`UPDATE channel_identities SET backend = 'hermes' WHERE backend IN (${placeholders})`).run(...legacyBackends);
+      sqlite.prepare(`UPDATE channel_identities SET backend = 'codex' WHERE backend IN (${placeholders})`).run(...legacyBackends);
     }
     markMigration(migrationKey);
   });

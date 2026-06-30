@@ -24,7 +24,6 @@ import { db } from "../db/index.js";
 import { settings } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
-import { MOBILE_SYSTEM_PROMPT } from "./mobile-prompt.js";
 
 // ─── 类型 ───────────────────────────────────────────────────────────
 
@@ -37,13 +36,22 @@ type ClientSideConnection = {
 
 type SessionNotification = {
   sessionId: string;
-  update:
-    | {
-        sessionUpdate: "agent_message_chunk";
-        content: { type: "text"; text: string } | { type: string };
-      }
-    | { sessionUpdate: string };
+  update: SessionUpdate;
 };
+
+type SessionUpdate =
+  | {
+      sessionUpdate: "agent_message_chunk";
+      content: { type: "text"; text: string } | { type: string };
+    }
+  | {
+      sessionUpdate: "usage_update";
+      used: number;
+      size: number;
+      cost?: { amount: number; currency: string } | null;
+      _meta?: Record<string, unknown> | null;
+    }
+  | { sessionUpdate: string; [key: string]: unknown };
 
 type RequestPermissionRequest = {
   options: Array<{ optionId: string }>;
@@ -78,6 +86,26 @@ export interface AcpBackendStatus {
   isDefault: boolean;
 }
 
+export interface AcpTokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  thoughtTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+  totalTokens?: number;
+  contextWindowUsed?: number;
+  contextWindowSize?: number;
+  costAmount?: number;
+  costCurrency?: string;
+  source: "actual" | "estimated";
+  raw?: unknown;
+}
+
+export interface AcpChatResult {
+  text: string;
+  usage: AcpTokenUsage;
+}
+
 // ─── 后端定义 ───────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 1_800_000;
@@ -108,9 +136,14 @@ const SETTINGS_KEY = "acp_backend";
 
 class ResponseCollector {
   private readonly chunks: string[] = [];
+  private usageUpdate: SessionUpdate | undefined;
 
   handleUpdate(notification: SessionNotification) {
     const update = notification.update;
+    if (update.sessionUpdate === "usage_update") {
+      this.usageUpdate = update;
+      return;
+    }
     if (update.sessionUpdate !== "agent_message_chunk") return;
     const content = (update as { content?: { type: string; text?: string } }).content;
     if (content?.type === "text") {
@@ -137,6 +170,10 @@ class ResponseCollector {
       repeatedSuffixChars: estimateRepeatedSuffixChars(text),
     };
   }
+
+  usageFromUpdate() {
+    return this.usageUpdate;
+  }
 }
 
 function estimateRepeatedSuffixChars(text: string) {
@@ -145,6 +182,90 @@ function estimateRepeatedSuffixChars(text: string) {
     if (text.slice(0, -len).endsWith(tail)) return len;
   }
   return 0;
+}
+
+function extractAcpUsage(
+  promptResult: unknown,
+  usageUpdate: unknown,
+  promptText: string,
+  replyText: string
+): AcpTokenUsage {
+  const resultUsage = isRecord(promptResult) ? normalizeUsage(promptResult.usage) : undefined;
+  const updateUsage = normalizeUsageUpdate(usageUpdate);
+  if (resultUsage) {
+    return {
+      ...resultUsage,
+      ...updateUsage,
+      source: "actual",
+      raw: {
+        promptUsage: isRecord(promptResult) ? promptResult.usage : undefined,
+        usageUpdate,
+      },
+    };
+  }
+
+  const inputTokens = estimateTokens(promptText);
+  const outputTokens = estimateTokens(replyText);
+  return {
+    inputTokens,
+    outputTokens,
+    ...updateUsage,
+    totalTokens: inputTokens + outputTokens,
+    source: "estimated",
+    raw: updateUsage ? { usageUpdate } : undefined,
+  };
+}
+
+function normalizeUsage(value: unknown): Omit<AcpTokenUsage, "source" | "raw"> | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = optionalInt(value.inputTokens);
+  const outputTokens = optionalInt(value.outputTokens);
+  const totalTokens = optionalInt(value.totalTokens);
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+    return undefined;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    thoughtTokens: optionalInt(value.thoughtTokens),
+    cachedReadTokens: optionalInt(value.cachedReadTokens),
+    cachedWriteTokens: optionalInt(value.cachedWriteTokens),
+    totalTokens,
+  };
+}
+
+function normalizeUsageUpdate(value: unknown): Omit<AcpTokenUsage, "source" | "raw"> | undefined {
+  if (!isRecord(value) || value.sessionUpdate !== "usage_update") return undefined;
+  const cost = isRecord(value.cost) ? value.cost : undefined;
+  return {
+    contextWindowUsed: optionalInt(value.used),
+    contextWindowSize: optionalInt(value.size),
+    costAmount: optionalNumber(cost?.amount),
+    costCurrency: typeof cost?.currency === "string" ? cost.currency : undefined,
+  };
+}
+
+function optionalInt(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+function optionalNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function estimateTokens(text: string) {
+  if (!text) return 0;
+  let ascii = 0;
+  let nonAscii = 0;
+  for (const char of text) {
+    if (char.charCodeAt(0) <= 0x7f) ascii += 1;
+    else nonAscii += 1;
+  }
+  return Math.max(1, Math.ceil(ascii / 4 + nonAscii / 1.7));
 }
 
 export class StdioAcpAgent {
@@ -205,6 +326,17 @@ export class StdioAcpAgent {
     timeoutMs?: number;
     cwd?: string;
   }): Promise<string> {
+    const result = await this.chatWithUsage(params);
+    return result.text;
+  }
+
+  async chatWithUsage(params: {
+    conversationId: string;
+    text: string;
+    messageId?: string;
+    timeoutMs?: number;
+    cwd?: string;
+  }): Promise<AcpChatResult> {
     if (this.activeConversations.has(params.conversationId)) {
       throw new Error("ACP_TURN_BUSY:上一条消息仍在处理中");
     }
@@ -220,8 +352,9 @@ export class StdioAcpAgent {
       `${this.def.label} ACP 开始处理 session=${sessionId} message=${params.messageId ?? "-"}`
     );
 
+    let promptResult: unknown;
     try {
-      const result = await Promise.race([
+      promptResult = await Promise.race([
         conn.prompt({
           sessionId,
           messageId: params.messageId,
@@ -230,7 +363,7 @@ export class StdioAcpAgent {
         this.timeoutAfter(params.timeoutMs ?? this.def.timeoutMs),
       ]);
       logger.info(
-        `${this.def.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(result)} responseStats=${JSON.stringify(collector.stats())}`
+        `${this.def.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(promptResult)} responseStats=${JSON.stringify(collector.stats())}`
       );
     } catch (error) {
       if (error instanceof Error && error.message.includes("请求超时")) {
@@ -245,7 +378,11 @@ export class StdioAcpAgent {
       this.activeConversations.delete(params.conversationId);
     }
 
-    return collector.toText() || "处理完成,但没有生成文本回复。";
+    const text = collector.toText() || "处理完成,但没有生成文本回复。";
+    return {
+      text,
+      usage: extractAcpUsage(promptResult, collector.usageFromUpdate(), params.text, text),
+    };
   }
 
   clearSession(conversationId: string) {
@@ -352,9 +489,6 @@ export class StdioAcpAgent {
     const res = await conn.newSession({
       cwd,
       mcpServers: [],
-      _meta: {
-        systemPrompt: { append: MOBILE_SYSTEM_PROMPT },
-      },
     });
     this.sessions.set(sessionKey, res.sessionId);
     logger.info(

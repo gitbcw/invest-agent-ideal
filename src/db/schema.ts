@@ -294,6 +294,18 @@ export const codexAcpTraces = sqliteTable("codex_acp_traces", {
   status: text("status").notNull(),
   errorMessage: text("error_message"),
   elapsedMs: integer("elapsed_ms"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  thoughtTokens: integer("thought_tokens"),
+  cachedReadTokens: integer("cached_read_tokens"),
+  cachedWriteTokens: integer("cached_write_tokens"),
+  totalTokens: integer("total_tokens"),
+  contextWindowUsed: integer("context_window_used"),
+  contextWindowSize: integer("context_window_size"),
+  costAmount: real("cost_amount"),
+  costCurrency: text("cost_currency"),
+  usageSource: text("usage_source"),
+  usageRaw: text("usage_raw"),
   createdAt: text("created_at").notNull(),
 });
 

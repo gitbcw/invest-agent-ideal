@@ -29,6 +29,25 @@
 - `tests/eval/strategy-recommendation/fixtures.yaml`: 策略推荐输入 fixture。
 - `tests/eval/strategy-recommendation/expected.yaml`: 策略推荐期望输出和命中率阈值。
 
+## 链路与契约 Smoke
+
+这些测试不需要放进 Platform 页面。它们是给 AI/开发流程使用的链路契约清单:当修改相关模块时,由 AI 根据变更范围选择运行,并总结结果。
+
+| 命令 | 目的 | 何时运行 |
+| --- | --- | --- |
+| `npm run build` | TypeScript 编译与 dist 产物更新 | 任意后端或 Platform 页面改动后 |
+| `npm run test` | Node test runner 下的基础单元/集成测试 | 修改 `tests/*.test.ts` 覆盖的 store、calendar、method-change 等逻辑后 |
+| `node scripts/market-watch-schedule-contract-smoke.mjs` | 验证盯盘调度不会把 `trading_days_09:30...` 这类字符串误解析成分钟间隔 | 修改 scheduler、schedules loader、workspace schedules 模板或用户 schedules 后 |
+| `npm run smoke:schedules-loader` | 验证 workspace `config/schedules.yaml` 的固定窗口、频率和开关字段能被服务端正确读取 | 修改 schedules schema、loader 或 onboarding 写入规则后 |
+| `npm run smoke:stage1-scheduler` | 验证 `scheduled_task_runs` 抢锁、`push_jobs` 状态流转和定时推送基础契约 | 修改 scheduler、push queue、scheduled task run 记录后 |
+| `npm run smoke:customer-output` | 验证用户输出清洗隐藏内部路径、接口、token 等调试信息,并保留 Markdown 表格 | 修改客户输出清洗、微信回复格式或入站/出站提示约束后 |
+| `node scripts/push-routing-contract-smoke.mjs` | 验证主动推送按 `userId + instanceId` 路由,且用户等待复杂分析时调度推送会延后 | 修改微信路由、push queue、复杂任务占用标记后 |
+| `npm run smoke:review-push-summary` | 验证复盘推送摘要的清洗与摘要形态 | 修改 review push、scheduled reply 清洗或复盘摘要格式后 |
+| `npm run smoke:weixin-complex-ack` | 验证微信复杂任务 ACK / 后台处理的用户体验契约 | 修改微信消息桥、复杂任务识别或 ACK 文案后 |
+| `npm run verify:convergence` | 聚合性收敛检查,确认当前架构边界没有明显回退 | 做运行时路径、workspace、prompt/context 相关收敛改动后 |
+
+运行结果不需要人工在 Platform 页面逐条点。推荐流程是:AI 说明为什么选择这些测试,运行后只总结失败点、风险和下一步判断。若涉及用户实际对话或推送表现,再回到 Platform 的日志审计和黄金数据集页面一起看。
+
 ## Case 编写原则
 
 每条 case 必须包含:

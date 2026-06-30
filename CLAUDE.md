@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-微信入口的 AI 投资决策助手，实验分支当前采用极简主链路：微信消息解析出用户、实例和 workspace 后，直接转发给在该 workspace 中运行的 Hermes stdio ACP 后端。服务层不再做普通微信消息的 triage、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Dashboard、行情数据、巡检、提醒、sandbox/API、落库和微信推送。
+微信入口的 AI 投资决策助手，实验分支当前采用极简主链路：微信消息解析出用户、实例和 workspace 后，直接转发给在该 workspace 中运行的当前 ACP 后端，默认 Codex。服务层不再做普通微信消息的 triage、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Dashboard、行情数据、巡检、提醒、sandbox/API、落库和微信推送。
 
 ## 常用命令
 
@@ -24,28 +24,30 @@ npm run db:migrate   # 执行数据库迁移
 
 ## 环境配置
 
-复制 `.env.example` 为 `.env`。数据库为 SQLite，路径 `./data/invest-agent.db`。微信消息进入智能后端时由服务直接启动 workspace-scoped Hermes ACP 子进程，不需要单独手动启动 ACP HTTP endpoint。
+复制 `.env.example` 为 `.env`。数据库为 SQLite，路径 `./data/invest-agent.db`。微信消息进入智能后端时由服务直接启动 workspace-scoped ACP 子进程，不需要单独手动启动 ACP HTTP endpoint。
+
+Workspace 默认根目录**不是**仓库内的 `./data/workspaces`。当前默认值来自 `src/lib/config.ts`，会解析到 `../../my-data/projects/invest-agent-ideal/workspaces`，即本机通常对应 `/Users/combo/MyFile/my-data/projects/invest-agent-ideal/workspaces`。只有显式设置 `WORKSPACE_ROOT` 时才覆盖。排查“workspace 是否创建”时，请先看运行时 `WORKSPACE_ROOT`，不要只看仓库内 `data/workspaces/`。
 
 微信桥接状态默认保存在本项目 `./.state/openclaw-weixin/`，也可通过 `INVEST_AGENT_WEIXIN_STATE_DIR` 覆盖。不要让本项目和全局 Claude Code 微信桥接共用同一个 `~/.openclaw` 登录态目录。
 
-> **运行时语义纠正(2026-06-26)**：当前统一使用 Hermes stdio ACP 作为 workspace 后端承接。Codex 不再作为 invest-agent 产品运行时 backend 注册或默认选项；历史 `codex_acp_traces` 表名仅作为兼容存储保留。
+> **运行时语义纠正(2026-06-30)**：当前默认使用 Codex ACP 作为 workspace 后端承接。Hermes 仅保留为兼容/实验 backend；历史 `codex_acp_traces` 表名仅作为兼容存储保留。
 
 ## 架构：消息处理主链路
 
 ```
 用户微信消息 → weixin-agent-sdk → InvestAgentMobileBridge
-  → 解析 user / project / instance / workspace
+  → 解析 user / instance / workspace
   → AcpAgent.handleMessage()
-  → workspace-scoped Hermes ACP session(cwd = 用户 workspace)
-  → Hermes 使用 workspace 的 AGENTS.md + .codex/skills 进行推理和工具调用
-  → Hermes 按需调用 invest-agent 的 sandbox / Dashboard / 行情等确定性 API
+  → workspace-scoped ACP session(cwd = 用户 workspace)
+  → Codex 使用 workspace 的 AGENTS.md + .codex/skills 进行推理和工具调用
+  → Codex 按需调用 invest-agent 的 sandbox / Dashboard / 行情等确定性 API
   → 响应返回微信
 ```
 
-主动提醒反向链路：`scheduler/index.ts` 每分钟扫描 workspace 的 `config/watch.yaml` / `config/schedules.yaml` → 命中后调用 workspace-scoped Hermes 执行巡检或复盘 → 触发后通过微信推送队列发送。
+主动提醒反向链路：`scheduler/index.ts` 每分钟扫描 workspace 的 `config/watch.yaml` / `config/schedules.yaml` → 命中后调用 workspace-scoped ACP backend 执行巡检或复盘 → 触发后通过微信推送队列发送。
 
 > **2026-06-23 范围收缩**:本项目定位明确为"少数几个投资客户的精品投资助手",不再承载多产品 AI 平台 / 饮食推荐 / 旁路桥 / 对话草案 / 多 bundle 抽象。WP A1+A2+A3+C 全部收尾:
-> - 主链路微信桥只剩 `InvestAgentMobileBridge`(主桥);`backend==="hermes"` 是当前唯一运行时后端标识
+> - 主链路微信桥只剩 `InvestAgentMobileBridge`(主桥);`backend==="codex"` 是当前默认运行时后端标识
 > - `src/platform/` 简化为 `project-registry.ts`(实例查询)+ `tool-registry.ts`(sandbox 工具白名单),不再有 project-type manifest / skill-bundle catalog
 > - 技能说明以 workspace 模板中的 `AGENTS.md` 和 `.codex/skills` 为准；服务层不再注入固定 skill-bundle prompt
 > - `/platform` 当前保留为轻量实例管理与实例级微信运维入口；复杂平台化抽象仍已删除，`src/routes/platform.ts` 主要负责实例查询、workspace ensure 和实例级 weixin 管理
@@ -61,8 +63,8 @@ npm run db:migrate   # 执行数据库迁移
 
 | 文件 | 职责 |
 |------|------|
-| `src/acp/agent.ts` | ACP 入口；微信消息只添加最小通道上下文并代理到 workspace-scoped Hermes |
-| `src/acp/stdio-agent.ts` | Hermes stdio ACP 托管器；微信直通路径使用按 workspace cwd 隔离的 Hermes session |
+| `src/acp/agent.ts` | ACP 入口；微信消息只添加最小通道上下文并代理到 workspace-scoped ACP backend |
+| `src/acp/stdio-agent.ts` | stdio ACP 托管器；微信直通路径使用按 workspace cwd 隔离的 ACP session |
 | `src/services/deepseek.ts` | DeepSeek API 封装，支持 light（flash）和 deep（pro+thinking）两种模式 |
 | `src/services/stock.ts` | 腾讯行情 API：实时报价、日 K、股票搜索 |
 | `src/services/stock-resolver.ts` | 股票名称/代码模糊解析 |
@@ -170,7 +172,7 @@ Dashboard 可直接操作数据，不经过 Hermes：
 ## 设计原则
 
 1. 不恢复旧关键词路由，也不恢复/扩展自研 Agent Runtime。
-2. Hermes 是对话总控。invest-agent 只做确定性查询、落库、巡检和推送。
+2. Workspace-scoped Codex 是对话总控。invest-agent 只做确定性查询、落库、巡检和推送。
 3. 用户不需要记指令，不需要提供股票代码。股票名称通过 `stock-resolver` 解析。
 4. 不确定时追问；能从上下文判断时不多余确认。
 5. 投资输出必须说明不确定性，不承诺收益，不自动交易。

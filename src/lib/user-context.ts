@@ -7,9 +7,6 @@ export interface UserContext {
   userId: string;
   projectId?: string;
   instanceId?: string;
-  projectType?: string;
-  skillBundleId?: string;
-  strategySkillId?: string;
   instanceExpansionPath?: string;
   projectName?: string;
   channel?: "weixin-mobile" | "dashboard" | "api";

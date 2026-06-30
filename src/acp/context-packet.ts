@@ -19,9 +19,6 @@ export interface ContextPacket {
   };
   workspace: {
     path?: string;
-    projectType?: string;
-    skillBundleId?: string;
-    strategySkillId?: string;
   };
   recentConversation: ConversationMessage[];
   pendingConfirmations: Array<{
@@ -73,9 +70,6 @@ export async function buildContextPacket(
     },
     workspace: {
       path: userContext.workspacePath || safeWorkspacePath(userId),
-      projectType: userContext.projectType,
-      skillBundleId: userContext.skillBundleId,
-      strategySkillId: userContext.strategySkillId,
     },
     recentConversation,
     pendingConfirmations: mergePendingConfirmations(listPendingConfirmations(userContext), options.pendingConfirmations ?? []),

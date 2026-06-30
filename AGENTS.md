@@ -4,7 +4,7 @@
 
 Invest Agent is the main investment assistant project. It is a WeChat-first AI investment decision assistant for one primary user in the current Experimental MVP stage.
 
-The current experimental architecture is intentionally simple: WeChat resolves the user/project/instance/workspace, then forwards the user's message directly to Hermes stdio ACP running inside that user's workspace. The product-level isolation unit is the workspace-backed AI Project instance.
+The current experimental architecture is intentionally simple: WeChat resolves the user/instance/workspace, then forwards the user's message directly to the active ACP backend, normally Codex, running inside that user's workspace. The product-level isolation unit is the workspace-backed investment assistant instance.
 
 The product has three long-term core capabilities:
 
@@ -28,15 +28,15 @@ Prefer the "AGENTS.md + .codex/skills" workflow for investment reasoning:
 
 ## Runtime Evolution Principle
 
-In the current phase, normal WeChat user messages should use the direct workspace Hermes path in `src/acp/agent.ts` and `src/acp/stdio-agent.ts`. The service may pass only minimal channel context: who sent the message, which workspace it belongs to, and that the final text will be sent back to WeChat.
+In the current phase, normal WeChat user messages should use the direct workspace ACP path in `src/acp/agent.ts` and `src/acp/stdio-agent.ts`. The service may pass only minimal channel context: that the message came from WeChat, which workspace it belongs to, and that the final text will be sent back to WeChat.
 
 Do not reintroduce service-level triage, fast-lane classification, onboarding short-circuiting, review intent detection, or context-packet wrapping for normal WeChat messages. If behavior needs to change, update the workspace template, AGENTS.md, skills, or workspace config instead.
 
-The durable product assets are workspace templates, Skills, sandbox/tool protocols, deterministic service APIs, confirmation workflows, audit, scheduler behavior, and saved artifacts. The current invest-agent runtime backend is Hermes stdio ACP; alternative backends are not product semantics and should not be reintroduced without an explicit design decision.
+The durable product assets are workspace templates, Skills, sandbox/tool protocols, deterministic service APIs, confirmation workflows, audit, scheduler behavior, and saved artifacts. Codex ACP is the preferred current backend; backend choice is runtime plumbing, not product semantics.
 
-> **运行时语义纠正(2026-06-26)**:Hermes stdio ACP 是当前唯一 invest-agent workspace 后端。Codex/Kimi/Claude 不再作为运行时 backend 注册或默认选项；历史工作包规划仍仅作考古。
+> **运行时语义纠正(2026-06-30)**:Codex ACP 是当前默认 invest-agent workspace 后端。Hermes 仅保留为兼容/实验 backend；历史 `codex_acp_traces` 表名仅作为兼容存储保留。
 
-Use workspace-scoped Hermes as the complex-reasoning and edge-case absorber. As repeated patterns become clear, move them into workspace skills, service APIs, sandbox confirmations, golden tests, and scheduled Hermes tasks.
+Use the workspace-scoped ACP backend as the complex-reasoning and edge-case absorber. As repeated patterns become clear, move them into workspace skills, service APIs, sandbox confirmations, golden tests, and scheduled ACP tasks.
 
 Profile should remain a runtime compatibility summary or routing/config residue. Do not add new methodology responsibilities to Profile; investment method should live in Strategy Skills: protected skeleton plus instance expansion.
 
@@ -44,7 +44,7 @@ Profile should remain a runtime compatibility summary or routing/config residue.
 
 Use the five-step engineering method for the current convergence phase: question the need, delete obsolete responsibilities, simplify the necessary core, speed up feedback loops, then automate stable checks.
 
-Documentation convergence is part of engineering convergence. Keep only current, agent-useful docs in `docs/`; move historical plans, experiments, test records, migration notes, and superseded decisions to `docs/archive/`. Current source-of-truth docs should describe the direct WeChat → workspace Hermes path, the service-owned scheduler/push/sandbox/API responsibilities, Profile as compatibility summary, and Strategy Skills as the methodology carrier.
+Documentation convergence is part of engineering convergence. Keep only current, agent-useful docs in `docs/`; move historical plans, experiments, test records, migration notes, and superseded decisions to `docs/archive/`. Current source-of-truth docs should describe the direct WeChat → workspace ACP path, the service-owned scheduler/push/sandbox/API responsibilities, Profile as compatibility summary, and Strategy Skills as the methodology carrier.
 
 ## Source Of Truth
 

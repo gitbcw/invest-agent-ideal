@@ -1,5 +1,5 @@
 /**
- * 烟测:ACP deep prompt 复用 ContextPacket。
+ * 烟测:ACP prompt 构建仍返回 ContextPacket,但普通微信入站 prompt 不再注入上下文包。
  *
  * 用法:npm run build && node scripts/prompt-context-packet-smoke.mjs
  */
@@ -8,6 +8,7 @@ import { buildAcpPromptContext } from "../dist/acp/prompt-context-builder.js";
 import { clearPendingConfirmation, registerPendingConfirmation } from "../dist/acp/pending-state.js";
 import { dailyPlanBackend } from "../dist/lib/daily-plan-backend.js";
 import { rememberWeixinTurn } from "../dist/lib/weixin-conversation-memory.js";
+import { ensureWorkspace } from "../dist/lib/workspace.js";
 
 const userId = "test-prompt-context-packet";
 const instanceId = "test-instance";
@@ -15,7 +16,6 @@ const userContext = {
   userId,
   instanceId,
   projectId: "invest-agent",
-  projectType: "invest-agent",
   conversationId: "conv-prompt-context",
   channel: "weixin-mobile",
 };
@@ -34,6 +34,7 @@ function assert(cond, label, value) {
   }
 }
 
+await ensureWorkspace({ userId, projectId: "invest-agent" });
 await rememberWeixinTurn(userContext, "生成日复盘", "【2026-06-24 复盘摘要】核心判断...");
 await dailyPlanBackend.upsert(userId, instanceId, {
   planDate: "2026-06-24",
@@ -54,13 +55,14 @@ const built = await buildAcpPromptContext({
 });
 
 assert(built.contextPacket.user.userId === userId, "返回 ContextPacket", built.contextPacket.user);
-assert(built.promptText.includes("【最近对话】"), "prompt 包含最近对话标题", built.promptText);
-assert(built.promptText.includes("生成日复盘"), "prompt 包含最近用户消息", built.promptText);
-assert(built.promptText.includes("【最近产物】"), "prompt 包含最近产物标题", built.promptText);
-assert(built.promptText.includes("今日复盘摘要"), "prompt 包含最新复盘摘要", built.promptText);
-assert(built.promptText.includes("【待确认事项】"), "prompt 包含待确认事项标题", built.promptText);
-assert(built.promptText.includes("赛轮轮胎跌到 11.22 提醒"), "prompt 包含 pending 摘要", built.promptText);
-assert(built.promptText.includes("【状态摘要】"), "prompt 包含状态摘要", built.promptText);
+assert(built.contextPacket.recentConversation.some((item) => item.content.includes("生成日复盘")), "ContextPacket 包含最近用户消息", built.contextPacket.recentConversation);
+assert(built.contextPacket.latestArtifacts.some((item) => item.summary.includes("今日复盘摘要")), "ContextPacket 包含最新复盘摘要", built.contextPacket.latestArtifacts);
+assert(built.contextPacket.pendingConfirmations.some((item) => item.summary.includes("赛轮轮胎跌到 11.22 提醒")), "ContextPacket 包含待确认事项", built.contextPacket.pendingConfirmations);
+assert(built.promptText.includes("sandboxToken="), "prompt 包含 sandboxToken", built.promptText);
+assert(!built.promptText.includes("【最近对话】"), "普通 prompt 不注入最近对话", built.promptText);
+assert(!built.promptText.includes("【最近产物】"), "普通 prompt 不注入最近产物", built.promptText);
+assert(!built.promptText.includes("【待确认事项】"), "普通 prompt 不注入待确认事项", built.promptText);
+assert(!built.promptText.includes("【状态摘要】"), "普通 prompt 不注入状态摘要", built.promptText);
 
 const { db } = await import("../dist/db/index.js");
 const { chatHistory, dailyPlans } = await import("../dist/db/schema.js");

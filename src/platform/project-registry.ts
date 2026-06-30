@@ -219,7 +219,7 @@ export async function createInvestAgentInstance(input: {
     const displayName = input.displayName?.trim() || userId;
     const project = await ensureDefaultProjectForUser(userId, input.backend || "codex", displayName);
     const workspacePath = resolveWorkspacePath(userId);
-    if ((input.backend || "hermes") === "codex") {
+    if ((input.backend || "codex") === "codex") {
       await ensureCodexRuntimeForWorkspace(workspacePath);
     } else {
       await ensureHermesRuntimeForWorkspace(workspacePath);

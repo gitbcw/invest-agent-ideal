@@ -90,7 +90,7 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
         generatedAt: reviewContext.generatedAt,
         stocks: reviewContext.stocks.map((stock) => ({ code: stock.code, name: stock.name, pool: stock.pool })),
         alertCount: reviewContext.alerts.length,
-        source: "scheduled-hermes",
+        source: "scheduled-acp",
       },
     });
     return summary;
@@ -118,7 +118,6 @@ async function buildScheduledUserContext(scope: ScheduledScope, taskName: string
     userId,
     projectId,
     instanceId,
-    projectType: "invest-agent",
     channel: "api",
     backend: await loadCurrentBackendId(),
     conversationId: `scheduler:${taskName}:${userId}:${instanceId}`,
@@ -164,13 +163,14 @@ async function runAcpTask(input: {
 }) {
   const startedAt = Date.now();
   try {
-    const reply = await (await getCurrentAcpAgent(input.userContext.workspacePath)).chat({
+    const acpResult = await (await getCurrentAcpAgent(input.userContext.workspacePath)).chatWithUsage({
       conversationId: input.conversationId,
       text: input.promptText,
       messageId: input.messageId,
       timeoutMs: SCHEDULED_ACP_TIMEOUT_MS,
       cwd: input.userContext.workspacePath,
     });
+    const reply = acpResult.text;
     await recordAcpTrace({
       userId: input.userContext.userId,
       projectId: input.userContext.projectId,
@@ -188,10 +188,11 @@ async function runAcpTask(input: {
       sandboxPermissions: input.sandboxPermissions,
       status: "success",
       elapsedMs: Date.now() - startedAt,
+      usage: acpResult.usage,
     });
     return reply;
   } catch (error) {
-    logger.error(`后台 Hermes ACP 任务失败 mode=${input.mode} user=${input.userContext.userId}:`, error);
+    logger.error(`后台 ACP 任务失败 mode=${input.mode} user=${input.userContext.userId}:`, error);
     await recordAcpTrace({
       userId: input.userContext.userId,
       projectId: input.userContext.projectId,
@@ -221,15 +222,16 @@ function buildMarketWatchTaskPrompt(sandboxToken: string, userContext: UserConte
     "你正在当前用户 Workspace 中执行自动盘中巡检。",
     "这条内容会直接作为微信消息发送给用户，请保持简短、明确、可直接转发。",
     "请读取 AGENTS.md、config/watch.yaml、config/notification.yaml、config/portfolio.yaml、reports/daily/ 和 market-watch skill。",
-    "先判断是否真的有需要打断用户的异常。不要输出普通行情陪伴，不要输出执行过程。",
+    "是否推送、推送频率、推送内容和提醒规则均以 Workspace 配置与 market-watch skill 为准。",
+    "不要输出执行过程。",
     "",
     "可调用确定性巡检 API 获取本轮触发结果：",
     `curl -s -X POST ${api} -H 'Authorization: Bearer ${sandboxToken}' -H 'Content-Type: application/json' -d '{"force":true}'`,
     "",
     "输出契约：",
-    "- 若没有需要推送的 P0/P1 异常，必须只输出：NO_PUSH",
-    "- 若需要推送，只输出微信正文，500 字以内，包含事实、推断、触发规则、用户是否需要确认。",
-    "- 不要提到 Hermes、workspace、sandbox、curl、接口、后台任务或本地路径。",
+    "- 若按 Workspace 规则本轮不应推送，只输出：NO_PUSH",
+    "- 若按 Workspace 规则本轮应推送，只输出微信正文，500 字以内。",
+    "- 不要提到 Codex、Hermes、ACP、workspace、sandbox、curl、接口、后台任务或本地路径。",
     `当前用户: ${userContext.userId}`,
     `当前实例: ${userContext.instanceId}`,
   ].join("\n");

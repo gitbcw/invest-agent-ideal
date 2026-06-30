@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, type UserContext } from "./user-context.js";
-import { DEFAULT_SANDBOX_PERMISSIONS, INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID } from "../platform/project-registry.js";
+import { DEFAULT_SANDBOX_PERMISSIONS } from "../platform/project-registry.js";
 
 export type SandboxRole = "admin" | "user" | "system" | "test";
 export type SandboxChannel = "dashboard" | "weixin-mobile" | "scheduler" | "api";
@@ -19,7 +19,7 @@ export interface SandboxContext {
   userId: string;
   projectId: string;
   instanceId: string;
-  projectType: string;
+  projectType?: string;
   skillBundleId?: string;
   strategySkillId?: string;
   instanceExpansionPath?: string;
@@ -92,7 +92,7 @@ export function verifySandboxToken(token: string, now = new Date()): SandboxCont
     userId: payload.userId,
     projectId: payload.projectId || DEFAULT_PROJECT_ID,
     instanceId: payload.instanceId || DEFAULT_INSTANCE_ID,
-    projectType: payload.projectType || payload.projectId || DEFAULT_PROJECT_ID,
+    projectType: payload.projectType,
     skillBundleId: payload.skillBundleId,
     strategySkillId: payload.strategySkillId,
     instanceExpansionPath: payload.instanceExpansionPath,
@@ -116,9 +116,6 @@ export function sandboxContextFromUserContext(
     userId: userContext.userId,
     projectId: userContext.projectId || DEFAULT_PROJECT_ID,
     instanceId: userContext.instanceId || DEFAULT_INSTANCE_ID,
-    projectType: "invest-agent",
-    skillBundleId: userContext.skillBundleId || INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID,
-    strategySkillId: userContext.strategySkillId,
     instanceExpansionPath: userContext.instanceExpansionPath,
     role: "user",
     channel: userContext.channel === "weixin-mobile" ? "weixin-mobile" : "api",

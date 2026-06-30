@@ -18,6 +18,7 @@ Read these first, in this order:
 | [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md) | Current source for staged watch runtime delivery (2026-06-28): stage 1 accepted, stage 2 service-owned rule catalog/API, stage 3 news/event rough filter + Agent judgment |
 | [watch-runtime-stage1-implementation-brief.md](./watch-runtime-stage1-implementation-brief.md) | Stage 1 implementation brief (2026-06-28): current scheduler/review/push status, gaps, smoke tests, observability, and acceptance checklist |
 | [watch-runtime-stage1-runbook.md](./watch-runtime-stage1-runbook.md) | Stage 1 manual acceptance runbook for the primary user investment assistant instance |
+| [quality/golden-test-set.md](./quality/golden-test-set.md) | Golden dataset and chain/contract smoke test source of truth: what each test protects and when AI should run it |
 | [investment-model-design.md](./investment-model-design.md) | Investment model v1: user-facing container for selection, trading, risk, review, and exit loops |
 | [trading-strategy-design.md](./trading-strategy-design.md) | Trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation, three trigger scenarios, review boundary |
 | [04-core-workflows.md](./04-core-workflows.md) | Core product loops: monitoring, alerts, reviews, screening, feedback |
@@ -26,11 +27,11 @@ Read these first, in this order:
 
 ## Current Consensus
 
-- The product is a WeChat-first AI investment decision assistant and the first AI Project type in a broader runtime platform.
+- The product is a WeChat-first AI investment decision assistant centered on workspace-backed investment assistant instances.
 - The durable product assets are Skills, Strategy Skill skeleton plus instance expansion, sandbox/tool protocols, deterministic service APIs, context building, confirmation workflows, audit, and saved artifacts.
-- WeChat user messages now follow the direct workspace path: WeChat bridge resolves user/project/instance/workspace, then forwards the raw user message plus minimal channel context to Hermes stdio ACP running with that workspace as cwd.
+- WeChat user messages now follow the direct workspace path: WeChat bridge resolves user/instance/workspace, then forwards the raw user message plus minimal channel context to the active ACP backend, normally Codex, running with that workspace as cwd.
 - The service must not classify normal WeChat messages into review/onboarding/fast-lane intents. Those behaviors belong in the workspace template, AGENTS.md, skills, and user config.
-- Hermes stdio ACP is the unified runtime backend. Codex is no longer registered as an invest-agent runtime backend; historical `codex_acp_traces` storage names are compatibility residue only.
+- Codex ACP is the default runtime backend. Hermes remains only as a compatibility/experimental backend; historical `codex_acp_traces` storage names are compatibility residue only.
 - Profile is a runtime compatibility summary and routing residue only. Do not add methodology responsibility to Profile.
 - Investment method lives in Strategy Skills: protected skeleton plus instance expansion candidates.
 - The service owns deterministic execution: SQLite, market data, dashboard/workbench APIs, WeChat bridge, scheduler, alert push, sandbox, audit, and confirmation.
@@ -39,9 +40,10 @@ Read these first, in this order:
 - Full reviews, viewpoint validation, statistics, method candidates, and visible system value belong in the Investment Workbench.
 - Historical docs in `docs/archive/` should not steer new implementation unless a current source-of-truth doc explicitly points to them.
 - **Workspace model is the keystone** (2026-06-21 master plan): each user gets a copy of `templates/workspace/`, all private artifacts land in workspace yaml/jsonl/md, SQLite only keeps platform-level system responsibilities. Table-level boundaries are defined in [table-ownership.md](./table-ownership.md).
+- **Workspace path note**: SQLite stays at repo-local `./data/invest-agent.db`, but workspace root does not default to repo-local `./data/workspaces`. Unless `WORKSPACE_ROOT` is set, runtime workspaces are created under `../../my-data/projects/invest-agent-ideal/workspaces` relative to the repo root.
 - **Composite indicator system 5-layer architecture is shipped** (2026-06-22): L1 operators / L2 signals / L3a rule tree (YAML) / L3b sandbox script (isolated-vm) / acknowledgement gate. Main-force-control (ZZLKP) is the first customer use case end-to-end verified. See [composite-indicator-system.md](./composite-indicator-system.md) for the RFC.
 - **Investment model is the user-facing configuration center** (2026-06-24): onboarding should converge from scattered "style / methodology / trading strategy" setup to "configure your investment model". Each user has a default model; methods and trading strategies are components inside that model. See [investment-model-design.md](./investment-model-design.md).
-- **Scheduled tasks remain service-owned**: the scheduler scans workspace `config/watch.yaml` / `config/schedules.yaml` every minute, invokes workspace-scoped Hermes for market-watch and review tasks, then pushes concise results when configured.
+- **Scheduled tasks remain service-owned**: the scheduler scans workspace `config/watch.yaml` / `config/schedules.yaml` every minute, invokes the workspace-scoped ACP backend for market-watch and review tasks, then pushes concise results when configured.
 - **Stage 1 acceptance should use the controllable scheduler trigger**: manual acceptance for the primary investment assistant instance should use `POST /api/testing/scheduler/trigger` on `localhost:22655`, not "edit to next minute and wait". A first real acceptance pass was completed on 2026-06-28: `daily-review` reached the primary user's phone, and `market-watch` correctly returned `NO_PUSH` without sending noise.
 - **Stage 2 now prefers service-owned watch rule APIs over workspace schema churn**: rule capability discovery, validation, CRUD, dry-run, scheduler execution, dedupe, and event recording should stay service-owned; Workspace skill should discover capabilities through API and call them instead of relying on frequent `watch.yaml` schema changes.
 - **Stage 2 service-layer foundation is now landed** (2026-06-28): the repository now contains watch-rule catalog APIs, CRUD / validate / dry-run APIs, and scheduler execution for `price_cross`, `ma_cross`, and `near_plan_level`. Workspace skill integration and real-user trigger acceptance still remain to be finished.

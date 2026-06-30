@@ -3,6 +3,7 @@ import { codexAcpTraces } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { redactSensitiveText } from "../lib/customer-output.js";
+import type { AcpTokenUsage } from "./stdio-agent.js";
 
 const TEXT_LIMIT = 8000;
 const ERROR_LIMIT = 1200;
@@ -27,6 +28,7 @@ export interface AcpTraceInput {
   status: TraceStatus;
   errorMessage?: string;
   elapsedMs?: number;
+  usage?: AcpTokenUsage;
 }
 
 function truncate(value: unknown, limit = TEXT_LIMIT) {
@@ -57,6 +59,18 @@ export async function recordAcpTrace(input: AcpTraceInput) {
       status: input.status,
       errorMessage: truncate(input.errorMessage, ERROR_LIMIT),
       elapsedMs: input.elapsedMs,
+      inputTokens: input.usage?.inputTokens,
+      outputTokens: input.usage?.outputTokens,
+      thoughtTokens: input.usage?.thoughtTokens,
+      cachedReadTokens: input.usage?.cachedReadTokens,
+      cachedWriteTokens: input.usage?.cachedWriteTokens,
+      totalTokens: input.usage?.totalTokens,
+      contextWindowUsed: input.usage?.contextWindowUsed,
+      contextWindowSize: input.usage?.contextWindowSize,
+      costAmount: input.usage?.costAmount,
+      costCurrency: truncate(input.usage?.costCurrency, 12),
+      usageSource: input.usage?.source,
+      usageRaw: truncate(input.usage?.raw, 2000),
       createdAt: new Date().toISOString(),
     });
   } catch (error) {

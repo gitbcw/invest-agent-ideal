@@ -7,11 +7,12 @@ import { resolveOrCreateChannelUser } from "../lib/user-identity.js";
 import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
 import { config } from "../lib/config.js";
+import { resolveWeixinAccount } from "./weixin-account-store.js";
 
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
 const WEIXIN_MESSAGE_STATE_FINISH = 2;
-const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 500;
+const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 1000;
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 
 export interface WeixinProjectBinding {
@@ -164,9 +165,6 @@ export class InvestAgentMobileBridge {
         userId: userContext.userId,
         projectId: userContext.projectId,
         instanceId: userContext.instanceId,
-        projectType: userContext.projectType,
-        skillBundleId: userContext.skillBundleId,
-        strategySkillId: userContext.strategySkillId,
         instanceExpansionPath: userContext.instanceExpansionPath,
         workspacePath: userContext.workspacePath,
       },
@@ -185,18 +183,22 @@ export class InvestAgentMobileBridge {
     return { text: chunks[0] };
   }
 
-  async pushToConversation(conversationId: string, text: string | string[], contextToken?: string, baseUrl = DEFAULT_BASE_URL, token?: string) {
+  async pushToConversation(conversationId: string, text: string | string[], contextToken?: string, baseUrl?: string, token?: string) {
     const chunks = Array.isArray(text) ? text : splitWeixinText(text);
-    if (!token) {
+    const account = !token || !baseUrl || !contextToken ? resolveWeixinAccount(this.accountId, this.stateDir) : undefined;
+    const resolvedToken = token || account?.token;
+    const resolvedBaseUrl = baseUrl || account?.baseUrl || DEFAULT_BASE_URL;
+    const resolvedContextToken = contextToken || account?.lastContextToken;
+    if (!resolvedToken) {
       throw new Error("缺少微信 token，无法发送消息");
     }
     for (const chunk of chunks) {
       await sendWeixinTextMessage({
-        baseUrl,
-        token,
+        baseUrl: resolvedBaseUrl,
+        token: resolvedToken,
         to: conversationId,
         text: chunk,
-        contextToken,
+        contextToken: resolvedContextToken,
       });
     }
   }

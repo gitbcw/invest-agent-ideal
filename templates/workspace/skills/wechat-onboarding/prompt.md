@@ -22,3 +22,5 @@
 随后提供默认投资风格包：稳健价值型、指数配置型、趋势辅助型。用户可以选择一个作为起点，也可以通过微信描述自己的风格。系统总结后必须请用户确认，再写入 `config/strategy.yaml` 和 `config/style_packs.yaml`。
 
 继续引导用户设置基本面、技术面、宏观和风险方法，再确认 skill 模板、自动执行时间、P0/P1/P2 通知策略、操作确认规则和盯盘频率。涉及长期记忆变更必须生成结构化草案，用户确认后再写入。
+
+写入盯盘时间时必须使用结构化字段：固定时间点写入 `config/schedules.yaml` 的 `market_watch.default_windows` 和 `config/watch.yaml` 的 `default_check_windows[].time`；只有用户明确要求“每 N 分钟”轮询时，才把纯数字分钟数写入 `check_interval_minutes` 或 `custom_frequency`。不要把 `09:30_10:30`、自然语言或混合字符串写入 `custom_frequency`。

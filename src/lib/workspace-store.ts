@@ -100,7 +100,7 @@ export interface WatchYaml {
   mode?: string;
   only_push_on_exception?: boolean;
   check_interval_minutes?: number;
-  custom_frequency?: number | string | null;
+  custom_frequency?: number | null;
   default_check_windows?: unknown[];
   exception_rules?: unknown[];
   non_exception_rules?: unknown[];

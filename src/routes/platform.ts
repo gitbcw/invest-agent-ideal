@@ -1,11 +1,12 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { and, count, desc, eq } from "drizzle-orm";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
+import { Document, isMap, isSeq, parseDocument } from "yaml";
 import { renderPlatformPage } from "../admin/platform-page.js";
 import { db } from "../db/index.js";
-import { alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, users } from "../db/schema.js";
+import { aiInstances, alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, pushJobs, scheduledTaskRuns, users } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { createInvestAgentInstance, deleteInvestAgentInstance, getProjectRuntimeContext, listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { WeixinMobileManager } from "../channels/weixin-mobile.js";
@@ -15,6 +16,92 @@ import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-bac
 import { disposeAcpForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
 
 const projectWeixinManagers = new Map<string, WeixinMobileManager>();
+const goldenCasesPath = path.resolve(process.cwd(), "tests/golden/conversation/cases.yaml");
+
+function readGoldenDocument() {
+  const source = readFileSync(goldenCasesPath, "utf-8");
+  const doc = parseDocument(source);
+  if (doc.errors.length) {
+    throw new Error(`黄金数据集 YAML 解析失败: ${doc.errors[0]?.message}`);
+  }
+  return doc;
+}
+
+function caseNodeToYaml(node: unknown) {
+  const value = isMap(node) ? node.toJSON() : node;
+  return String(new Document(value));
+}
+
+function goldenCaseSummary(node: unknown) {
+  if (!isMap(node)) return null;
+  const expected = node.get("expected", true);
+  const turns = node.get("turns", true);
+  const turnCount = isSeq(turns) ? turns.items.length : 1;
+  const expectedMap = isMap(expected) ? expected : null;
+  const mustContain = expectedMap?.get("must_contain", true);
+  const mustNotContain = expectedMap?.get("must_not_contain", true);
+  return {
+    id: String(node.get("id") || ""),
+    category: String(node.get("category") || ""),
+    priority: String(node.get("priority") || ""),
+    scenario: String(node.get("scenario") || ""),
+    tags: node.get("tags") || [],
+    principles: node.get("principles") || [],
+    userInput: String(node.get("user_input") || ""),
+    turnCount,
+    mustContainCount: isSeq(mustContain) ? mustContain.items.length : 0,
+    mustNotContainCount: isSeq(mustNotContain) ? mustNotContain.items.length : 0,
+    styleNotes: expectedMap ? String(expectedMap.get("style_notes") || "") : "",
+    rawYaml: caseNodeToYaml(node),
+  };
+}
+
+function loadGoldenCases() {
+  const doc = readGoldenDocument();
+  const casesNode = doc.getIn(["cases"], true);
+  if (!isSeq(casesNode)) throw new Error("黄金数据集缺少 cases 数组");
+  const cases = casesNode.items.map(goldenCaseSummary).filter(Boolean);
+  const categories = new Map<string, number>();
+  const priorities = new Map<string, number>();
+  const scenarios = new Map<string, number>();
+  for (const item of cases) {
+    if (!item) continue;
+    categories.set(item.category, (categories.get(item.category) || 0) + 1);
+    priorities.set(item.priority, (priorities.get(item.priority) || 0) + 1);
+    scenarios.set(item.scenario, (scenarios.get(item.scenario) || 0) + 1);
+  }
+  return {
+    suite: doc.get("suite") || {},
+    qualityGates: doc.get("quality_gates") || {},
+    sourcePath: goldenCasesPath,
+    cases,
+    stats: {
+      total: cases.length,
+      categories: Object.fromEntries([...categories.entries()].sort()),
+      priorities: Object.fromEntries([...priorities.entries()].sort()),
+      scenarioCount: scenarios.size,
+    },
+  };
+}
+
+function updateGoldenCase(input: { id: string; rawYaml: string }) {
+  const nextCaseDoc = parseDocument(input.rawYaml);
+  if (nextCaseDoc.errors.length || !isMap(nextCaseDoc.contents)) {
+    throw new Error(nextCaseDoc.errors[0]?.message || "case YAML 必须是对象");
+  }
+  const nextId = String(nextCaseDoc.contents.get("id") || "").trim();
+  if (!nextId) throw new Error("case YAML 缺少 id");
+  if (nextId !== input.id) throw new Error("暂不支持通过编辑重命名 case id");
+
+  const doc = readGoldenDocument();
+  const casesNode = doc.getIn(["cases"], true);
+  if (!isSeq(casesNode)) throw new Error("黄金数据集缺少 cases 数组");
+  const index = casesNode.items.findIndex((item) => isMap(item) && String(item.get("id") || "") === input.id);
+  if (index < 0) throw new Error("未找到 case");
+  casesNode.items[index] = nextCaseDoc.contents;
+  writeFileSync(goldenCasesPath, String(doc), "utf-8");
+  return loadGoldenCases();
+}
 
 function projectWeixinManager(project: AiProjectRuntimeContext) {
   const existing = projectWeixinManagers.get(project.instanceId);
@@ -47,6 +134,371 @@ function projectWeixinManager(project: AiProjectRuntimeContext) {
 export async function projectWeixinManagerForInstance(instanceId: string) {
   const project = await getProjectRuntimeContext(instanceId);
   return projectWeixinManager(project);
+}
+
+async function auditUsers() {
+  const rows = await db
+    .select({ id: users.id, displayName: users.displayName, status: users.status, updatedAt: users.updatedAt })
+    .from(users)
+    .innerJoin(aiInstances, eq(aiInstances.ownerUserId, users.id))
+    .where(eq(aiInstances.status, "active"))
+    .orderBy(desc(users.updatedAt))
+    .limit(200);
+  return rows;
+}
+
+type AuditScope = "all" | "conversation" | "push";
+type UsageGroupBy = "day" | "mode" | "channel" | "user" | "instance";
+
+async function loadAuditTimeline(input: { userId?: string; instanceId?: string; limit?: number; scope?: AuditScope }) {
+  const limit = Math.max(1, Math.min(Number(input.limit || 40), 120));
+  const scope = input.scope || "all";
+  const conditions = [];
+  if (input.userId) conditions.push(eq(codexAcpTraces.userId, input.userId));
+  if (input.instanceId) conditions.push(eq(codexAcpTraces.instanceId, input.instanceId));
+  if (scope === "conversation") conditions.push(eq(codexAcpTraces.channel, "weixin-mobile"));
+  if (scope === "push") conditions.push(eq(codexAcpTraces.channel, "scheduler"));
+  const pushConditions = [];
+  if (input.userId) pushConditions.push(eq(pushJobs.userId, input.userId));
+  if (input.instanceId) pushConditions.push(eq(pushJobs.instanceId, input.instanceId));
+  const taskConditions = [];
+  if (input.userId) taskConditions.push(eq(scheduledTaskRuns.userId, input.userId));
+  if (input.instanceId) taskConditions.push(eq(scheduledTaskRuns.instanceId, input.instanceId));
+
+  const traceRows = await db
+    .select({
+      kind: sql<string>`'trace'`.as("kind"),
+      id: codexAcpTraces.id,
+      userId: codexAcpTraces.userId,
+      instanceId: codexAcpTraces.instanceId,
+      channel: codexAcpTraces.channel,
+      mode: codexAcpTraces.mode,
+      status: codexAcpTraces.status,
+      conversationId: codexAcpTraces.conversationId,
+      messageId: codexAcpTraces.messageId,
+      userText: codexAcpTraces.userText,
+      promptText: codexAcpTraces.promptText,
+      replyTextRaw: codexAcpTraces.replyTextRaw,
+      replyTextSanitized: codexAcpTraces.replyTextSanitized,
+      errorMessage: codexAcpTraces.errorMessage,
+      elapsedMs: codexAcpTraces.elapsedMs,
+      inputTokens: codexAcpTraces.inputTokens,
+      outputTokens: codexAcpTraces.outputTokens,
+      thoughtTokens: codexAcpTraces.thoughtTokens,
+      cachedReadTokens: codexAcpTraces.cachedReadTokens,
+      cachedWriteTokens: codexAcpTraces.cachedWriteTokens,
+      totalTokens: codexAcpTraces.totalTokens,
+      contextWindowUsed: codexAcpTraces.contextWindowUsed,
+      contextWindowSize: codexAcpTraces.contextWindowSize,
+      costAmount: codexAcpTraces.costAmount,
+      costCurrency: codexAcpTraces.costCurrency,
+      usageSource: codexAcpTraces.usageSource,
+      reviewContextSummary: codexAcpTraces.reviewContextSummary,
+      sandboxTokenId: codexAcpTraces.sandboxTokenId,
+      createdAt: codexAcpTraces.createdAt,
+    })
+    .from(codexAcpTraces)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(codexAcpTraces.createdAt))
+    .limit(limit);
+
+  const pushRows = scope === "conversation" ? [] : await db
+    .select({
+      kind: sql<string>`'push'`.as("kind"),
+      id: pushJobs.id,
+      userId: pushJobs.userId,
+      instanceId: pushJobs.instanceId,
+      channel: pushJobs.channel,
+      mode: pushJobs.source,
+      status: pushJobs.status,
+      conversationId: sql<string | null>`NULL`.as("conversationId"),
+      messageId: sql<string | null>`NULL`.as("messageId"),
+      userText: pushJobs.message,
+      promptText: sql<string | null>`NULL`.as("promptText"),
+      replyTextRaw: pushJobs.message,
+      replyTextSanitized: pushJobs.message,
+      errorMessage: pushJobs.lastError,
+      elapsedMs: sql<number | null>`NULL`.as("elapsedMs"),
+      inputTokens: sql<number | null>`NULL`.as("inputTokens"),
+      outputTokens: sql<number | null>`NULL`.as("outputTokens"),
+      thoughtTokens: sql<number | null>`NULL`.as("thoughtTokens"),
+      cachedReadTokens: sql<number | null>`NULL`.as("cachedReadTokens"),
+      cachedWriteTokens: sql<number | null>`NULL`.as("cachedWriteTokens"),
+      totalTokens: sql<number | null>`NULL`.as("totalTokens"),
+      contextWindowUsed: sql<number | null>`NULL`.as("contextWindowUsed"),
+      contextWindowSize: sql<number | null>`NULL`.as("contextWindowSize"),
+      costAmount: sql<number | null>`NULL`.as("costAmount"),
+      costCurrency: sql<string | null>`NULL`.as("costCurrency"),
+      usageSource: sql<string | null>`NULL`.as("usageSource"),
+      reviewContextSummary: sql<string | null>`NULL`.as("reviewContextSummary"),
+      sandboxTokenId: sql<string | null>`NULL`.as("sandboxTokenId"),
+      createdAt: pushJobs.createdAt,
+      updatedAt: pushJobs.updatedAt,
+      sentAt: pushJobs.sentAt,
+    })
+    .from(pushJobs)
+    .where(pushConditions.length > 0 ? and(...pushConditions) : undefined)
+    .orderBy(desc(pushJobs.createdAt))
+    .limit(limit);
+
+  const taskRows = scope === "conversation" ? [] : await db
+    .select({
+      kind: sql<string>`'task'`.as("kind"),
+      id: scheduledTaskRuns.taskKey,
+      userId: scheduledTaskRuns.userId,
+      instanceId: scheduledTaskRuns.instanceId,
+      channel: sql<string | null>`NULL`.as("channel"),
+      mode: scheduledTaskRuns.taskType,
+      status: scheduledTaskRuns.status,
+      conversationId: sql<string | null>`NULL`.as("conversationId"),
+      messageId: sql<string | null>`NULL`.as("messageId"),
+      userText: scheduledTaskRuns.taskKey,
+      promptText: sql<string | null>`NULL`.as("promptText"),
+      replyTextRaw: sql<string | null>`NULL`.as("replyTextRaw"),
+      replyTextSanitized: sql<string | null>`NULL`.as("replyTextSanitized"),
+      errorMessage: scheduledTaskRuns.errorMessage,
+      elapsedMs: sql<number | null>`NULL`.as("elapsedMs"),
+      inputTokens: sql<number | null>`NULL`.as("inputTokens"),
+      outputTokens: sql<number | null>`NULL`.as("outputTokens"),
+      thoughtTokens: sql<number | null>`NULL`.as("thoughtTokens"),
+      cachedReadTokens: sql<number | null>`NULL`.as("cachedReadTokens"),
+      cachedWriteTokens: sql<number | null>`NULL`.as("cachedWriteTokens"),
+      totalTokens: sql<number | null>`NULL`.as("totalTokens"),
+      contextWindowUsed: sql<number | null>`NULL`.as("contextWindowUsed"),
+      contextWindowSize: sql<number | null>`NULL`.as("contextWindowSize"),
+      costAmount: sql<number | null>`NULL`.as("costAmount"),
+      costCurrency: sql<string | null>`NULL`.as("costCurrency"),
+      usageSource: sql<string | null>`NULL`.as("usageSource"),
+      reviewContextSummary: sql<string | null>`NULL`.as("reviewContextSummary"),
+      sandboxTokenId: sql<string | null>`NULL`.as("sandboxTokenId"),
+      createdAt: scheduledTaskRuns.createdAt,
+      finishedAt: scheduledTaskRuns.finishedAt,
+      pushJobId: scheduledTaskRuns.pushJobId,
+    })
+    .from(scheduledTaskRuns)
+    .where(taskConditions.length > 0 ? and(...taskConditions) : undefined)
+    .orderBy(desc(scheduledTaskRuns.createdAt))
+    .limit(limit);
+
+  const combined = [
+    ...(scope === "push" ? [] : traceRows),
+    ...pushRows,
+    ...(scope === "push" ? traceRows : []),
+    ...taskRows,
+  ]
+    .sort((a, b) => String((b as any).createdAt).localeCompare(String((a as any).createdAt)))
+    .slice(0, limit);
+
+  if (scope === "push") {
+    return { items: aggregatePushRuns({ traceRows, pushRows, taskRows, limit }), limit, scope };
+  }
+
+  return { items: combined, limit, scope };
+}
+
+async function loadUsageSummary(input: {
+  userId?: string;
+  instanceId?: string;
+  scope?: AuditScope;
+  days?: number;
+  groupBy?: UsageGroupBy;
+}) {
+  const scope = input.scope || "all";
+  const days = Math.max(1, Math.min(Number(input.days || 30), 365));
+  const groupBy = input.groupBy || "day";
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const conditions = [sql`${codexAcpTraces.createdAt} >= ${since}`];
+  const activeScope = await activeInvestAgentTraceScope(input.userId);
+  if (!activeScope.instanceIds.length) {
+    return {
+      filters: { userId: input.userId || "", instanceId: input.instanceId || "", scope, days, groupBy, since },
+      totals: emptyUsageSummary(),
+      groups: [],
+    };
+  }
+  conditions.push(inArray(codexAcpTraces.instanceId, activeScope.instanceIds));
+  conditions.push(inArray(codexAcpTraces.userId, activeScope.userIds));
+  if (input.userId) conditions.push(eq(codexAcpTraces.userId, input.userId));
+  if (input.instanceId) conditions.push(eq(codexAcpTraces.instanceId, input.instanceId));
+  if (scope === "conversation") conditions.push(eq(codexAcpTraces.channel, "weixin-mobile"));
+  if (scope === "push") conditions.push(eq(codexAcpTraces.channel, "scheduler"));
+  const where = and(...conditions);
+  const periodExpr = sql<string>`date(${codexAcpTraces.createdAt})`;
+  const groupExpr =
+    groupBy === "mode"
+      ? codexAcpTraces.mode
+      : groupBy === "channel"
+        ? codexAcpTraces.channel
+        : groupBy === "user"
+          ? codexAcpTraces.userId
+          : groupBy === "instance"
+            ? codexAcpTraces.instanceId
+            : periodExpr;
+
+  const totals = await db
+    .select({
+      calls: count(),
+      inputTokens: sql<number>`coalesce(sum(${codexAcpTraces.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${codexAcpTraces.outputTokens}), 0)`,
+      thoughtTokens: sql<number>`coalesce(sum(${codexAcpTraces.thoughtTokens}), 0)`,
+      cachedReadTokens: sql<number>`coalesce(sum(${codexAcpTraces.cachedReadTokens}), 0)`,
+      cachedWriteTokens: sql<number>`coalesce(sum(${codexAcpTraces.cachedWriteTokens}), 0)`,
+      totalTokens: sql<number>`coalesce(sum(${codexAcpTraces.totalTokens}), 0)`,
+      costAmount: sql<number>`coalesce(sum(${codexAcpTraces.costAmount}), 0)`,
+      actualCalls: sql<number>`sum(case when ${codexAcpTraces.usageSource} = 'actual' then 1 else 0 end)`,
+      estimatedCalls: sql<number>`sum(case when ${codexAcpTraces.usageSource} = 'estimated' then 1 else 0 end)`,
+    })
+    .from(codexAcpTraces)
+    .where(where);
+
+  const groups = await db
+    .select({
+      bucket: groupExpr,
+      calls: count(),
+      inputTokens: sql<number>`coalesce(sum(${codexAcpTraces.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${codexAcpTraces.outputTokens}), 0)`,
+      thoughtTokens: sql<number>`coalesce(sum(${codexAcpTraces.thoughtTokens}), 0)`,
+      cachedReadTokens: sql<number>`coalesce(sum(${codexAcpTraces.cachedReadTokens}), 0)`,
+      cachedWriteTokens: sql<number>`coalesce(sum(${codexAcpTraces.cachedWriteTokens}), 0)`,
+      totalTokens: sql<number>`coalesce(sum(${codexAcpTraces.totalTokens}), 0)`,
+      costAmount: sql<number>`coalesce(sum(${codexAcpTraces.costAmount}), 0)`,
+      actualCalls: sql<number>`sum(case when ${codexAcpTraces.usageSource} = 'actual' then 1 else 0 end)`,
+      estimatedCalls: sql<number>`sum(case when ${codexAcpTraces.usageSource} = 'estimated' then 1 else 0 end)`,
+    })
+    .from(codexAcpTraces)
+    .where(where)
+    .groupBy(groupExpr)
+    .orderBy(groupBy === "day" ? sql`date(${codexAcpTraces.createdAt}) desc` : sql`coalesce(sum(${codexAcpTraces.totalTokens}), 0) desc`);
+
+  return {
+    filters: { userId: input.userId || "", instanceId: input.instanceId || "", scope, days, groupBy, since },
+    totals: totals[0] || emptyUsageSummary(),
+    groups,
+  };
+}
+
+async function activeInvestAgentTraceScope(userId?: string) {
+  const rows = await db
+    .select({ userId: aiInstances.ownerUserId, instanceId: aiInstances.id })
+    .from(aiInstances)
+    .where(userId ? and(eq(aiInstances.status, "active"), eq(aiInstances.ownerUserId, userId)) : eq(aiInstances.status, "active"));
+  return {
+    userIds: [...new Set(rows.map((row) => row.userId).filter(Boolean))],
+    instanceIds: [...new Set(rows.map((row) => row.instanceId).filter(Boolean))],
+  };
+}
+
+function emptyUsageSummary() {
+  return {
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    thoughtTokens: 0,
+    cachedReadTokens: 0,
+    cachedWriteTokens: 0,
+    totalTokens: 0,
+    costAmount: 0,
+    actualCalls: 0,
+    estimatedCalls: 0,
+  };
+}
+
+function aggregatePushRuns(input: { traceRows: any[]; pushRows: any[]; taskRows: any[]; limit: number }) {
+  const traces = [...input.traceRows];
+  const pushes = [...input.pushRows];
+  const pushById = new Map(pushes.map((item) => [item.id, item]));
+  const usedTraceIds = new Set<string>();
+  const usedPushIds = new Set<string>();
+
+  const runs = input.taskRows.map((task) => {
+    const trace = nearestTrace(task.finishedAt || task.createdAt, traces, usedTraceIds);
+    if (trace) usedTraceIds.add(String(trace.id));
+    const push = task.pushJobId ? pushById.get(task.pushJobId) : null;
+    if (push) usedPushIds.add(String(push.id));
+    return buildPushRun({ task, trace, push });
+  });
+
+  for (const trace of traces) {
+    if (usedTraceIds.has(String(trace.id))) continue;
+    const push = nearestPush(trace.createdAt, pushes, usedPushIds);
+    if (push) usedPushIds.add(String(push.id));
+    runs.push(buildPushRun({ trace, push }));
+  }
+
+  for (const push of pushes) {
+    if (usedPushIds.has(String(push.id))) continue;
+    runs.push(buildPushRun({ push }));
+  }
+
+  return runs
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, input.limit);
+}
+
+function buildPushRun(input: { task?: any; trace?: any; push?: any }) {
+  const { task, trace, push } = input;
+  const status = push?.status || task?.status || trace?.status || "unknown";
+  return {
+    kind: "push_run",
+    id: task?.id || trace?.id || push?.id,
+    userId: task?.userId || trace?.userId || push?.userId,
+    instanceId: task?.instanceId || trace?.instanceId || push?.instanceId,
+    channel: push?.channel || trace?.channel || null,
+    mode: task?.mode || trace?.mode || push?.mode || null,
+    status,
+    conversationId: trace?.conversationId || null,
+    messageId: trace?.messageId || null,
+    userText: trace?.userText || task?.userText || push?.userText || null,
+    promptText: trace?.promptText || null,
+    replyTextRaw: trace?.replyTextRaw || null,
+    replyTextSanitized: trace?.replyTextSanitized || null,
+    errorMessage: task?.errorMessage || trace?.errorMessage || push?.errorMessage || null,
+    elapsedMs: trace?.elapsedMs || null,
+    inputTokens: trace?.inputTokens || null,
+    outputTokens: trace?.outputTokens || null,
+    thoughtTokens: trace?.thoughtTokens || null,
+    cachedReadTokens: trace?.cachedReadTokens || null,
+    cachedWriteTokens: trace?.cachedWriteTokens || null,
+    totalTokens: trace?.totalTokens || null,
+    contextWindowUsed: trace?.contextWindowUsed || null,
+    contextWindowSize: trace?.contextWindowSize || null,
+    costAmount: trace?.costAmount || null,
+    costCurrency: trace?.costCurrency || null,
+    usageSource: trace?.usageSource || null,
+    reviewContextSummary: trace?.reviewContextSummary || null,
+    sandboxTokenId: trace?.sandboxTokenId || null,
+    createdAt: task?.createdAt || trace?.createdAt || push?.createdAt,
+    finishedAt: task?.finishedAt || null,
+    pushJobId: task?.pushJobId || push?.id || null,
+    task,
+    trace,
+    push,
+  };
+}
+
+function nearestTrace(anchor: string | null | undefined, traces: any[], used: Set<string>) {
+  return nearestByTime(anchor, traces.filter((item) => !used.has(String(item.id))), 5 * 60 * 1000);
+}
+
+function nearestPush(anchor: string | null | undefined, pushes: any[], used: Set<string>) {
+  return nearestByTime(anchor, pushes.filter((item) => !used.has(String(item.id))), 5 * 1000);
+}
+
+function nearestByTime(anchor: string | null | undefined, items: any[], maxDeltaMs: number) {
+  const time = Date.parse(String(anchor || ""));
+  if (!Number.isFinite(time)) return null;
+  let best: any = null;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  for (const item of items) {
+    const itemTime = Date.parse(String(item.createdAt || ""));
+    if (!Number.isFinite(itemTime)) continue;
+    const delta = Math.abs(itemTime - time);
+    if (delta < bestDelta && delta <= maxDeltaMs) {
+      best = item;
+      bestDelta = delta;
+    }
+  }
+  return best;
 }
 
 export async function autoStartPlatformWeixinListeners() {
@@ -243,6 +695,81 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       updatedAt: new Date().toISOString(),
       count: instances.length,
       instances,
+    };
+  }));
+
+  app.get("/api/platform/golden-cases", safe(async () => {
+    const data = loadGoldenCases();
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      ...data,
+    };
+  }));
+
+  app.put<{ Body: { id?: string; rawYaml?: string } }>("/api/platform/golden-cases", safe(async (request, reply) => {
+    const id = request.body?.id?.trim();
+    const rawYaml = request.body?.rawYaml;
+    if (!id) return reply.status(400).send({ ok: false, error: "id 必填" });
+    if (!rawYaml || typeof rawYaml !== "string") return reply.status(400).send({ ok: false, error: "rawYaml 必填" });
+    try {
+      const data = updateGoldenCase({ id, rawYaml });
+      return {
+        ok: true,
+        updatedAt: new Date().toISOString(),
+        ...data,
+      };
+    } catch (error) {
+      return reply.status(400).send({ ok: false, error: (error as Error).message });
+    }
+  }));
+
+  app.get<{ Querystring: { userId?: string; instanceId?: string; limit?: string; scope?: string } }>("/api/platform/audit", safe(async (request) => {
+    const users = await auditUsers();
+    const userId = request.query.userId?.trim();
+    const instanceId = request.query.instanceId?.trim();
+    const limit = Number(request.query.limit || 40);
+    const scope = request.query.scope === "conversation" || request.query.scope === "push" ? request.query.scope : "all";
+    const timeline = await loadAuditTimeline({ userId, instanceId, limit, scope });
+    const instances = await listProjectRuntimeContexts({ ownerUserId: userId || undefined });
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      filters: { userId: userId || "", instanceId: instanceId || "", limit: timeline.limit, scope: timeline.scope },
+      users,
+      instances: instances.map((item) => ({
+        instanceId: item.instanceId,
+        name: item.name,
+        ownerUserId: item.ownerUserId,
+        backend: item.backend,
+        status: item.status,
+      })),
+      items: timeline.items,
+    };
+  }));
+
+  app.get<{ Querystring: { userId?: string; instanceId?: string; scope?: string; days?: string; groupBy?: string } }>("/api/platform/audit/usage", safe(async (request) => {
+    const userId = request.query.userId?.trim();
+    const instanceId = request.query.instanceId?.trim();
+    const scope = request.query.scope === "conversation" || request.query.scope === "push" ? request.query.scope : "all";
+    const groupBy =
+      request.query.groupBy === "mode" ||
+      request.query.groupBy === "channel" ||
+      request.query.groupBy === "user" ||
+      request.query.groupBy === "instance"
+        ? request.query.groupBy
+        : "day";
+    const usage = await loadUsageSummary({
+      userId,
+      instanceId,
+      scope,
+      days: Number(request.query.days || 30),
+      groupBy,
+    });
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      ...usage,
     };
   }));
 

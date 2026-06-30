@@ -314,23 +314,20 @@ function resolveMarketWatchInterval(
   hasDefaultWindows: boolean,
 ) {
   const raw =
-    readNumberLike((watch as Record<string, unknown> | null)?.check_interval_minutes) ??
-    readNumberLike((watch as Record<string, unknown> | null)?.custom_frequency) ??
-    readNumberLike(schedules.market_watch?.custom_frequency);
+    readIntervalMinutes((watch as Record<string, unknown> | null)?.check_interval_minutes) ??
+    readIntervalMinutes((watch as Record<string, unknown> | null)?.custom_frequency) ??
+    readIntervalMinutes(schedules.market_watch?.custom_frequency);
   if (raw != null) return Math.max(1, raw);
   return hasDefaultWindows ? null : Math.max(1, fallbackIntervalMinutes);
 }
 
-function readNumberLike(value: unknown): number | null {
+function readIntervalMinutes(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
   if (typeof value !== "string") return null;
   const trimmed = value.trim().toLowerCase();
-  if (!trimmed || trimmed === "default" || trimmed === "默认") return null;
-  if (trimmed.includes("高频")) return 1;
-  if (trimmed.includes("低频")) return 30;
-  const m = /(\d+)/.exec(trimmed);
-  if (!m) return null;
-  const n = Number(m[1]);
+  if (!trimmed || trimmed === "default" || trimmed === "默认" || trimmed === "null") return null;
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 }
 
@@ -358,3 +355,10 @@ function windowSlot(now: Date, windows: string[]) {
   const current = `${String(bj.getHours()).padStart(2, "0")}:${String(bj.getMinutes()).padStart(2, "0")}`;
   return windows.includes(current) ? current : null;
 }
+
+export const __test__ = {
+  normalizeWatchWindows,
+  readIntervalMinutes,
+  intervalSlot,
+  windowSlot,
+};

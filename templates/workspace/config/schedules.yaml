@@ -41,5 +41,6 @@ market_watch:
     - "09:55"
     - "11:20"
     - "14:30"
+  # 固定时间只写 default_windows；分钟轮询才写纯数字 custom_frequency，例如 30。
   custom_frequency: null
   only_push_on_exception: true

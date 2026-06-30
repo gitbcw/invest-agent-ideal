@@ -148,7 +148,7 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 - 剩余约 110 条用户手输数据也是测试期配置,真实使用时会重新输入
 - 工作包 3/4 切 handler 到读工作空间后,primary 用户从空模板启动,正好验证冷启动
 
-SQLite 数据库继续保留在 `./data/invest-agent.db`,需要查时直接 `sqlite3` 临时查询。
+SQLite 数据库继续保留在 `./data/invest-agent.db`,需要查时直接 `sqlite3` 临时查询。注意 workspace 默认根目录不是仓库内 `./data/workspaces`,而是运行时配置 `WORKSPACE_ROOT`；未显式覆盖时,当前默认实现会落到 `../../my-data/projects/invest-agent-ideal/workspaces`。
 
 ## 这份归属文档的实际用途
 

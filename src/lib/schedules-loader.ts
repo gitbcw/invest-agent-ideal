@@ -40,7 +40,7 @@ export interface SchedulesYaml {
   company_financial_analysis?: ScheduleEntry & { trigger?: string };
   market_watch?: ScheduleEntry & {
     default_windows?: string[];
-    custom_frequency?: number | string | null;
+    custom_frequency?: number | null;
     only_push_on_exception?: boolean;
   };
 }
