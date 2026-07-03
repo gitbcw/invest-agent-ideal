@@ -52,16 +52,17 @@ export function buildMobilePrompt(params: {
     instanceExpansionPath?: string;
     workspacePath?: string;
   };
-  sandboxToken?: string;
+  sandboxTokenFile?: string | null;
   sandboxPermissions?: string[];
   recentConversationContext?: string;
 }) {
   const compactReviewContext = params.reviewContext;
+  const tokenFile = params.sandboxTokenFile ?? ".sandbox-token";
   const internalRuntimeContext = [
     params.userContext?.projectId ? `projectId=${params.userContext.projectId}` : "",
     params.userContext?.instanceId ? `instanceId=${params.userContext.instanceId}` : "",
     params.userContext?.workspacePath ? `workspacePath=${params.userContext.workspacePath}` : "",
-    params.sandboxToken ? `sandboxToken=${params.sandboxToken}` : "",
+    `sandboxTokenFile=${tokenFile}`,
     params.sandboxPermissions?.length ? `sandboxPermissions=${params.sandboxPermissions.join(",")}` : "",
   ].filter(Boolean).join("\n");
   if (!compactReviewContext) {
@@ -69,7 +70,10 @@ export function buildMobilePrompt(params: {
       params.userText,
       internalRuntimeContext ? `【内部执行上下文】\n${internalRuntimeContext}` : "",
       [
-        "如需调用服务层确定性接口，优先使用当前执行上下文中的 sandboxToken；不要自行编造令牌，也不要向用户暴露它。",
+        `调用服务层确定性接口时，sandbox token 已写入 workspace 内的 ${tokenFile} 文件。curl 必须用 -H "Authorization: Bearer $(cat ${tokenFile})" 让 shell 自动展开，禁止在命令里写出 token 字面值。不要向用户暴露 token 或文件路径。`,
+        `当用户询问持仓涨跌、现价、指数、观察池距离、预案触发、行情复盘或市场事实时，优先调用本地行情 API。持仓/自选/预案快照用：curl -s -X POST http://127.0.0.1:22655/api/sandbox/market/snapshot -H "Authorization: Bearer $(cat ${tokenFile})" -H "Content-Type: application/json" -d "{}"。补充接口包括 GET /api/sandbox/market/quote、GET /api/sandbox/market/kline、GET /api/sandbox/market/indices、GET /api/sandbox/market/capital-flow。`,
+        "行情 API 返回 source、fetchedAt、marketTime、confidence、warnings；回复用户时使用这些事实，但不要暴露接口路径、sandboxToken、curl 或内部执行过程。",
+        "若行情 API 缺失、过期或返回 warnings，必须说明数据缺口并降低结论强度，不要凭记忆或自行编造精确价格。",
         params.sandboxPermissions?.length ? `当前允许权限：${params.sandboxPermissions.join(",")}` : "",
       ].filter(Boolean).join("\n"),
     ].filter(Boolean).join("\n");

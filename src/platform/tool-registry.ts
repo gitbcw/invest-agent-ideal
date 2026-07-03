@@ -11,8 +11,11 @@ export type ToolId =
   | "invest.plan.write"
   | "invest.profile.read"
   | "invest.profile.write"
+  | "invest.onboarding.read"
+  | "invest.onboarding.write"
   | "invest.review.read"
   | "invest.review.write"
+  | "invest.market.read"
   | "invest.alert.read"
   | "invest.alert.write"
   | "invest.alert.check"
@@ -103,6 +106,22 @@ const toolDefinitions: ToolDefinition[] = [
     risk: "write",
   },
   {
+    id: "invest.onboarding.read",
+    displayName: "读取新手引导状态",
+    description: "读取 workspace 新手引导运行进度。",
+    requiredPermissions: ["read:self"],
+    resourceType: "onboarding_state",
+    risk: "read",
+  },
+  {
+    id: "invest.onboarding.write",
+    displayName: "确认新手引导步骤",
+    description: "确认新手引导中的单个轻量步骤并更新运行进度；不批量创建盯盘规则。",
+    requiredPermissions: ["write:self"],
+    resourceType: "onboarding_state",
+    risk: "write",
+  },
+  {
     id: "invest.review.read",
     displayName: "读取复盘上下文",
     description: "读取项目范围内的复盘上下文和历史复盘。",
@@ -117,6 +136,14 @@ const toolDefinitions: ToolDefinition[] = [
     requiredPermissions: ["review:self"],
     resourceType: "daily_review",
     risk: "write",
+  },
+  {
+    id: "invest.market.read",
+    displayName: "读取行情信息",
+    description: "读取服务层行情、K 线、指数、资金流、股票解析和行情快照。",
+    requiredPermissions: ["read:self"],
+    resourceType: "market_data",
+    risk: "read",
   },
   {
     id: "invest.alert.read",

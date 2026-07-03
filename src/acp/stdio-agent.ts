@@ -25,6 +25,21 @@ import { settings } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 
+const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
+const ACP_DEBUG_PREVIEW_CHARS = Number(process.env.ACP_DEBUG_PREVIEW_CHARS) || 120;
+const ACP_RESPONSE_COLLECTOR_MODE =
+  process.env.ACP_RESPONSE_COLLECTOR_MODE === "full" ? "full" : "last_segment";
+const DEFAULT_CODEX_ACP_ARGS = [
+  "-c",
+  'project_trust_level="trusted"',
+  "-c",
+  'sandbox_mode="workspace-write"',
+  "-c",
+  "sandbox_workspace_write.network_access=true",
+  "-c",
+  'approval_policy="never"',
+];
+
 // ─── 类型 ───────────────────────────────────────────────────────────
 
 type ClientSideConnection = {
@@ -124,7 +139,7 @@ export const ACP_BACKENDS: AcpBackendDef[] = [
     id: "codex",
     label: "Codex",
     command: config.codex.acpCommand,
-    args: config.codex.acpArgs,
+    args: [...DEFAULT_CODEX_ACP_ARGS, ...config.codex.acpArgs],
     cwd: config.codex.acpCwd,
     timeoutMs: config.codex.acpTimeoutMs || DEFAULT_TIMEOUT_MS,
   },
@@ -136,23 +151,35 @@ const SETTINGS_KEY = "acp_backend";
 
 class ResponseCollector {
   private readonly chunks: string[] = [];
+  private readonly segments: string[] = [];
+  private currentSegment: string[] = [];
   private usageUpdate: SessionUpdate | undefined;
 
   handleUpdate(notification: SessionNotification) {
     const update = notification.update;
     if (update.sessionUpdate === "usage_update") {
       this.usageUpdate = update;
+      this.flushSegment();
       return;
     }
-    if (update.sessionUpdate !== "agent_message_chunk") return;
+    if (update.sessionUpdate !== "agent_message_chunk") {
+      this.flushSegment();
+      return;
+    }
     const content = (update as { content?: { type: string; text?: string } }).content;
     if (content?.type === "text") {
-      this.chunks.push(content.text ?? "");
+      const text = content.text ?? "";
+      this.chunks.push(text);
+      this.currentSegment.push(text);
     }
   }
 
   toText() {
-    return this.chunks.join("").trim();
+    this.flushSegment();
+    if (ACP_RESPONSE_COLLECTOR_MODE === "full") {
+      return this.fullText();
+    }
+    return this.lastSegmentText() || this.fullText();
   }
 
   stats() {
@@ -164,8 +191,11 @@ class ResponseCollector {
     }
     const text = this.toText();
     return {
+      mode: ACP_RESPONSE_COLLECTOR_MODE,
       chunks: this.chunks.length,
+      segments: this.segments.length,
       chars: text.length,
+      fullChars: this.fullText().length,
       adjacentDuplicateChunks,
       repeatedSuffixChars: estimateRepeatedSuffixChars(text),
     };
@@ -174,6 +204,65 @@ class ResponseCollector {
   usageFromUpdate() {
     return this.usageUpdate;
   }
+
+  private flushSegment() {
+    if (this.currentSegment.length === 0) return;
+    const text = this.currentSegment.join("").trim();
+    if (text) this.segments.push(text);
+    this.currentSegment = [];
+  }
+
+  private fullText() {
+    return this.chunks.join("").trim();
+  }
+
+  private lastSegmentText() {
+    return this.segments[this.segments.length - 1]?.trim() ?? "";
+  }
+}
+
+function debugSessionUpdate(label: string, notification: SessionNotification) {
+  if (!ACP_DEBUG_SESSION_UPDATES) return;
+  const update = notification.update;
+  const updateRecord: Record<string, unknown> = isRecord(update) ? update : {};
+  const record = sanitizeDebugValue(update) as Record<string, unknown>;
+  const content = updateRecord.content;
+  const text =
+    isRecord(content) && typeof content.text === "string"
+      ? content.text.slice(0, ACP_DEBUG_PREVIEW_CHARS)
+      : undefined;
+  logger.info(
+    `[ACP_DEBUG] ${label} session=${notification.sessionId} update=${String(update.sessionUpdate)} keys=${Object.keys(record).join(",")} summary=${JSON.stringify({
+      ...record,
+      contentTextPreview: text,
+    })}`
+  );
+}
+
+function debugPromptResult(label: string, sessionId: string, result: unknown) {
+  if (!ACP_DEBUG_SESSION_UPDATES) return;
+  const summary = sanitizeDebugValue(result);
+  logger.info(
+    `[ACP_DEBUG] ${label} session=${sessionId} promptResult keys=${isRecord(result) ? Object.keys(result).join(",") : "-"} summary=${JSON.stringify(summary)}`
+  );
+}
+
+function sanitizeDebugValue(value: unknown, depth = 0): unknown {
+  if (depth > 2) return "[MaxDepth]";
+  if (typeof value === "string") {
+    return value.length > ACP_DEBUG_PREVIEW_CHARS
+      ? `${value.slice(0, ACP_DEBUG_PREVIEW_CHARS)}…`
+      : value;
+  }
+  if (typeof value !== "object" || value === null) return value;
+  if (Array.isArray(value)) {
+    return value.slice(0, 5).map((item) => sanitizeDebugValue(item, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    out[key] = sanitizeDebugValue(child, depth + 1);
+  }
+  return out;
 }
 
 function estimateRepeatedSuffixChars(text: string) {
@@ -365,6 +454,7 @@ export class StdioAcpAgent {
       logger.info(
         `${this.def.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(promptResult)} responseStats=${JSON.stringify(collector.stats())}`
       );
+      debugPromptResult(this.def.label, sessionId, promptResult);
     } catch (error) {
       if (error instanceof Error && error.message.includes("请求超时")) {
         logger.warn(`${this.def.label} ACP 超时,取消当前轮次 session=${sessionId}`);
@@ -453,6 +543,7 @@ export class StdioAcpAgent {
     const conn = new acp.ClientSideConnection(
       () => ({
         sessionUpdate: async (params: SessionNotification) => {
+          debugSessionUpdate(label, params);
           const collector = this.collectors.get(params.sessionId);
           collector?.handleUpdate(params);
         },

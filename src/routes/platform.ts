@@ -1,12 +1,12 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { Document, isMap, isSeq, parseDocument } from "yaml";
 import { renderPlatformPage } from "../admin/platform-page.js";
 import { db } from "../db/index.js";
-import { aiInstances, alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, pushJobs, scheduledTaskRuns, users } from "../db/schema.js";
+import { aiInstances, alertEvents, alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, pushJobs, scheduledTaskRuns, users } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { createInvestAgentInstance, deleteInvestAgentInstance, getProjectRuntimeContext, listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { WeixinMobileManager } from "../channels/weixin-mobile.js";
@@ -14,6 +14,10 @@ import { config } from "../lib/config.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { disposeAcpForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
+import { loadCodexWorkspaceUsageSummary, type CodexUsageGroupBy } from "../services/codex-usage.js";
+import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
+import { marketHealth } from "../services/market-data.js";
+import { getAlertInterval } from "../scheduler/index.js";
 
 const projectWeixinManagers = new Map<string, WeixinMobileManager>();
 const goldenCasesPath = path.resolve(process.cwd(), "tests/golden/conversation/cases.yaml");
@@ -43,6 +47,7 @@ function goldenCaseSummary(node: unknown) {
   return {
     id: String(node.get("id") || ""),
     category: String(node.get("category") || ""),
+    reviewTier: String(node.get("review_tier") || ""),
     priority: String(node.get("priority") || ""),
     scenario: String(node.get("scenario") || ""),
     tags: node.get("tags") || [],
@@ -63,11 +68,13 @@ function loadGoldenCases() {
   const cases = casesNode.items.map(goldenCaseSummary).filter(Boolean);
   const categories = new Map<string, number>();
   const priorities = new Map<string, number>();
+  const reviewTiers = new Map<string, number>();
   const scenarios = new Map<string, number>();
   for (const item of cases) {
     if (!item) continue;
     categories.set(item.category, (categories.get(item.category) || 0) + 1);
     priorities.set(item.priority, (priorities.get(item.priority) || 0) + 1);
+    reviewTiers.set(item.reviewTier, (reviewTiers.get(item.reviewTier) || 0) + 1);
     scenarios.set(item.scenario, (scenarios.get(item.scenario) || 0) + 1);
   }
   return {
@@ -79,6 +86,7 @@ function loadGoldenCases() {
       total: cases.length,
       categories: Object.fromEntries([...categories.entries()].sort()),
       priorities: Object.fromEntries([...priorities.entries()].sort()),
+      reviewTiers: Object.fromEntries([...reviewTiers.entries()].sort()),
       scenarioCount: scenarios.size,
     },
   };
@@ -101,6 +109,65 @@ function updateGoldenCase(input: { id: string; rawYaml: string }) {
   casesNode.items[index] = nextCaseDoc.contents;
   writeFileSync(goldenCasesPath, String(doc), "utf-8");
   return loadGoldenCases();
+}
+
+function getGoldenCaseById(id: string) {
+  const doc = readGoldenDocument();
+  const casesNode = doc.getIn(["cases"], true);
+  if (!isSeq(casesNode)) throw new Error("黄金数据集缺少 cases 数组");
+  const node = casesNode.items.find((item) => isMap(item) && String(item.get("id") || "") === id);
+  if (!node || !isMap(node)) throw new Error("未找到 case");
+  return node;
+}
+
+function goldenCaseUserInput(id: string) {
+  const node = getGoldenCaseById(id);
+  const userInput = String(node.get("user_input") || "").trim();
+  if (!userInput) throw new Error("该 case 缺少 user_input，暂不支持多轮 turns 直接运行");
+  return userInput;
+}
+
+function readSourceQualityReports(limit = 14) {
+  const dir = config.runtimeData.sourceQualityDir;
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => /^\d{4}-\d{2}-\d{2}\.json$/.test(name))
+    .sort()
+    .reverse()
+    .slice(0, Math.max(1, Math.min(limit, 60)))
+    .map((name) => {
+      try {
+        return JSON.parse(readFileSync(path.join(dir, name), "utf-8"));
+      } catch (error) {
+        logger.warn(`source-quality report read failed file=${name}: ${(error as Error).message}`);
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function readSourceQualityAlerts(limit = 40) {
+  const dir = config.runtimeData.sourceQualityDir;
+  if (!existsSync(dir)) return [];
+  const rows: unknown[] = [];
+  const files = readdirSync(dir)
+    .filter((name) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name))
+    .sort()
+    .reverse();
+  for (const name of files) {
+    try {
+      const lines = readFileSync(path.join(dir, name), "utf-8")
+        .split("\n")
+        .filter((line) => line.trim());
+      for (const line of lines.reverse()) {
+        rows.push(JSON.parse(line));
+        if (rows.length >= limit) return rows;
+      }
+    } catch (error) {
+      logger.warn(`source-quality alerts read failed file=${name}: ${(error as Error).message}`);
+    }
+  }
+  return rows;
 }
 
 function projectWeixinManager(project: AiProjectRuntimeContext) {
@@ -148,7 +215,6 @@ async function auditUsers() {
 }
 
 type AuditScope = "all" | "conversation" | "push";
-type UsageGroupBy = "day" | "mode" | "channel" | "user" | "instance";
 
 async function loadAuditTimeline(input: { userId?: string; instanceId?: string; limit?: number; scope?: AuditScope }) {
   const limit = Math.max(1, Math.min(Number(input.limit || 40), 120));
@@ -296,110 +362,66 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
   return { items: combined, limit, scope };
 }
 
-async function loadUsageSummary(input: {
-  userId?: string;
-  instanceId?: string;
-  scope?: AuditScope;
-  days?: number;
-  groupBy?: UsageGroupBy;
-}) {
-  const scope = input.scope || "all";
-  const days = Math.max(1, Math.min(Number(input.days || 30), 365));
-  const groupBy = input.groupBy || "day";
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  const conditions = [sql`${codexAcpTraces.createdAt} >= ${since}`];
-  const activeScope = await activeInvestAgentTraceScope(input.userId);
-  if (!activeScope.instanceIds.length) {
-    return {
-      filters: { userId: input.userId || "", instanceId: input.instanceId || "", scope, days, groupBy, since },
-      totals: emptyUsageSummary(),
-      groups: [],
-    };
+async function loadRuleAlertAudit(input: { userId?: string; instanceId?: string; limit?: number }) {
+  const limit = Math.max(1, Math.min(Number(input.limit || 40), 120));
+  const taskConditions = [eq(scheduledTaskRuns.taskType, "rule-alert-check")];
+  const eventConditions = [];
+  const ruleConditions = [];
+  if (input.userId) {
+    taskConditions.push(eq(scheduledTaskRuns.userId, input.userId));
+    eventConditions.push(eq(alertEvents.userId, input.userId));
+    ruleConditions.push(eq(alertRules.userId, input.userId));
   }
-  conditions.push(inArray(codexAcpTraces.instanceId, activeScope.instanceIds));
-  conditions.push(inArray(codexAcpTraces.userId, activeScope.userIds));
-  if (input.userId) conditions.push(eq(codexAcpTraces.userId, input.userId));
-  if (input.instanceId) conditions.push(eq(codexAcpTraces.instanceId, input.instanceId));
-  if (scope === "conversation") conditions.push(eq(codexAcpTraces.channel, "weixin-mobile"));
-  if (scope === "push") conditions.push(eq(codexAcpTraces.channel, "scheduler"));
-  const where = and(...conditions);
-  const periodExpr = sql<string>`date(${codexAcpTraces.createdAt})`;
-  const groupExpr =
-    groupBy === "mode"
-      ? codexAcpTraces.mode
-      : groupBy === "channel"
-        ? codexAcpTraces.channel
-        : groupBy === "user"
-          ? codexAcpTraces.userId
-          : groupBy === "instance"
-            ? codexAcpTraces.instanceId
-            : periodExpr;
+  if (input.instanceId) {
+    taskConditions.push(eq(scheduledTaskRuns.instanceId, input.instanceId));
+    eventConditions.push(eq(alertEvents.instanceId, input.instanceId));
+    ruleConditions.push(eq(alertRules.instanceId, input.instanceId));
+  }
 
-  const totals = await db
-    .select({
-      calls: count(),
-      inputTokens: sql<number>`coalesce(sum(${codexAcpTraces.inputTokens}), 0)`,
-      outputTokens: sql<number>`coalesce(sum(${codexAcpTraces.outputTokens}), 0)`,
-      thoughtTokens: sql<number>`coalesce(sum(${codexAcpTraces.thoughtTokens}), 0)`,
-      cachedReadTokens: sql<number>`coalesce(sum(${codexAcpTraces.cachedReadTokens}), 0)`,
-      cachedWriteTokens: sql<number>`coalesce(sum(${codexAcpTraces.cachedWriteTokens}), 0)`,
-      totalTokens: sql<number>`coalesce(sum(${codexAcpTraces.totalTokens}), 0)`,
-      costAmount: sql<number>`coalesce(sum(${codexAcpTraces.costAmount}), 0)`,
-      actualCalls: sql<number>`sum(case when ${codexAcpTraces.usageSource} = 'actual' then 1 else 0 end)`,
-      estimatedCalls: sql<number>`sum(case when ${codexAcpTraces.usageSource} = 'estimated' then 1 else 0 end)`,
-    })
-    .from(codexAcpTraces)
-    .where(where);
+  const [taskRows, eventRows, ruleRows, intervalMinutes] = await Promise.all([
+    db
+      .select()
+      .from(scheduledTaskRuns)
+      .where(and(...taskConditions))
+      .orderBy(desc(scheduledTaskRuns.createdAt))
+      .limit(limit),
+    db
+      .select()
+      .from(alertEvents)
+      .where(eventConditions.length > 0 ? and(...eventConditions) : undefined)
+      .orderBy(desc(alertEvents.createdAt))
+      .limit(limit),
+    db
+      .select()
+      .from(alertRules)
+      .where(ruleConditions.length > 0 ? and(...ruleConditions) : undefined)
+      .orderBy(desc(alertRules.updatedAt))
+      .limit(200),
+    getAlertInterval(),
+  ]);
 
-  const groups = await db
-    .select({
-      bucket: groupExpr,
-      calls: count(),
-      inputTokens: sql<number>`coalesce(sum(${codexAcpTraces.inputTokens}), 0)`,
-      outputTokens: sql<number>`coalesce(sum(${codexAcpTraces.outputTokens}), 0)`,
-      thoughtTokens: sql<number>`coalesce(sum(${codexAcpTraces.thoughtTokens}), 0)`,
-      cachedReadTokens: sql<number>`coalesce(sum(${codexAcpTraces.cachedReadTokens}), 0)`,
-      cachedWriteTokens: sql<number>`coalesce(sum(${codexAcpTraces.cachedWriteTokens}), 0)`,
-      totalTokens: sql<number>`coalesce(sum(${codexAcpTraces.totalTokens}), 0)`,
-      costAmount: sql<number>`coalesce(sum(${codexAcpTraces.costAmount}), 0)`,
-      actualCalls: sql<number>`sum(case when ${codexAcpTraces.usageSource} = 'actual' then 1 else 0 end)`,
-      estimatedCalls: sql<number>`sum(case when ${codexAcpTraces.usageSource} = 'estimated' then 1 else 0 end)`,
-    })
-    .from(codexAcpTraces)
-    .where(where)
-    .groupBy(groupExpr)
-    .orderBy(groupBy === "day" ? sql`date(${codexAcpTraces.createdAt}) desc` : sql`coalesce(sum(${codexAcpTraces.totalTokens}), 0) desc`);
+  const latestTask = taskRows[0] || null;
+  const latestEvent = eventRows[0] || null;
+  const today = new Date().toISOString().slice(0, 10);
+  const todayTasks = taskRows.filter((item) => String(item.scheduledFor || item.createdAt).startsWith(today));
+  const todayEvents = eventRows.filter((item) => item.eventDate === today);
 
   return {
-    filters: { userId: input.userId || "", instanceId: input.instanceId || "", scope, days, groupBy, since },
-    totals: totals[0] || emptyUsageSummary(),
-    groups,
-  };
-}
-
-async function activeInvestAgentTraceScope(userId?: string) {
-  const rows = await db
-    .select({ userId: aiInstances.ownerUserId, instanceId: aiInstances.id })
-    .from(aiInstances)
-    .where(userId ? and(eq(aiInstances.status, "active"), eq(aiInstances.ownerUserId, userId)) : eq(aiInstances.status, "active"));
-  return {
-    userIds: [...new Set(rows.map((row) => row.userId).filter(Boolean))],
-    instanceIds: [...new Set(rows.map((row) => row.instanceId).filter(Boolean))],
-  };
-}
-
-function emptyUsageSummary() {
-  return {
-    calls: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    thoughtTokens: 0,
-    cachedReadTokens: 0,
-    cachedWriteTokens: 0,
-    totalTokens: 0,
-    costAmount: 0,
-    actualCalls: 0,
-    estimatedCalls: 0,
+    intervalMinutes,
+    summary: {
+      enabledRules: ruleRows.filter((item) => item.enabled).length,
+      rules: ruleRows.length,
+      latestRunAt: latestTask?.createdAt || null,
+      latestRunStatus: latestTask?.status || null,
+      latestEventAt: latestEvent?.createdAt || null,
+      todayRuns: todayTasks.length,
+      todayHits: todayEvents.length,
+      todayErrors: todayTasks.filter((item) => item.status === "error").length,
+    },
+    tasks: taskRows,
+    events: eventRows,
+    rules: ruleRows,
+    limit,
   };
 }
 
@@ -679,7 +701,10 @@ export function registerPlatformRoutes(app: FastifyInstance) {
         return await handler(request, reply);
       } catch (error) {
         logger.error("Platform API 操作失败:", error);
-        return reply.status(500).send({ ok: false, error: "平台接口操作失败" });
+        return reply.status(500).send({
+          ok: false,
+          error: error instanceof Error ? error.message : "平台接口操作失败",
+        });
       }
     };
 
@@ -724,6 +749,39 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     }
   }));
 
+  app.post<{ Body: { id?: string; instanceId?: string } }>("/api/platform/golden-cases/run", safe(async (request, reply) => {
+    const id = request.body?.id?.trim();
+    const instanceId = request.body?.instanceId?.trim() || DEFAULT_INSTANCE_ID;
+    if (!id) return reply.status(400).send({ ok: false, error: "id 必填" });
+    const userInput = goldenCaseUserInput(id);
+    const project = await getProjectRuntimeContext(instanceId).catch(() => null);
+    if (!project) return reply.status(404).send({ ok: false, error: `未找到用户助手 ${instanceId}` });
+    const manager = projectWeixinManager(project);
+    const conversationId = `golden:${id}:${Date.now()}`;
+    const startedAt = Date.now();
+    const response = await manager.simulateIncomingText({
+      text: userInput,
+      conversationId,
+      accountId: `${project.backend}-golden-runner`,
+    });
+    return {
+      ok: true,
+      id,
+      target: {
+        userId: project.ownerUserId,
+        instanceId: project.instanceId,
+        name: project.name,
+        backend: project.backend,
+      },
+      userInput,
+      text: response.text || "",
+      accountId: response.accountId,
+      conversationId,
+      elapsedMs: Date.now() - startedAt,
+      updatedAt: new Date().toISOString(),
+    };
+  }));
+
   app.get<{ Querystring: { userId?: string; instanceId?: string; limit?: string; scope?: string } }>("/api/platform/audit", safe(async (request) => {
     const users = await auditUsers();
     const userId = request.query.userId?.trim();
@@ -748,28 +806,68 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     };
   }));
 
-  app.get<{ Querystring: { userId?: string; instanceId?: string; scope?: string; days?: string; groupBy?: string } }>("/api/platform/audit/usage", safe(async (request) => {
+  app.get<{ Querystring: { userId?: string; instanceId?: string; limit?: string } }>("/api/platform/rule-alerts", safe(async (request) => {
+    const users = await auditUsers();
     const userId = request.query.userId?.trim();
     const instanceId = request.query.instanceId?.trim();
-    const scope = request.query.scope === "conversation" || request.query.scope === "push" ? request.query.scope : "all";
+    const limit = Number(request.query.limit || 40);
+    const instances = await listProjectRuntimeContexts({ ownerUserId: userId || undefined });
+    const audit = await loadRuleAlertAudit({ userId, instanceId, limit });
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      filters: { userId: userId || "", instanceId: instanceId || "", limit: audit.limit },
+      users,
+      instances: instances.map((item) => ({
+        instanceId: item.instanceId,
+        name: item.name,
+        ownerUserId: item.ownerUserId,
+        backend: item.backend,
+        status: item.status,
+      })),
+      ...audit,
+    };
+  }));
+
+  app.get<{ Querystring: { userId?: string; instanceId?: string; days?: string; groupBy?: string } }>("/api/platform/audit/usage", safe(async (request) => {
+    const userId = request.query.userId?.trim();
+    const instanceId = request.query.instanceId?.trim();
+    const days = Math.max(1, Math.min(Number(request.query.days || 30), 365));
     const groupBy =
-      request.query.groupBy === "mode" ||
-      request.query.groupBy === "channel" ||
       request.query.groupBy === "user" ||
       request.query.groupBy === "instance"
         ? request.query.groupBy
         : "day";
-    const usage = await loadUsageSummary({
+    const codexGroupBy: CodexUsageGroupBy = groupBy === "instance" || groupBy === "user" ? groupBy : "day";
+    const instances = await listProjectRuntimeContexts({ ownerUserId: userId || undefined });
+    const codexUsage = loadCodexWorkspaceUsageSummary({
+      instances,
       userId,
       instanceId,
-      scope,
-      days: Number(request.query.days || 30),
-      groupBy,
+      days,
+      groupBy: codexGroupBy,
     });
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
-      ...usage,
+      filters: { userId: userId || "", instanceId: instanceId || "", days, groupBy },
+      codexUsage,
+    };
+  }));
+
+  app.get<{ Querystring: { reportLimit?: string; alertLimit?: string } }>("/api/platform/source-quality", safe(async (request) => {
+    const reportLimit = Number(request.query.reportLimit || 14);
+    const alertLimit = Number(request.query.alertLimit || 40);
+    const health = await marketHealth();
+    const reports = readSourceQualityReports(reportLimit);
+    const alerts = readSourceQualityAlerts(alertLimit);
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      sourceQualityDir: config.runtimeData.sourceQualityDir,
+      health,
+      reports,
+      alerts,
     };
   }));
 

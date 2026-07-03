@@ -6,7 +6,7 @@ import { getSignalConfig, handleSignalConfigTool } from "../handlers/signal-conf
 import { getAlertInterval, setAlertInterval } from "../scheduler/index.js";
 import { renderDashboardPage } from "../admin/dashboard-page.js";
 import { resolveStockRefs } from "../services/stock-resolver.js";
-import { getQuote } from "../services/stock.js";
+import { marketQuote } from "../services/market-data.js";
 import { getCapitalFlowBatch } from "../services/eastmoney.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
@@ -204,7 +204,8 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     let holdingQuotes: Record<string, { price: number | null; changePercent: number | null }> = {};
     if (holdings.length > 0) {
       try {
-        const quotes = await getQuote(holdings.map((h) => h.stockCode));
+        const quoteResult = await marketQuote(holdings.map((h) => h.stockCode), userId);
+        const quotes = quoteResult.items;
         for (const q of quotes) {
           holdingQuotes[q.code] = {
             price: typeof q.price === "number" ? q.price : null,
@@ -377,8 +378,8 @@ export function registerDashboardRoutes(app: FastifyInstance) {
       return { ok: false, error: `${existing.name}(${stockCode}) 已在持仓池中` };
     }
 
-    const quotes = await getQuote([stockCode]);
-    const stockName = quotes[0]?.name || name || stockCode;
+    const quoteResult = await marketQuote([stockCode], userId);
+    const stockName = quoteResult.items[0]?.name || name || stockCode;
 
     await portfolioBackend.upsertActive(userId, instanceId, {
       code: stockCode,
@@ -415,8 +416,8 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     const existing = await watchlistBackend.find(userId, instanceId, stockCode);
     if (existing) return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中` };
 
-    const quotes = await getQuote([stockCode]);
-    const stockName = quotes[0]?.name || name || stockCode;
+    const quoteResult = await marketQuote([stockCode], userId);
+    const stockName = quoteResult.items[0]?.name || name || stockCode;
 
     const normalizedReason = normalizeWatchlistReason(reason || "Dashboard 添加");
     await watchlistBackend.add(userId, instanceId, {
@@ -448,8 +449,8 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     const { stockCode, stockName, support, resistance, targetPrice, stopLoss, notes, watchConditions, linkedAlertRuleIds, planType, strategyKey } = request.body ?? {};
     if (!stockCode) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
 
-    const quotes = await getQuote([stockCode]);
-    const name = stockName || quotes[0]?.name || stockCode;
+    const quoteResult = await marketQuote([stockCode], userId);
+    const name = stockName || quoteResult.items[0]?.name || stockCode;
 
     const existing = await planBackend.find(userId, instanceId, stockCode);
     const wasExisting = !!existing;

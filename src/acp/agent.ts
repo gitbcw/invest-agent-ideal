@@ -139,7 +139,7 @@ async function postProcessAcpReply(input: {
 function buildChannelForwardPrompt(text: string, context: UserContext): string {
   if (context.channel !== "weixin-mobile") return text;
   return [
-    "【通道上下文】这是一条来自微信用户的消息；你的回复会直接发回该用户微信。微信通道支持 Markdown，请用结构化 Markdown 输出最终正文，不输出执行过程、内部路径或调试信息。",
+    "【通道上下文】这是一条来自微信用户的消息；你的回复会直接发回该用户微信。必须使用适合微信阅读的 Markdown 提升可读性，例如分段、列表、重点加粗或必要的表格；但请按内容场景选择，不要机械套用复杂格式。不要输出执行过程、内部路径或调试信息。",
     "【用户消息】",
     text,
   ].filter(Boolean).join("\n");

@@ -117,9 +117,24 @@ export async function sendWeixinTextMessage(params: {
   }
 
   const responseText = await response.text().catch(() => "");
+  const responseBody = parseWeixinResponseBody(responseText);
+  const errcode = responseBody ? Number(responseBody.errcode ?? responseBody.errorCode ?? 0) : 0;
+  if (Number.isFinite(errcode) && errcode !== 0) {
+    const errmsg = String(responseBody?.errmsg ?? responseBody?.message ?? responseText.slice(0, 300) ?? "unknown");
+    throw new Error(`微信主动推送失败: errcode=${errcode} ${errmsg.slice(0, 300)}`);
+  }
   logger.info(
     `微信主动推送已提交 to=${params.to} contextToken=${params.contextToken ? "yes" : "no"} status=${response.status} body=${responseText.slice(0, 300)}`
   );
+}
+
+function parseWeixinResponseBody(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
 }
 
 export class InvestAgentMobileBridge {

@@ -83,6 +83,12 @@ async function resolvePushConversation(params: {
   const userId = params.userId?.trim() || DEFAULT_USER_ID;
   const instanceId = params.instanceId?.trim();
   if (instanceId) {
+    if (params.fallbackConversationId) {
+      return {
+        conversationId: params.fallbackConversationId,
+        contextToken: params.fallbackContextToken,
+      };
+    }
     const rows = await db
       .select({
         externalAccountId: channelIdentities.externalAccountId,
@@ -96,16 +102,13 @@ async function resolvePushConversation(params: {
         eq(channelIdentities.userId, userId),
         eq(channelIdentities.channel, "weixin-mobile"),
         eq(channelIdentities.backend, params.backend),
+        eq(channelIdentities.externalAccountId, params.accountId),
       ))
       .orderBy(desc(channelIdentities.updatedAt))
       .limit(1);
 
     const identity = rows[0];
     if (identity?.lastConversationId) {
-      if (identity.externalAccountId && identity.externalAccountId !== params.accountId) {
-        logger.warn(`微信主动推送跳过：实例 ${instanceId} 绑定账号 ${identity.externalAccountId}，当前账号 ${params.accountId}`);
-        return { conversationId: undefined, contextToken: undefined };
-      }
       return {
         conversationId: identity.lastConversationId,
         contextToken: identity.lastContextToken ?? undefined,
@@ -420,13 +423,31 @@ export class WeixinMobileManager {
       );
 
       const chunks = splitWeixinText(sanitizeCustomerText(message));
-      await this.buildBridge(account.accountId).pushToConversation(
-        target.conversationId,
-        chunks,
-        target.contextToken,
-        account.baseUrl,
-        account.token
-      );
+      try {
+        await this.buildBridge(account.accountId).pushToConversation(
+          target.conversationId,
+          chunks,
+          target.contextToken,
+          account.baseUrl,
+          account.token
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("errcode=-14") || message.toLowerCase().includes("session timeout")) {
+          const controller = this.listenerAbortControllers.get(account.accountId);
+          controller?.abort();
+          this.listenerAbortControllers.delete(account.accountId);
+          this.withState({
+            accountId: account.accountId,
+            pushReady: false,
+            listenerRunning: this.listenerAbortControllers.size > 0,
+            stage: "error",
+            message: `${this.label}登录态已过期，请重新扫码连接。`,
+            lastError: message,
+          });
+        }
+        throw error;
+      }
       this.withState({
         accountId: account.accountId,
         lastConversationId: target.conversationId,
@@ -584,7 +605,7 @@ export class WeixinMobileManager {
         listenerRunning: this.listenerAbortControllers.has(account.accountId),
         lastConversationId: account.lastConversationId,
         lastConversationAt: account.lastConversationAt,
-        pushReady: Boolean(account.lastConversationId),
+        pushReady: Boolean(account.token && account.lastConversationId && this.listenerAbortControllers.has(account.accountId)),
       });
     }
     return summaries;
@@ -602,7 +623,7 @@ export class WeixinMobileManager {
       listenerRunning: accounts.some((account) => account.listenerRunning),
       lastConversationId: base.lastConversationId || preferred?.lastConversationId,
       lastConversationAt: base.lastConversationAt || preferred?.lastConversationAt,
-      pushReady: accounts.some((account) => account.pushReady) || Boolean(base.pushReady),
+      pushReady: accounts.some((account) => account.pushReady),
     };
   }
 }

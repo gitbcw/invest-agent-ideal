@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { dedupeRepeatedCustomerText, sanitizeCustomerText, redactSensitiveText } from "../dist/lib/customer-output.js";
+import { dedupeRepeatedCustomerText, extractFinalCustomerReply, sanitizeCustomerText, redactSensitiveText } from "../dist/lib/customer-output.js";
 
 const unsafeLeakPatterns = [
   /localhost:\d+/i,
@@ -90,5 +90,27 @@ const repeatedDraft = dedupeRepeatedCustomerText([
   "请回复“确认写入”，我再保存。",
 ].join("\n"));
 assert.equal((repeatedDraft.match(/【持仓】/g) ?? []).length, 1);
+
+const cleanDailyReview = extractFinalCustomerReply([
+  "## 7月1日收盘复盘",
+  "",
+  "**结论：今日不建议操作，需要关注，但不需要你确认交易。**",
+  "",
+  "### 今日动作结论",
+  "",
+  "| 项目 | 结论 | 原因 |",
+  "|---|---|---|",
+  "| 是否需要操作 | 否 | 没有触发已确认的买卖规则 |",
+].join("\n"));
+assert.match(cleanDailyReview, /^## 7月1日收盘复盘/);
+assert.match(cleanDailyReview, /今日动作结论/);
+assert.match(cleanDailyReview, /已确认的买卖规则/);
+
+const explicitFinal = extractFinalCustomerReply([
+  "我先读取配置。",
+  "最终回复：",
+  "当前持仓已记录，但缺少成本价。",
+].join("\n"));
+assert.equal(explicitFinal, "当前持仓已记录，但缺少成本价。");
 
 console.log(JSON.stringify({ ok: true }));

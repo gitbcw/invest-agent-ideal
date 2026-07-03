@@ -99,6 +99,8 @@ export interface StrategyYaml {
 export interface WatchYaml {
   mode?: string;
   only_push_on_exception?: boolean;
+  priority_policy?: string;
+  purpose_boundary?: string;
   check_interval_minutes?: number;
   custom_frequency?: number | null;
   default_check_windows?: unknown[];
@@ -109,9 +111,13 @@ export interface WatchYaml {
   custom_rules?: unknown[];
   legacy_alerts?: unknown[];
   alert_rules?: unknown[];
+  confirmed_watch_rule_summary?: string[];
   required_output_fields?: string[];
   last_confirmed_at?: string | null;
 }
+
+export type SchedulesYaml = Record<string, unknown>;
+export type NotificationYaml = Record<string, unknown>;
 
 export type RiskLevel = "P0" | "P1" | "P2";
 
@@ -479,7 +485,6 @@ export class WorkspaceStore {
     await writeYaml(path.join(this.root, "config/onboarding_state.yaml"), data);
   }
 
-
   // ----- risk_taxonomy.yaml -----
 
   async readRiskTaxonomy(): Promise<RiskTaxonomyYaml | null> {
@@ -803,6 +808,7 @@ export class WorkspaceStore {
     this.ensureReady();
     await appendJsonl(path.join(this.root, "memory/change_log.jsonl"), record);
   }
+
   // ----- 路径(供 trace/sandbox 审计使用) -----
 
   path(): string {

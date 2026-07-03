@@ -40,7 +40,7 @@ export function renderPlatformPage(): string {
     .cost-grid { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; }
     .view.cost-grid { display: none; }
     .view.cost-grid.active { display: grid; }
-    .eval-grid { display: grid; grid-template-columns: minmax(280px, .75fr) minmax(420px, 1.25fr); gap: 14px; align-items: start; }
+    .eval-grid { display: grid; grid-template-columns: minmax(320px, .78fr) minmax(460px, 1.22fr); gap: 14px; align-items: stretch; height: calc(100vh - 92px); min-height: 560px; }
     .view.eval-grid { display: none; }
     .view.eval-grid.active { display: grid; }
     .panel { background: #fff; border: 1px solid #d9e0ea; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
@@ -124,12 +124,22 @@ export function renderPlatformPage(): string {
     .tab:hover { color: #1d4ed8; }
     .cost-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 0 0 12px; margin-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
     .cost-toolbar .field { min-width: 150px; }
-    .eval-list { display: flex; flex-direction: column; gap: 10px; }
+    .golden-list-panel, .golden-detail-panel { min-height: 0; display: flex; flex-direction: column; }
+    .golden-list-body { min-height: 0; display: flex; flex-direction: column; }
+    .golden-list-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .golden-list-scroll { flex: 1; min-height: 0; overflow: auto; padding-right: 4px; }
+    .golden-detail-body { min-height: 0; overflow: auto; }
+    .golden-tier-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tier-chip { border: 1px solid #cbd5e1; background: #fff; color: #475569; border-radius: 999px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
+    .tier-chip.active { border-color: #2563eb; background: #dbeafe; color: #1d4ed8; font-weight: 650; }
+    .eval-list { display: flex; flex-direction: column; gap: 9px; padding-bottom: 4px; }
     .eval-card { border: 1px solid #d9e0ea; background: #fff; border-radius: 8px; padding: 12px; cursor: pointer; }
     .eval-card:hover { background: #f8fafc; border-color: #9db3d1; }
     .eval-card.selected { background: #eff6ff; border-color: #60a5fa; box-shadow: 0 0 0 1px rgba(96,165,250,.22); }
     .eval-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-    .eval-desc { color: #475569; font-size: 12px; line-height: 1.55; margin-top: 7px; }
+    .eval-title strong { min-width: 0; color: #0f172a; font-size: 13px; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .eval-desc { color: #475569; font-size: 12px; line-height: 1.5; margin-top: 7px; }
+    .eval-case-id { color: #64748b; font-size: 11px; margin-top: 6px; }
     .eval-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
     .eval-output { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 11px; max-height: 360px; overflow: auto; font-size: 12px; line-height: 1.55; }
     .eval-output.empty-output { background: #f8fafc; color: #94a3b8; border: 1px solid #e2e8f0; }
@@ -146,7 +156,9 @@ export function renderPlatformPage(): string {
       .grid { grid-template-columns: 1fr; }
       .audit-grid { grid-template-columns: 1fr; }
       .cost-grid { grid-template-columns: 1fr; }
-      .eval-grid { grid-template-columns: 1fr; }
+      .eval-grid { grid-template-columns: 1fr; height: auto; min-height: 0; }
+      .golden-list-panel, .golden-detail-panel { max-height: none; }
+      .golden-list-scroll, .golden-detail-body { overflow: visible; }
       .audit-item { grid-template-columns: 1fr; }
       .audit-rail { border-right: 0; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; gap: 12px; }
       .audit-columns { grid-template-columns: 1fr; }
@@ -162,8 +174,10 @@ export function renderPlatformPage(): string {
         <a id="nav-instances" class="active" href="#instances" onclick="setView('instances')">用户助手 <span>›</span></a>
         <a id="nav-cost" href="#cost" onclick="setView('cost')">成本统计 <span>›</span></a>
         <a id="nav-audit" href="#audit" onclick="setView('audit')">日志审计 <span>›</span></a>
+        <a id="nav-rule-alerts" href="#rule-alerts" onclick="setView('rule-alerts')">规则巡检 <span>›</span></a>
         <a id="nav-golden" href="#golden" onclick="setView('golden')">黄金数据集 <span>›</span></a>
         <a href="/dashboard">投资工作台 <span>↗</span></a>
+        <a id="nav-source-quality" href="#source-quality" onclick="setView('source-quality')">数据源质量 <span>›</span></a>
       </nav>
     </aside>
     <main class="main">
@@ -181,8 +195,16 @@ export function renderPlatformPage(): string {
           <button class="btn btn-primary" onclick="loadAudit()">刷新审计</button>
           <button class="btn" onclick="setView('instances')">返回用户助手</button>
         </div>
+        <div class="actions" id="ruleAlertActions" style="display:none">
+          <button class="btn btn-primary" onclick="loadRuleAlerts()">刷新巡检</button>
+          <button class="btn" onclick="setView('instances')">返回用户助手</button>
+        </div>
         <div class="actions" id="costActions" style="display:none">
           <button class="btn btn-primary" onclick="loadCostPanel()">刷新成本</button>
+          <button class="btn" onclick="setView('instances')">返回用户助手</button>
+        </div>
+        <div class="actions" id="sourceQualityActions" style="display:none">
+          <button class="btn btn-primary" onclick="loadSourceQuality()">刷新质量</button>
           <button class="btn" onclick="setView('instances')">返回用户助手</button>
         </div>
         <div class="actions" id="goldenActions" style="display:none">
@@ -217,6 +239,15 @@ export function renderPlatformPage(): string {
             <span class="muted" id="costUpdated">未加载</span>
           </div>
           <div class="panel-body" id="costPanel"><div class="empty">加载中...</div></div>
+        </div>
+      </section>
+      <section id="view-source-quality" class="view cost-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>数据源可靠性</h2>
+            <span class="muted" id="sourceQualityUpdated">未加载</span>
+          </div>
+          <div class="panel-body" id="sourceQualityPanel"><div class="empty">加载中...</div></div>
         </div>
       </section>
       <section id="view-audit" class="view audit-grid">
@@ -260,32 +291,72 @@ export function renderPlatformPage(): string {
           <div class="panel-body" id="auditTimeline"><div class="empty">选择用户后加载审计记录</div></div>
         </div>
       </section>
-      <section id="view-golden" class="view eval-grid">
+      <section id="view-rule-alerts" class="view audit-grid">
         <div class="panel">
+          <div class="panel-head">
+            <h2>规则巡检</h2>
+            <span class="muted" id="ruleAlertScopeHint">确定性采样</span>
+          </div>
+          <div class="panel-body">
+            <div class="form-grid">
+              <div class="field">
+                <label>用户</label>
+                <select id="ruleAlertUser" class="select" onchange="onRuleAlertUserChange()"></select>
+              </div>
+              <div class="field">
+                <label>用户助手</label>
+                <select id="ruleAlertInstance" class="select" onchange="loadRuleAlerts()"></select>
+              </div>
+              <div class="field">
+                <label>条数</label>
+                <select id="ruleAlertLimit" class="select" onchange="loadRuleAlerts()">
+                  <option value="30">30</option>
+                  <option value="60">60</option>
+                  <option value="120">120</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" onclick="loadRuleAlerts()">刷新巡检</button>
+              <div class="muted">规则巡检按采样当刻价格执行确定性规则；触发事实写入提醒事件，推送由优先级和去重策略决定。</div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>规则巡检审计</h2>
+            <span class="muted" id="ruleAlertUpdated">未加载</span>
+          </div>
+          <div class="panel-body" id="ruleAlertPanel"><div class="empty">选择用户后加载规则巡检记录</div></div>
+        </div>
+      </section>
+      <section id="view-golden" class="view eval-grid">
+        <div class="panel golden-list-panel">
           <div class="panel-head">
             <h2>黄金数据集</h2>
             <span class="muted" id="goldenCount">0 项</span>
           </div>
-          <div class="panel-body">
+          <div class="panel-body golden-list-body">
             <div class="metrics" id="goldenStats"></div>
             <div class="section">
               <div class="form-grid">
                 <input id="goldenSearch" class="input" placeholder="搜索 case、场景、输入、原则" oninput="renderGoldenCases()" />
+                <div class="golden-tier-filter" id="goldenTierFilter"></div>
                 <div class="audit-columns">
                   <select id="goldenCategory" class="select" onchange="renderGoldenCases()"></select>
                   <select id="goldenPriority" class="select" onchange="renderGoldenCases()"></select>
                 </div>
               </div>
             </div>
-            <div class="section" id="goldenList"><div class="empty">加载中...</div></div>
+            <div class="section golden-list-section">
+              <div class="golden-list-scroll" id="goldenList"><div class="empty">加载中...</div></div>
+            </div>
           </div>
         </div>
-        <div class="panel">
+        <div class="panel golden-detail-panel">
           <div class="panel-head">
             <h2>Case 详情</h2>
             <span class="muted" id="goldenUpdated">未加载</span>
           </div>
-          <div class="panel-body" id="goldenDetail"><div class="empty">选择一个 case</div></div>
+          <div class="panel-body golden-detail-body" id="goldenDetail"><div class="empty">选择一个 case</div></div>
         </div>
       </section>
     </main>
@@ -320,13 +391,17 @@ export function renderPlatformPage(): string {
 let DATA = { instances: [] };
 let selectedInstanceId = '';
 let AUDIT = { users: [], instances: [], items: [], filters: {} };
+let RULE_ALERTS = { users: [], instances: [], tasks: [], events: [], rules: [], filters: {}, summary: {} };
 let COST = { platform: null, scoped: null };
 let COST_TAB = 'overview';
-let COST_FILTERS = { scope: 'all', days: '30' };
+let COST_FILTERS = { days: '30' };
 let selectedCostInstanceId = '';
+let SOURCE_QUALITY = null;
 let GOLDEN = { cases: [], stats: {}, suite: {}, qualityGates: {} };
 let selectedGoldenId = '';
-const VALID_VIEWS = new Set(['instances', 'cost', 'audit', 'golden']);
+let GOLDEN_RUNS = {};
+let GOLDEN_ACTIVE_TIERS = new Set(['golden_core', 'regression']);
+const VALID_VIEWS = new Set(['instances', 'cost', 'source-quality', 'audit', 'rule-alerts', 'golden']);
 let ACTIVE_VIEW = VALID_VIEWS.has(location.hash.slice(1)) ? location.hash.slice(1) : 'instances';
 let AUDIT_SCOPE = 'conversation';
 
@@ -353,9 +428,13 @@ async function loadPlatform() {
     selectedInstanceId = selectedInstanceId || DATA.instances?.[0]?.instanceId || '';
     render();
     initAuditFromSelection();
+    initRuleAlertsFromSelection();
     initCostFromSelection();
     if (ACTIVE_VIEW === 'golden') {
       loadGoldenCases();
+    }
+    if (ACTIVE_VIEW === 'source-quality' && !SOURCE_QUALITY) {
+      loadSourceQuality();
     }
   } catch (error) {
     const node = document.getElementById('error');
@@ -373,8 +452,14 @@ function setView(view) {
   if (ACTIVE_VIEW === 'audit' && !(AUDIT.items || []).length) {
     initAuditFromSelection();
   }
+  if (ACTIVE_VIEW === 'rule-alerts' && !(RULE_ALERTS.tasks || []).length) {
+    initRuleAlertsFromSelection();
+  }
   if (ACTIVE_VIEW === 'cost' && !COST.platform) {
     initCostFromSelection();
+  }
+  if (ACTIVE_VIEW === 'source-quality' && !SOURCE_QUALITY) {
+    loadSourceQuality();
   }
   if (ACTIVE_VIEW === 'golden' && !(GOLDEN.cases || []).length) {
     loadGoldenCases();
@@ -386,19 +471,27 @@ function setView(view) {
 function renderChrome() {
   document.getElementById('view-instances').classList.toggle('active', ACTIVE_VIEW === 'instances');
   document.getElementById('view-cost').classList.toggle('active', ACTIVE_VIEW === 'cost');
+  document.getElementById('view-source-quality').classList.toggle('active', ACTIVE_VIEW === 'source-quality');
   document.getElementById('view-audit').classList.toggle('active', ACTIVE_VIEW === 'audit');
+  document.getElementById('view-rule-alerts').classList.toggle('active', ACTIVE_VIEW === 'rule-alerts');
   document.getElementById('view-golden').classList.toggle('active', ACTIVE_VIEW === 'golden');
   document.getElementById('nav-instances').classList.toggle('active', ACTIVE_VIEW === 'instances');
   document.getElementById('nav-cost').classList.toggle('active', ACTIVE_VIEW === 'cost');
+  document.getElementById('nav-source-quality').classList.toggle('active', ACTIVE_VIEW === 'source-quality');
   document.getElementById('nav-audit').classList.toggle('active', ACTIVE_VIEW === 'audit');
+  document.getElementById('nav-rule-alerts').classList.toggle('active', ACTIVE_VIEW === 'rule-alerts');
   document.getElementById('nav-golden').classList.toggle('active', ACTIVE_VIEW === 'golden');
   document.getElementById('instanceActions').style.display = ACTIVE_VIEW === 'instances' ? 'flex' : 'none';
   document.getElementById('costActions').style.display = ACTIVE_VIEW === 'cost' ? 'flex' : 'none';
+  document.getElementById('sourceQualityActions').style.display = ACTIVE_VIEW === 'source-quality' ? 'flex' : 'none';
   document.getElementById('auditActions').style.display = ACTIVE_VIEW === 'audit' ? 'flex' : 'none';
+  document.getElementById('ruleAlertActions').style.display = ACTIVE_VIEW === 'rule-alerts' ? 'flex' : 'none';
   document.getElementById('goldenActions').style.display = ACTIVE_VIEW === 'golden' ? 'flex' : 'none';
   document.getElementById('pageTitle').textContent =
     ACTIVE_VIEW === 'cost' ? '成本统计' :
+    ACTIVE_VIEW === 'source-quality' ? '数据源质量' :
     ACTIVE_VIEW === 'audit' ? '日志审计' :
+    ACTIVE_VIEW === 'rule-alerts' ? '规则巡检' :
     ACTIVE_VIEW === 'golden' ? '黄金数据集' : '用户助手';
 }
 
@@ -472,6 +565,131 @@ async function onAuditUserChange() {
   await loadAudit();
 }
 
+async function loadRuleAlerts() {
+  const userId = document.getElementById('ruleAlertUser')?.value || '';
+  const instanceId = document.getElementById('ruleAlertInstance')?.value || '';
+  const limit = document.getElementById('ruleAlertLimit')?.value || '30';
+  const params = new URLSearchParams();
+  if (userId) params.set('userId', userId);
+  if (instanceId) params.set('instanceId', instanceId);
+  params.set('limit', limit);
+  try {
+    RULE_ALERTS = await platformJson('/api/platform/rule-alerts?' + params.toString());
+    if (!RULE_ALERTS.ok) throw new Error(RULE_ALERTS.error || '规则巡检接口返回失败');
+    renderRuleAlertControls();
+    renderRuleAlertPanel();
+  } catch (error) {
+    document.getElementById('ruleAlertPanel').innerHTML = '<div class="error" style="display:block">规则巡检加载失败: ' + esc(error.message) + '</div>';
+  }
+}
+
+function initRuleAlertsFromSelection() {
+  const item = selectedInstance();
+  if (!document.getElementById('ruleAlertUser')) return;
+  if (item) {
+    document.getElementById('ruleAlertUser').innerHTML = '<option value="' + esc(item.owner?.id || '') + '">' + esc(item.owner?.displayName || item.owner?.id || '') + '</option>';
+    document.getElementById('ruleAlertInstance').innerHTML = '<option value="' + esc(item.instanceId) + '">' + esc(item.name || item.instanceId) + '</option>';
+  }
+  if (ACTIVE_VIEW === 'rule-alerts') loadRuleAlerts();
+}
+
+function renderRuleAlertControls() {
+  const userSelect = document.getElementById('ruleAlertUser');
+  const instanceSelect = document.getElementById('ruleAlertInstance');
+  if (!userSelect || !instanceSelect) return;
+  const selectedUser = RULE_ALERTS.filters?.userId || userSelect.value || '';
+  const selectedInstance = RULE_ALERTS.filters?.instanceId || instanceSelect.value || '';
+  userSelect.innerHTML = '<option value="">全部用户</option>' + (RULE_ALERTS.users || []).map((user) =>
+    '<option value="' + esc(user.id) + '"' + (user.id === selectedUser ? ' selected' : '') + '>' + esc(user.displayName || user.id) + ' · ' + esc(user.id) + '</option>'
+  ).join('');
+  instanceSelect.innerHTML = '<option value="">全部用户助手</option>' + (RULE_ALERTS.instances || []).map((item) =>
+    '<option value="' + esc(item.instanceId) + '"' + (item.instanceId === selectedInstance ? ' selected' : '') + '>' + esc(item.name || item.instanceId) + ' · ' + esc(item.instanceId) + '</option>'
+  ).join('');
+  document.getElementById('ruleAlertUpdated').textContent = '更新于 ' + fmtTime(RULE_ALERTS.updatedAt);
+  document.getElementById('ruleAlertScopeHint').textContent = '采样间隔 ' + (RULE_ALERTS.intervalMinutes || '-') + ' 分钟';
+}
+
+async function onRuleAlertUserChange() {
+  const instanceSelect = document.getElementById('ruleAlertInstance');
+  if (instanceSelect) instanceSelect.value = '';
+  await loadRuleAlerts();
+}
+
+function renderRuleAlertPanel() {
+  const root = document.getElementById('ruleAlertPanel');
+  if (!root || !RULE_ALERTS.ok) return;
+  const summary = RULE_ALERTS.summary || {};
+  root.innerHTML =
+    '<div class="section" style="margin-top:0"><h3>运行总览</h3><div class="cost-summary">' +
+      stat(fmtNumber(RULE_ALERTS.intervalMinutes), '采样间隔(分钟)') +
+      stat(fmtNumber(summary.enabledRules), '启用规则') +
+      stat(fmtNumber(summary.todayRuns), '今日运行') +
+      stat(fmtNumber(summary.todayHits), '今日命中') +
+      stat(fmtNumber(summary.todayErrors), '今日错误') +
+    '</div><div class="cost-source">' +
+      badge('独立确定性任务', 'info') +
+      badge('只判断采样当刻价格/事实', 'ok') +
+      badge('不依赖定时简报', 'warn') +
+    '</div></div>' +
+    '<div class="section"><h3>最近运行</h3>' + renderRuleAlertTaskTable(RULE_ALERTS.tasks || []) + '</div>' +
+    '<div class="section"><h3>最近命中事件</h3>' + renderRuleAlertEventTable(RULE_ALERTS.events || []) + '</div>' +
+    '<div class="section"><h3>启用规则</h3>' + renderRuleAlertRuleTable(RULE_ALERTS.rules || []) + '</div>';
+}
+
+function renderRuleAlertTaskTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无独立规则巡检运行记录；服务启动后会按采样间隔生成。</div>';
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>时间</th><th>用户</th><th>助手</th><th>采样槽</th><th>状态</th><th>推送</th><th>错误</th></tr></thead>' +
+    '<tbody>' + rows.map((row) => {
+      const statusKind = row.status === 'success' ? 'ok' : (row.status === 'error' ? 'warn' : 'gray');
+      return '<tr>' +
+        '<td>' + esc(fmtTime(row.createdAt)) + '</td>' +
+        '<td class="mono">' + esc(row.userId || '-') + '</td>' +
+        '<td class="mono">' + esc(row.instanceId || '-') + '</td>' +
+        '<td class="mono">' + esc(row.scheduledFor || '-') + '</td>' +
+        '<td>' + badge(row.status || '-', statusKind) + '</td>' +
+        '<td class="mono">' + esc(row.pushJobId || '-') + '</td>' +
+        '<td>' + esc(row.errorMessage || '-') + '</td>' +
+      '</tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function renderRuleAlertEventTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无规则命中事件</div>';
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>时间</th><th>用户</th><th>股票</th><th>规则</th><th>价格</th><th>级别</th><th>状态</th><th>消息</th></tr></thead>' +
+    '<tbody>' + rows.map((row) =>
+      '<tr>' +
+        '<td>' + esc(fmtTime(row.createdAt)) + '</td>' +
+        '<td class="mono">' + esc(row.userId || '-') + '</td>' +
+        '<td><strong>' + esc(row.stockName || '-') + '</strong><div class="mono">' + esc(row.stockCode || '-') + '</div></td>' +
+        '<td class="mono">' + esc(row.signalKey || '-') + '</td>' +
+        '<td>' + esc(row.price == null ? '-' : row.price) + '</td>' +
+        '<td>' + badge(row.severity || '-', row.severity === 'high' ? 'warn' : 'gray') + '</td>' +
+        '<td>' + esc(row.status || '-') + '</td>' +
+        '<td>' + esc(row.message || '-') + '</td>' +
+      '</tr>'
+    ).join('') + '</tbody></table></div>';
+}
+
+function renderRuleAlertRuleTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无规则实例</div>';
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>规则</th><th>用户</th><th>股票</th><th>条件</th><th>参数</th><th>去重</th><th>启用</th><th>更新时间</th></tr></thead>' +
+    '<tbody>' + rows.map((row) =>
+      '<tr>' +
+        '<td><strong>#' + esc(row.id) + '</strong><div class="mono">' + esc(row.indicatorKey || '-') + '</div></td>' +
+        '<td class="mono">' + esc(row.userId || '-') + '</td>' +
+        '<td><strong>' + esc(row.stockName || '-') + '</strong><div class="mono">' + esc(row.stockCode || '-') + '</div></td>' +
+        '<td class="mono">' + esc(row.condition || '-') + '</td>' +
+        '<td class="mono">' + esc(row.params || '{}') + '</td>' +
+        '<td class="mono">' + esc(row.dedupePolicy || '{}') + '</td>' +
+        '<td>' + badge(row.enabled ? '启用' : '停用', row.enabled ? 'ok' : 'gray') + '</td>' +
+        '<td>' + esc(fmtTime(row.updatedAt)) + '</td>' +
+      '</tr>'
+    ).join('') + '</tbody></table></div>';
+}
+
 function initCostFromSelection() {
   const item = selectedInstance();
   selectedCostInstanceId = selectedCostInstanceId || item?.instanceId || '';
@@ -482,26 +700,22 @@ async function loadCostPanel() {
   const selectedCostInstance = costInstanceById(selectedCostInstanceId);
   const userId = selectedCostInstance?.owner?.id || '';
   const instanceId = selectedCostInstance?.instanceId || '';
-  const scope = document.getElementById('costScope')?.value || COST_FILTERS.scope || 'all';
   const days = document.getElementById('costDays')?.value || COST_FILTERS.days || '30';
-  COST_FILTERS = { scope, days: String(days) };
+  COST_FILTERS = { days: String(days) };
   const root = document.getElementById('costPanel');
   if (root) root.innerHTML = '<div class="empty">正在加载成本统计...</div>';
   try {
     const base = new URLSearchParams();
-    base.set('scope', scope);
     base.set('days', days);
     const scoped = new URLSearchParams(base);
     if (userId) scoped.set('userId', userId);
     if (instanceId) scoped.set('instanceId', instanceId);
-    const [platform, scopedUsage, byMode, byChannel, byInstance] = await Promise.all([
+    const [platform, scopedUsage, byInstance] = await Promise.all([
       platformJson('/api/platform/audit/usage?' + base.toString()),
       platformJson('/api/platform/audit/usage?' + scoped.toString()),
-      platformJson('/api/platform/audit/usage?' + withParam(scoped, 'groupBy', 'mode')),
-      platformJson('/api/platform/audit/usage?' + withParam(scoped, 'groupBy', 'channel')),
       platformJson('/api/platform/audit/usage?' + withParam(base, 'groupBy', 'instance')),
     ]);
-    COST = { platform, scoped: scopedUsage, byMode, byChannel, byInstance };
+    COST = { platform, scoped: scopedUsage, byInstance };
     renderCostPanel();
   } catch (error) {
     document.getElementById('costPanel').innerHTML = '<div class="error" style="display:block">成本统计加载失败: ' + esc(error.message) + '</div>';
@@ -532,11 +746,11 @@ function renderCostPanel() {
   document.getElementById('costUpdated').textContent = '更新于 ' + fmtTime(scoped.updatedAt);
   const filters = scoped.filters || {};
   const costScopeHint = document.getElementById('costScopeHint');
-  if (costScopeHint) costScopeHint.textContent = '最近 ' + (filters.days || 30) + ' 天 · ' + costScopeLabel(filters.scope);
+  if (costScopeHint) costScopeHint.textContent = '最近 ' + (filters.days || 30) + ' 天 · Codex 原生日志';
   const selectedAssistant = costInstanceById(filters.instanceId || selectedCostInstanceId);
   const scopedTitle = selectedAssistant
-    ? '当前用户助手成本：' + (selectedAssistant.owner?.displayName || selectedAssistant.owner?.id || selectedAssistant.name || selectedAssistant.instanceId)
-    : '当前用户助手成本';
+    ? '当前用户助手 Codex 用量：' + (selectedAssistant.owner?.displayName || selectedAssistant.owner?.id || selectedAssistant.name || selectedAssistant.instanceId)
+    : '当前用户助手 Codex 用量';
   root.innerHTML =
     renderCostToolbar() +
     renderCostTabs() +
@@ -546,14 +760,8 @@ function renderCostPanel() {
 }
 
 function renderCostToolbar() {
-  const scope = COST_FILTERS.scope || COST.scoped?.filters?.scope || 'all';
   const days = String(COST_FILTERS.days || COST.scoped?.filters?.days || '30');
   return '<div class="cost-toolbar">' +
-    '<div class="field"><label>范围</label><select id="costScope" class="select" onchange="loadCostPanel()">' +
-      costOption('all', '全部调用', scope) +
-      costOption('conversation', '对话', scope) +
-      costOption('push', '推送', scope) +
-    '</select></div>' +
     '<div class="field"><label>时间</label><select id="costDays" class="select" onchange="loadCostPanel()">' +
       costOption('7', '最近 7 天', days) +
       costOption('30', '最近 30 天', days) +
@@ -582,22 +790,20 @@ function renderCostTabs() {
 }
 
 function renderCostOverviewView(platform, scoped) {
-  return '<div class="section" style="margin-top:0"><h3>平台总成本</h3><div class="cost-summary">' + renderCostSummary(platform.totals || {}) + '</div>' + renderUsageSource(platform.totals || {}) + '</div>' +
-    '<div class="section"><h3>平台按日期</h3>' + renderCostTable(platform.groups || [], '日期') + '</div>' +
-    '<div class="section"><h3>当前筛选按调用类型</h3>' + renderCostTable(COST.byMode?.groups || [], 'Mode') + '</div>' +
-    '<div class="section"><h3>当前筛选按通道</h3>' + renderCostTable(COST.byChannel?.groups || [], 'Channel') + '</div>';
+  return '<div class="section" style="margin-top:0"><h3>Codex 原生日志用量</h3><div class="cost-summary">' + renderCodexUsageSummary(platform.codexUsage?.totals || {}) + '</div>' + renderCodexUsageSource(platform.codexUsage?.totals || {}) + '</div>' +
+    '<div class="section"><h3>Codex 原生日志按日期</h3>' + renderCodexUsageTable(platform.codexUsage?.groups || [], '日期') + '</div>';
 }
 
 function renderCostUsersView(scopedTitle, scoped) {
-  return '<div class="section" style="margin-top:0"><h3>各用户助手成本统计</h3>' + renderCostAssistantTable(COST.byInstance?.groups || []) + '</div>' +
-    '<div class="section"><h3>' + esc(scopedTitle) + '</h3><div class="cost-summary">' + renderCostSummary(scoped.totals || {}) + '</div>' + renderUsageSource(scoped.totals || {}) + '</div>' +
-    '<div class="section"><h3>当前筛选按日期</h3>' + renderCostTable(scoped.groups || [], '日期') + '</div>';
+  return '<div class="section" style="margin-top:0"><h3>各用户助手 Codex 原生日志</h3>' + renderCodexAssistantTable(COST.byInstance?.codexUsage?.groups || []) + '</div>' +
+    '<div class="section"><h3>' + esc(scopedTitle) + '</h3><div class="cost-summary">' + renderCodexUsageSummary(scoped.codexUsage?.totals || {}) + '</div>' + renderCodexUsageSource(scoped.codexUsage?.totals || {}) + '</div>' +
+    '<div class="section"><h3>当前筛选 Codex 按日期</h3>' + renderCodexUsageTable(scoped.codexUsage?.groups || [], '日期') + '</div>';
 }
 
-function renderCostAssistantTable(rows) {
-  if (!rows.length) return '<div class="empty">暂无用户助手成本记录</div>';
+function renderCodexAssistantTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无 Codex 原生日志用量</div>';
   return '<div style="overflow:auto"><table class="cost-table">' +
-    '<thead><tr><th>用户助手</th><th>用户</th><th>调用</th><th>总 Token</th><th>输入</th><th>输出</th><th>思考</th><th>成本</th><th>真实/估算</th></tr></thead>' +
+    '<thead><tr><th>用户助手</th><th>用户</th><th>Token Events</th><th>总 Token</th><th>输入</th><th>输出</th><th>推理</th><th>Cache Read</th></tr></thead>' +
     '<tbody>' + rows.map((row) => {
       const assistant = costInstanceById(row.bucket);
       const selected = row.bucket === selectedCostInstanceId ? ' style="background:#eff6ff"' : '';
@@ -611,33 +817,33 @@ function renderCostAssistantTable(rows) {
         '<td>' + esc(fmtNumber(row.inputTokens)) + '</td>' +
         '<td>' + esc(fmtNumber(row.outputTokens)) + '</td>' +
         '<td>' + esc(fmtNumber(row.thoughtTokens)) + '</td>' +
-        '<td>' + esc(formatCost(row.costAmount)) + '</td>' +
-        '<td>' + esc(fmtNumber(row.actualCalls || 0) + '/' + fmtNumber(row.estimatedCalls || 0)) + '</td>' +
+        '<td>' + esc(fmtNumber(row.cachedReadTokens)) + '</td>' +
       '</tr>';
     }).join('') + '</tbody></table></div>';
 }
 
-function renderCostSummary(totals) {
+function renderCodexUsageSummary(totals) {
   return [
-    stat(fmtNumber(totals.totalTokens), '总 Token'),
+    stat(fmtNumber(totals.totalTokens), 'Codex 总 Token'),
     stat(fmtNumber(totals.inputTokens), '输入 Token'),
     stat(fmtNumber(totals.outputTokens), '输出 Token'),
-    stat(formatCost(totals.costAmount), '模型返回成本'),
+    stat(fmtNumber(totals.thoughtTokens), '推理 Token'),
+    stat(fmtNumber(totals.cachedReadTokens), 'Cache Read'),
   ].join('');
 }
 
-function renderUsageSource(totals) {
+function renderCodexUsageSource(totals) {
   return '<div class="cost-source">' +
-    badge('调用 ' + fmtNumber(totals.calls || 0), 'gray') +
-    badge('真实 ' + fmtNumber(totals.actualCalls || 0), 'ok') +
-    badge('估算 ' + fmtNumber(totals.estimatedCalls || 0), 'warn') +
+    badge('token_count events ' + fmtNumber(totals.calls || 0), 'ok') +
+    badge('来源 .codex/sessions', 'info') +
+    badge('不区分对话/推送', 'warn') +
   '</div>';
 }
 
-function renderCostTable(rows, firstLabel) {
-  if (!rows.length) return '<div class="empty">暂无成本记录</div>';
+function renderCodexUsageTable(rows, firstLabel) {
+  if (!rows.length) return '<div class="empty">暂无 Codex 原生日志用量</div>';
   return '<div style="overflow:auto"><table class="cost-table">' +
-    '<thead><tr><th>' + esc(firstLabel) + '</th><th>调用</th><th>总 Token</th><th>输入</th><th>输出</th><th>思考</th><th>Cache Read</th><th>成本</th><th>真实/估算</th></tr></thead>' +
+    '<thead><tr><th>' + esc(firstLabel) + '</th><th>Token Events</th><th>总 Token</th><th>输入</th><th>输出</th><th>推理</th><th>Cache Read</th></tr></thead>' +
     '<tbody>' + rows.map((row) =>
       '<tr>' +
         '<td class="mono">' + esc(row.bucket || '-') + '</td>' +
@@ -647,8 +853,145 @@ function renderCostTable(rows, firstLabel) {
         '<td>' + esc(fmtNumber(row.outputTokens)) + '</td>' +
         '<td>' + esc(fmtNumber(row.thoughtTokens)) + '</td>' +
         '<td>' + esc(fmtNumber(row.cachedReadTokens)) + '</td>' +
-        '<td>' + esc(formatCost(row.costAmount)) + '</td>' +
-        '<td>' + esc(fmtNumber(row.actualCalls || 0) + '/' + fmtNumber(row.estimatedCalls || 0)) + '</td>' +
+      '</tr>'
+    ).join('') + '</tbody></table></div>';
+}
+
+async function loadSourceQuality() {
+  const root = document.getElementById('sourceQualityPanel');
+  if (root) root.innerHTML = '<div class="empty">正在加载数据源质量...</div>';
+  try {
+    SOURCE_QUALITY = await platformJson('/api/platform/source-quality');
+    renderSourceQuality();
+  } catch (error) {
+    document.getElementById('sourceQualityPanel').innerHTML = '<div class="error" style="display:block">数据源质量加载失败: ' + esc(error.message) + '</div>';
+  }
+}
+
+function renderSourceQuality() {
+  const root = document.getElementById('sourceQualityPanel');
+  if (!root || !SOURCE_QUALITY) return;
+  document.getElementById('sourceQualityUpdated').textContent = '更新于 ' + fmtTime(SOURCE_QUALITY.updatedAt);
+  const endpoints = SOURCE_QUALITY.health?.endpoints || [];
+  const capabilities = SOURCE_QUALITY.health?.capabilities || [];
+  const latest = SOURCE_QUALITY.reports?.[0] || null;
+  const failedNow = endpoints.filter((item) => item.lastStatus === 'fail').length;
+  const readyCount = capabilities.filter((item) => item.status === 'ready').length;
+  const partialCount = capabilities.filter((item) => item.status === 'partial').length;
+  const missingCount = capabilities.filter((item) => item.status === 'missing').length;
+  root.innerHTML =
+    '<div class="section" style="margin-top:0"><h3>数据源能力总览</h3><div class="cost-summary">' +
+      stat(fmtNumber(readyCount), '可用能力') +
+      stat(fmtNumber(partialCount), '部分可用') +
+      stat(fmtNumber(missingCount), '缺失能力') +
+      stat(fmtNumber(endpoints.length), 'Provider 端点') +
+    '</div><div class="cost-source">' +
+      badge('服务层数据', 'info') +
+      badge('可靠服务目标: fallback + freshness + audit', 'warn') +
+    '</div></div>' +
+    '<div class="section"><h3>能力矩阵</h3>' + renderSourceCapabilityTable(capabilities) + '</div>' +
+    '<div class="section"><h3>当前 Provider 健康</h3><div class="cost-summary">' +
+      stat(fmtNumber(endpoints.length), '已观测端点') +
+      stat(fmtNumber(failedNow), '当前失败') +
+      stat(fmtNumber(latest?.totalFailures || 0), '最近日报失败') +
+      stat(fmtNumber(latest?.totalDegraded || 0), '最近日报降级') +
+    '</div><div class="cost-source">' +
+      badge('服务层数据', 'info') +
+      badge('目录 ' + (SOURCE_QUALITY.sourceQualityDir || '-'), 'gray') +
+    '</div></div>' +
+    '<div class="section"><h3>Endpoint 状态</h3>' + renderSourceEndpointTable(endpoints) + '</div>' +
+    '<div class="section"><h3>最近质量日报</h3>' + renderSourceReportTable(SOURCE_QUALITY.reports || []) + '</div>' +
+    '<div class="section"><h3>近期质量告警</h3>' + renderSourceAlertTable(SOURCE_QUALITY.alerts || []) + '</div>';
+}
+
+function renderSourceCapabilityTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无数据源能力声明</div>';
+  const statusLabel = { ready: '可用', partial: '部分可用', missing: '缺失' };
+  const statusKind = { ready: 'ok', partial: 'warn', missing: 'gray' };
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>能力</th><th>状态</th><th>证据等级</th><th>主源</th><th>Fallback</th><th>业务用途</th><th>使用边界</th><th>缺口</th><th>下一步</th></tr></thead>' +
+    '<tbody>' + rows.map((row) =>
+      '<tr>' +
+        '<td><strong>' + esc(row.name || row.key || '-') + '</strong><div class="muted mono">' + esc(row.key || '-') + '</div></td>' +
+        '<td>' + badge(statusLabel[row.status] || row.status || '-', statusKind[row.status] || 'gray') + '</td>' +
+        '<td>' + renderEvidenceBadge(row.evidenceLevel) + '</td>' +
+        '<td class="mono">' + esc((row.primaryProviders || []).join(', ') || '-') + '</td>' +
+        '<td class="mono">' + esc((row.fallbackProviders || []).join(', ') || '无') + '</td>' +
+        '<td>' + esc(row.businessUse || '-') + '</td>' +
+        '<td>' + esc(row.usageBoundary || '-') + '</td>' +
+        '<td>' + esc((row.gaps || []).join('；') || '-') + '</td>' +
+        '<td>' + esc(row.nextStep || '-') + '</td>' +
+      '</tr>'
+    ).join('') + '</tbody></table></div>';
+}
+
+function renderEvidenceBadge(level) {
+  const labels = {
+    primary_fact: '事实',
+    secondary_evidence: '辅助证据',
+    signal: '观察信号',
+    operational: '运行规则',
+  };
+  const kinds = {
+    primary_fact: 'ok',
+    secondary_evidence: 'info',
+    signal: 'warn',
+    operational: 'gray',
+  };
+  return badge(labels[level] || level || '-', kinds[level] || 'gray');
+}
+
+function renderSourceEndpointTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无 provider 调用记录；冷启动或尚未请求行情时是正常状态。</div>';
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>Provider</th><th>Endpoint</th><th>证据等级</th><th>置信度</th><th>状态</th><th>调用</th><th>失败</th><th>连续失败</th><th>P95(ms)</th><th>最近成功</th><th>最近错误</th></tr></thead>' +
+    '<tbody>' + rows.map((row) => {
+      const statusKind = row.lastStatus === 'ok' ? 'ok' : (row.lastStatus === 'fail' ? 'warn' : 'gray');
+      return '<tr>' +
+        '<td class="mono">' + esc(row.provider || '-') + '</td>' +
+        '<td class="mono">' + esc(row.endpoint || '-') + '</td>' +
+        '<td>' + renderEvidenceBadge(row.evidenceLevel) + '</td>' +
+        '<td>' + esc(row.confidence || '-') + '</td>' +
+        '<td>' + badge(row.lastStatus || 'unknown', statusKind) + '</td>' +
+        '<td>' + esc(fmtNumber(row.totalCalls)) + '</td>' +
+        '<td>' + esc(fmtNumber(row.totalFailures)) + '</td>' +
+        '<td>' + esc(fmtNumber(row.consecutiveFailures)) + '</td>' +
+        '<td>' + esc(row.recentLatencyP95 == null ? '-' : fmtNumber(row.recentLatencyP95)) + '</td>' +
+        '<td>' + esc(fmtTime(row.lastSuccessAt)) + '</td>' +
+        '<td>' + esc(row.lastError || '-') + '</td>' +
+      '</tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function renderSourceReportTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无质量日报；每日 15:30 后生成，或等待 provider 调用后手动生成。</div>';
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>日期</th><th>事件</th><th>端点</th><th>失败</th><th>降级</th><th>最长连续失败</th><th>生成时间</th></tr></thead>' +
+    '<tbody>' + rows.map((row) =>
+      '<tr>' +
+        '<td class="mono">' + esc(row.dateKey || '-') + '</td>' +
+        '<td>' + esc(fmtNumber(row.eventCount)) + '</td>' +
+        '<td>' + esc(fmtNumber(row.endpointsTouched)) + '</td>' +
+        '<td>' + esc(fmtNumber(row.totalFailures)) + '</td>' +
+        '<td>' + esc(fmtNumber(row.totalDegraded)) + '</td>' +
+        '<td>' + esc(fmtNumber(row.longestFailureStreak)) + '</td>' +
+        '<td>' + esc(fmtTime(row.generatedAt)) + '</td>' +
+      '</tr>'
+    ).join('') + '</tbody></table></div>';
+}
+
+function renderSourceAlertTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无服务层数据源质量告警</div>';
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>时间</th><th>级别</th><th>Provider</th><th>Endpoint</th><th>User 标签</th><th>消息</th></tr></thead>' +
+    '<tbody>' + rows.map((row) =>
+      '<tr>' +
+        '<td>' + esc(fmtTime(row.created_at)) + '</td>' +
+        '<td>' + badge(row.severity || '-', row.severity === 'P1' ? 'warn' : 'gray') + '</td>' +
+        '<td class="mono">' + esc(row.provider || '-') + '</td>' +
+        '<td class="mono">' + esc(row.endpoint || '-') + '</td>' +
+        '<td class="mono">' + esc(row.userId || '-') + '</td>' +
+        '<td>' + esc(row.message || '-') + '</td>' +
       '</tr>'
     ).join('') + '</tbody></table></div>';
 }
@@ -662,12 +1005,6 @@ function formatCost(value) {
   const n = Number(value || 0);
   if (!Number.isFinite(n) || n === 0) return '-';
   return '$' + n.toFixed(n < 0.01 ? 4 : 2);
-}
-
-function costScopeLabel(scope) {
-  if (scope === 'conversation') return '对话';
-  if (scope === 'push') return '推送';
-  return '全部调用';
 }
 
 function renderAuditTimeline() {
@@ -846,8 +1183,39 @@ function selectedGoldenCase() {
 function renderGoldenFilters() {
   const categories = Object.keys(GOLDEN.stats?.categories || {});
   const priorities = Object.keys(GOLDEN.stats?.priorities || {});
+  renderGoldenTierFilter();
   document.getElementById('goldenCategory').innerHTML = '<option value="">全部分类</option>' + categories.map((item) => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
   document.getElementById('goldenPriority').innerHTML = '<option value="">全部优先级</option>' + priorities.map((item) => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
+}
+
+function renderGoldenTierFilter() {
+  const root = document.getElementById('goldenTierFilter');
+  if (!root) return;
+  const tiers = Object.keys(GOLDEN.stats?.reviewTiers || {});
+  const knownOrder = ['golden_core', 'regression', 'principle_probe', 'smoke', 'archived_candidate'];
+  const ordered = knownOrder.filter((tier) => tiers.includes(tier)).concat(tiers.filter((tier) => !knownOrder.includes(tier)));
+  root.innerHTML = ordered.map((tier) => {
+    const active = GOLDEN_ACTIVE_TIERS.has(tier) ? ' active' : '';
+    const count = GOLDEN.stats?.reviewTiers?.[tier] || 0;
+    return '<button class="tier-chip' + active + '" onclick="toggleGoldenTier(\\'' + esc(tier) + '\\')">' + esc(reviewTierLabel(tier)) + ' ' + esc(count) + '</button>';
+  }).join('') + '<button class="tier-chip" onclick="showAllGoldenTiers()">全部</button>';
+}
+
+function toggleGoldenTier(tier) {
+  if (GOLDEN_ACTIVE_TIERS.has(tier)) {
+    GOLDEN_ACTIVE_TIERS.delete(tier);
+  } else {
+    GOLDEN_ACTIVE_TIERS.add(tier);
+  }
+  if (!GOLDEN_ACTIVE_TIERS.size) GOLDEN_ACTIVE_TIERS.add(tier);
+  renderGoldenTierFilter();
+  renderGoldenCases();
+}
+
+function showAllGoldenTiers() {
+  GOLDEN_ACTIVE_TIERS = new Set(Object.keys(GOLDEN.stats?.reviewTiers || {}));
+  renderGoldenTierFilter();
+  renderGoldenCases();
 }
 
 function filteredGoldenCases() {
@@ -855,12 +1223,14 @@ function filteredGoldenCases() {
   const category = document.getElementById('goldenCategory')?.value || '';
   const priority = document.getElementById('goldenPriority')?.value || '';
   return (GOLDEN.cases || []).filter((item) => {
+    if (GOLDEN_ACTIVE_TIERS.size && !GOLDEN_ACTIVE_TIERS.has(item.reviewTier)) return false;
     if (category && item.category !== category) return false;
     if (priority && item.priority !== priority) return false;
     if (!keyword) return true;
     return [
       item.id,
       item.category,
+      item.reviewTier,
       item.priority,
       item.scenario,
       item.userInput,
@@ -879,9 +1249,9 @@ function renderGoldenCases() {
   document.getElementById('goldenCount').textContent = (GOLDEN.stats?.total || 0) + ' 条';
   document.getElementById('goldenUpdated').textContent = GOLDEN.updatedAt ? '更新于 ' + fmtTime(GOLDEN.updatedAt) : '未加载';
   document.getElementById('goldenStats').innerHTML = [
-    metric(GOLDEN.stats?.total || 0, 'Case 总数'),
-    metric((GOLDEN.stats?.priorities || {}).P0 || 0, 'P0'),
-    metric(Object.keys(GOLDEN.stats?.categories || {}).length, '分类'),
+    metric(cases.length, '当前显示'),
+    metric((GOLDEN.stats?.reviewTiers || {}).golden_core || 0, '黄金核心'),
+    metric((GOLDEN.stats?.reviewTiers || {}).regression || 0, '事故回归'),
   ].join('');
   const root = document.getElementById('goldenList');
   if (!cases.length) {
@@ -895,22 +1265,102 @@ function renderGoldenCases() {
 function renderGoldenCard(item) {
   const selected = item.id === selectedGoldenId ? ' selected' : '';
   const summary = summarizeAuditText(item.userInput || item.styleNotes || item.scenario);
+  const title = humanGoldenTitle(item);
+  const turnLabel = (item.turnCount || 1) > 1 ? (item.turnCount || 1) + ' 轮对话' : '单轮';
   return '<div class="eval-card' + selected + '" onclick="selectGoldenCase(\\'' + esc(item.id) + '\\')">' +
-    '<div class="eval-title"><strong>' + esc(item.id) + '</strong>' + badge(item.priority || '-', item.priority === 'P0' ? 'warn' : 'gray') + '</div>' +
-    '<div class="eval-desc">' + esc(item.scenario || '-') + '</div>' +
+    '<div class="eval-title"><strong>' + esc(title) + '</strong>' + badge(item.priority || '-', item.priority === 'P0' ? 'warn' : 'gray') + '</div>' +
     '<div class="eval-desc">' + esc(summary) + '</div>' +
+    '<div class="eval-case-id mono">' + esc(item.id || '-') + '</div>' +
     '<div class="eval-tags">' +
-      badge(item.category || '-', 'info') +
-      badge((item.turnCount || 1) + ' turn', 'gray') +
-      badge('must +' + (item.mustContainCount || 0), 'ok') +
-      badge('must-not ' + (item.mustNotContainCount || 0), 'gray') +
+      badge(reviewTierLabel(item.reviewTier), item.reviewTier === 'golden_core' ? 'ok' : 'info') +
+      badge(turnLabel, 'gray') +
+      badge(scenarioLabel(item.scenario), 'gray') +
     '</div>' +
   '</div>';
+}
+
+function humanGoldenTitle(item) {
+  const firstLine = String(item.userInput || item.styleNotes || item.scenario || item.id || '')
+    .split('\\n')
+    .map((line) => line.trim())
+    .find(Boolean);
+  return firstLine || item.id || '未命名 case';
+}
+
+function categoryLabel(value) {
+  return ({
+    core_golden: '核心样本',
+    principle_probe: '原则探针',
+    incident_regression: '回归样本',
+    safety_redline: '安全红线',
+    smoke: '冒烟样本',
+  })[value] || value || '-';
+}
+
+function reviewTierLabel(value) {
+  return ({
+    golden_core: '黄金核心',
+    regression: '事故回归',
+    principle_probe: '原则探针',
+    smoke: '冒烟样本',
+    archived_candidate: '候选归档',
+  })[value] || value || '-';
+}
+
+function scenarioLabel(value) {
+  const labels = {
+    workspace_greeting: '开场',
+    out_of_scope_boundary: '越界拒答',
+    investment_model_guided_setup: '投资模型',
+    investment_model_query_empty: '投资模型',
+    investment_model_freeform_draft: '投资模型',
+    investment_model_plan_drafting_confirm: '模型预案',
+    portfolio_add_no_plan_hint: '持仓',
+    portfolio_movement_answer_composition: '持仓查询',
+    portfolio_movement_natural_question: '持仓查询',
+    portfolio_update_cost_confirm: '持仓修改',
+    watchlist_add: '自选',
+    watchlist_remove_confirm: '自选移除',
+    watchlist_movement_answer_composition: '自选查询',
+    watchlist_entry_condition_query: '自选买点',
+    plan_trigger_answer_composition: '预案查询',
+    plan_update_answer_composition: '预案更新',
+    contextual_watchlist_add: '上下文写入',
+    contextual_expand_latest: '上下文追问',
+    contextual_write_policy_guard: '写入拦截',
+    contextual_write_no_code_guessing: '上下文绑定',
+    alert_set_simple_price: '提醒草案',
+    alert_set_confirm_two_turn: '提醒确认',
+    pending_confirmation_can_be_ambiguous: '短确认',
+    alert_set_breakout_price_cancel: '提醒取消',
+    alert_rules_query: '提醒查询',
+    alert_near_trigger_answer_composition: '提醒查询',
+    alert_invalid_answer_composition: '提醒诊断',
+    alert_remove_confirm: '提醒关闭',
+    strategy_list_query: '策略查询',
+    strategy_plan_drafting_gate_one: '策略闸门',
+    investment_style_set_confirm: '风格草案',
+    methodology_set_confirm: '方法论',
+    screening_methodology_overlay_draft: '选股方法',
+    trading_strategy_set_confirm: '交易策略',
+    trading_strategy_indicator_draft: '指标草案',
+    daily_review_request: '日复盘',
+    daily_review_summary_then_expand: '复盘查看',
+    weekly_review_request: '周复盘',
+    monthly_review_request: '月复盘',
+    stock_screening_qa: '选股问答',
+    stock_screening_ambiguous: '选股澄清',
+  };
+  return labels[value] || '其他场景';
 }
 
 function selectGoldenCase(id) {
   selectedGoldenId = id;
   renderGoldenCases();
+}
+
+function goldenRunResult(id) {
+  return GOLDEN_RUNS[id] || null;
 }
 
 function renderGoldenDetail() {
@@ -924,17 +1374,60 @@ function renderGoldenDetail() {
     '<dl class="kv">' +
       '<dt>Case ID</dt><dd class="mono">' + esc(item.id) + '</dd>' +
       '<dt>场景</dt><dd>' + esc(item.scenario || '-') + '</dd>' +
-      '<dt>分类</dt><dd>' + esc(item.category || '-') + ' · ' + esc(item.priority || '-') + '</dd>' +
+      '<dt>审查层级</dt><dd>' + esc(reviewTierLabel(item.reviewTier)) + ' · ' + esc(item.priority || '-') + '</dd>' +
+      '<dt>原始分类</dt><dd>' + esc(categoryLabel(item.category)) + '</dd>' +
       '<dt>标签</dt><dd>' + esc((item.tags || []).join(', ') || '-') + '</dd>' +
       '<dt>轮数</dt><dd>' + esc(item.turnCount || 1) + '</dd>' +
     '</dl>' +
     '<div class="section"><h3>原则</h3>' + auditSection('Principles', (item.principles || []).map((line) => '- ' + line).join('\\n') || '-') + '</div>' +
+    '<div class="section"><h3>单条运行</h3>' +
+      '<div class="ops">' +
+        '<button id="goldenRunBtn" class="btn btn-primary" onclick="runGoldenCase()">发送到主用户投资助手</button>' +
+        '<button class="btn" onclick="setView(\\'audit\\')">查看审计</button>' +
+      '</div>' +
+      '<div id="goldenRunError" class="error" style="display:none;margin-top:10px"></div>' +
+      '<div id="goldenRunResult">' + renderGoldenRunResult(item) + '</div>' +
+    '</div>' +
     '<div class="section"><h3>编辑 YAML</h3><textarea id="goldenRawEditor" class="golden-editor">' + esc(item.rawYaml || '') + '</textarea></div>' +
     '<div id="goldenSaveError" class="error" style="display:none"></div>' +
     '<div class="ops">' +
       '<button class="btn btn-primary" onclick="saveGoldenCase()">保存这条 case</button>' +
       '<button class="btn" onclick="renderGoldenDetail()">放弃修改</button>' +
     '</div>';
+}
+
+function renderGoldenRunResult(item) {
+  const result = goldenRunResult(item.id);
+  if (!result) return '<div class="empty">尚未运行。点击后会通过微信入站链路发送 case 的 user_input。</div>';
+  if (result.running) return '<div class="empty">正在发送并等待回复...</div>';
+  if (result.error) return '<div class="error" style="display:block;margin-top:10px">' + esc(result.error) + '</div>';
+  return '<div class="section">' +
+    '<dl class="kv">' +
+      '<dt>目标</dt><dd>' + esc(result.target?.name || result.target?.instanceId || '-') + ' · <span class="mono">' + esc(result.target?.instanceId || '-') + '</span></dd>' +
+      '<dt>耗时</dt><dd>' + esc(result.elapsedMs || 0) + 'ms</dd>' +
+      '<dt>会话</dt><dd class="mono">' + esc(result.conversationId || '-') + '</dd>' +
+      '<dt>输入</dt><dd>' + esc(result.userInput || '-') + '</dd>' +
+    '</dl>' +
+    auditSection('助手回复', result.text || '-', 'primary') +
+  '</div>';
+}
+
+async function runGoldenCase() {
+  const item = selectedGoldenCase();
+  if (!item) return;
+  GOLDEN_RUNS[item.id] = { running: true };
+  renderGoldenDetail();
+  try {
+    const result = await platformJson('/api/platform/golden-cases/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: item.id, instanceId: 'invest-agent-primary' }),
+    });
+    GOLDEN_RUNS[item.id] = result;
+  } catch (error) {
+    GOLDEN_RUNS[item.id] = { error: error.message };
+  }
+  renderGoldenDetail();
 }
 
 async function saveGoldenCase() {
@@ -1072,7 +1565,6 @@ function renderDetail(item) {
       metric(item.channelBindingCount, '微信绑定') +
     '</div></div>' +
     '<div class="section"><h3>微信扫码绑定</h3>' + renderWeixinPanel(item) + '</div>' +
-    '<div class="section"><h3>最近对话</h3>' + renderTraces(item.recentTraces || []) + '</div>' +
     '<div class="section"><h3>微信绑定</h3>' + renderBindings(item.channelBindings || []) + '</div>';
   refreshWeixinStatus(item.instanceId);
 }
@@ -1096,14 +1588,6 @@ function renderWeixinPanel(item) {
     '</div>' +
     '<div class="log" id="wxLog-' + id + '" style="margin-top:10px">-</div>' +
   '</div>';
-}
-
-function renderTraces(rows) {
-  if (!rows.length) return '<div class="empty">暂无对话记录</div>';
-  return '<div class="list">' + rows.map((row) =>
-    '<div class="item"><div class="item-line"><strong>' + esc(row.mode || '-') + '</strong><span>' + esc(fmtTime(row.createdAt)) + '</span></div>' +
-    '<div class="muted" style="margin-top:6px">' + esc(row.userText || '-') + '</div></div>'
-  ).join('') + '</div>';
 }
 
 function renderBindings(rows) {
@@ -1252,6 +1736,8 @@ async function wxTestSelected() {
   });
 }
 
+window.addEventListener('hashchange', () => setView(location.hash.slice(1)));
+renderChrome();
 loadPlatform();
 </script>
 </body>
