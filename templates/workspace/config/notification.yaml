@@ -1,6 +1,22 @@
 # 面向固定上班在职员工的低打扰通知策略。
 user_mode: working_professional
 
+preference:
+  mode: "low_disturbance"
+  label: "低打扰"
+  description: "盘中只提醒可能需要当天处理的事，其他放到晚间复盘。"
+
+preference_options:
+  low_disturbance:
+    label: "低打扰"
+    description: "盘中只提醒可能需要当天处理的事，其他放到晚间复盘。"
+  active_watch:
+    label: "积极盯盘"
+    description: "到用户设置的盯盘时间就推送盘中简报；重大风险仍会单独提醒。"
+  evening_summary:
+    label: "晚间汇总"
+    description: "盘中尽量不打扰，晚上统一复盘。"
+
 priority_levels:
   P0:
     name: "立即关注"

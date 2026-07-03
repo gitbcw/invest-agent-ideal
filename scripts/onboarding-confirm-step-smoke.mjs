@@ -25,7 +25,7 @@ await store.writeOnboardingState({
     style: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
     review_schedule: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
     market_watch_schedule: { done: false, completed_at: null },
-    notification: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+    notification: { done: false, completed_at: null },
     watch_rules: { done: false, completed_at: null },
   },
   completed_at: null,
@@ -39,6 +39,10 @@ await store.writeNotification({
     trading_days_only: true,
     times: EXPECTED_WINDOWS,
     format: "简报",
+  },
+  do_not_disturb: {
+    enabled: true,
+    allow_p0_override: true,
   },
 });
 await store.writeSchedules({
@@ -100,6 +104,26 @@ try {
   assert.equal(scheduleBody.state.current_step, "notification");
   assert.equal(scheduleBody.state.steps.market_watch_schedule.done, true);
 
+  const notificationResponse = await app.inject({
+    method: "POST",
+    url: "/api/sandbox/onboarding/confirm-step",
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      step: "notification",
+      summary: "确认积极盯盘通知偏好",
+      notificationPreference: {
+        mode: "active_watch",
+      },
+    },
+  });
+
+  assert.equal(notificationResponse.statusCode, 200, notificationResponse.body);
+  const notificationBody = notificationResponse.json();
+  assert.equal(notificationBody.ok, true);
+  assert.equal(notificationBody.state.status, "in_progress");
+  assert.equal(notificationBody.state.current_step, "watch_rules");
+  assert.equal(notificationBody.state.steps.notification.done, true);
+
   const response = await app.inject({
     method: "POST",
     url: "/api/sandbox/onboarding/confirm-step",
@@ -124,13 +148,19 @@ try {
   const state = await store.readOnboardingState();
   const watch = await store.readWatch();
   const schedules = await store.readSchedules();
+  const notification = await store.readNotification();
   assert.equal(state.status, "completed");
   assert(Array.isArray(watch?.confirmed_watch_rule_summary), "watch summary written");
+  assert.equal(notification?.preference?.mode, "active_watch");
+  assert.equal(notification?.do_not_disturb?.enabled, false, "active watch should disable do-not-disturb mode");
   assert.deepEqual(
     schedules?.market_watch?.default_windows,
     EXPECTED_WINDOWS,
     "market-watch schedule windows must live in schedules.yaml"
   );
+  assert.equal(schedules?.market_watch?.only_push_on_exception, false);
+  assert.equal(schedules?.market_watch?.push_mode, "scheduled_intraday_brief");
+  assert.equal(watch?.only_push_on_exception, false);
   assert.deepEqual(
     watch?.default_check_windows?.map((window) => window.time),
     ["09:55", "11:20", "14:30"],
@@ -144,6 +174,8 @@ try {
     didCreateWatchRules: body.didCreateWatchRules,
     alertRuleCount: rules.length,
     scheduleWindows: schedules?.market_watch?.default_windows,
+    notificationPreference: notification?.preference?.mode,
+    pushMode: schedules?.market_watch?.push_mode,
     watchWindows: watch?.default_check_windows?.map((window) => window.time),
   }, null, 2));
 } finally {

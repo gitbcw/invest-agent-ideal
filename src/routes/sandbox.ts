@@ -399,6 +399,54 @@ function readMarketWatchScheduleDefaults(value: unknown): Record<string, unknown
   };
 }
 
+type NotificationPreferenceMode = "low_disturbance" | "active_watch" | "evening_summary";
+
+const NOTIFICATION_PREFERENCE_LABELS: Record<NotificationPreferenceMode, string> = {
+  low_disturbance: "低打扰",
+  active_watch: "积极盯盘",
+  evening_summary: "晚间汇总",
+};
+
+const NOTIFICATION_PREFERENCE_DESCRIPTIONS: Record<NotificationPreferenceMode, string> = {
+  low_disturbance: "盘中只提醒可能需要当天处理的事，其他放到晚间复盘。",
+  active_watch: "到用户设置的盯盘时间就推送盘中简报；重大风险仍会单独提醒。",
+  evening_summary: "盘中尽量不打扰，晚上统一复盘。",
+};
+
+function normalizeNotificationPreferenceMode(value: unknown): NotificationPreferenceMode {
+  if (typeof value !== "string") return "low_disturbance";
+  const normalized = value.trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (normalized === "active_watch" || normalized === "active" || normalized === "积极盯盘") return "active_watch";
+  if (normalized === "evening_summary" || normalized === "evening" || normalized === "晚间汇总") return "evening_summary";
+  return "low_disturbance";
+}
+
+function readNotificationPreferenceMode(value: unknown): NotificationPreferenceMode {
+  const input = asRecord(value);
+  return normalizeNotificationPreferenceMode(input.mode ?? value);
+}
+
+function buildNotificationPreference(mode: NotificationPreferenceMode) {
+  return {
+    mode,
+    label: NOTIFICATION_PREFERENCE_LABELS[mode],
+    description: NOTIFICATION_PREFERENCE_DESCRIPTIONS[mode],
+  };
+}
+
+function marketWatchPolicyForPreference(mode: NotificationPreferenceMode) {
+  if (mode === "active_watch") {
+    return {
+      only_push_on_exception: false,
+      push_mode: "scheduled_intraday_brief",
+    };
+  }
+  return {
+    only_push_on_exception: true,
+    push_mode: mode === "evening_summary" ? "exception_only" : "exception_only",
+  };
+}
+
 async function applyOnboardingStepDefaults(
   store: WorkspaceStore,
   step: OnboardingStepKey,
@@ -468,32 +516,57 @@ async function applyOnboardingStepDefaults(
 
   if (step === "notification") {
     const notification = await store.readNotification() ?? {};
+    const mode = readNotificationPreferenceMode(body.notificationPreference);
+    const marketWatchPolicy = marketWatchPolicyForPreference(mode);
+    const schedules = await store.readSchedules() ?? {};
     await store.writeNotification({
       ...notification,
+      preference: buildNotificationPreference(mode),
       user_mode: notification.user_mode ?? "working_professional",
       working_hours: {
         start: "09:00",
         end: "18:00",
-        policy: "工作时间只推 P0，P1/P2 延后到晚间简报。",
         ...(notification.working_hours && typeof notification.working_hours === "object" ? notification.working_hours as Record<string, unknown> : {}),
+        policy: mode === "active_watch"
+          ? "按用户设置的盯盘时间推送盘中简报；重大风险可单独提醒。"
+          : mode === "evening_summary"
+            ? "盘中尽量不打扰，晚上统一复盘；重大风险按系统安全边界处理。"
+            : "盘中只提醒可能需要当天处理的事，其他放到晚间复盘。",
       },
       do_not_disturb: {
-        enabled: true,
-        allow_p0_override: true,
         ...(notification.do_not_disturb && typeof notification.do_not_disturb === "object" ? notification.do_not_disturb as Record<string, unknown> : {}),
+        enabled: mode !== "active_watch",
+        allow_p0_override: true,
       },
       last_confirmed_at: now,
+    });
+    await store.writeSchedules({
+      ...schedules,
+      timezone: schedules.timezone ?? "Asia/Shanghai",
+      market_watch: {
+        enabled: true,
+        auto_run: true,
+        default_windows: ["09:55", "11:20", "14:30"],
+        custom_frequency: null,
+        ...(schedules.market_watch && typeof schedules.market_watch === "object" ? schedules.market_watch as Record<string, unknown> : {}),
+        ...marketWatchPolicy,
+      },
     });
   }
 
   if (step === "watch_rules") {
     const watch = await store.readWatch() ?? {};
     const watchDefaults = pickWatchPolicyOverrides(body.watchPolicy);
+    const notification = await store.readNotification() ?? {};
+    const mode = readNotificationPreferenceMode(asRecord(notification.preference).mode);
+    const marketWatchPolicy = marketWatchPolicyForPreference(mode);
     await store.writeWatch({
       ...watch,
       mode: typeof watch.mode === "string" ? watch.mode : "default",
-      only_push_on_exception: true,
-      priority_policy: "P0 立即推送；P1 晚间汇总；P2 仅记录。详见 config/notification.yaml。",
+      only_push_on_exception: marketWatchPolicy.only_push_on_exception,
+      priority_policy: mode === "active_watch"
+        ? "用户偏好为积极盯盘：固定盯盘时间推送盘中简报，重大风险单独提醒；事件优先级仍由系统内部判断。"
+        : "用户偏好为低打扰/晚间汇总：盘中只打断可能需要当天处理的事项，其他进入晚间复盘或记录；事件优先级由系统内部判断。",
       exception_rules: Array.isArray(watch.exception_rules) && watch.exception_rules.length > 0
         ? watch.exception_rules
         : [
@@ -505,7 +578,8 @@ async function applyOnboardingStepDefaults(
       custom_rules: Array.isArray(watch.custom_rules) ? watch.custom_rules : [],
       last_confirmed_at: now,
       confirmed_watch_rule_summary: [
-        "已确认默认盯盘策略和低打扰口径。",
+        `已确认通知偏好：${NOTIFICATION_PREFERENCE_LABELS[mode]}。`,
+        NOTIFICATION_PREFERENCE_DESCRIPTIONS[mode],
         "尚未批量创建具体阶段二明确规则；如需创建均线、价格或技术指标提醒，应单独向用户确认后再调用 watch-rule API。",
       ],
       ...watchDefaults,
@@ -636,6 +710,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       notes?: string;
       reviewSchedule?: Record<string, unknown>;
       marketWatchSchedule?: Record<string, unknown>;
+      notificationPreference?: Record<string, unknown> | string;
       watchPolicy?: Record<string, unknown>;
       complete?: boolean;
     };
