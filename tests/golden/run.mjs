@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { parse } from "yaml";
@@ -162,9 +162,48 @@ function validateStrategyRecommendationGolden() {
   };
 }
 
+function validateWorkflowSuites() {
+  const workflowsDir = resolve(repoRoot, "tests/golden/workflows");
+  const files = readdirSync(workflowsDir).filter((file) => file.endsWith(".yaml")).sort();
+  assert.ok(files.length > 0, "workflow golden suites should not be empty");
+  const workflows = [];
+  for (const file of files) {
+    const doc = readYaml(`tests/golden/workflows/${file}`);
+    assertString(doc.suite?.id, `${file}.suite.id`);
+    assertString(doc.suite?.domain, `${file}.suite.domain`);
+    assertString(doc.suite?.title, `${file}.suite.title`);
+    assertString(doc.workflow?.id, `${file}.workflow.id`);
+    assert.equal(doc.workflow?.review_tier, "business_flow", `${file}.workflow.review_tier must be business_flow`);
+    assert.ok(["P0", "P1", "P2"].includes(doc.workflow?.priority), `${file}.workflow.priority must be P0/P1/P2`);
+    assert.equal(doc.workflow?.create_new_user, true, `${file}.workflow.create_new_user must be true`);
+    assertStringArray(doc.workflow?.principles, `${file}.workflow.principles`);
+    assert.ok(Array.isArray(doc.workflow?.turns), `${file}.workflow.turns must be array`);
+    assert.ok(doc.workflow.turns.length >= 3, `${file}.workflow.turns should contain a continuous flow`);
+    for (const [index, turn] of doc.workflow.turns.entries()) {
+      assertString(turn.name, `${file}.workflow.turns[${index}].name`);
+      assertString(turn.user_input, `${file}.workflow.turns[${index}].user_input`);
+      assertStringArray(turn.expected?.must_contain, `${file}.workflow.turns[${index}].expected.must_contain`);
+      assertStringArray(turn.expected?.must_not_contain, `${file}.workflow.turns[${index}].expected.must_not_contain`);
+    }
+    assertStringArray(doc.workflow?.final_expected?.must_contain, `${file}.workflow.final_expected.must_contain`);
+    assertStringArray(doc.workflow?.final_expected?.must_not_contain, `${file}.workflow.final_expected.must_not_contain`);
+    workflows.push({
+      file,
+      id: doc.workflow.id,
+      domain: doc.suite.domain,
+      turns: doc.workflow.turns.length,
+    });
+  }
+  return {
+    ok: true,
+    workflows,
+  };
+}
+
 const result = {
   ok: true,
   conversation: validateConversationGolden(),
+  workflows: validateWorkflowSuites(),
   strategyRecommendation: validateStrategyRecommendationGolden(),
 };
 

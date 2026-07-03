@@ -1329,6 +1329,7 @@ function renderEvaluationOverview() {
   const assets = document.getElementById('evalAssetOverview');
   if (!root || !assets) return;
   const stats = GOLDEN.stats || {};
+  const workflowStats = GOLDEN.workflowSuites?.stats || {};
   const tiers = stats.reviewTiers || {};
   const queue = EVAL_REVIEW_QUEUE || {};
   const verdicts = queue.judge?.verdict_counts || {};
@@ -1341,6 +1342,7 @@ function renderEvaluationOverview() {
   assets.innerHTML =
     '<div class="cost-summary">' +
       stat(fmtNumber(stats.total || 0), 'Case 总数') +
+      stat(fmtNumber(workflowStats.total || 0), '业务流程') +
       stat(fmtNumber(tiers.golden_core || 0), '黄金核心') +
       stat(fmtNumber(tiers.regression || 0), '事故回归') +
       stat(fmtNumber(stats.scenarioCount || 0), '场景数') +
@@ -1357,6 +1359,7 @@ function renderEvaluationOverview() {
       stat(fmtNumber(verdicts.fail || 0), 'Fail') +
       stat(fmtNumber(verdicts.unknown || 0), 'Unknown') +
     '</div></div>' +
+    '<div class="section"><h3>业务流程套件</h3>' + renderWorkflowSuiteTable(GOLDEN.workflowSuites?.workflows || []) + '</div>' +
     '<div class="section"><h3>当前 Case 层级</h3>' + renderTierTable(tiers) + '</div>';
 }
 
@@ -1377,6 +1380,21 @@ function renderTierTable(tiers) {
       '<tr><td>' + esc(reviewTierLabel(tier)) + '<div class="mono">' + esc(tier) + '</div></td><td>' + esc(fmtNumber(count)) + '</td><td>' + esc(reviewTierMeaning(tier)) + '</td></tr>'
     ).join('') + '</tbody></table></div>';
 }
+
+function renderWorkflowSuiteTable(rows) {
+  if (!rows.length) return '<div class="empty">暂无业务流程套件</div>';
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>流程</th><th>业务域</th><th>轮数</th><th>运行命令</th></tr></thead>' +
+    '<tbody>' + rows.map((row) =>
+      '<tr>' +
+        '<td><strong>' + esc(row.title || row.id) + '</strong><div class="mono">' + esc(row.id || '-') + '</div></td>' +
+        '<td>' + esc(row.domain || '-') + '</td>' +
+        '<td>' + esc(row.turnCount || 0) + (row.createNewUser ? '<div class="muted">新用户</div>' : '') + '</td>' +
+        '<td class="mono">' + esc(row.command || '-') + '</td>' +
+      '</tr>'
+    ).join('') + '</tbody></table></div>';
+}
+
 
 function reviewTierMeaning(tier) {
   return ({
@@ -1559,13 +1577,17 @@ function renderEvaluationRunHistory() {
 
 function renderEvalCommandBuilder() {
   const scenarios = Object.keys(GOLDEN.stats?.categories || {}).length ? [...new Set((GOLDEN.cases || []).map((item) => item.scenario).filter(Boolean))].sort() : [];
+  const workflows = GOLDEN.workflowSuites?.workflows || [];
   return '<div class="section" style="margin-top:0"><h3>运行命令生成</h3>' +
     '<div class="cost-toolbar">' +
       '<div class="field"><label>Judge</label><select id="evalJudgeMode" class="select" onchange="generateEvalCommand()">' +
         '<option value="static">static</option><option value="model">model</option><option value="none">none</option>' +
       '</select></div>' +
       '<div class="field"><label>范围</label><select id="evalRunScope" class="select" onchange="generateEvalCommand()">' +
-        '<option value="priority-p0">P0</option><option value="onboarding">Onboarding</option><option value="case">单条 case</option><option value="scenario">场景</option><option value="all">全部</option>' +
+        '<option value="workflow">业务流程</option><option value="priority-p0">P0</option><option value="case">单条 case</option><option value="scenario">场景</option><option value="all">全部</option>' +
+      '</select></div>' +
+      '<div class="field"><label>Workflow</label><select id="evalRunWorkflow" class="select" onchange="generateEvalCommand()">' +
+        workflows.map((item) => '<option value="' + esc((item.file || '').replace('.yaml', '')) + '">' + esc(item.title || item.id) + ' · ' + esc(item.id) + '</option>').join('') +
       '</select></div>' +
       '<div class="field"><label>Case ID</label><input id="evalRunCaseId" class="input" value="' + esc(selectedGoldenId || '') + '" oninput="generateEvalCommand()" /></div>' +
       '<div class="field"><label>Scenario</label><select id="evalRunScenario" class="select" onchange="generateEvalCommand()">' +
@@ -1587,9 +1609,11 @@ function generateEvalCommand() {
   const scope = document.getElementById('evalRunScope')?.value || 'priority-p0';
   const caseId = (document.getElementById('evalRunCaseId')?.value || selectedGoldenId || '').trim();
   const scenario = document.getElementById('evalRunScenario')?.value || '';
-  let cmd = 'npm run eval:conversation -- --judge=' + judge;
+  const workflow = document.getElementById('evalRunWorkflow')?.value || 'onboarding';
+  let cmd = scope === 'workflow'
+    ? 'npm run eval:workflow -- --workflow=' + workflow
+    : 'npm run eval:conversation -- --judge=' + judge;
   if (scope === 'priority-p0') cmd += ' --priority=P0';
-  else if (scope === 'onboarding') cmd += ' --tag=onboarding';
   else if (scope === 'case' && caseId) cmd += ' --only=' + caseId;
   else if (scope === 'scenario' && scenario) cmd += ' --scenario=' + scenario;
   cmd += ' --run-id=' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);

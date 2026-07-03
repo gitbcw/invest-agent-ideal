@@ -12,6 +12,7 @@
     "eval:golden": "node tests/golden/run.mjs",
     "eval:strategy-recommendation": "node tests/eval/strategy-recommendation/run.mjs",
     "eval:conversation": "node --import tsx tests/conversation-eval/run.mjs",
+    "eval:workflow": "node --import tsx tests/workflow-eval/run.mjs",
     "smoke": "npm run build && node scripts/customer-output-smoke.mjs",
     "smoke:customer-output": "npm run build && node scripts/customer-output-smoke.mjs",
     "smoke:strategy-expansion": "npm run build && node scripts/strategy-instance-expansion-smoke.mjs",

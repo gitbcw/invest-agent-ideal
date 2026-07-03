@@ -21,6 +21,7 @@ import { getAlertInterval } from "../scheduler/index.js";
 
 const projectWeixinManagers = new Map<string, WeixinMobileManager>();
 const goldenCasesPath = path.resolve(process.cwd(), "tests/golden/conversation/cases.yaml");
+const goldenWorkflowsDir = path.resolve(process.cwd(), "tests/golden/workflows");
 const evalReportsDir = path.resolve(process.cwd(), "eval-reports");
 const reviewQueueJsonPath = path.join(evalReportsDir, "_review-queue.json");
 const reviewQueueMarkdownPath = path.join(evalReportsDir, "_review-queue.md");
@@ -34,6 +35,22 @@ function readGoldenDocument() {
     throw new Error(`黄金数据集 YAML 解析失败: ${doc.errors[0]?.message}`);
   }
   return doc;
+}
+
+function readGoldenWorkflowDocuments() {
+  if (!existsSync(goldenWorkflowsDir)) return [];
+  return readdirSync(goldenWorkflowsDir)
+    .filter((file) => file.endsWith(".yaml"))
+    .sort()
+    .map((file) => {
+      const filePath = path.join(goldenWorkflowsDir, file);
+      const source = readFileSync(filePath, "utf-8");
+      const doc = parseDocument(source);
+      if (doc.errors.length) {
+        throw new Error(`业务流程评测 YAML 解析失败 ${file}: ${doc.errors[0]?.message}`);
+      }
+      return { file, filePath, doc };
+    });
 }
 
 function caseNodeToYaml(node: unknown) {
@@ -86,6 +103,41 @@ function inferGoldenDomain(scenario: string, tags: string[]) {
   return "其他";
 }
 
+function goldenWorkflowSummary(item: { file: string; filePath: string; doc: Document }) {
+  const suite = item.doc.get("suite", true);
+  const workflow = item.doc.get("workflow", true);
+  if (!isMap(suite) || !isMap(workflow)) return null;
+  const turns = workflow.get("turns", true);
+  return {
+    id: String(workflow.get("id") || ""),
+    title: String(suite.get("title") || workflow.get("id") || ""),
+    domain: String(suite.get("domain") || ""),
+    reviewTier: String(workflow.get("review_tier") || ""),
+    priority: String(workflow.get("priority") || ""),
+    createNewUser: Boolean(workflow.get("create_new_user")),
+    turnCount: isSeq(turns) ? turns.items.length : 0,
+    sourcePath: item.filePath,
+    file: item.file,
+    command: `npm run eval:workflow -- --workflow=${item.file.replace(/\.yaml$/, "")}`,
+  };
+}
+
+function loadGoldenWorkflows() {
+  const workflows = readGoldenWorkflowDocuments().map(goldenWorkflowSummary).filter(Boolean);
+  const domains = new Map<string, number>();
+  for (const workflow of workflows) {
+    if (!workflow) continue;
+    domains.set(workflow.domain, (domains.get(workflow.domain) || 0) + 1);
+  }
+  return {
+    workflows,
+    stats: {
+      total: workflows.length,
+      domains: Object.fromEntries([...domains.entries()].sort()),
+    },
+  };
+}
+
 function loadGoldenCases() {
   const doc = readGoldenDocument();
   const casesNode = doc.getIn(["cases"], true);
@@ -108,6 +160,7 @@ function loadGoldenCases() {
     suite: doc.get("suite") || {},
     qualityGates: doc.get("quality_gates") || {},
     sourcePath: goldenCasesPath,
+    workflowSuites: loadGoldenWorkflows(),
     cases,
     stats: {
       total: cases.length,
