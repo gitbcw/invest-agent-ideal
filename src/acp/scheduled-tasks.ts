@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
+import { getCurrentAcpAgent, loadCurrentBackendId, type AcpModelTier } from "./stdio-agent.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
 import { recordAcpTrace } from "./trace.js";
 import { extractFinalCustomerReply, sanitizeCustomerText } from "../lib/customer-output.js";
@@ -46,6 +46,7 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
     conversationId: userContext.conversationId!,
     messageId: randomUUID(),
     mode: "scheduled-market-watch",
+    modelTier: "simple",
     sandboxTokenId: promptContext.sandboxContext.tokenId,
     sandboxPermissions: promptContext.sandboxContext.permissions,
   });
@@ -87,6 +88,7 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
       conversationId: userContext.conversationId!,
       messageId: randomUUID(),
       mode: "scheduled-daily-review",
+      modelTier: "complex",
       reviewContextSummary: promptContext.reviewContextSummary,
       sandboxTokenId: promptContext.sandboxContext.tokenId,
       sandboxPermissions: promptContext.sandboxContext.permissions,
@@ -159,6 +161,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
     conversationId: userContext.conversationId!,
     messageId: randomUUID(),
     mode: `scheduled-${kind}-review`,
+    modelTier: "complex",
     sandboxTokenId: promptContext.sandboxContext.tokenId,
     sandboxPermissions: promptContext.sandboxContext.permissions,
   });
@@ -171,13 +174,16 @@ async function runAcpTask(input: {
   conversationId: string;
   messageId: string;
   mode: string;
+  modelTier?: AcpModelTier;
   reviewContextSummary?: Record<string, unknown>;
   sandboxTokenId?: string;
   sandboxPermissions?: string[];
 }) {
   const startedAt = Date.now();
   try {
-    const acpResult = await (await getCurrentAcpAgent(input.userContext.workspacePath)).chatWithUsage({
+    const acpResult = await (await getCurrentAcpAgent(input.userContext.workspacePath, {
+      modelTier: input.modelTier || "simple",
+    })).chatWithUsage({
       conversationId: input.conversationId,
       text: input.promptText,
       messageId: input.messageId,

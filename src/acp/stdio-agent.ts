@@ -73,6 +73,7 @@ type RequestPermissionRequest = {
 };
 
 export type AcpBackendId = "hermes" | "codex";
+export type AcpModelTier = "simple" | "complex";
 
 export interface AcpBackendDef {
   id: AcpBackendId;
@@ -86,6 +87,8 @@ export interface AcpBackendDef {
 
 interface AcpBackendOverride {
   cwd?: string;
+  modelTier?: AcpModelTier;
+  model?: string;
 }
 
 export interface AcpBackendStatus {
@@ -94,6 +97,8 @@ export interface AcpBackendStatus {
   ready: boolean;
   command: string;
   cwd: string;
+  modelTier?: AcpModelTier;
+  model?: string;
   pid?: number;
   sessions: number;
   lastError?: string;
@@ -374,16 +379,19 @@ export class StdioAcpAgent {
   }
 
   get label(): string {
-    return this.def.label;
+    if (this.def.id !== "codex" || !this.override.model) return this.def.label;
+    return `${this.def.label}/${this.override.modelTier || "model"}:${this.override.model}`;
   }
 
   status(isCurrent: boolean): AcpBackendStatus {
     return {
       id: this.def.id,
-      label: this.def.label,
+      label: this.label,
       ready: this.ready,
       command: this.def.command,
       cwd: this.cwd,
+      modelTier: this.override.modelTier,
+      model: this.override.model,
       pid: this.process?.pid,
       sessions: this.sessions.size,
       lastError: this.lastError,
@@ -394,6 +402,11 @@ export class StdioAcpAgent {
 
   private get cwd() {
     return this.override.cwd || this.def.cwd;
+  }
+
+  private get args() {
+    if (this.def.id !== "codex" || !this.override.model) return this.def.args;
+    return [...this.def.args, "-c", `model=${JSON.stringify(this.override.model)}`];
   }
 
   async ensureReady(): Promise<ClientSideConnection> {
@@ -438,7 +451,7 @@ export class StdioAcpAgent {
     this.collectors.set(sessionId, collector);
     const startedAt = Date.now();
     logger.info(
-      `${this.def.label} ACP 开始处理 session=${sessionId} message=${params.messageId ?? "-"}`
+      `${this.label} ACP 开始处理 session=${sessionId} message=${params.messageId ?? "-"}`
     );
 
     let promptResult: unknown;
@@ -452,14 +465,14 @@ export class StdioAcpAgent {
         this.timeoutAfter(params.timeoutMs ?? this.def.timeoutMs),
       ]);
       logger.info(
-        `${this.def.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(promptResult)} responseStats=${JSON.stringify(collector.stats())}`
+        `${this.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(promptResult)} responseStats=${JSON.stringify(collector.stats())}`
       );
-      debugPromptResult(this.def.label, sessionId, promptResult);
+      debugPromptResult(this.label, sessionId, promptResult);
     } catch (error) {
       if (error instanceof Error && error.message.includes("请求超时")) {
-        logger.warn(`${this.def.label} ACP 超时,取消当前轮次 session=${sessionId}`);
+        logger.warn(`${this.label} ACP 超时,取消当前轮次 session=${sessionId}`);
         await conn.cancel({ sessionId }).catch((cancelError: unknown) => {
-          logger.warn(`${this.def.label} ACP 取消失败:`, cancelError);
+          logger.warn(`${this.label} ACP 取消失败:`, cancelError);
         });
       }
       throw error;
@@ -503,11 +516,13 @@ export class StdioAcpAgent {
       }
     }
     this.process = null;
-    logger.info(`${this.def.label} ACP 子进程已停止`);
+    logger.info(`${this.label} ACP 子进程已停止`);
   }
 
   private async start(): Promise<ClientSideConnection> {
-    const { command, args, label } = this.def;
+    const { command } = this.def;
+    const args = this.args;
+    const label = this.label;
     const cwd = this.cwd;
     const env = await buildRuntimeEnvForBackend(this.def.id, cwd);
     logger.info(`启动 ${label} ACP: ${command}${args.length ? ` ${args.join(" ")}` : ""}`);
@@ -583,7 +598,7 @@ export class StdioAcpAgent {
     });
     this.sessions.set(sessionKey, res.sessionId);
     logger.info(
-      `${this.def.label} ACP 新会话 key=${sessionKey} cwd=${cwd} session=${res.sessionId}`
+      `${this.label} ACP 新会话 key=${sessionKey} cwd=${cwd} session=${res.sessionId}`
     );
     return res.sessionId;
   }
@@ -591,7 +606,7 @@ export class StdioAcpAgent {
   private timeoutAfter(ms: number): Promise<never> {
     return new Promise((_, reject) => {
       setTimeout(
-        () => reject(new Error(`${this.def.label} ACP 请求超时 ${ms}ms`)),
+        () => reject(new Error(`${this.label} ACP 请求超时 ${ms}ms`)),
         ms
       );
     });
@@ -714,13 +729,26 @@ const scopedInstances = new Map<string, StdioAcpAgent>();
 let currentBackendId: AcpBackendId | null = null;
 let settingsLoaded = false;
 
+export function resolveAcpModel(tier: AcpModelTier): string {
+  return tier === "complex" ? config.codex.complexModel : config.codex.simpleModel;
+}
+
+function scopedInstanceKey(id: AcpBackendId, override: AcpBackendOverride): string | undefined {
+  if (!override.cwd && !override.model) return undefined;
+  return [id, path.resolve(override.cwd || ACP_BACKENDS.find((b) => b.id === id)?.cwd || process.cwd()), override.model || ""].join("\0");
+}
+
+function scopedInstanceCwd(key: string): string {
+  return key.split("\0")[1] || "";
+}
+
 function getOrCreateInstance(id: AcpBackendId, override: AcpBackendOverride = {}): StdioAcpAgent {
-  const scopedKey = override.cwd ? `${id}:${path.resolve(override.cwd)}` : undefined;
+  const scopedKey = scopedInstanceKey(id, override);
   if (scopedKey) {
     const existing = scopedInstances.get(scopedKey);
     if (existing) return existing;
   }
-  const existing = override.cwd ? undefined : instances.get(id);
+  const existing = scopedKey ? undefined : instances.get(id);
   if (existing) return existing;
   const def = ACP_BACKENDS.find((b) => b.id === id);
   if (!def) throw new Error(`未知 ACP backend: ${id}`);
@@ -749,9 +777,18 @@ export async function loadCurrentBackendId(): Promise<AcpBackendId> {
   return currentBackendId;
 }
 
-export async function getCurrentAcpAgent(workspacePath?: string): Promise<StdioAcpAgent> {
+export async function getCurrentAcpAgent(
+  workspacePath?: string,
+  options: { modelTier?: AcpModelTier } = {},
+): Promise<StdioAcpAgent> {
   const id = await loadCurrentBackendId();
-  return getOrCreateInstance(id, workspacePath ? { cwd: workspacePath } : {});
+  const modelTier = options.modelTier;
+  const model = id === "codex" && modelTier ? resolveAcpModel(modelTier) : undefined;
+  return getOrCreateInstance(id, {
+    ...(workspacePath ? { cwd: workspacePath } : {}),
+    ...(modelTier ? { modelTier } : {}),
+    ...(model ? { model } : {}),
+  });
 }
 
 export function clearAcpSessions(conversationId: string) {
@@ -767,8 +804,7 @@ export function disposeAcpForWorkspace(workspacePath: string): number {
   const resolved = path.resolve(workspacePath);
   let disposed = 0;
   for (const [key, inst] of [...scopedInstances.entries()]) {
-    const [, ...cwdParts] = key.split(":");
-    const cwd = cwdParts.join(":");
+    const cwd = scopedInstanceCwd(key);
     if (path.resolve(cwd) !== resolved) continue;
     inst.dispose();
     scopedInstances.delete(key);
@@ -834,7 +870,7 @@ export async function listAcpBackends(): Promise<{
 }
 
 export async function startDefaultAcp(): Promise<void> {
-  const agent = await getCurrentAcpAgent();
+  const agent = await getCurrentAcpAgent(undefined, { modelTier: "simple" });
   await agent.ensureReady();
 }
 
