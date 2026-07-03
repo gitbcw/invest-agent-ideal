@@ -40,9 +40,22 @@ export function renderPlatformPage(): string {
     .cost-grid { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; }
     .view.cost-grid { display: none; }
     .view.cost-grid.active { display: grid; }
-    .eval-grid { display: grid; grid-template-columns: minmax(320px, .78fr) minmax(460px, 1.22fr); gap: 14px; align-items: stretch; height: calc(100vh - 92px); min-height: 560px; }
+    .eval-workbench { display: flex; flex-direction: column; gap: 14px; height: calc(100vh - 92px); min-height: 620px; }
+    .view.eval-workbench { display: none; }
+    .view.eval-workbench.active { display: flex; }
+    .eval-grid { display: grid; grid-template-columns: minmax(320px, .78fr) minmax(460px, 1.22fr); gap: 14px; align-items: stretch; flex: 1; min-height: 0; }
     .view.eval-grid { display: none; }
     .view.eval-grid.active { display: grid; }
+    .eval-tab-view { display: none; min-height: 0; flex: 1; }
+    .eval-tab-view.active { display: block; }
+    .eval-tab-view.case-library.active { display: flex; }
+    .eval-workbench-grid { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr); gap: 14px; align-items: start; }
+    .eval-stage-list { display: grid; gap: 10px; }
+    .eval-stage { border: 1px solid #d9e0ea; border-radius: 8px; background: #fff; padding: 12px; }
+    .eval-stage-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .eval-stage h3 { margin: 0; color: #111827; font-size: 13px; }
+    .eval-stage p { margin: 7px 0 0; color: #475569; font-size: 12px; line-height: 1.55; }
+    .eval-command { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 7px; padding: 8px; color: #334155; font-size: 12px; margin-top: 8px; }
     .panel { background: #fff; border: 1px solid #d9e0ea; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
     .panel-head { padding: 13px 15px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #fbfdff; }
     .panel-head h2 { color: #111827; font-size: 14px; margin: 0; }
@@ -156,7 +169,9 @@ export function renderPlatformPage(): string {
       .grid { grid-template-columns: 1fr; }
       .audit-grid { grid-template-columns: 1fr; }
       .cost-grid { grid-template-columns: 1fr; }
+      .eval-workbench { height: auto; min-height: 0; }
       .eval-grid { grid-template-columns: 1fr; height: auto; min-height: 0; }
+      .eval-workbench-grid { grid-template-columns: 1fr; }
       .golden-list-panel, .golden-detail-panel { max-height: none; }
       .golden-list-scroll, .golden-detail-body { overflow: visible; }
       .audit-item { grid-template-columns: 1fr; }
@@ -175,7 +190,7 @@ export function renderPlatformPage(): string {
         <a id="nav-cost" href="#cost" onclick="setView('cost')">成本统计 <span>›</span></a>
         <a id="nav-audit" href="#audit" onclick="setView('audit')">日志审计 <span>›</span></a>
         <a id="nav-rule-alerts" href="#rule-alerts" onclick="setView('rule-alerts')">规则巡检 <span>›</span></a>
-        <a id="nav-golden" href="#golden" onclick="setView('golden')">黄金数据集 <span>›</span></a>
+        <a id="nav-golden" href="#golden" onclick="setView('golden')">评测工作台 <span>›</span></a>
         <a href="/dashboard">投资工作台 <span>↗</span></a>
         <a id="nav-source-quality" href="#source-quality" onclick="setView('source-quality')">数据源质量 <span>›</span></a>
       </nav>
@@ -208,7 +223,7 @@ export function renderPlatformPage(): string {
           <button class="btn" onclick="setView('instances')">返回用户助手</button>
         </div>
         <div class="actions" id="goldenActions" style="display:none">
-          <button class="btn btn-primary" onclick="loadGoldenCases()">刷新数据集</button>
+          <button class="btn btn-primary" onclick="loadGoldenCases()">刷新评测资产</button>
           <button class="btn" onclick="setView('instances')">返回用户助手</button>
         </div>
       </div>
@@ -328,35 +343,81 @@ export function renderPlatformPage(): string {
           <div class="panel-body" id="ruleAlertPanel"><div class="empty">选择用户后加载规则巡检记录</div></div>
         </div>
       </section>
-      <section id="view-golden" class="view eval-grid">
-        <div class="panel golden-list-panel">
-          <div class="panel-head">
-            <h2>黄金数据集</h2>
-            <span class="muted" id="goldenCount">0 项</span>
-          </div>
-          <div class="panel-body golden-list-body">
-            <div class="metrics" id="goldenStats"></div>
-            <div class="section">
-              <div class="form-grid">
-                <input id="goldenSearch" class="input" placeholder="搜索 case、场景、输入、原则" oninput="renderGoldenCases()" />
-                <div class="golden-tier-filter" id="goldenTierFilter"></div>
-                <div class="audit-columns">
-                  <select id="goldenCategory" class="select" onchange="renderGoldenCases()"></select>
-                  <select id="goldenPriority" class="select" onchange="renderGoldenCases()"></select>
-                </div>
+      <section id="view-golden" class="view eval-workbench">
+        <div class="tabs">
+          <button id="evalTabOverview" class="tab active" onclick="setGoldenTab('overview')">总览</button>
+          <button id="evalTabReview" class="tab" onclick="setGoldenTab('review')">人工待审</button>
+          <button id="evalTabCases" class="tab" onclick="setGoldenTab('cases')">黄金 Case 库</button>
+          <button id="evalTabRuns" class="tab" onclick="setGoldenTab('runs')">运行记录</button>
+        </div>
+        <div id="eval-view-overview" class="eval-tab-view active">
+          <div class="eval-workbench-grid">
+            <div class="panel">
+              <div class="panel-head">
+                <h2>评测分层</h2>
+                <span class="muted">L1 / L2 / L3</span>
               </div>
+              <div class="panel-body" id="evalOverview"></div>
             </div>
-            <div class="section golden-list-section">
-              <div class="golden-list-scroll" id="goldenList"><div class="empty">加载中...</div></div>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>资产概览</h2>
+                <span class="muted" id="goldenUpdated">未加载</span>
+              </div>
+              <div class="panel-body" id="evalAssetOverview"><div class="empty">加载中...</div></div>
             </div>
           </div>
         </div>
-        <div class="panel golden-detail-panel">
-          <div class="panel-head">
-            <h2>Case 详情</h2>
-            <span class="muted" id="goldenUpdated">未加载</span>
+        <div id="eval-view-review" class="eval-tab-view">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>人工待审</h2>
+              <span class="muted" id="evalReviewHint">等待评测结果</span>
+            </div>
+            <div class="panel-body" id="evalReviewQueue"><div class="empty">加载中...</div></div>
           </div>
-          <div class="panel-body golden-detail-body" id="goldenDetail"><div class="empty">选择一个 case</div></div>
+        </div>
+        <div id="eval-view-cases" class="eval-tab-view case-library">
+          <div class="eval-grid">
+            <div class="panel golden-list-panel">
+              <div class="panel-head">
+                <h2>黄金 Case 库</h2>
+                <span class="muted" id="goldenCount">0 项</span>
+              </div>
+              <div class="panel-body golden-list-body">
+                <div class="metrics" id="goldenStats"></div>
+                <div class="section">
+                  <div class="form-grid">
+                    <input id="goldenSearch" class="input" placeholder="搜索 case、场景、输入、原则" oninput="renderGoldenCases()" />
+                    <div class="golden-tier-filter" id="goldenTierFilter"></div>
+                    <div class="audit-columns">
+                      <select id="goldenCategory" class="select" onchange="renderGoldenCases()"></select>
+                      <select id="goldenPriority" class="select" onchange="renderGoldenCases()"></select>
+                    </div>
+                  </div>
+                </div>
+                <div class="section golden-list-section">
+                  <div class="golden-list-scroll" id="goldenList"><div class="empty">加载中...</div></div>
+                </div>
+              </div>
+            </div>
+            <div class="panel golden-detail-panel">
+              <div class="panel-head">
+                <h2>Case 详情</h2>
+                <span class="muted">YAML / 单条运行</span>
+              </div>
+              <div class="panel-body golden-detail-body" id="goldenDetail"><div class="empty">选择一个 case</div></div>
+            </div>
+          </div>
+        </div>
+        <div id="eval-view-runs" class="eval-tab-view">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>运行记录</h2>
+              <span class="muted">本页单条运行</span>
+            </div>
+            <div class="panel-body" id="evalRunHistory"><div class="empty">尚未运行 case</div></div>
+          </div>
         </div>
       </section>
     </main>
@@ -400,6 +461,7 @@ let SOURCE_QUALITY = null;
 let GOLDEN = { cases: [], stats: {}, suite: {}, qualityGates: {} };
 let selectedGoldenId = '';
 let GOLDEN_RUNS = {};
+let GOLDEN_TAB = 'overview';
 let GOLDEN_ACTIVE_TIERS = new Set(['golden_core', 'regression']);
 const VALID_VIEWS = new Set(['instances', 'cost', 'source-quality', 'audit', 'rule-alerts', 'golden']);
 let ACTIVE_VIEW = VALID_VIEWS.has(location.hash.slice(1)) ? location.hash.slice(1) : 'instances';
@@ -464,7 +526,7 @@ function setView(view) {
   if (ACTIVE_VIEW === 'golden' && !(GOLDEN.cases || []).length) {
     loadGoldenCases();
   } else if (ACTIVE_VIEW === 'golden') {
-    renderGoldenCases();
+    renderGoldenWorkbench();
   }
 }
 
@@ -492,7 +554,7 @@ function renderChrome() {
     ACTIVE_VIEW === 'source-quality' ? '数据源质量' :
     ACTIVE_VIEW === 'audit' ? '日志审计' :
     ACTIVE_VIEW === 'rule-alerts' ? '规则巡检' :
-    ACTIVE_VIEW === 'golden' ? '黄金数据集' : '用户助手';
+    ACTIVE_VIEW === 'golden' ? '评测工作台' : '用户助手';
 }
 
 function setAuditScope(scope) {
@@ -1170,10 +1232,156 @@ async function loadGoldenCases() {
     GOLDEN = await platformJson('/api/platform/golden-cases');
     selectedGoldenId = selectedGoldenId || GOLDEN.cases?.[0]?.id || '';
     renderGoldenFilters();
-    renderGoldenCases();
+    renderGoldenWorkbench();
   } catch (error) {
-    document.getElementById('goldenDetail').innerHTML = '<div class="error" style="display:block">黄金数据集加载失败: ' + esc(error.message) + '</div>';
+    const detail = document.getElementById('goldenDetail');
+    if (detail) detail.innerHTML = '<div class="error" style="display:block">评测资产加载失败: ' + esc(error.message) + '</div>';
+    const overview = document.getElementById('evalAssetOverview');
+    if (overview) overview.innerHTML = '<div class="error" style="display:block">评测资产加载失败: ' + esc(error.message) + '</div>';
   }
+}
+
+function setGoldenTab(tab) {
+  GOLDEN_TAB = ['overview', 'review', 'cases', 'runs'].includes(tab) ? tab : 'overview';
+  renderGoldenWorkbench();
+}
+
+function renderGoldenWorkbench() {
+  for (const tab of ['overview', 'review', 'cases', 'runs']) {
+    document.getElementById('evalTab' + tabName(tab))?.classList.toggle('active', GOLDEN_TAB === tab);
+    document.getElementById('eval-view-' + tab)?.classList.toggle('active', GOLDEN_TAB === tab);
+  }
+  const updated = document.getElementById('goldenUpdated');
+  if (updated) updated.textContent = GOLDEN.updatedAt ? '更新于 ' + fmtTime(GOLDEN.updatedAt) : '未加载';
+  renderEvaluationOverview();
+  renderEvaluationReviewQueue();
+  renderEvaluationRunHistory();
+  renderGoldenCases();
+}
+
+function tabName(tab) {
+  return tab === 'overview' ? 'Overview' : tab === 'review' ? 'Review' : tab === 'cases' ? 'Cases' : 'Runs';
+}
+
+function renderEvaluationOverview() {
+  const root = document.getElementById('evalOverview');
+  const assets = document.getElementById('evalAssetOverview');
+  if (!root || !assets) return;
+  const stats = GOLDEN.stats || {};
+  const tiers = stats.reviewTiers || {};
+  root.innerHTML =
+    '<div class="eval-stage-list">' +
+      renderEvalStage('L1 程序化评测', '确定性 contract、格式、状态机、权限、禁词、调度和推送队列。失败时直接修代码或契约。', 'npm run build · npm test · npm run eval:golden · smoke:*', 'ok') +
+      renderEvalStage('L2 AI 语义评估', '真实或模拟对话跑出 actual output，再由 AI judge 按 rubric 判定 pass / warn / fail / unknown。', 'npm run eval:conversation -- --judge=model', 'info') +
+      renderEvalStage('L3 人工审核', '只处理 AI judge 的 warn / fail / unknown、新核心样本和产品标准取舍。', 'Platform 评测工作台', 'warn') +
+    '</div>';
+  assets.innerHTML =
+    '<div class="cost-summary">' +
+      stat(fmtNumber(stats.total || 0), 'Case 总数') +
+      stat(fmtNumber(tiers.golden_core || 0), '黄金核心') +
+      stat(fmtNumber(tiers.regression || 0), '事故回归') +
+      stat(fmtNumber(stats.scenarioCount || 0), '场景数') +
+    '</div>' +
+    '<div class="cost-source">' +
+      badge('黄金集属于 L2 case 库', 'info') +
+      badge('eval:golden 是 L1 结构校验', 'ok') +
+      badge('人工默认看待审项', 'warn') +
+    '</div>' +
+    '<div class="section"><h3>当前 Case 层级</h3>' + renderTierTable(tiers) + '</div>';
+}
+
+function renderEvalStage(title, desc, command, badgeKind) {
+  return '<div class="eval-stage">' +
+    '<div class="eval-stage-head"><h3>' + esc(title) + '</h3>' + badge(title.slice(0, 2), badgeKind) + '</div>' +
+    '<p>' + esc(desc) + '</p>' +
+    '<div class="eval-command mono">' + esc(command) + '</div>' +
+  '</div>';
+}
+
+function renderTierTable(tiers) {
+  const rows = Object.entries(tiers || {});
+  if (!rows.length) return '<div class="empty">暂无 case 层级统计</div>';
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>层级</th><th>数量</th><th>工作台含义</th></tr></thead>' +
+    '<tbody>' + rows.map(([tier, count]) =>
+      '<tr><td>' + esc(reviewTierLabel(tier)) + '<div class="mono">' + esc(tier) + '</div></td><td>' + esc(fmtNumber(count)) + '</td><td>' + esc(reviewTierMeaning(tier)) + '</td></tr>'
+    ).join('') + '</tbody></table></div>';
+}
+
+function reviewTierMeaning(tier) {
+  return ({
+    golden_core: '定义产品形态和投资纪律，新增或修改后需要人工校准',
+    regression: '历史事故和关键回归，L2 fail 后进入人工复核',
+    principle_probe: '验证 AGENTS.md / skills 原则是否被执行',
+    smoke: '基础链路样本，后续应尽量下沉到 L1',
+    archived_candidate: '暂不参与常规审查的候选样本',
+  })[tier] || '未分类样本';
+}
+
+function renderEvaluationReviewQueue() {
+  const root = document.getElementById('evalReviewQueue');
+  if (!root) return;
+  const hint = document.getElementById('evalReviewHint');
+  const runs = Object.values(GOLDEN_RUNS || {});
+  const failedRuns = runs.filter((item) => item && (item.error || item.ok === false));
+  const manualCandidates = (GOLDEN.cases || []).filter((item) => ['golden_core', 'regression'].includes(item.reviewTier));
+  if (hint) hint.textContent = failedRuns.length ? failedRuns.length + ' 条运行异常' : '待接入 AI judge 报告';
+  root.innerHTML =
+    '<div class="cost-source">' +
+      badge('下一步读取 eval-reports/_review-queue.md', 'info') +
+      badge('warn / fail / unknown 才进入人工', 'warn') +
+      badge('当前展示核心候选入口', 'gray') +
+    '</div>' +
+    '<div class="section"><h3>运行异常</h3>' + renderRunIssueList(failedRuns) + '</div>' +
+    '<div class="section"><h3>核心样本校准入口</h3>' + renderManualCandidateList(manualCandidates.slice(0, 12)) + '</div>';
+}
+
+function renderRunIssueList(rows) {
+  if (!rows.length) return '<div class="empty">暂无本页运行异常；AI judge 报告接入后这里会显示 warn / fail / unknown。</div>';
+  return '<div class="eval-list">' + rows.map((row) =>
+    '<div class="eval-card"><div class="eval-title"><strong>' + esc(row.id || '-') + '</strong>' + badge('异常', 'warn') + '</div><div class="eval-desc">' + esc(row.error || row.reason || '运行失败') + '</div></div>'
+  ).join('') + '</div>';
+}
+
+function renderManualCandidateList(rows) {
+  if (!rows.length) return '<div class="empty">暂无核心样本</div>';
+  return '<div class="eval-list">' + rows.map((item) =>
+    '<div class="eval-card" onclick="openGoldenCase(\\'' + esc(item.id) + '\\')">' +
+      '<div class="eval-title"><strong>' + esc(humanGoldenTitle(item)) + '</strong>' + badge(item.priority || '-', item.priority === 'P0' ? 'warn' : 'gray') + '</div>' +
+      '<div class="eval-desc">' + esc(summarizeAuditText(item.userInput || item.styleNotes || item.scenario)) + '</div>' +
+      '<div class="eval-tags">' + badge(reviewTierLabel(item.reviewTier), item.reviewTier === 'golden_core' ? 'ok' : 'info') + badge(scenarioLabel(item.scenario), 'gray') + '</div>' +
+    '</div>'
+  ).join('') + '</div>';
+}
+
+function renderEvaluationRunHistory() {
+  const root = document.getElementById('evalRunHistory');
+  if (!root) return;
+  const rows = Object.values(GOLDEN_RUNS || {}).filter(Boolean).reverse();
+  if (!rows.length) {
+    root.innerHTML = '<div class="empty">尚未运行 case；可在“黄金 Case 库”中选择单条发送。</div>';
+    return;
+  }
+  root.innerHTML = '<div class="eval-list">' + rows.map((row) => {
+    const ok = row.ok !== false && !row.error && !row.running;
+    const title = row.id || row.target?.instanceId || '运行中';
+    return '<div class="eval-card" onclick="rowIdToCase(\\'' + esc(row.id || '') + '\\')">' +
+      '<div class="eval-title"><strong>' + esc(title) + '</strong>' + badge(row.running ? '运行中' : ok ? '已完成' : '异常', row.running ? 'info' : ok ? 'ok' : 'warn') + '</div>' +
+      '<div class="eval-desc">' + esc(row.error || row.userInput || '-') + '</div>' +
+      '<div class="eval-case-id mono">' + esc(row.conversationId || '-') + '</div>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+
+function openGoldenCase(id) {
+  selectedGoldenId = id;
+  GOLDEN_TAB = 'cases';
+  renderGoldenWorkbench();
+}
+
+function rowIdToCase(id) {
+  if (!id) return;
+  openGoldenCase(id);
 }
 
 function selectedGoldenCase() {
@@ -1184,6 +1392,7 @@ function renderGoldenFilters() {
   const categories = Object.keys(GOLDEN.stats?.categories || {});
   const priorities = Object.keys(GOLDEN.stats?.priorities || {});
   renderGoldenTierFilter();
+  if (!document.getElementById('goldenCategory') || !document.getElementById('goldenPriority')) return;
   document.getElementById('goldenCategory').innerHTML = '<option value="">全部分类</option>' + categories.map((item) => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
   document.getElementById('goldenPriority').innerHTML = '<option value="">全部优先级</option>' + priorities.map((item) => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
 }
@@ -1246,14 +1455,16 @@ function renderGoldenCases() {
   if (!cases.some((item) => item.id === selectedGoldenId)) {
     selectedGoldenId = cases[0]?.id || GOLDEN.cases?.[0]?.id || '';
   }
-  document.getElementById('goldenCount').textContent = (GOLDEN.stats?.total || 0) + ' 条';
-  document.getElementById('goldenUpdated').textContent = GOLDEN.updatedAt ? '更新于 ' + fmtTime(GOLDEN.updatedAt) : '未加载';
-  document.getElementById('goldenStats').innerHTML = [
+  const count = document.getElementById('goldenCount');
+  const stats = document.getElementById('goldenStats');
+  const root = document.getElementById('goldenList');
+  if (!count || !stats || !root) return;
+  count.textContent = (GOLDEN.stats?.total || 0) + ' 条';
+  stats.innerHTML = [
     metric(cases.length, '当前显示'),
     metric((GOLDEN.stats?.reviewTiers || {}).golden_core || 0, '黄金核心'),
     metric((GOLDEN.stats?.reviewTiers || {}).regression || 0, '事故回归'),
   ].join('');
-  const root = document.getElementById('goldenList');
   if (!cases.length) {
     root.innerHTML = '<div class="empty">没有匹配的 case</div>';
   } else {
@@ -1427,6 +1638,8 @@ async function runGoldenCase() {
   } catch (error) {
     GOLDEN_RUNS[item.id] = { error: error.message };
   }
+  renderEvaluationRunHistory();
+  renderEvaluationReviewQueue();
   renderGoldenDetail();
 }
 
