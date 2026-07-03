@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { Document, isMap, isSeq, parseDocument } from "yaml";
@@ -21,6 +21,9 @@ import { getAlertInterval } from "../scheduler/index.js";
 
 const projectWeixinManagers = new Map<string, WeixinMobileManager>();
 const goldenCasesPath = path.resolve(process.cwd(), "tests/golden/conversation/cases.yaml");
+const evalReportsDir = path.resolve(process.cwd(), "eval-reports");
+const reviewQueueJsonPath = path.join(evalReportsDir, "_review-queue.json");
+const reviewQueueMarkdownPath = path.join(evalReportsDir, "_review-queue.md");
 
 function readGoldenDocument() {
   const source = readFileSync(goldenCasesPath, "utf-8");
@@ -89,6 +92,50 @@ function loadGoldenCases() {
       reviewTiers: Object.fromEntries([...reviewTiers.entries()].sort()),
       scenarioCount: scenarios.size,
     },
+  };
+}
+
+function loadEvaluationReviewQueue() {
+  if (!existsSync(reviewQueueJsonPath)) {
+    return {
+      exists: false,
+      sourcePath: reviewQueueJsonPath,
+      markdownPath: reviewQueueMarkdownPath,
+      markdown: existsSync(reviewQueueMarkdownPath) ? readFileSync(reviewQueueMarkdownPath, "utf-8") : "",
+      updatedAt: null,
+      ranAt: null,
+      runId: null,
+      suite: null,
+      testUser: null,
+      judge: {
+        enabled: false,
+        mode: "none",
+        verdict_counts: { pass: 0, warn: 0, fail: 0, unknown: 0, none: 0 },
+        review_count: 0,
+      },
+      reviewQueue: [],
+      reports: [],
+    };
+  }
+  const parsed = JSON.parse(readFileSync(reviewQueueJsonPath, "utf-8"));
+  return {
+    exists: true,
+    sourcePath: reviewQueueJsonPath,
+    markdownPath: reviewQueueMarkdownPath,
+    markdown: existsSync(reviewQueueMarkdownPath) ? readFileSync(reviewQueueMarkdownPath, "utf-8") : "",
+    updatedAt: new Date(statSync(reviewQueueJsonPath).mtimeMs).toISOString(),
+    ranAt: parsed.ran_at || null,
+    runId: parsed.run_id || null,
+    suite: parsed.suite || null,
+    testUser: parsed.test_user || null,
+    judge: parsed.judge || {
+      enabled: false,
+      mode: "none",
+      verdict_counts: { pass: 0, warn: 0, fail: 0, unknown: 0, none: 0 },
+      review_count: 0,
+    },
+    reviewQueue: Array.isArray(parsed.review_queue) ? parsed.review_queue : [],
+    reports: Array.isArray(parsed.reports) ? parsed.reports : [],
   };
 }
 
@@ -729,6 +776,15 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       ok: true,
       updatedAt: new Date().toISOString(),
       ...data,
+    };
+  }));
+
+  app.get("/api/platform/evaluation/review-queue", safe(async () => {
+    const data = loadEvaluationReviewQueue();
+    return {
+      ok: true,
+      ...data,
+      loadedAt: new Date().toISOString(),
     };
   }));
 

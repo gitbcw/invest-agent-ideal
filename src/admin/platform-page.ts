@@ -459,6 +459,7 @@ let COST_FILTERS = { days: '30' };
 let selectedCostInstanceId = '';
 let SOURCE_QUALITY = null;
 let GOLDEN = { cases: [], stats: {}, suite: {}, qualityGates: {} };
+let EVAL_REVIEW_QUEUE = null;
 let selectedGoldenId = '';
 let GOLDEN_RUNS = {};
 let GOLDEN_TAB = 'overview';
@@ -1229,7 +1230,12 @@ function formatAuditTime(value) {
 
 async function loadGoldenCases() {
   try {
-    GOLDEN = await platformJson('/api/platform/golden-cases');
+    const [golden, reviewQueue] = await Promise.all([
+      platformJson('/api/platform/golden-cases'),
+      loadEvaluationReviewQueue(),
+    ]);
+    GOLDEN = golden;
+    EVAL_REVIEW_QUEUE = reviewQueue;
     selectedGoldenId = selectedGoldenId || GOLDEN.cases?.[0]?.id || '';
     renderGoldenFilters();
     renderGoldenWorkbench();
@@ -1238,6 +1244,21 @@ async function loadGoldenCases() {
     if (detail) detail.innerHTML = '<div class="error" style="display:block">评测资产加载失败: ' + esc(error.message) + '</div>';
     const overview = document.getElementById('evalAssetOverview');
     if (overview) overview.innerHTML = '<div class="error" style="display:block">评测资产加载失败: ' + esc(error.message) + '</div>';
+  }
+}
+
+async function loadEvaluationReviewQueue() {
+  try {
+    return await platformJson('/api/platform/evaluation/review-queue');
+  } catch (error) {
+    return {
+      ok: false,
+      exists: false,
+      error: error.message,
+      judge: { verdict_counts: {}, review_count: 0 },
+      reviewQueue: [],
+      reports: [],
+    };
   }
 }
 
@@ -1269,6 +1290,8 @@ function renderEvaluationOverview() {
   if (!root || !assets) return;
   const stats = GOLDEN.stats || {};
   const tiers = stats.reviewTiers || {};
+  const queue = EVAL_REVIEW_QUEUE || {};
+  const verdicts = queue.judge?.verdict_counts || {};
   root.innerHTML =
     '<div class="eval-stage-list">' +
       renderEvalStage('L1 程序化评测', '确定性 contract、格式、状态机、权限、禁词、调度和推送队列。失败时直接修代码或契约。', 'npm run build · npm test · npm run eval:golden · smoke:*', 'ok') +
@@ -1281,12 +1304,19 @@ function renderEvaluationOverview() {
       stat(fmtNumber(tiers.golden_core || 0), '黄金核心') +
       stat(fmtNumber(tiers.regression || 0), '事故回归') +
       stat(fmtNumber(stats.scenarioCount || 0), '场景数') +
+      stat(fmtNumber(queue.judge?.review_count || 0), '人工待审') +
     '</div>' +
     '<div class="cost-source">' +
       badge('黄金集属于 L2 case 库', 'info') +
       badge('eval:golden 是 L1 结构校验', 'ok') +
-      badge('人工默认看待审项', 'warn') +
+      badge(queue.exists ? ('最近评测 ' + fmtTime(queue.ranAt || queue.updatedAt)) : '尚未生成评测队列', queue.exists ? 'ok' : 'warn') +
     '</div>' +
+    '<div class="section"><h3>最近 L2 Verdict</h3><div class="cost-summary">' +
+      stat(fmtNumber(verdicts.pass || 0), 'Pass') +
+      stat(fmtNumber(verdicts.warn || 0), 'Warn') +
+      stat(fmtNumber(verdicts.fail || 0), 'Fail') +
+      stat(fmtNumber(verdicts.unknown || 0), 'Unknown') +
+    '</div></div>' +
     '<div class="section"><h3>当前 Case 层级</h3>' + renderTierTable(tiers) + '</div>';
 }
 
@@ -1322,25 +1352,67 @@ function renderEvaluationReviewQueue() {
   const root = document.getElementById('evalReviewQueue');
   if (!root) return;
   const hint = document.getElementById('evalReviewHint');
-  const runs = Object.values(GOLDEN_RUNS || {});
-  const failedRuns = runs.filter((item) => item && (item.error || item.ok === false));
-  const manualCandidates = (GOLDEN.cases || []).filter((item) => ['golden_core', 'regression'].includes(item.reviewTier));
-  if (hint) hint.textContent = failedRuns.length ? failedRuns.length + ' 条运行异常' : '待接入 AI judge 报告';
+  const queue = EVAL_REVIEW_QUEUE;
+  if (!queue) {
+    if (hint) hint.textContent = '加载中';
+    root.innerHTML = '<div class="empty">正在加载评测队列...</div>';
+    return;
+  }
+  if (!queue.exists) {
+    if (hint) hint.textContent = '暂无评测结果';
+    root.innerHTML =
+      '<div class="cost-source">' +
+        badge('尚未生成 _review-queue.json', 'warn') +
+        badge('先跑 L2 对话评测', 'info') +
+      '</div>' +
+      '<div class="section"><h3>生成方式</h3>' +
+        '<div class="eval-command mono">npm run eval:conversation -- --judge=static --only=&lt;case-id&gt;</div>' +
+        '<div class="eval-command mono">npm run eval:conversation -- --judge=model --priority=P0</div>' +
+        '<div class="muted" style="margin-top:8px">跑完后会生成 eval-reports/_review-queue.json 和 _review-queue.md，本页刷新后展示 warn / fail / unknown。</div>' +
+      '</div>' +
+      '<div class="section"><h3>核心样本校准入口</h3>' + renderManualCandidateList((GOLDEN.cases || []).filter((item) => ['golden_core', 'regression'].includes(item.reviewTier)).slice(0, 12)) + '</div>';
+    return;
+  }
+  const rows = queue.reviewQueue || [];
+  if (hint) hint.textContent = rows.length ? rows.length + ' 条待审' : '无需人工处理';
+  if (!rows.length) {
+    root.innerHTML =
+      '<div class="cost-source">' +
+        badge('最近评测全部通过', 'ok') +
+        badge('run ' + (queue.runId || '-'), 'gray') +
+        badge('judge ' + (queue.judge?.mode || 'none'), 'info') +
+      '</div>' +
+      '<div class="empty">暂无 warn / fail / unknown。人工可以只抽查黄金核心样本。</div>';
+    return;
+  }
   root.innerHTML =
     '<div class="cost-source">' +
-      badge('下一步读取 eval-reports/_review-queue.md', 'info') +
-      badge('warn / fail / unknown 才进入人工', 'warn') +
-      badge('当前展示核心候选入口', 'gray') +
+      badge('run ' + (queue.runId || '-'), 'gray') +
+      badge('judge ' + (queue.judge?.mode || 'none'), 'info') +
+      badge('更新 ' + fmtTime(queue.ranAt || queue.updatedAt), 'ok') +
+      badge('只显示 warn / fail / unknown', 'warn') +
     '</div>' +
-    '<div class="section"><h3>运行异常</h3>' + renderRunIssueList(failedRuns) + '</div>' +
-    '<div class="section"><h3>核心样本校准入口</h3>' + renderManualCandidateList(manualCandidates.slice(0, 12)) + '</div>';
+    '<div class="section"><h3>待审项</h3>' + renderEvalReviewQueueList(rows) + '</div>';
 }
 
-function renderRunIssueList(rows) {
-  if (!rows.length) return '<div class="empty">暂无本页运行异常；AI judge 报告接入后这里会显示 warn / fail / unknown。</div>';
-  return '<div class="eval-list">' + rows.map((row) =>
-    '<div class="eval-card"><div class="eval-title"><strong>' + esc(row.id || '-') + '</strong>' + badge('异常', 'warn') + '</div><div class="eval-desc">' + esc(row.error || row.reason || '运行失败') + '</div></div>'
-  ).join('') + '</div>';
+function renderEvalReviewQueueList(rows) {
+  return '<div class="eval-list">' + rows.map((row) => {
+    const verdict = row.judge?.verdict || 'unknown';
+    return '<div class="eval-card" onclick="openGoldenCase(\\'' + esc(row.id || '') + '\\')">' +
+      '<div class="eval-title"><strong>' + esc(row.id || '-') + '</strong>' + badge(verdict.toUpperCase(), verdictBadgeKind(verdict)) + '</div>' +
+      '<div class="eval-desc">' + esc(row.judge?.reason || '-') + '</div>' +
+      '<div class="eval-tags">' +
+        badge(row.scenario_name || row.scenario || '-', 'gray') +
+        badge((row.judge?.judge_type || '-') + (row.judge?.confidence ? ' · ' + row.judge.confidence : ''), 'info') +
+        badge(String(row.elapsed_ms || 0) + 'ms', 'gray') +
+      '</div>' +
+      '<div class="section"><div class="audit-text primary">' + esc(summarizeAuditText(row.actual_output_preview || row.user_input || '-')) + '</div></div>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+
+function verdictBadgeKind(verdict) {
+  return verdict === 'pass' ? 'ok' : verdict === 'warn' ? 'warn' : verdict === 'fail' ? 'warn' : 'gray';
 }
 
 function renderManualCandidateList(rows) {
@@ -1358,11 +1430,15 @@ function renderEvaluationRunHistory() {
   const root = document.getElementById('evalRunHistory');
   if (!root) return;
   const rows = Object.values(GOLDEN_RUNS || {}).filter(Boolean).reverse();
+  const reports = EVAL_REVIEW_QUEUE?.reports || [];
+  const reportSection = reports.length
+    ? '<div class="section" style="margin-top:0"><h3>最近评测报告</h3>' + renderEvalReportTable(reports) + '</div>'
+    : '<div class="section" style="margin-top:0"><h3>最近评测报告</h3><div class="empty">暂无 _review-queue.json 报告索引</div></div>';
   if (!rows.length) {
-    root.innerHTML = '<div class="empty">尚未运行 case；可在“黄金 Case 库”中选择单条发送。</div>';
+    root.innerHTML = reportSection + '<div class="section"><h3>本页单条运行</h3><div class="empty">尚未运行 case；可在“黄金 Case 库”中选择单条发送。</div></div>';
     return;
   }
-  root.innerHTML = '<div class="eval-list">' + rows.map((row) => {
+  root.innerHTML = reportSection + '<div class="section"><h3>本页单条运行</h3><div class="eval-list">' + rows.map((row) => {
     const ok = row.ok !== false && !row.error && !row.running;
     const title = row.id || row.target?.instanceId || '运行中';
     return '<div class="eval-card" onclick="rowIdToCase(\\'' + esc(row.id || '') + '\\')">' +
@@ -1370,7 +1446,19 @@ function renderEvaluationRunHistory() {
       '<div class="eval-desc">' + esc(row.error || row.userInput || '-') + '</div>' +
       '<div class="eval-case-id mono">' + esc(row.conversationId || '-') + '</div>' +
     '</div>';
-  }).join('') + '</div>';
+  }).join('') + '</div></div>';
+}
+
+function renderEvalReportTable(rows) {
+  return '<div style="overflow:auto"><table class="cost-table">' +
+    '<thead><tr><th>场景</th><th>Markdown</th><th>JSON</th></tr></thead>' +
+    '<tbody>' + rows.map((row) =>
+      '<tr>' +
+        '<td><strong>' + esc(row.scenario_name || row.scenario || '-') + '</strong><div class="mono">' + esc(row.scenario || '-') + '</div></td>' +
+        '<td class="mono">' + esc(row.mdFilename || '-') + '</td>' +
+        '<td class="mono">' + esc(row.jsonFilename || '-') + '</td>' +
+      '</tr>'
+    ).join('') + '</tbody></table></div>';
 }
 
 function openGoldenCase(id) {

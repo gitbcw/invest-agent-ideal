@@ -100,7 +100,14 @@ Invest Agent 的完整可评测性分为三层:
 
 `eval:golden` 必须始终通过。它是测试集资产自身的健康检查。
 
-`eval:conversation` 的输出报告不自动判分。当前阶段由人工或当前 ACP 运行时复读 `eval-reports/<中文场景名>.md` 后判定。
+`eval:conversation` 会输出结构化 judge 结果。默认 `--judge=static` 使用 rubric 和全局禁词生成 `pass` / `warn` / `fail` / `unknown`; `--judge=model` 使用外部 AI judge。脚本会生成:
+
+- `eval-reports/<中文场景名>.md`: 场景最新审计报告。
+- `eval-reports/<中文场景名>.json`: 场景机器可读结果。
+- `eval-reports/_review-queue.md`: 面向人工的待审摘要。
+- `eval-reports/_review-queue.json`: Platform 评测工作台读取的待审队列。
+
+Platform 的“评测工作台 / 人工待审”默认只展示 `warn` / `fail` / `unknown`。人工不需要逐条浏览全部 case;如果某个失败可以程序化判断,应下沉到 L1 测试或 smoke。
 
 报告按场景覆盖保存，只保留每个场景最新一份人工审计稿；同场景包含多条 case 时会写在同一个中文报告里。对应 JSON 文件用于后续机器复评。
 

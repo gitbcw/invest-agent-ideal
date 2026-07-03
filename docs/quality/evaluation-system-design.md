@@ -159,7 +159,8 @@ Platform 页面应演进为评测工作台:
 - 后续可替换或新增模型 judge,但保持相同结果结构。
 - 输出结构化 JSON: case id、actual output、judge verdict、reason、violated rubric。
 - 生成面向人工的 Markdown 摘要 `eval-reports/_review-queue.md`,只列 warn/fail/unknown。
-- Platform 读取最近评测报告,默认展示待审项而非全部 case。
+- 生成机器可读队列 `eval-reports/_review-queue.json`,供 Platform 评测工作台读取。
+- Platform 读取最近评测队列,默认展示待审项而非全部 case。
 
 Judge contract 由 `tests/conversation-eval/judge-contract.mjs` 承载。模型 judge 不允许调用工具、访问 workspace 或补充市场事实;它只能基于 case、rubric、actual output 和 quality gates 给出结构化裁判结果。推荐配置:
 
