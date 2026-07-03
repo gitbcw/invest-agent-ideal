@@ -109,6 +109,8 @@ Invest Agent 的完整可评测性分为三层:
 
 Platform 的“评测工作台 / 人工待审”默认只展示 `warn` / `fail` / `unknown`。人工不需要逐条浏览全部 case;如果某个失败可以程序化判断,应下沉到 L1 测试或 smoke。
 
+人工处理结果不会覆盖原始 judge 输出,而是追加写入 `eval-reports/_review-decisions.json`。从日志审计中发现的新样本会先写入 `eval-reports/_candidate-cases.json`,等人工整理后再进入正式 `tests/golden/conversation/cases.yaml`。
+
 报告按场景覆盖保存，只保留每个场景最新一份人工审计稿；同场景包含多条 case 时会写在同一个中文报告里。对应 JSON 文件用于后续机器复评。
 
 - Pass: 满足 must_contain,没有触犯 must_not_contain,风格可接受。

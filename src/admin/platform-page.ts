@@ -452,6 +452,7 @@ export function renderPlatformPage(): string {
 let DATA = { instances: [] };
 let selectedInstanceId = '';
 let AUDIT = { users: [], instances: [], items: [], filters: {} };
+let AUDIT_ITEM_BY_ID = {};
 let RULE_ALERTS = { users: [], instances: [], tasks: [], events: [], rules: [], filters: {}, summary: {} };
 let COST = { platform: null, scoped: null };
 let COST_TAB = 'overview';
@@ -1073,6 +1074,7 @@ function formatCost(value) {
 function renderAuditTimeline() {
   const root = document.getElementById('auditTimeline');
   const items = AUDIT.items || [];
+  AUDIT_ITEM_BY_ID = Object.fromEntries(items.map((item) => [String(item.id), item]));
   if (!items.length) {
     root.innerHTML = '<div class="empty">暂无审计记录</div>';
     return;
@@ -1119,10 +1121,45 @@ function renderAuditItem(item) {
       '</div>' +
       (item.errorMessage ? auditSection('错误', item.errorMessage, 'audit-error') : '') +
       visibleBody +
+      renderAuditCandidateAction(item) +
       renderAuditUsage(item) +
       details +
     '</div>' +
   '</div>';
+}
+
+function renderAuditCandidateAction(item) {
+  if (item.kind !== 'trace' || !item.userText) return '';
+  return '<div class="ops">' +
+    '<button class="btn" onclick="createCandidateFromAudit(\\'' + esc(String(item.id)) + '\\')">生成候选 case</button>' +
+  '</div>';
+}
+
+async function createCandidateFromAudit(id) {
+  const item = AUDIT_ITEM_BY_ID[String(id)];
+  if (!item) return;
+  const note = prompt('给这个候选 case 加一句备注，说明为什么值得评测。', '');
+  if (note === null) return;
+  const actualOutput = item.replyTextSanitized || item.replyTextRaw || item.errorMessage || '';
+  try {
+    await platformJson('/api/platform/evaluation/candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'audit',
+        sourceId: String(item.id),
+        userInput: item.userText,
+        actualOutput,
+        scenario: 'candidate_from_audit',
+        priority: item.errorMessage ? 'P0' : 'P1',
+        note,
+      }),
+    });
+    if (ACTIVE_VIEW === 'golden') await loadGoldenCases();
+    alert('已生成候选 case 草稿，可在评测工作台查看。');
+  } catch (error) {
+    alert('生成候选 case 失败: ' + error.message);
+  }
 }
 
 function renderAuditUsage(item) {
@@ -1398,6 +1435,7 @@ function renderEvaluationReviewQueue() {
 function renderEvalReviewQueueList(rows) {
   return '<div class="eval-list">' + rows.map((row) => {
     const verdict = row.judge?.verdict || 'unknown';
+    const decision = latestReviewDecision(row.id);
     return '<div class="eval-card" onclick="openGoldenCase(\\'' + esc(row.id || '') + '\\')">' +
       '<div class="eval-title"><strong>' + esc(row.id || '-') + '</strong>' + badge(verdict.toUpperCase(), verdictBadgeKind(verdict)) + '</div>' +
       '<div class="eval-desc">' + esc(row.judge?.reason || '-') + '</div>' +
@@ -1405,10 +1443,62 @@ function renderEvalReviewQueueList(rows) {
         badge(row.scenario_name || row.scenario || '-', 'gray') +
         badge((row.judge?.judge_type || '-') + (row.judge?.confidence ? ' · ' + row.judge.confidence : ''), 'info') +
         badge(String(row.elapsed_ms || 0) + 'ms', 'gray') +
+        (decision ? badge(decisionLabel(decision.action), 'ok') : badge('未处理', 'warn')) +
       '</div>' +
       '<div class="section"><div class="audit-text primary">' + esc(summarizeAuditText(row.actual_output_preview || row.user_input || '-')) + '</div></div>' +
+      '<div class="ops" onclick="event.stopPropagation()">' +
+        renderDecisionButton(row, 'accept_judge', '接受 judge') +
+        renderDecisionButton(row, 'override_pass', '改判 Pass') +
+        renderDecisionButton(row, 'override_fail', '改判 Fail') +
+        renderDecisionButton(row, 'needs_fix', '需要修复') +
+        renderDecisionButton(row, 'move_to_l1', '下沉 L1') +
+        renderDecisionButton(row, 'update_case', '更新 case') +
+      '</div>' +
     '</div>';
   }).join('') + '</div>';
+}
+
+function latestReviewDecision(caseId) {
+  const rows = EVAL_REVIEW_QUEUE?.decisions || [];
+  return rows.find((item) => item.caseId === caseId) || null;
+}
+
+function decisionLabel(action) {
+  return ({
+    accept_judge: '已接受',
+    override_pass: '改判 Pass',
+    override_fail: '改判 Fail',
+    needs_fix: '需修复',
+    move_to_l1: '下沉 L1',
+    update_case: '更新 case',
+  })[action] || action || '已处理';
+}
+
+function renderDecisionButton(row, action, label) {
+  return '<button class="btn" onclick="saveReviewDecision(\\'' + esc(row.id || '') + '\\', \\'' + esc(action) + '\\')">' + esc(label) + '</button>';
+}
+
+async function saveReviewDecision(caseId, action) {
+  const note = prompt('处理备注，可写修复方向、改判原因或需要下沉的测试点。', '');
+  if (note === null) return;
+  const finalVerdict = action === 'override_pass' ? 'pass' : action === 'override_fail' ? 'fail' : '';
+  try {
+    const res = await platformJson('/api/platform/evaluation/review-decisions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        caseId,
+        action,
+        finalVerdict,
+        note,
+        sourceRunId: EVAL_REVIEW_QUEUE?.runId || '',
+      }),
+    });
+    EVAL_REVIEW_QUEUE.decisions = res.decisions || [];
+    renderEvaluationReviewQueue();
+  } catch (error) {
+    alert('保存处理结果失败: ' + error.message);
+  }
 }
 
 function verdictBadgeKind(verdict) {
@@ -1426,19 +1516,34 @@ function renderManualCandidateList(rows) {
   ).join('') + '</div>';
 }
 
+function renderCandidateCaseList() {
+  const rows = EVAL_REVIEW_QUEUE?.candidates || [];
+  if (!rows.length) return '<div class="empty">暂无候选 case 草稿；可在日志审计里从真实对话生成。</div>';
+  return '<div class="eval-list">' + rows.map((item) =>
+    '<div class="eval-card">' +
+      '<div class="eval-title"><strong>' + esc(item.id || '-') + '</strong>' + badge(item.priority || 'P1', item.priority === 'P0' ? 'warn' : 'gray') + '</div>' +
+      '<div class="eval-desc">' + esc(summarizeAuditText(item.userInput || '-')) + '</div>' +
+      '<div class="eval-tags">' + badge(item.reviewTier || 'archived_candidate', 'gray') + badge(item.source || '-', 'info') + badge(fmtTime(item.createdAt), 'gray') + '</div>' +
+      '<div class="section"><div class="audit-text">' + esc(item.note || item.actualOutput || '-') + '</div></div>' +
+    '</div>'
+  ).join('') + '</div>';
+}
+
 function renderEvaluationRunHistory() {
   const root = document.getElementById('evalRunHistory');
   if (!root) return;
   const rows = Object.values(GOLDEN_RUNS || {}).filter(Boolean).reverse();
   const reports = EVAL_REVIEW_QUEUE?.reports || [];
+  const commandSection = renderEvalCommandBuilder();
+  const candidateSection = '<div class="section"><h3>候选 Case 草稿</h3>' + renderCandidateCaseList() + '</div>';
   const reportSection = reports.length
     ? '<div class="section" style="margin-top:0"><h3>最近评测报告</h3>' + renderEvalReportTable(reports) + '</div>'
     : '<div class="section" style="margin-top:0"><h3>最近评测报告</h3><div class="empty">暂无 _review-queue.json 报告索引</div></div>';
   if (!rows.length) {
-    root.innerHTML = reportSection + '<div class="section"><h3>本页单条运行</h3><div class="empty">尚未运行 case；可在“黄金 Case 库”中选择单条发送。</div></div>';
+    root.innerHTML = commandSection + reportSection + candidateSection + '<div class="section"><h3>本页单条运行</h3><div class="empty">尚未运行 case；可在“黄金 Case 库”中选择单条发送。</div></div>';
     return;
   }
-  root.innerHTML = reportSection + '<div class="section"><h3>本页单条运行</h3><div class="eval-list">' + rows.map((row) => {
+  root.innerHTML = commandSection + reportSection + candidateSection + '<div class="section"><h3>本页单条运行</h3><div class="eval-list">' + rows.map((row) => {
     const ok = row.ok !== false && !row.error && !row.running;
     const title = row.id || row.target?.instanceId || '运行中';
     return '<div class="eval-card" onclick="rowIdToCase(\\'' + esc(row.id || '') + '\\')">' +
@@ -1447,6 +1552,56 @@ function renderEvaluationRunHistory() {
       '<div class="eval-case-id mono">' + esc(row.conversationId || '-') + '</div>' +
     '</div>';
   }).join('') + '</div></div>';
+}
+
+function renderEvalCommandBuilder() {
+  const scenarios = Object.keys(GOLDEN.stats?.categories || {}).length ? [...new Set((GOLDEN.cases || []).map((item) => item.scenario).filter(Boolean))].sort() : [];
+  return '<div class="section" style="margin-top:0"><h3>运行命令生成</h3>' +
+    '<div class="cost-toolbar">' +
+      '<div class="field"><label>Judge</label><select id="evalJudgeMode" class="select" onchange="generateEvalCommand()">' +
+        '<option value="static">static</option><option value="model">model</option><option value="none">none</option>' +
+      '</select></div>' +
+      '<div class="field"><label>范围</label><select id="evalRunScope" class="select" onchange="generateEvalCommand()">' +
+        '<option value="priority-p0">P0</option><option value="case">单条 case</option><option value="scenario">场景</option><option value="all">全部</option>' +
+      '</select></div>' +
+      '<div class="field"><label>Case ID</label><input id="evalRunCaseId" class="input" value="' + esc(selectedGoldenId || '') + '" oninput="generateEvalCommand()" /></div>' +
+      '<div class="field"><label>Scenario</label><select id="evalRunScenario" class="select" onchange="generateEvalCommand()">' +
+        scenarios.map((item) => '<option value="' + esc(item) + '">' + esc(scenarioLabel(item)) + ' · ' + esc(item) + '</option>').join('') +
+      '</select></div>' +
+      '<button class="btn btn-primary" onclick="generateEvalCommand()">生成命令</button>' +
+      '<button class="btn" onclick="copyEvalCommand()">复制</button>' +
+    '</div>' +
+    '<textarea id="evalCommandOutput" class="golden-editor" style="min-height:92px" readonly></textarea>' +
+    '<div class="section"><h3>对比入口</h3><div class="muted">建议先用两个不同 run id 跑同一范围，再比较两个 _review-queue.json 的 verdict 分布和待审项变化。</div>' +
+      '<div class="eval-command mono">npm run eval:conversation -- --judge=static --priority=P0 --run-id=baseline</div>' +
+      '<div class="eval-command mono">npm run eval:conversation -- --judge=static --priority=P0 --run-id=candidate</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function generateEvalCommand() {
+  const judge = document.getElementById('evalJudgeMode')?.value || 'static';
+  const scope = document.getElementById('evalRunScope')?.value || 'priority-p0';
+  const caseId = (document.getElementById('evalRunCaseId')?.value || selectedGoldenId || '').trim();
+  const scenario = document.getElementById('evalRunScenario')?.value || '';
+  let cmd = 'npm run eval:conversation -- --judge=' + judge;
+  if (scope === 'priority-p0') cmd += ' --priority=P0';
+  else if (scope === 'case' && caseId) cmd += ' --only=' + caseId;
+  else if (scope === 'scenario' && scenario) cmd += ' --scenario=' + scenario;
+  cmd += ' --run-id=' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+  const output = document.getElementById('evalCommandOutput');
+  if (output) output.value = cmd;
+}
+
+async function copyEvalCommand() {
+  generateEvalCommand();
+  const value = document.getElementById('evalCommandOutput')?.value || '';
+  try {
+    await navigator.clipboard.writeText(value);
+    alert('已复制评测命令');
+  } catch {
+    prompt('复制评测命令', value);
+  }
 }
 
 function renderEvalReportTable(rows) {

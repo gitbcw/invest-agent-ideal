@@ -132,6 +132,12 @@ Platform 页面应演进为评测工作台:
 | 人工待审 | 只展示 warn/fail/unknown、新核心样本和标准变更样本 |
 | Case 库 | 作为检索和编辑入口,不作为默认审查入口 |
 
+当前 Platform 评测工作台还提供三类动作能力:
+
+- 人工待审决策:对单个待审项标记 `accept_judge` / `override_pass` / `override_fail` / `needs_fix` / `move_to_l1` / `update_case`,结果落盘到 `eval-reports/_review-decisions.json`。
+- 候选 case 草稿:从日志审计中的真实对话生成候选样本,结果落盘到 `eval-reports/_candidate-cases.json`,后续再人工整理进正式 `cases.yaml`。
+- 运行命令生成:按 judge、priority、case id、scenario 生成 `npm run eval:conversation` 命令;工作台暂不直接启动长跑任务。
+
 ## 当前资产归位
 
 | 当前资产 | 目标归属 | 说明 |
@@ -161,6 +167,7 @@ Platform 页面应演进为评测工作台:
 - 生成面向人工的 Markdown 摘要 `eval-reports/_review-queue.md`,只列 warn/fail/unknown。
 - 生成机器可读队列 `eval-reports/_review-queue.json`,供 Platform 评测工作台读取。
 - Platform 读取最近评测队列,默认展示待审项而非全部 case。
+- Platform 的人工处理结果单独保存在 `_review-decisions.json`,不直接改写 judge 原始结果。
 
 Judge contract 由 `tests/conversation-eval/judge-contract.mjs` 承载。模型 judge 不允许调用工具、访问 workspace 或补充市场事实;它只能基于 case、rubric、actual output 和 quality gates 给出结构化裁判结果。推荐配置:
 

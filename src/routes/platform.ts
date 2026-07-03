@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { Document, isMap, isSeq, parseDocument } from "yaml";
@@ -24,6 +24,8 @@ const goldenCasesPath = path.resolve(process.cwd(), "tests/golden/conversation/c
 const evalReportsDir = path.resolve(process.cwd(), "eval-reports");
 const reviewQueueJsonPath = path.join(evalReportsDir, "_review-queue.json");
 const reviewQueueMarkdownPath = path.join(evalReportsDir, "_review-queue.md");
+const reviewDecisionsPath = path.join(evalReportsDir, "_review-decisions.json");
+const candidateCasesPath = path.join(evalReportsDir, "_candidate-cases.json");
 
 function readGoldenDocument() {
   const source = readFileSync(goldenCasesPath, "utf-8");
@@ -96,6 +98,8 @@ function loadGoldenCases() {
 }
 
 function loadEvaluationReviewQueue() {
+  const decisions = loadEvaluationReviewDecisions();
+  const candidates = loadEvaluationCandidateCases();
   if (!existsSync(reviewQueueJsonPath)) {
     return {
       exists: false,
@@ -115,6 +119,8 @@ function loadEvaluationReviewQueue() {
       },
       reviewQueue: [],
       reports: [],
+      decisions,
+      candidates,
     };
   }
   const parsed = JSON.parse(readFileSync(reviewQueueJsonPath, "utf-8"));
@@ -136,7 +142,95 @@ function loadEvaluationReviewQueue() {
     },
     reviewQueue: Array.isArray(parsed.review_queue) ? parsed.review_queue : [],
     reports: Array.isArray(parsed.reports) ? parsed.reports : [],
+    decisions,
+    candidates,
   };
+}
+
+function readJsonFile<T>(filePath: string, fallback: T): T {
+  if (!existsSync(filePath)) return fallback;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf-8")) as T;
+  } catch (error) {
+    logger.warn(`Platform eval json read failed file=${filePath}: ${(error as Error).message}`);
+    return fallback;
+  }
+}
+
+function writeJsonFile(filePath: string, data: unknown) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+}
+
+function loadEvaluationReviewDecisions() {
+  const data = readJsonFile<{ decisions?: unknown[] }>(reviewDecisionsPath, { decisions: [] });
+  return Array.isArray(data.decisions) ? data.decisions : [];
+}
+
+function saveEvaluationReviewDecision(input: {
+  caseId?: string;
+  action?: string;
+  finalVerdict?: string;
+  note?: string;
+  sourceRunId?: string;
+}) {
+  const caseId = String(input.caseId || "").trim();
+  if (!caseId) throw new Error("caseId 必填");
+  const allowedActions = new Set(["accept_judge", "override_pass", "override_fail", "needs_fix", "move_to_l1", "update_case"]);
+  const action = allowedActions.has(String(input.action)) ? String(input.action) : "";
+  if (!action) throw new Error("action 无效");
+  const now = new Date().toISOString();
+  const current = loadEvaluationReviewDecisions();
+  const next = [
+    {
+      id: `${caseId}:${now}`,
+      caseId,
+      action,
+      finalVerdict: input.finalVerdict ? String(input.finalVerdict) : null,
+      note: input.note ? String(input.note).slice(0, 2000) : "",
+      sourceRunId: input.sourceRunId ? String(input.sourceRunId) : null,
+      decidedAt: now,
+    },
+    ...current,
+  ].slice(0, 500);
+  writeJsonFile(reviewDecisionsPath, { updatedAt: now, decisions: next });
+  return next[0];
+}
+
+function loadEvaluationCandidateCases() {
+  const data = readJsonFile<{ candidates?: unknown[] }>(candidateCasesPath, { candidates: [] });
+  return Array.isArray(data.candidates) ? data.candidates : [];
+}
+
+function saveEvaluationCandidateCase(input: {
+  source?: string;
+  sourceId?: string;
+  userInput?: string;
+  actualOutput?: string;
+  scenario?: string;
+  priority?: string;
+  note?: string;
+}) {
+  const userInput = String(input.userInput || "").trim();
+  if (!userInput) throw new Error("userInput 必填");
+  const now = new Date().toISOString();
+  const idSeed = `${input.source || "manual"}:${input.sourceId || ""}:${userInput}:${now}`;
+  const candidate = {
+    id: `candidate-${createHash("sha256").update(idSeed).digest("hex").slice(0, 10)}`,
+    source: input.source || "manual",
+    sourceId: input.sourceId || null,
+    scenario: input.scenario || "candidate_from_audit",
+    priority: input.priority || "P1",
+    reviewTier: "archived_candidate",
+    userInput,
+    actualOutput: input.actualOutput ? String(input.actualOutput).slice(0, 4000) : "",
+    note: input.note ? String(input.note).slice(0, 2000) : "",
+    createdAt: now,
+  };
+  const current = loadEvaluationCandidateCases();
+  const next = [candidate, ...current].slice(0, 500);
+  writeJsonFile(candidateCasesPath, { updatedAt: now, candidates: next });
+  return candidate;
 }
 
 function updateGoldenCase(input: { id: string; rawYaml: string }) {
@@ -787,6 +881,32 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       loadedAt: new Date().toISOString(),
     };
   }));
+
+  app.post<{ Body: { caseId?: string; action?: string; finalVerdict?: string; note?: string; sourceRunId?: string } }>(
+    "/api/platform/evaluation/review-decisions",
+    safe(async (request) => {
+      const decision = saveEvaluationReviewDecision(request.body || {});
+      return {
+        ok: true,
+        decision,
+        decisions: loadEvaluationReviewDecisions(),
+        updatedAt: new Date().toISOString(),
+      };
+    }),
+  );
+
+  app.post<{ Body: { source?: string; sourceId?: string; userInput?: string; actualOutput?: string; scenario?: string; priority?: string; note?: string } }>(
+    "/api/platform/evaluation/candidates",
+    safe(async (request) => {
+      const candidate = saveEvaluationCandidateCase(request.body || {});
+      return {
+        ok: true,
+        candidate,
+        candidates: loadEvaluationCandidateCases(),
+        updatedAt: new Date().toISOString(),
+      };
+    }),
+  );
 
   app.put<{ Body: { id?: string; rawYaml?: string } }>("/api/platform/golden-cases", safe(async (request, reply) => {
     const id = request.body?.id?.trim();
