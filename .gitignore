@@ -3,9 +3,12 @@ dist/
 data/
 logs/
 .env
+.DS_Store
+.codex/
 .state/
 *.db
 *.log
+*.tmp
 reviews/
 workspaces/
 .backup/

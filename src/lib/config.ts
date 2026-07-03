@@ -88,4 +88,21 @@ export const config = {
     root: path.resolve(process.env.WORKSPACE_ROOT || defaultWorkspaceRoot()),
     templatePath: path.resolve(process.env.WORKSPACE_TEMPLATE_PATH || "./templates/workspace"),
   },
+
+  /**
+   * 服务层运行时数据(独立于 workspace,跟 sqlite db 同在 data/ 目录下)。
+   * - sourceTelemetryDir: provider 调用遥测 jsonl 按日分区
+   * - sourceQualityDir: provider 质量汇总/告警,用于平台观测与评测
+   */
+  runtimeData: {
+    root: path.resolve(process.env.RUNTIME_DATA_ROOT || path.join(repoRoot, "data")),
+    sourceTelemetryDir: path.resolve(
+      process.env.RUNTIME_DATA_ROOT || path.join(repoRoot, "data"),
+      "source-telemetry",
+    ),
+    sourceQualityDir: path.resolve(
+      process.env.RUNTIME_DATA_ROOT || path.join(repoRoot, "data"),
+      "source-quality",
+    ),
+  },
 };

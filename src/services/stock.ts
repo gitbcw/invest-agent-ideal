@@ -2,9 +2,18 @@ import { logger } from "../lib/logger.js";
 
 // 股票代码格式化：纯数字 → 带市场前缀
 function formatCode(code: string): string {
-  const pure = code.replace(/^(sh|sz|SH|SZ)/, "");
+  const trimmed = code.trim();
+  const explicitPrefix = trimmed.match(/^(sh|sz)(\d{6})$/i);
+  if (explicitPrefix) return `${explicitPrefix[1].toLowerCase()}${explicitPrefix[2]}`;
+  const explicitSuffix = trimmed.match(/^(\d{6})\.(sh|sz)$/i);
+  if (explicitSuffix) return `${explicitSuffix[2].toLowerCase()}${explicitSuffix[1]}`;
+  const pure = pureCode(trimmed);
   if (pure.startsWith("6") || pure.startsWith("5")) return `sh${pure}`;
   return `sz${pure}`;
+}
+
+function pureCode(code: string): string {
+  return code.replace(/^(sh|sz|SH|SZ)/, "").replace(/\.(sh|sz|SH|SZ)$/, "");
 }
 
 /** 实时行情数据 */
@@ -94,6 +103,62 @@ export async function getQuote(codes: string[]): Promise<StockQuote[]> {
   return results;
 }
 
+/** 获取实时行情（新浪 fallback API） */
+export async function getSinaQuote(codes: string[]): Promise<StockQuote[]> {
+  const formatted = codes.map(formatCode);
+  const url = `https://hq.sinajs.cn/rn=${Date.now()}&list=${formatted.join(",")}`;
+
+  const response = await fetch(url, {
+    headers: { Referer: "https://finance.sina.com.cn" },
+    signal: AbortSignal.timeout(8000),
+  });
+  const text = new TextDecoder("gb18030").decode(await response.arrayBuffer());
+  const results: StockQuote[] = [];
+  const lines = text.trim().split(";").filter(Boolean);
+
+  for (const line of lines) {
+    try {
+      const codeMatch = line.match(/hq_str_(sh|sz)(\d{6})=/i);
+      const valueMatch = line.match(/"([^"]*)"/);
+      if (!codeMatch || !valueMatch) continue;
+      const fields = valueMatch[1].split(",");
+      if (fields.length < 32 || !fields[0]) continue;
+      const yesterdayClose = parseFloat(fields[2]) || 0;
+      const price = parseFloat(fields[3]) || 0;
+      const change = price && yesterdayClose ? price - yesterdayClose : 0;
+      const bidVolume = [10, 12, 14, 16, 18]
+        .map((index) => parseFloat(fields[index]) || 0)
+        .reduce((sum, value) => sum + value, 0);
+      const askVolume = [20, 22, 24, 26, 28]
+        .map((index) => parseFloat(fields[index]) || 0)
+        .reduce((sum, value) => sum + value, 0);
+      const bidAskTotal = bidVolume + askVolume;
+      results.push({
+        code: codeMatch[2],
+        name: fields[0],
+        price,
+        yesterdayClose,
+        open: parseFloat(fields[1]) || 0,
+        volume: Math.round((parseFloat(fields[8]) || 0) / 100),
+        amount: (parseFloat(fields[9]) || 0) / 10000,
+        high: parseFloat(fields[4]) || 0,
+        low: parseFloat(fields[5]) || 0,
+        change,
+        changePercent: yesterdayClose ? (change / yesterdayClose) * 100 : 0,
+        turnoverRate: 0,
+        time: [fields[30], fields[31]].filter(Boolean).join(" "),
+        bidVolume,
+        askVolume,
+        bidAskImbalance: bidAskTotal > 0 ? (bidVolume - askVolume) / bidAskTotal : undefined,
+      });
+    } catch {
+      logger.warn(`解析新浪行情数据失败: ${line.slice(0, 50)}`);
+    }
+  }
+
+  return results;
+}
+
 /**
  * 获取历史日K线（腾讯 API）
  * @param code 股票代码
@@ -135,6 +200,34 @@ export async function getKline(
     low: parseFloat(k[4]) || 0,
     volume: parseInt(k[5]) || 0,
   }));
+}
+
+/** 获取历史日K线（新浪 fallback API,不含复权口径保证） */
+export async function getSinaKline(code: string, count = 250): Promise<StockKline[]> {
+  const symbol = formatCode(code);
+  const limit = Math.max(1, Math.min(Math.floor(count || 120), 500));
+  const url = `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${symbol}&scale=240&ma=no&datalen=${limit}`;
+  const response = await fetch(url, {
+    headers: { Referer: "https://finance.sina.com.cn" },
+    signal: AbortSignal.timeout(10000),
+  });
+  const raw = (await response.json()) as Array<{
+    day?: string;
+    open?: string;
+    close?: string;
+    high?: string;
+    low?: string;
+    volume?: string;
+  }>;
+
+  return (raw || []).map((k) => ({
+    date: String(k.day || "").slice(0, 10),
+    open: parseFloat(k.open || "0") || 0,
+    close: parseFloat(k.close || "0") || 0,
+    high: parseFloat(k.high || "0") || 0,
+    low: parseFloat(k.low || "0") || 0,
+    volume: parseInt(k.volume || "0") || 0,
+  })).filter((item) => item.date);
 }
 
 /**
@@ -216,6 +309,28 @@ export async function getMarketIndex(): Promise<Array<{ name: string; code: stri
   }
 
   return results;
+}
+
+/** 获取大盘指数概况（新浪 fallback API） */
+export async function getSinaMarketIndex(): Promise<Array<{ name: string; code: string; price: number; change: number; changePercent: number; amount: number }>> {
+  const quoteResult = await getSinaQuote(["sh000001", "sz399001", "sz399006", "sh000300"]);
+  const indexNames: Record<string, string> = {
+    "000001": "上证指数",
+    "399001": "深证成指",
+    "399006": "创业板指",
+    "000300": "沪深300",
+  };
+  return quoteResult.map((quote) => {
+    const code = pureCode(quote.code);
+    return {
+      name: indexNames[code] || quote.name,
+      code,
+      price: quote.price,
+      change: quote.change,
+      changePercent: quote.changePercent,
+      amount: quote.amount,
+    };
+  });
 }
 
 /** 格式化行情摘要 */

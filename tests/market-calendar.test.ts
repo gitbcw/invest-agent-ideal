@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import * as assert from "node:assert/strict";
-import { beijingDateKey, isAshareTradingDay, isAshareTradingTime } from "../src/lib/market-calendar.js";
+import { ashareCalendarReport, beijingDateKey, isAshareTradingDay, isAshareTradingTime } from "../src/lib/market-calendar.js";
 
 const bj = (iso: string) => new Date(iso);
 
@@ -35,5 +35,13 @@ describe("A-share market calendar", () => {
     assert.equal(isAshareTradingTime(bj("2026-06-24T03:31:00.000Z")), false);
     assert.equal(isAshareTradingTime(bj("2026-06-24T05:00:00.000Z")), true);
     assert.equal(isAshareTradingTime(bj("2026-06-24T07:01:00.000Z")), false);
+  });
+
+  test("reports previous and next trading days", () => {
+    const report = ashareCalendarReport(bj("2026-06-28T01:35:00.000Z"));
+    assert.equal(report.isTradingDay, false);
+    assert.equal(report.session, "closed");
+    assert.equal(report.previousTradingDay, "2026-06-26");
+    assert.equal(report.nextTradingDay, "2026-06-29");
   });
 });
