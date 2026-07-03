@@ -71,7 +71,10 @@ export function createAgent(): AcpAgent {
           userText: buildChannelForwardPrompt(text, userContext),
           userContext,
         });
-        const modelTier = resolveChatModelTier(text);
+        const modelTier = await resolveChatModelTier({
+          text,
+          contextPacket: promptContext.contextPacket,
+        });
         const acpAgent = await getCurrentAcpAgent(userContext.workspacePath, { modelTier });
         const acpResult = await acpAgent.chatWithUsage({
           conversationId,
