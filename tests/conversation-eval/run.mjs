@@ -112,6 +112,8 @@ const judgeEnabled = judgeMode !== "none";
 
 const SCENARIO_NAMES = {
   workspace_greeting: "问候引导",
+  onboarding_market_watch_custom_times: "Onboarding 自定义盯盘时间",
+  onboarding_notification_custom_times: "Onboarding 自定义通知时间",
   investment_model_guided_setup: "默认投资模型引导配置",
   investment_model_query_empty: "查询投资模型空状态",
   investment_model_freeform_draft: "投资模型自由描述草案",

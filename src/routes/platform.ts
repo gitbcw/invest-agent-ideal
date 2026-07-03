@@ -41,6 +41,11 @@ function caseNodeToYaml(node: unknown) {
   return String(new Document(value));
 }
 
+function yamlSeqToStrings(value: unknown) {
+  if (!isSeq(value)) return [];
+  return value.items.map((item) => String(item)).filter(Boolean);
+}
+
 function goldenCaseSummary(node: unknown) {
   if (!isMap(node)) return null;
   const expected = node.get("expected", true);
@@ -49,14 +54,17 @@ function goldenCaseSummary(node: unknown) {
   const expectedMap = isMap(expected) ? expected : null;
   const mustContain = expectedMap?.get("must_contain", true);
   const mustNotContain = expectedMap?.get("must_not_contain", true);
+  const scenario = String(node.get("scenario") || "");
+  const tags = yamlSeqToStrings(node.get("tags", true));
   return {
     id: String(node.get("id") || ""),
     category: String(node.get("category") || ""),
     reviewTier: String(node.get("review_tier") || ""),
     priority: String(node.get("priority") || ""),
-    scenario: String(node.get("scenario") || ""),
-    tags: node.get("tags") || [],
-    principles: node.get("principles") || [],
+    scenario,
+    domain: inferGoldenDomain(scenario, tags),
+    tags,
+    principles: yamlSeqToStrings(node.get("principles", true)),
     userInput: String(node.get("user_input") || ""),
     turnCount,
     mustContainCount: isSeq(mustContain) ? mustContain.items.length : 0,
@@ -64,6 +72,18 @@ function goldenCaseSummary(node: unknown) {
     styleNotes: expectedMap ? String(expectedMap.get("style_notes") || "") : "",
     rawYaml: caseNodeToYaml(node),
   };
+}
+
+function inferGoldenDomain(scenario: string, tags: string[]) {
+  const lowerTags = tags.map((item) => item.toLowerCase());
+  if (lowerTags.includes("onboarding") || scenario.startsWith("onboarding_")) return "Onboarding";
+  if (scenario.includes("review")) return "复盘";
+  if (scenario.includes("alert")) return "提醒";
+  if (scenario.includes("portfolio")) return "持仓";
+  if (scenario.includes("watchlist")) return "自选";
+  if (scenario.includes("screening")) return "选股";
+  if (scenario.includes("strategy") || scenario.includes("model") || scenario.includes("methodology")) return "投资模型/策略";
+  return "其他";
 }
 
 function loadGoldenCases() {
@@ -75,12 +95,14 @@ function loadGoldenCases() {
   const priorities = new Map<string, number>();
   const reviewTiers = new Map<string, number>();
   const scenarios = new Map<string, number>();
+  const domains = new Map<string, number>();
   for (const item of cases) {
     if (!item) continue;
     categories.set(item.category, (categories.get(item.category) || 0) + 1);
     priorities.set(item.priority, (priorities.get(item.priority) || 0) + 1);
     reviewTiers.set(item.reviewTier, (reviewTiers.get(item.reviewTier) || 0) + 1);
     scenarios.set(item.scenario, (scenarios.get(item.scenario) || 0) + 1);
+    domains.set(item.domain, (domains.get(item.domain) || 0) + 1);
   }
   return {
     suite: doc.get("suite") || {},
@@ -92,6 +114,7 @@ function loadGoldenCases() {
       categories: Object.fromEntries([...categories.entries()].sort()),
       priorities: Object.fromEntries([...priorities.entries()].sort()),
       reviewTiers: Object.fromEntries([...reviewTiers.entries()].sort()),
+      domains: Object.fromEntries([...domains.entries()].sort()),
       scenarioCount: scenarios.size,
     },
   };

@@ -110,6 +110,130 @@ cases:
         - 承诺收益
       style_notes: 应以引导问题或分步结构开始,让用户先选择默认模板或描述自己的做法,再形成模型草案等待确认
 
+  - id: onboarding-market-watch-custom-times-001
+    category: incident_regression
+    review_tier: regression
+    priority: P0
+    scenario: onboarding_market_watch_custom_times
+    tags: [onboarding, schedules, market_watch, notification]
+    principles:
+      - 盯盘固定时间是 onboarding 的独立确认步骤,不能被复盘时间或通知策略吞掉
+      - 用户自定义盯盘时间必须逐个明确列出并等待确认,不能回退默认 09:55 / 11:20 / 14:30
+      - 确认后盯盘固定时间唯一写入 schedules 的 market_watch.default_windows,不同步污染 watch 或 notification
+      - 完成盯盘时间后应继续推进通知偏好,但不要求用户理解或选择 P0/P1/P2
+    turns:
+      - user_input: 每天9点20,9点50,11点20,13点20,14点30，帮我盯盘推送盘面信息
+        expected:
+          must_contain:
+            - 09:20
+            - 09:50
+            - 11:20
+            - 13:20
+            - 14:30
+            - 确认
+            - 低打扰
+          must_not_contain:
+            - 09:55
+            - 按默认
+            - P0
+            - P1
+            - P2
+      - user_input: 确认
+        expected:
+          must_contain:
+            - 已确认
+            - 盯盘
+            - 09:20
+            - 14:30
+            - 通知偏好
+          must_not_contain:
+            - 09:55
+            - P0
+            - P1
+            - P2
+      - user_input: 我选择低打扰
+        expected:
+          must_contain:
+            - 低打扰
+            - 确认
+            - 默认盯盘
+          must_not_contain:
+            - 自动批量创建
+            - 均线提醒已创建
+            - 价格提醒已创建
+    expected:
+      must_contain:
+        - 低打扰
+        - 默认盯盘
+      must_not_contain:
+        - P0
+        - P1
+        - P2
+        - 自动批量创建
+      style_notes: 真实审计回归样本,来源于用户自定义 09:20/09:50/11:20/13:20/14:30 盯盘时间未稳定推送的问题;重点检查独立确认和后续通知偏好推进
+
+  - id: onboarding-notification-custom-times-001
+    category: incident_regression
+    review_tier: regression
+    priority: P0
+    scenario: onboarding_notification_custom_times
+    tags: [onboarding, notification, market_watch, confirmation]
+    principles:
+      - 用户把通知策略表述成固定盘中推送时间时,应整理为积极盯盘偏好和固定盯盘时间草案
+      - 第一次回复只能形成待确认草案,不能直接保存长期配置
+      - 用户明确确认保存后,应保存所有固定时间并继续推进 onboarding 完成确认
+      - 面向用户只展示通知偏好,事件优先级 P0/P1/P2 是系统内部实现
+    turns:
+      - user_input: 通知策略，我想9点半，10点，11点，12点，13点，14点，15点主动将盘中信息推送给我
+        expected:
+          must_contain:
+            - 通知偏好
+            - 积极盯盘
+            - 09:30
+            - 10:00
+            - 11:00
+            - 12:00
+            - 13:00
+            - 14:00
+            - 15:00
+            - 确认
+          must_not_contain:
+            - 已保存
+            - P0
+            - P1
+            - P2
+      - user_input: 确认保存通知策略
+        expected:
+          must_contain:
+            - 已确认
+            - 通知
+            - 09:30
+            - 15:00
+            - 下一步
+          must_not_contain:
+            - P0
+            - P1
+            - P2
+      - user_input: 确认
+        expected:
+          must_contain:
+            - 新手引导
+            - 完成
+            - 盯盘
+          must_not_contain:
+            - 自动批量创建
+            - 未经确认
+    expected:
+      must_contain:
+        - 新手引导
+        - 完成
+      must_not_contain:
+        - P0
+        - P1
+        - P2
+        - 未经确认直接写入
+      style_notes: 真实审计回归样本,来源于用户希望固定 09:30/10:00/11:00/12:00/13:00/14:00/15:00 主动推送盘中信息;重点检查草案确认和保存后继续完成 onboarding
+
   - id: model-002
     category: incident_regression
     review_tier: regression

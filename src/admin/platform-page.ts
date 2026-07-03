@@ -391,7 +391,10 @@ export function renderPlatformPage(): string {
                     <input id="goldenSearch" class="input" placeholder="搜索 case、场景、输入、原则" oninput="renderGoldenCases()" />
                     <div class="golden-tier-filter" id="goldenTierFilter"></div>
                     <div class="audit-columns">
+                      <select id="goldenDomain" class="select" onchange="renderGoldenCases()"></select>
                       <select id="goldenCategory" class="select" onchange="renderGoldenCases()"></select>
+                    </div>
+                    <div class="audit-columns">
                       <select id="goldenPriority" class="select" onchange="renderGoldenCases()"></select>
                     </div>
                   </div>
@@ -1562,7 +1565,7 @@ function renderEvalCommandBuilder() {
         '<option value="static">static</option><option value="model">model</option><option value="none">none</option>' +
       '</select></div>' +
       '<div class="field"><label>范围</label><select id="evalRunScope" class="select" onchange="generateEvalCommand()">' +
-        '<option value="priority-p0">P0</option><option value="case">单条 case</option><option value="scenario">场景</option><option value="all">全部</option>' +
+        '<option value="priority-p0">P0</option><option value="onboarding">Onboarding</option><option value="case">单条 case</option><option value="scenario">场景</option><option value="all">全部</option>' +
       '</select></div>' +
       '<div class="field"><label>Case ID</label><input id="evalRunCaseId" class="input" value="' + esc(selectedGoldenId || '') + '" oninput="generateEvalCommand()" /></div>' +
       '<div class="field"><label>Scenario</label><select id="evalRunScenario" class="select" onchange="generateEvalCommand()">' +
@@ -1586,6 +1589,7 @@ function generateEvalCommand() {
   const scenario = document.getElementById('evalRunScenario')?.value || '';
   let cmd = 'npm run eval:conversation -- --judge=' + judge;
   if (scope === 'priority-p0') cmd += ' --priority=P0';
+  else if (scope === 'onboarding') cmd += ' --tag=onboarding';
   else if (scope === 'case' && caseId) cmd += ' --only=' + caseId;
   else if (scope === 'scenario' && scenario) cmd += ' --scenario=' + scenario;
   cmd += ' --run-id=' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
@@ -1632,10 +1636,12 @@ function selectedGoldenCase() {
 }
 
 function renderGoldenFilters() {
+  const domains = Object.keys(GOLDEN.stats?.domains || {});
   const categories = Object.keys(GOLDEN.stats?.categories || {});
   const priorities = Object.keys(GOLDEN.stats?.priorities || {});
   renderGoldenTierFilter();
-  if (!document.getElementById('goldenCategory') || !document.getElementById('goldenPriority')) return;
+  if (!document.getElementById('goldenDomain') || !document.getElementById('goldenCategory') || !document.getElementById('goldenPriority')) return;
+  document.getElementById('goldenDomain').innerHTML = '<option value="">全部业务域</option>' + domains.map((item) => '<option value="' + esc(item) + '">' + esc(item) + ' · ' + esc(GOLDEN.stats?.domains?.[item] || 0) + '</option>').join('');
   document.getElementById('goldenCategory').innerHTML = '<option value="">全部分类</option>' + categories.map((item) => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
   document.getElementById('goldenPriority').innerHTML = '<option value="">全部优先级</option>' + priorities.map((item) => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
 }
@@ -1672,16 +1678,19 @@ function showAllGoldenTiers() {
 
 function filteredGoldenCases() {
   const keyword = (document.getElementById('goldenSearch')?.value || '').trim().toLowerCase();
+  const domain = document.getElementById('goldenDomain')?.value || '';
   const category = document.getElementById('goldenCategory')?.value || '';
   const priority = document.getElementById('goldenPriority')?.value || '';
   return (GOLDEN.cases || []).filter((item) => {
     if (GOLDEN_ACTIVE_TIERS.size && !GOLDEN_ACTIVE_TIERS.has(item.reviewTier)) return false;
+    if (domain && item.domain !== domain) return false;
     if (category && item.category !== category) return false;
     if (priority && item.priority !== priority) return false;
     if (!keyword) return true;
     return [
       item.id,
       item.category,
+      item.domain,
       item.reviewTier,
       item.priority,
       item.scenario,
@@ -1707,6 +1716,7 @@ function renderGoldenCases() {
     metric(cases.length, '当前显示'),
     metric((GOLDEN.stats?.reviewTiers || {}).golden_core || 0, '黄金核心'),
     metric((GOLDEN.stats?.reviewTiers || {}).regression || 0, '事故回归'),
+    metric((GOLDEN.stats?.domains || {}).Onboarding || 0, 'Onboarding'),
   ].join('');
   if (!cases.length) {
     root.innerHTML = '<div class="empty">没有匹配的 case</div>';
@@ -1726,6 +1736,7 @@ function renderGoldenCard(item) {
     '<div class="eval-desc">' + esc(summary) + '</div>' +
     '<div class="eval-case-id mono">' + esc(item.id || '-') + '</div>' +
     '<div class="eval-tags">' +
+      badge(item.domain || '其他', item.domain === 'Onboarding' ? 'warn' : 'gray') +
       badge(reviewTierLabel(item.reviewTier), item.reviewTier === 'golden_core' ? 'ok' : 'info') +
       badge(turnLabel, 'gray') +
       badge(scenarioLabel(item.scenario), 'gray') +
@@ -1764,6 +1775,8 @@ function reviewTierLabel(value) {
 function scenarioLabel(value) {
   const labels = {
     workspace_greeting: '开场',
+    onboarding_market_watch_custom_times: 'Onboarding 盯盘时间',
+    onboarding_notification_custom_times: 'Onboarding 通知偏好',
     out_of_scope_boundary: '越界拒答',
     investment_model_guided_setup: '投资模型',
     investment_model_query_empty: '投资模型',
@@ -1828,6 +1841,7 @@ function renderGoldenDetail() {
     '<dl class="kv">' +
       '<dt>Case ID</dt><dd class="mono">' + esc(item.id) + '</dd>' +
       '<dt>场景</dt><dd>' + esc(item.scenario || '-') + '</dd>' +
+      '<dt>业务域</dt><dd>' + esc(item.domain || '其他') + '</dd>' +
       '<dt>审查层级</dt><dd>' + esc(reviewTierLabel(item.reviewTier)) + ' · ' + esc(item.priority || '-') + '</dd>' +
       '<dt>原始分类</dt><dd>' + esc(categoryLabel(item.category)) + '</dd>' +
       '<dt>标签</dt><dd>' + esc((item.tags || []).join(', ') || '-') + '</dd>' +
