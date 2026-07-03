@@ -5,10 +5,12 @@ levels:
     required:
       - "上传持仓截图或输入核心持仓"
       - "选择风格包"
+      - "确认盯盘固定时间"
       - "确认低打扰模式"
     writes:
       - "config/portfolio.yaml"
       - "config/strategy.yaml"
+      - "config/schedules.yaml"
       - "config/notification.yaml"
   standard_3m:
     goal: "补齐可用盯盘和仓位判断"
@@ -16,6 +18,7 @@ levels:
       - "现金"
       - "观察仓"
       - "单一标的或资产仓位上限"
+      - "盘中固定盯盘时间或轮询频率"
       - "提醒偏好"
     writes:
       - "config/portfolio.yaml"

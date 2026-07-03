@@ -319,6 +319,7 @@ const ONBOARDING_STEPS: OnboardingStepKey[] = [
   "portfolio",
   "style",
   "review_schedule",
+  "market_watch_schedule",
   "notification",
   "watch_rules",
 ];
@@ -359,6 +360,43 @@ function pickWatchPolicyOverrides(value: unknown): Record<string, unknown> {
   const input = asRecord(value);
   const { default_check_windows: _defaultCheckWindows, fixed_intraday_brief: _fixedIntradayBrief, ...rest } = input;
   return rest;
+}
+
+function normalizeMarketWatchWindowToken(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeMarketWatchWindows(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const windows: string[] = [];
+  for (const item of value) {
+    const time = normalizeMarketWatchWindowToken(item);
+    if (!time || seen.has(time)) continue;
+    seen.add(time);
+    windows.push(time);
+  }
+  return windows;
+}
+
+function readMarketWatchScheduleDefaults(value: unknown): Record<string, unknown> {
+  const input = asRecord(value);
+  const fixed = asRecord(input.fixed_intraday_brief);
+  const { default_windows: _defaultWindows, fixed_intraday_brief: _fixedIntradayBrief, ...rest } = input;
+  const windows = normalizeMarketWatchWindows(input.default_windows).length > 0
+    ? normalizeMarketWatchWindows(input.default_windows)
+    : normalizeMarketWatchWindows(fixed.times);
+  return {
+    ...rest,
+    ...(windows.length > 0 ? { default_windows: windows } : {}),
+  };
 }
 
 async function applyOnboardingStepDefaults(
@@ -406,6 +444,24 @@ async function applyOnboardingStepDefaults(
         enabled: true,
         trigger: "user_request_or_new_report_detected",
         ...(reviewDefaults.company_financial_analysis && typeof reviewDefaults.company_financial_analysis === "object" ? reviewDefaults.company_financial_analysis as Record<string, unknown> : {}),
+      },
+    });
+  }
+
+  if (step === "market_watch_schedule") {
+    const schedules = await store.readSchedules() ?? {};
+    const marketWatchDefaults = readMarketWatchScheduleDefaults(body.marketWatchSchedule);
+    await store.writeSchedules({
+      ...schedules,
+      timezone: schedules.timezone ?? "Asia/Shanghai",
+      market_watch: {
+        enabled: true,
+        auto_run: true,
+        default_windows: ["09:55", "11:20", "14:30"],
+        custom_frequency: null,
+        only_push_on_exception: true,
+        ...(schedules.market_watch && typeof schedules.market_watch === "object" ? schedules.market_watch as Record<string, unknown> : {}),
+        ...marketWatchDefaults,
       },
     });
   }
@@ -579,6 +635,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       summary?: string;
       notes?: string;
       reviewSchedule?: Record<string, unknown>;
+      marketWatchSchedule?: Record<string, unknown>;
       watchPolicy?: Record<string, unknown>;
       complete?: boolean;
     };

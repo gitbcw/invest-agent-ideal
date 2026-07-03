@@ -17,7 +17,8 @@
 1. 录入当前持仓和观察仓。
 2. 根据持仓分布，引导用户描述基本面分析方法、技术面分析方法、仓位和风控偏好。
 3. 基于持仓和分析方法，生成日复盘、周复盘、月复盘、公司财务分析能力模板和默认自动执行时间，询问用户是否调整。
-4. 引导用户设置智能盯盘频率和异常提醒规则。
+4. 单独确认盘中盯盘固定时间，默认 `09:55 / 11:20 / 14:30`，允许用户改成自己的时间点。
+5. 引导用户设置低打扰通知策略、智能盯盘偏好和异常提醒规则。
 
 推进规则：
 
@@ -25,8 +26,9 @@
 - 用户确认并完成某一步后，优先调用服务层 `POST /api/sandbox/onboarding/confirm-step` 更新 `config/onboarding_state.yaml` 对应 step 的 `done`、`completed_at`、`current_step` 和 `updated_at`；不要手工批量编辑多个 onboarding 文件来替代该接口。
 - 所有必需步骤完成后，将 `status` 改为 `completed` 并写入 `completed_at`；之后不要重复展开新手引导，除非用户明确要求重新配置。
 - 涉及长期记忆或规则写入时，仍必须遵守“生成结构化草案 → 用户确认 → 写入”的确认规则。
-- `review_schedule`、`notification`、`watch_rules` 三个 onboarding 步骤确认时，应走 `confirm-step` 快通道，只保存默认复盘时间、低打扰通知策略和盯盘偏好。
+- `review_schedule`、`market_watch_schedule`、`notification`、`watch_rules` 四个 onboarding 步骤确认时，应走 `confirm-step` 快通道，只保存默认复盘时间、盯盘固定时间、低打扰通知策略和盯盘偏好。
 - 盯盘固定时间的唯一事实源是 `config/schedules.yaml` 的 `market_watch.default_windows`；不要把盘中固定时间同步写入 `config/watch.yaml` 或 `config/notification.yaml`。
+- `market_watch_schedule` 步骤必须在回复里显式列出盯盘检查时间，例如 `09:55 / 11:20 / 14:30`，不能只说“已启用默认盯盘”。
 - 确认 `watch_rules` 只表示用户接受默认盯盘策略和低打扰边界；不要因此自动调用 watch-rule catalog/validate/create 批量创建具体均线、价格或指标规则。只有用户明确说“现在创建这些提醒规则/批量创建均线提醒”时，才另起草案并走 watch-rule API。
 
 ## 长期记忆位置

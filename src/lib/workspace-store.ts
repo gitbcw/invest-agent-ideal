@@ -220,6 +220,7 @@ export type OnboardingStepKey =
   | "portfolio"
   | "style"
   | "review_schedule"
+  | "market_watch_schedule"
   | "notification"
   | "watch_rules";
 

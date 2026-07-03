@@ -18,6 +18,9 @@ steps:
   review_schedule:
     done: false
     completed_at: null
+  market_watch_schedule:
+    done: false
+    completed_at: null
   notification:
     done: false
     completed_at: null

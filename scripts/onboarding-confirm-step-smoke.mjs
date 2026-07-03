@@ -18,12 +18,13 @@ const store = new WorkspaceStore(USER_ID);
 await store.writeOnboardingState({
   version: 1,
   status: "in_progress",
-  current_step: "watch_rules",
+  current_step: "market_watch_schedule",
   steps: {
     welcome: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
     portfolio: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
     style: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
     review_schedule: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+    market_watch_schedule: { done: false, completed_at: null },
     notification: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
     watch_rules: { done: false, completed_at: null },
   },
@@ -44,7 +45,7 @@ await store.writeSchedules({
   timezone: "Asia/Shanghai",
   market_watch: {
     enabled: true,
-    default_windows: EXPECTED_WINDOWS,
+    default_windows: ["09:55", "11:20", "14:30"],
     custom_frequency: null,
     only_push_on_exception: false,
   },
@@ -77,6 +78,28 @@ const token = createSandboxToken({
 });
 
 try {
+  const scheduleResponse = await app.inject({
+    method: "POST",
+    url: "/api/sandbox/onboarding/confirm-step",
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      step: "market_watch_schedule",
+      summary: "确认自定义盘中盯盘时间",
+      marketWatchSchedule: {
+        default_windows: EXPECTED_WINDOWS,
+        custom_frequency: null,
+        only_push_on_exception: false,
+      },
+    },
+  });
+
+  assert.equal(scheduleResponse.statusCode, 200, scheduleResponse.body);
+  const scheduleBody = scheduleResponse.json();
+  assert.equal(scheduleBody.ok, true);
+  assert.equal(scheduleBody.state.status, "in_progress");
+  assert.equal(scheduleBody.state.current_step, "notification");
+  assert.equal(scheduleBody.state.steps.market_watch_schedule.done, true);
+
   const response = await app.inject({
     method: "POST",
     url: "/api/sandbox/onboarding/confirm-step",
@@ -92,6 +115,7 @@ try {
   assert.equal(body.ok, true);
   assert.equal(body.didCreateWatchRules, false);
   assert.equal(body.state.status, "completed");
+  assert.equal(body.state.steps.market_watch_schedule.done, true);
   assert.equal(body.state.steps.watch_rules.done, true);
 
   const rules = await db.select().from(alertRules).where(eq(alertRules.userId, USER_ID));
