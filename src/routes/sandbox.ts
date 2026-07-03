@@ -6,7 +6,7 @@ import { logger } from "../lib/logger.js";
 import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
-import { WorkspaceStore, type StrategyYaml } from "../lib/workspace-store.js";
+import { WorkspaceStore, type OnboardingStepKey, type OnboardingStateYaml, type StrategyYaml } from "../lib/workspace-store.js";
 import { sandboxContextFromRequest, type SandboxPermission } from "../lib/sandbox-context.js";
 import { assertSandboxToolAllowed, type ToolId } from "../platform/tool-registry.js";
 import { resolveStockRefs } from "../services/stock-resolver.js";
@@ -292,6 +292,227 @@ async function requireConfirmation(ctx: ReturnType<typeof sandboxContextFromRequ
   return true;
 }
 
+const ONBOARDING_STEPS: OnboardingStepKey[] = [
+  "welcome",
+  "portfolio",
+  "style",
+  "review_schedule",
+  "notification",
+  "watch_rules",
+];
+
+function nextOnboardingStep(step: OnboardingStepKey): OnboardingStepKey | "completed" {
+  const idx = ONBOARDING_STEPS.indexOf(step);
+  return idx >= 0 && idx < ONBOARDING_STEPS.length - 1 ? ONBOARDING_STEPS[idx + 1] : "completed";
+}
+
+function normalizeOnboardingState(state: OnboardingStateYaml): OnboardingStateYaml {
+  const steps = { ...(state.steps ?? {}) };
+  for (const key of ONBOARDING_STEPS) {
+    steps[key] = {
+      done: steps[key]?.done === true,
+      completed_at: steps[key]?.completed_at ?? null,
+    };
+  }
+  return {
+    version: state.version ?? 1,
+    status: state.status ?? "not_started",
+    current_step: state.current_step ?? "welcome",
+    steps,
+    completed_at: state.completed_at ?? null,
+    updated_at: state.updated_at ?? null,
+    notes: state.notes ?? "",
+  };
+}
+
+function isOnboardingStep(value: unknown): value is OnboardingStepKey {
+  return typeof value === "string" && (ONBOARDING_STEPS as string[]).includes(value);
+}
+
+const DEFAULT_WATCH_CHECK_WINDOWS = [
+  { name: "开盘后", time: "09:55", purpose: "检查核心持仓、观察仓和市场风格是否出现开盘异常。" },
+  { name: "午盘前", time: "11:20", purpose: "检查风格切换、板块异动和持仓是否偏离日复盘判断。" },
+  { name: "收盘前", time: "14:30", purpose: "检查是否触发买入区、减仓区或风险阈值。" },
+];
+
+const WATCH_WINDOW_PURPOSES: Record<string, { name: string; purpose: string }> = {
+  "09:30": { name: "开盘简报", purpose: "检查开盘状态、核心/非核心是否异常跳空。" },
+  "10:00": { name: "早盘简报", purpose: "检查早盘第一轮走势、是否接近触发区。" },
+  "11:00": { name: "上午趋势简报", purpose: "检查上午趋势确认、强弱分化。" },
+  "12:00": { name: "午间简报", purpose: "汇总上午结论和下午关注点。" },
+  "13:00": { name: "午后开盘简报", purpose: "检查午后开盘状态。" },
+  "14:00": { name: "尾盘前简报", purpose: "检查尾盘前风险和是否接近操作触发。" },
+  "15:00": { name: "收盘快照", purpose: "汇总收盘状态，识别晚间日复盘重点。" },
+};
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function normalizeTimeToken(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeTimeList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const times: string[] = [];
+  for (const item of value) {
+    const time = normalizeTimeToken(item);
+    if (!time || seen.has(time)) continue;
+    seen.add(time);
+    times.push(time);
+  }
+  return times;
+}
+
+function buildWatchWindowsFromTimes(times: string[]) {
+  return times.map((time) => ({
+    name: WATCH_WINDOW_PURPOSES[time]?.name ?? `${time}简报`,
+    time,
+    purpose: WATCH_WINDOW_PURPOSES[time]?.purpose ?? "按用户确认的固定盘中时间检查组合状态和规则触发。",
+  }));
+}
+
+function deriveWatchWindows(input: {
+  watch: Record<string, unknown>;
+  watchDefaults: Record<string, unknown>;
+  schedules: Record<string, unknown>;
+  notification: Record<string, unknown>;
+}) {
+  const explicitWatchWindows = Array.isArray(input.watchDefaults.default_check_windows) && input.watchDefaults.default_check_windows.length > 0
+    ? input.watchDefaults.default_check_windows
+    : null;
+  if (explicitWatchWindows) return explicitWatchWindows;
+
+  const explicitWatchTimes = normalizeTimeList(asRecord(input.watchDefaults.fixed_intraday_brief).times);
+  if (explicitWatchTimes.length > 0) return buildWatchWindowsFromTimes(explicitWatchTimes);
+
+  const notificationTimes = normalizeTimeList(asRecord(input.notification.intraday_push).times);
+  if (notificationTimes.length > 0) return buildWatchWindowsFromTimes(notificationTimes);
+
+  const scheduleTimes = normalizeTimeList(asRecord(input.schedules.market_watch).default_windows);
+  if (scheduleTimes.length > 0) return buildWatchWindowsFromTimes(scheduleTimes);
+
+  return Array.isArray(input.watch.default_check_windows) && input.watch.default_check_windows.length > 0
+    ? input.watch.default_check_windows
+    : DEFAULT_WATCH_CHECK_WINDOWS;
+}
+
+async function applyOnboardingStepDefaults(
+  store: WorkspaceStore,
+  step: OnboardingStepKey,
+  now: string,
+  body: Record<string, unknown>
+) {
+  if (step === "review_schedule") {
+    const schedules = await store.readSchedules() ?? {};
+    const reviewDefaults = body.reviewSchedule && typeof body.reviewSchedule === "object"
+      ? body.reviewSchedule as Record<string, unknown>
+      : {};
+    await store.writeSchedules({
+      ...schedules,
+      timezone: schedules.timezone ?? "Asia/Shanghai",
+      run_policy: {
+        automatic_by_default: true,
+        manual_trigger_allowed: true,
+        skip_automatic_if_manual_report_exists: true,
+        refresh_requires_user_confirmation: true,
+        ...(schedules.run_policy && typeof schedules.run_policy === "object" ? schedules.run_policy as Record<string, unknown> : {}),
+      },
+      daily_review: {
+        enabled: true,
+        auto_run: true,
+        default_time: "19:00",
+        trading_days_only: true,
+        ...(reviewDefaults.daily_review && typeof reviewDefaults.daily_review === "object" ? reviewDefaults.daily_review as Record<string, unknown> : {}),
+      },
+      weekly_review: {
+        enabled: true,
+        auto_run: true,
+        default_time: "Saturday 09:00",
+        ...(reviewDefaults.weekly_review && typeof reviewDefaults.weekly_review === "object" ? reviewDefaults.weekly_review as Record<string, unknown> : {}),
+      },
+      monthly_review: {
+        enabled: true,
+        auto_run: true,
+        default_time: "day_1 09:00",
+        review_previous_month: true,
+        ...(reviewDefaults.monthly_review && typeof reviewDefaults.monthly_review === "object" ? reviewDefaults.monthly_review as Record<string, unknown> : {}),
+      },
+      company_financial_analysis: {
+        enabled: true,
+        trigger: "user_request_or_new_report_detected",
+        ...(reviewDefaults.company_financial_analysis && typeof reviewDefaults.company_financial_analysis === "object" ? reviewDefaults.company_financial_analysis as Record<string, unknown> : {}),
+      },
+    });
+  }
+
+  if (step === "notification") {
+    const notification = await store.readNotification() ?? {};
+    await store.writeNotification({
+      ...notification,
+      user_mode: notification.user_mode ?? "working_professional",
+      working_hours: {
+        start: "09:00",
+        end: "18:00",
+        policy: "工作时间只推 P0，P1/P2 延后到晚间简报。",
+        ...(notification.working_hours && typeof notification.working_hours === "object" ? notification.working_hours as Record<string, unknown> : {}),
+      },
+      do_not_disturb: {
+        enabled: true,
+        allow_p0_override: true,
+        ...(notification.do_not_disturb && typeof notification.do_not_disturb === "object" ? notification.do_not_disturb as Record<string, unknown> : {}),
+      },
+      last_confirmed_at: now,
+    });
+  }
+
+  if (step === "watch_rules") {
+    const watch = await store.readWatch() ?? {};
+    const schedules = await store.readSchedules() ?? {};
+    const notification = await store.readNotification() ?? {};
+    const watchDefaults = body.watchPolicy && typeof body.watchPolicy === "object"
+      ? body.watchPolicy as Record<string, unknown>
+      : {};
+    const defaultCheckWindows = deriveWatchWindows({
+      watch: watch as Record<string, unknown>,
+      watchDefaults,
+      schedules,
+      notification,
+    });
+    await store.writeWatch({
+      ...watch,
+      mode: typeof watch.mode === "string" ? watch.mode : "default",
+      only_push_on_exception: true,
+      priority_policy: "P0 立即推送；P1 晚间汇总；P2 仅记录。详见 config/notification.yaml。",
+      default_check_windows: defaultCheckWindows,
+      exception_rules: Array.isArray(watch.exception_rules) && watch.exception_rules.length > 0
+        ? watch.exception_rules
+        : [
+            "核心持仓接近用户设定的买入区或减仓区。",
+            "观察仓进入用户设定的配置区。",
+            "持仓、行业或指数走势与日复盘核心判断明显相反。",
+            "重大新闻、财报、政策或商品价格变化影响持仓逻辑。",
+          ],
+      custom_rules: Array.isArray(watch.custom_rules) ? watch.custom_rules : [],
+      last_confirmed_at: now,
+      confirmed_watch_rule_summary: [
+        "已确认默认盯盘策略和低打扰口径。",
+        "尚未批量创建具体阶段二明确规则；如需创建均线、价格或技术指标提醒，应单独向用户确认后再调用 watch-rule API。",
+      ],
+      ...watchDefaults,
+    });
+  }
+}
+
 export function registerSandboxRoutes(app: FastifyInstance) {
   app.get("/api/sandbox/me", sandboxSafe("invest.dashboard.read", async (ctx) => ({
     ok: true,
@@ -394,6 +615,80 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       investmentProfile,
       methodologyProfile,
       methodChangeCandidates: changeRows,
+    };
+  }));
+
+  app.get("/api/sandbox/onboarding/state", sandboxSafe("invest.onboarding.read", async (ctx) => {
+    const store = new WorkspaceStore(ctx.userId);
+    const state = normalizeOnboardingState(await store.readOnboardingState());
+    await audit(ctx, {
+      operation: "onboarding.state.read",
+      resourceType: "onboarding_state",
+      resultSummary: `status=${state.status}; current=${state.current_step ?? "-"}`,
+    });
+    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, state };
+  }));
+
+  app.post<{
+    Body: {
+      step?: string;
+      summary?: string;
+      notes?: string;
+      reviewSchedule?: Record<string, unknown>;
+      watchPolicy?: Record<string, unknown>;
+      complete?: boolean;
+    };
+  }>("/api/sandbox/onboarding/confirm-step", sandboxSafe("invest.onboarding.write", async (ctx, request, reply) => {
+    const step = request.body?.step;
+    if (!isOnboardingStep(step)) {
+      return reply.status(400).send({ ok: false, error: `非法 onboarding step: ${String(step ?? "")}` });
+    }
+
+    const now = new Date().toISOString();
+    const store = new WorkspaceStore(ctx.userId);
+    await applyOnboardingStepDefaults(store, step, now, request.body ?? {});
+
+    const current = normalizeOnboardingState(await store.readOnboardingState());
+    const steps = { ...(current.steps ?? {}) };
+    steps[step] = { done: true, completed_at: steps[step]?.completed_at ?? now };
+    const allDone = ONBOARDING_STEPS.every((key) => key === step || steps[key]?.done === true);
+    const shouldComplete = request.body?.complete === true || allDone || step === "watch_rules";
+    const nextState: OnboardingStateYaml = {
+      ...current,
+      status: shouldComplete ? "completed" : "in_progress",
+      current_step: shouldComplete ? "completed" : nextOnboardingStep(step),
+      steps,
+      completed_at: shouldComplete ? (current.completed_at ?? now) : current.completed_at ?? null,
+      updated_at: now,
+      notes: request.body?.notes ?? current.notes ?? "",
+    };
+    await store.writeOnboardingState(nextState);
+    await store.appendChangeLog({
+      ts: now,
+      source: "sandbox",
+      type: `onboarding_${step}_confirmed`,
+      summary: request.body?.summary || `用户确认 onboarding 步骤: ${step}`,
+      details: {
+        step,
+        status: nextState.status,
+        current_step: nextState.current_step,
+        did_create_watch_rules: false,
+      },
+    });
+    await audit(ctx, {
+      operation: "onboarding.confirm_step",
+      resourceType: "onboarding_state",
+      resourceId: step,
+      requestBody: request.body,
+      resultSummary: `confirmed ${step}; status=${nextState.status}; no watch-rule batch create`,
+    });
+    return {
+      ok: true,
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      state: nextState,
+      didCreateWatchRules: false,
+      message: shouldComplete ? "新手引导已完成" : `已确认 ${step}`,
     };
   }));
 

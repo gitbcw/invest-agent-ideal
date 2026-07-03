@@ -209,6 +209,29 @@ export interface InvestmentModelsYaml {
   models?: InvestmentModel[];
 }
 
+export type OnboardingStepKey =
+  | "welcome"
+  | "portfolio"
+  | "style"
+  | "review_schedule"
+  | "notification"
+  | "watch_rules";
+
+export interface OnboardingStepState {
+  done?: boolean;
+  completed_at?: string | null;
+}
+
+export interface OnboardingStateYaml {
+  version?: number;
+  status?: "not_started" | "in_progress" | "completed";
+  current_step?: OnboardingStepKey | "completed" | null;
+  steps?: Partial<Record<OnboardingStepKey, OnboardingStepState>>;
+  completed_at?: string | null;
+  updated_at?: string | null;
+  notes?: string;
+}
+
 // ============ 内部工具 ============
 
 async function readYaml<T>(filePath: string): Promise<T | null> {
@@ -410,6 +433,52 @@ export class WorkspaceStore {
     this.ensureReady();
     await writeYaml(path.join(this.root, "config/watch.yaml"), data);
   }
+
+  // ----- schedules.yaml -----
+
+  async readSchedules(): Promise<SchedulesYaml | null> {
+    this.ensureReady();
+    return readYaml<SchedulesYaml>(path.join(this.root, "config/schedules.yaml"));
+  }
+
+  async writeSchedules(data: SchedulesYaml): Promise<void> {
+    this.ensureReady();
+    await writeYaml(path.join(this.root, "config/schedules.yaml"), data);
+  }
+
+  // ----- notification.yaml -----
+
+  async readNotification(): Promise<NotificationYaml | null> {
+    this.ensureReady();
+    return readYaml<NotificationYaml>(path.join(this.root, "config/notification.yaml"));
+  }
+
+  async writeNotification(data: NotificationYaml): Promise<void> {
+    this.ensureReady();
+    await writeYaml(path.join(this.root, "config/notification.yaml"), data);
+  }
+
+  // ----- onboarding_state.yaml -----
+
+  async readOnboardingState(): Promise<OnboardingStateYaml> {
+    this.ensureReady();
+    const data = await readYaml<OnboardingStateYaml>(path.join(this.root, "config/onboarding_state.yaml"));
+    return data ?? {
+      version: 1,
+      status: "not_started",
+      current_step: "welcome",
+      steps: {},
+      completed_at: null,
+      updated_at: null,
+      notes: "",
+    };
+  }
+
+  async writeOnboardingState(data: OnboardingStateYaml): Promise<void> {
+    this.ensureReady();
+    await writeYaml(path.join(this.root, "config/onboarding_state.yaml"), data);
+  }
+
 
   // ----- risk_taxonomy.yaml -----
 
@@ -730,6 +799,10 @@ export class WorkspaceStore {
     await appendJsonl(path.join(this.root, "memory/audit_events.jsonl"), record);
   }
 
+  async appendChangeLog(record: unknown): Promise<void> {
+    this.ensureReady();
+    await appendJsonl(path.join(this.root, "memory/change_log.jsonl"), record);
+  }
   // ----- 路径(供 trace/sandbox 审计使用) -----
 
   path(): string {

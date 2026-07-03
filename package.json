@@ -24,6 +24,7 @@
     "smoke:main-force-control": "npm run build && node scripts/main-force-control-smoke.mjs",
     "smoke:review-push-summary": "npm run build && node scripts/review-push-summary-smoke.mjs",
     "smoke:schedules-loader": "npm run build && node scripts/schedules-loader-smoke.mjs",
+    "smoke:onboarding-confirm-step": "npm run build && node scripts/onboarding-confirm-step-smoke.mjs",
     "smoke:stage1-scheduler": "npm run build && node scripts/stage1-scheduled-tasks-smoke.mjs",
     "smoke:stage2-watch-rules": "npm run build && node scripts/watch-rules-stage2-smoke.mjs",
     "smoke:weixin-complex-ack": "npm run build && node scripts/weixin-complex-ack-smoke.mjs",
