@@ -27,6 +27,9 @@ assert.deepEqual(windows, ["09:30", "10:30", "11:30"]);
 
 assert.equal(windowSlot(new Date("2026-06-30T01:30:00.000Z"), windows), "09:30");
 assert.equal(windowSlot(new Date("2026-06-30T01:39:00.000Z"), windows), null);
+assert.equal(windowSlot(new Date("2026-06-30T04:00:00.000Z"), ["12:00"], 3), "12:00");
+assert.equal(windowSlot(new Date("2026-06-30T04:02:00.000Z"), ["12:00"], 3), "12:00");
+assert.equal(windowSlot(new Date("2026-06-30T04:04:00.000Z"), ["12:00"], 3), null);
 assert.equal(intervalSlot(new Date("2026-06-30T01:30:00.000Z"), 9), null);
 assert.equal(intervalSlot(new Date("2026-06-30T01:29:00.000Z"), 9), "am-1");
 

@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
-import { sanitizeScheduledReply } from "../dist/acp/scheduled-tasks.js";
+import { buildScheduledReviewPush, sanitizeScheduledReply } from "../dist/acp/scheduled-tasks.js";
 import { readSchedules, entryHitsNow } from "../dist/lib/schedules-loader.js";
 import { enqueuePushJob, getPushJob, processDuePushJobs } from "../dist/services/push-queue.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../dist/lib/user-context.js";
@@ -43,8 +43,35 @@ try {
   assert.equal(sanitizeScheduledReply("当前无提醒。"), "NO_PUSH");
   assert.equal(sanitizeScheduledReply("暂无提醒，今天不用打扰用户。"), "NO_PUSH");
   assert.equal(sanitizeScheduledReply("无需推送：没有 P0/P1。"), "NO_PUSH");
+  assert.equal(sanitizeScheduledReply("我先核对低打扰规则，再调用本轮巡检接口。\nNO_PUSH"), "NO_PUSH");
   assert.match(sanitizeScheduledReply("赛轮轮胎触发 P0,需要确认。"), /赛轮轮胎/);
   console.log("  ✓ NO_PUSH 与中文无推送语义清洗正确");
+
+  log("scheduled review 推送保留最终正文");
+  const longReview = [
+    "# 2026-07-01 周复盘",
+    "",
+    "## 一、核心结论",
+    "本周以观察为主。",
+    "",
+    "## 二、事实",
+    "事实 1",
+    "事实 2",
+    "事实 3",
+    "事实 4",
+    "事实 5",
+    "事实 6",
+    "事实 7",
+    "事实 8",
+    "事实 9",
+    "",
+    "## 三、后续验证点",
+    "这一段位于第 8 个非空行之后，不能被服务层截断。",
+  ].join("\n");
+  const pushedReview = buildScheduledReviewPush("周复盘", longReview);
+  assert.equal(pushedReview, longReview);
+  assert.match(pushedReview, /后续验证点/);
+  console.log("  ✓ 周/月复盘推送不再裁剪为前 8 行摘要");
 
   log("主用户 schedules.yaml 解析");
   const schedules = readSchedules(DEFAULT_USER_ID);
@@ -96,7 +123,7 @@ try {
   const okResult = await processDuePushJobs(async (job) => {
     assert.equal(job.userId, DEFAULT_USER_ID);
     assert.equal(job.instanceId, DEFAULT_INSTANCE_ID);
-    assert.equal(job.backend, "hermes");
+    assert.equal(job.backend, "codex");
     return true;
   }, { limit: 5 });
   assert.equal(okResult.sent, 1);

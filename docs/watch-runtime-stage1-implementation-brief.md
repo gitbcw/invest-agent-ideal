@@ -23,7 +23,7 @@
 
 - 到时间能触发。
 - 能进入正确的 `userId + instanceId` scope。
-- 能调用 workspace-scoped Hermes。
+- 能调用 workspace-scoped ACP backend。
 - 能保存复盘 artifact。
 - 能把应推送内容进入微信可靠推送队列。
 - 无需推送时能稳定处理 `NO_PUSH`。
@@ -37,11 +37,11 @@
 
 当前已有阶段一骨架:
 
-- `src/index.ts` 启动顺序为:数据库初始化 → HTTP 服务 → Hermes ACP → scheduler。
+- `src/index.ts` 启动顺序为:数据库初始化 → HTTP 服务 → workspace ACP backend → scheduler。
 - `src/server.ts` 注册 scheduler push callback,调度器产出的消息会进入 `push_jobs` 队列。
 - `src/scheduler/index.ts` 每分钟扫描可调度 scope,负责盘中 market-watch 任务触发。
 - `src/scheduler/review.ts` 每分钟扫描日/周/月复盘配置。
-- `src/acp/scheduled-tasks.ts` 负责后台 Hermes 任务:
+- `src/acp/scheduled-tasks.ts` 负责后台 ACP 任务:
   - `runScheduledMarketWatchTask`
   - `runScheduledReviewTask`
 - `src/acp/scheduled-tasks.ts` 会通过 `recordAcpTrace` 记录后台任务成功或失败。
@@ -87,8 +87,8 @@
 
 `runScheduledReviewTask()` 当前:
 
-- daily:构建 deterministic review context → 调 Hermes → 清洗正文 → 生成 push summary → `saveSkillDailyReview()` 保存。
-- weekly/monthly:构建上下文 → 调 Hermes → 写 `workspace/reports/<kind>/` → 返回推送摘要。
+- daily:构建 deterministic review context → 调 workspace ACP backend → 清洗正文 → 生成 push summary → `saveSkillDailyReview()` 保存。
+- weekly/monthly:构建上下文 → 调 workspace ACP backend → 写 `workspace/reports/<kind>/` → 返回推送摘要。
 
 这说明阶段一的"复盘任务承接"也已经有代码基础。
 
@@ -125,7 +125,7 @@
 
 ### 3.2 多进程重复触发风险
 
-真实验收时发现本机存在多个 invest-agent 服务进程监听不同端口,但共享同一份主用户 workspace 和数据库。临时修改主用户 `schedules.yaml` 后,多个进程可能同时命中同一个 daily review slot,造成重复 Hermes 调用和重复微信推送。
+真实验收时发现本机存在多个 invest-agent 服务进程监听不同端口,但共享同一份主用户 workspace 和数据库。临时修改主用户 `schedules.yaml` 后,多个进程可能同时命中同一个 daily review slot,造成重复 ACP 调用和重复微信推送。
 
 2026-06-28 已补充 `scheduled_task_runs` 持久化抢锁:
 
@@ -155,9 +155,9 @@ weekly/monthly 当前直接写 `workspace/reports/weekly|monthly`。这符合阶
 
 阶段一只要求生成和保存,不要求完整工作台阅读能力。
 
-### 3.5 后台 Hermes 输出质量没有强约束测试
+### 3.5 后台 ACP 输出质量没有强约束测试
 
-market-watch 要求 Hermes 返回 `NO_PUSH` 或 500 字以内正文;daily/weekly/monthly 也要求短推送摘要。
+market-watch 要求 ACP backend 返回 `NO_PUSH` 或 500 字以内正文;daily/weekly/monthly 也要求短推送摘要。
 
 现有 smoke 主要测日复盘摘要裁剪,没有覆盖:
 
@@ -232,7 +232,7 @@ scripts/stage1-scheduled-tasks-smoke.mjs
 
 验收:
 
-- 人工触发一次后台任务,能在日志中串起:命中调度 → Hermes task → trace → push job。
+- 人工触发一次后台任务,能在日志中串起:命中调度 → ACP task → trace → push job。
 
 ### P4. 持久化 task run 去重
 
@@ -242,7 +242,7 @@ scripts/stage1-scheduled-tasks-smoke.mjs
 
 - 新增 `scheduled_task_runs` 表。
 - 新增 `src/services/scheduled-task-runs.ts`。
-- review scheduler 和 market-watch scheduler 在调用 Hermes 前先 claim。
+- review scheduler 和 market-watch scheduler 在调用 ACP backend 前先 claim。
 - `smoke:stage1-scheduler` 覆盖同一 taskKey 只能领取一次。
 
 验收:
@@ -343,5 +343,5 @@ Executor prompt:
 Reviewer prompt:
 
 ```markdown
-请按 `docs/watch-runtime-stage1-implementation-brief.md` 审查阶段一执行结果。重点检查:是否越阶段实现、是否有端到端或契约 smoke、复盘 artifact 是否保存、push_jobs 是否可追踪、NO_PUSH 是否不推送、Hermes 失败是否不会卡住 scheduler、scheduled_task_runs 是否能防止多进程重复触发。
+请按 `docs/watch-runtime-stage1-implementation-brief.md` 审查阶段一执行结果。重点检查:是否越阶段实现、是否有端到端或契约 smoke、复盘 artifact 是否保存、push_jobs 是否可追踪、NO_PUSH 是否不推送、ACP backend 失败是否不会卡住 scheduler、scheduled_task_runs 是否能防止多进程重复触发。
 ```

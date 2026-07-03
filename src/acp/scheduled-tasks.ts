@@ -4,12 +4,15 @@ import { join } from "node:path";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
 import { recordAcpTrace } from "./trace.js";
-import { sanitizeCustomerText } from "../lib/customer-output.js";
+import { extractFinalCustomerReply, sanitizeCustomerText } from "../lib/customer-output.js";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { UserContext } from "../lib/user-context.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID } from "../lib/user-context.js";
+import { readSchedules } from "../lib/schedules-loader.js";
+import { WorkspaceStore } from "../lib/workspace-store.js";
+import { formatUnknownError } from "../lib/errors.js";
 import {
   buildDailyReviewContext,
   buildMonthlyReviewContext,
@@ -28,17 +31,18 @@ export interface ScheduledScope {
 }
 
 type ScheduledReviewKind = "daily" | "weekly" | "monthly";
+type MarketWatchPushMode = "exception_only" | "scheduled_intraday_brief";
 
 export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
   const userContext = await buildScheduledUserContext(scope, "market-watch");
+  const pushMode = await resolveMarketWatchPushMode(userContext.userId);
   const promptContext = await buildAcpPromptContext({
-    userText: buildMarketWatchTaskPrompt(promptContextTokenPlaceholder, userContext),
+    userText: buildMarketWatchTaskPrompt(userContext, pushMode),
     userContext,
   });
-  const promptText = buildMarketWatchTaskPrompt(promptContext.sandboxToken, userContext);
   const reply = await runAcpTask({
     userContext,
-    promptText,
+    promptText: promptContext.promptText,
     conversationId: userContext.conversationId!,
     messageId: randomUUID(),
     mode: "scheduled-market-watch",
@@ -46,7 +50,14 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
     sandboxPermissions: promptContext.sandboxContext.permissions,
   });
   const cleaned = sanitizeScheduledReply(reply);
-  if (!cleaned || cleaned === "NO_PUSH") return null;
+  if (!cleaned) return null;
+  if (cleaned === "NO_PUSH") {
+    if (pushMode === "scheduled_intraday_brief") {
+      logger.warn(`固定盘中简报返回 NO_PUSH，改用兜底简报 user=${userContext.userId} instance=${userContext.instanceId}`);
+      return buildMarketWatchFallbackBrief();
+    }
+    return null;
+  }
   return cleaned;
 }
 
@@ -58,16 +69,18 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
       userId: userContext.userId,
       instanceId: userContext.instanceId,
     });
-  const promptContext = await buildAcpPromptContext({
-    userText: [
-      "【后台任务：日复盘】",
-      "这条内容会直接作为微信消息发送给用户。",
-      "请基于下方复盘上下文生成今日收盘复盘，控制在微信可读的简短长度，默认不超过 500 字。",
-      "只输出给用户看的复盘正文，不要输出执行过程。",
-    ].join("\n"),
-    reviewContext,
-    userContext,
-  });
+    const promptContext = await buildAcpPromptContext({
+      userText: [
+        "【后台任务：日复盘】",
+        "你正在当前用户 Workspace 中执行自动日复盘。",
+        "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
+        "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 daily-review 相关 skills；结构和详略由 Workspace 规则决定。",
+        "只输出给用户看的复盘正文，不要输出执行过程、工具调用过程、接口、token 或内部路径。",
+        "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
+      ].join("\n"),
+      reviewContext,
+      userContext,
+    });
     const reply = await runAcpTask({
       userContext,
       promptText: promptContext.promptText,
@@ -93,7 +106,7 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
         source: "scheduled-acp",
       },
     });
-    return summary;
+    return cleaned;
   }
 
   if (kind === "weekly") {
@@ -131,8 +144,9 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
     userText: [
       `【后台任务：${label}】`,
       "你正在当前用户 Workspace 中执行自动复盘生成。",
-      "这条内容会直接作为微信消息发送给用户，请用微信可读的简短表达，默认不超过 500 字。",
+      "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
       "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 review/market 相关 skills。",
+      "结构和详略由 Workspace 规则决定；不要在服务层任务中自行压缩成固定字数摘要。",
       "只输出给用户看的复盘正文，不要输出执行过程、工具调用过程或内部路径。",
       "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
       `复盘上下文 JSON：${JSON.stringify(context)}`,
@@ -204,7 +218,7 @@ async function runAcpTask(input: {
       promptText: input.promptText,
       mode: input.mode,
       status: "error",
-      errorMessage: error instanceof Error ? error.message : String(error),
+      errorMessage: formatUnknownError(error),
       elapsedMs: Date.now() - startedAt,
       sandboxTokenId: input.sandboxTokenId,
       sandboxPermissions: input.sandboxPermissions,
@@ -213,33 +227,65 @@ async function runAcpTask(input: {
   }
 }
 
-const promptContextTokenPlaceholder = "__SANDBOX_TOKEN__";
+async function resolveMarketWatchPushMode(userId: string): Promise<MarketWatchPushMode> {
+  const schedules = readSchedules(userId);
+  const watch = await readWatchConfig(userId);
+  const mode = String(watch?.mode || schedules.market_watch?.push_mode || "");
+  if (mode === "scheduled_intraday_brief" || schedules.market_watch?.only_push_on_exception === false || watch?.only_push_on_exception === false) {
+    return "scheduled_intraday_brief";
+  }
+  return "exception_only";
+}
 
-function buildMarketWatchTaskPrompt(sandboxToken: string, userContext: UserContext) {
+async function readWatchConfig(userId: string) {
+  try {
+    return await new WorkspaceStore(userId).readWatch();
+  } catch (error) {
+    logger.warn(`scheduled.marketWatch.readWatch failed user=${userId}: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: MarketWatchPushMode) {
   const api = `http://127.0.0.1:${config.port}/api/sandbox/alerts/check`;
+  const isBriefMode = pushMode === "scheduled_intraday_brief";
   return [
     "【后台任务：智能盯盘】",
     "你正在当前用户 Workspace 中执行自动盘中巡检。",
-    "这条内容会直接作为微信消息发送给用户，请保持简短、明确、可直接转发。",
+    "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
     "请读取 AGENTS.md、config/watch.yaml、config/notification.yaml、config/portfolio.yaml、reports/daily/ 和 market-watch skill。",
     "是否推送、推送频率、推送内容和提醒规则均以 Workspace 配置与 market-watch skill 为准。",
-    "不要输出执行过程。",
+    "结构和详略由 Workspace 规则决定；不要输出执行过程。",
     "",
-    "可调用确定性巡检 API 获取本轮触发结果：",
-    `curl -s -X POST ${api} -H 'Authorization: Bearer ${sandboxToken}' -H 'Content-Type: application/json' -d '{"force":true}'`,
+    "可调用确定性巡检 API 获取本轮触发结果（sandbox token 已写入 workspace 根目录的 .sandbox-token 文件，curl 必须用 shell 展开，禁止在命令里写出 token 字面值）：",
+    `curl -s -X POST ${api} -H "Authorization: Bearer $(cat .sandbox-token)" -H "Content-Type: application/json" -d '{"force":true}'`,
     "",
     "输出契约：",
-    "- 若按 Workspace 规则本轮不应推送，只输出：NO_PUSH",
-    "- 若按 Workspace 规则本轮应推送，只输出微信正文，500 字以内。",
+    isBriefMode
+      ? "- 当前是固定盘中简报模式：必须输出一条微信正文；即使没有异常，也要给出盘面状态、持仓观察和“是否需要操作”。"
+      : "- 当前是异常触发模式：若按 Workspace 规则本轮不应推送，只输出：NO_PUSH",
+    isBriefMode
+      ? "- 固定盘中简报模式禁止输出 NO_PUSH、无需推送、暂无提醒等拒绝推送文本。"
+      : "- 若按 Workspace 规则本轮应推送，只输出微信正文。",
     "- 不要提到 Codex、Hermes、ACP、workspace、sandbox、curl、接口、后台任务或本地路径。",
     `当前用户: ${userContext.userId}`,
     `当前实例: ${userContext.instanceId}`,
   ].join("\n");
 }
 
+function buildMarketWatchFallbackBrief() {
+  return [
+    "【盘中简报】",
+    "本轮未检测到需要立即确认的 P0 级风险或明确买卖区触发。",
+    "当前按固定盘中简报规则推送：普通波动先观察，不追涨杀跌；如后续接近关键区间、出现重大公告或核心逻辑变化，再单独提醒。",
+    "是否需要操作：暂不需要。",
+  ].join("\n");
+}
+
 export function sanitizeScheduledReply(reply: string) {
-  const cleaned = sanitizeCustomerText(reply).trim();
+  const cleaned = sanitizeCustomerText(extractFinalCustomerReply(reply)).trim();
   if (/^NO_PUSH[。.!！\s]*$/i.test(cleaned)) return "NO_PUSH";
+  if (/NO_PUSH[。.!！\s]*$/i.test(cleaned) && !/^#{1,3}\s/m.test(cleaned)) return "NO_PUSH";
   if (/^(当前无提醒|暂无提醒|无提醒|无需推送|没有需要推送)/.test(cleaned)) return "NO_PUSH";
   return cleaned;
 }
@@ -251,12 +297,8 @@ async function writeWorkspaceReview(userId: string, kind: "weekly" | "monthly", 
   await writeFile(join(dir, `${key}.md`), content, "utf-8");
 }
 
-function buildScheduledReviewPush(label: string, content: string) {
-  const head = content
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 8)
-    .join("\n");
-  return `【${label}已生成】\n${head}\n\n完整内容已保存到复盘记录。`;
+export function buildScheduledReviewPush(label: string, content: string) {
+  const cleaned = content.trim();
+  if (!cleaned) return `【${label}已生成】\n完整内容已保存到复盘记录。`;
+  return cleaned;
 }

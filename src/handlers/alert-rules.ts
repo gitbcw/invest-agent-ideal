@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { alertRules, alerts } from "../db/schema.js";
-import { getQuote } from "../services/stock.js";
+import { marketQuote } from "../services/market-data.js";
 import { ensureBuiltInIndicatorDefinitions } from "./indicator-definitions.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 
@@ -61,10 +61,10 @@ function severityFor(indicator: string) {
   return "medium";
 }
 
-async function resolveStockName(stockCode: string, fallback?: string) {
+async function resolveStockName(userId: string, stockCode: string, fallback?: string) {
   if (fallback) return fallback;
-  const quote = await getQuote([stockCode]).catch(() => []);
-  return quote[0]?.name || stockCode;
+  const quote = await marketQuote([stockCode], userId).catch(() => ({ items: [] }));
+  return quote.items[0]?.name || stockCode;
 }
 
 export async function syncLegacyAlertToAlertRule(input: {
@@ -80,7 +80,7 @@ export async function syncLegacyAlertToAlertRule(input: {
   const indicatorKey = LEGACY_TO_INDICATOR_KEY[input.indicator] ?? input.indicator;
   const userId = input.userId ?? DEFAULT_USER_ID;
   const instanceId = input.instanceId ?? DEFAULT_INSTANCE_ID;
-  const stockName = await resolveStockName(input.stockCode, input.stockName);
+  const stockName = await resolveStockName(userId, input.stockCode, input.stockName);
   const now = new Date().toISOString();
   const params = safeParse(input.threshold);
 

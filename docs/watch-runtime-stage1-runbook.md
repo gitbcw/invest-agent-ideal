@@ -258,8 +258,8 @@ curl -s -X POST http://localhost:22655/api/testing/scheduler/trigger \
 - 返回 `ok=true`
 - 返回 `taskKey`
 - `trace.mode=scheduled-market-watch`
-- Hermes 返回 `NO_PUSH` 时,`taskRun.status=skipped` 且不产生新的 `pushJobId`
-- Hermes 返回正文时,返回 `pushJobId` 并真实推送
+- ACP backend 返回 `NO_PUSH` 时,`taskRun.status=skipped` 且不产生新的 `pushJobId`
+- ACP backend 返回正文时,返回 `pushJobId` 并真实推送
 
 2026-06-28 当前验收记录:
 
@@ -275,8 +275,8 @@ curl -s -X POST http://localhost:22655/api/testing/scheduler/trigger \
 
 - 服务日志显示行情巡检命中对应 scope。
 - `codex_acp_traces` 中有 `mode=scheduled-market-watch`。
-- Hermes 返回 `NO_PUSH` 时不产生新的 push job。
-- Hermes 返回正文时产生 `push_jobs` 记录并真实推送。
+- ACP backend 返回 `NO_PUSH` 时不产生新的 push job。
+- ACP backend 返回正文时产生 `push_jobs` 记录并真实推送。
 
 验收后恢复:
 

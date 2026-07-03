@@ -1,7 +1,7 @@
 import { db } from "../db/index.js";
 import { alertEvents, alertRules, alertSignalStates, alerts, indicatorResults } from "../db/schema.js";
-import { getQuote } from "../services/stock.js";
-import { getKline, getMinuteKline } from "../services/stock.js";
+import { marketKline, marketQuote, type MarketMinuteKline } from "../services/market-data.js";
+import type { StockKline } from "../services/stock.js";
 import { analyzeIndicators, computeMA, computeMACD, computeKDJ } from "../services/indicators.js";
 import { logger } from "../lib/logger.js";
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
@@ -123,7 +123,11 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
 
   const items = [...stockMap.values()];
   const codes = items.map((w) => w.stockCode);
-  const quotes = await getQuote(codes);
+  const quoteResult = await marketQuote(codes, userId);
+  if (quoteResult.warnings.length > 0) {
+    logger.warn(`巡检行情数据不完整 user=${userId}: ${quoteResult.warnings.join(";")}`);
+  }
+  const quotes = quoteResult.items;
   const quoteMap = new Map(quotes.map((q) => [q.code, q]));
   const customAlertMap = new Map<string, typeof customAlerts>();
 
@@ -377,7 +381,8 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
   // 技术指标检查（放量突破 / 跌破支撑 — 仅与预案关联的信号）
   for (const item of items) {
     try {
-      const klines = await getKline(item.stockCode, 120);
+      const klineResult = await marketKline({ code: item.stockCode, period: "day", count: 120 }, userId);
+      const klines = klineResult.items as StockKline[];
       if (klines.length < 30) continue;
 
       const report = analyzeIndicators(klines);
@@ -679,7 +684,8 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
       try {
         const configured = customAlertMap.get(item.stockCode) ?? [];
         if (!hasConfiguredIndicator(configured, "volume_price_divergence")) continue;
-        const minuteBars = await getMinuteKline(item.stockCode, 48);
+        const minuteResult = await marketKline({ code: item.stockCode, period: "m5", count: 48 }, userId);
+        const minuteBars = minuteResult.items as MarketMinuteKline[];
         if (minuteBars.length < 10) continue;
 
         const bars = minuteBars.slice(0, -1);
@@ -911,6 +917,126 @@ function buildStage2AlertItem(
     };
   }
 
+  if (rule.ruleType === "macd_cross") {
+    const direction = String(rule.params.direction);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const difToday = Number(evaluated.facts.difToday);
+    const deaToday = Number(evaluated.facts.deaToday);
+    const signalKey = `${rule.stockCode}:watch-rule:macd-cross:${direction}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      message: `${rule.stockName}(${rule.stockCode}) 触发 MACD 规则：${direction === "golden_cross" ? "金叉" : "死叉"}，DIF ${difToday.toFixed(3)}，DEA ${deaToday.toFixed(3)}，现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "kdj_cross") {
+    const direction = String(rule.params.direction);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const kToday = Number(evaluated.facts.kToday);
+    const dToday = Number(evaluated.facts.dToday);
+    const jToday = Number(evaluated.facts.jToday);
+    const threshold = Number(rule.params.threshold);
+    const signalKey = `${rule.stockCode}:watch-rule:kdj-cross:${direction}:${threshold}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      message: `${rule.stockName}(${rule.stockCode}) 触发 KDJ 规则：${direction === "golden_cross" ? "金叉" : "死叉"}，K ${kToday.toFixed(2)}，D ${dToday.toFixed(2)}，J ${jToday.toFixed(2)}，现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "rsi_threshold") {
+    const period = Number(rule.params.period);
+    const direction = String(rule.params.direction);
+    const threshold = Number(rule.params.threshold);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const rsiToday = Number(evaluated.facts.rsiToday);
+    const signalKey = `${rule.stockCode}:watch-rule:rsi-threshold:${direction}:${period}:${threshold}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      message: `${rule.stockName}(${rule.stockCode}) 触发 RSI 规则：RSI${period} ${rsiToday.toFixed(2)} ${direction === "above" ? ">=" : "<="} ${threshold}，现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "boll_break") {
+    const direction = String(rule.params.direction);
+    const period = Number(rule.params.period);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const upper = Number(evaluated.facts.upper);
+    const lower = Number(evaluated.facts.lower);
+    const signalKey = `${rule.stockCode}:watch-rule:boll-break:${direction}:${period}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      message: `${rule.stockName}(${rule.stockCode}) 触发布林带规则：${direction === "break_upper" ? "突破上轨" : "跌破下轨"}，现价 ${closeToday.toFixed(2)}，上轨 ${upper.toFixed(2)}，下轨 ${lower.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "wr_threshold") {
+    const period = Number(rule.params.period);
+    const direction = String(rule.params.direction);
+    const threshold = Number(rule.params.threshold);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const wrToday = Number(evaluated.facts.wrToday);
+    const signalKey = `${rule.stockCode}:watch-rule:wr-threshold:${direction}:${period}:${threshold}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      message: `${rule.stockName}(${rule.stockCode}) 触发 WR 规则：WR${period} ${wrToday.toFixed(2)} ${direction === "above" ? ">=" : "<="} ${threshold}，现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "volume_ratio") {
+    const period = Number(rule.params.period);
+    const direction = String(rule.params.direction);
+    const threshold = Number(rule.params.threshold);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const ratio = Number(evaluated.facts.ratio);
+    const signalKey = `${rule.stockCode}:watch-rule:volume-ratio:${direction}:${period}:${threshold}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "volume",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      message: `${rule.stockName}(${rule.stockCode}) 触发成交量规则：成交量为 ${period} 日均量的 ${ratio.toFixed(2)} 倍，阈值 ${direction === "above" ? ">=" : "<="} ${threshold}，现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
   const levelType = String(rule.params.levelType);
   const levelValue = Number(evaluated.facts.levelValue);
   const currentPrice = Number(evaluated.facts.currentPrice);
@@ -954,6 +1080,12 @@ const STATEFUL_SIGNAL_SUFFIXES = new Set([
   "macd-death-cross",
   "kdj-oversold",
   "kdj-overbought",
+  "watch-rule:macd-cross",
+  "watch-rule:kdj-cross",
+  "watch-rule:rsi-threshold",
+  "watch-rule:boll-break",
+  "watch-rule:wr-threshold",
+  "watch-rule:volume-ratio",
   "composite",
   "script",
 ]);
@@ -1117,6 +1249,15 @@ function indicatorKeyFromSignal(signalKey: string) {
   if (suffix === "macd-death-cross") return "macd_death_cross";
   if (suffix.startsWith("kdj-oversold")) return "kdj_oversold";
   if (suffix.startsWith("kdj-overbought")) return "kdj_overbought";
+  if (suffix.startsWith("watch-rule:price-cross")) return "watch_rule_price_cross";
+  if (suffix.startsWith("watch-rule:ma-cross")) return "watch_rule_ma_cross";
+  if (suffix.startsWith("watch-rule:macd-cross")) return "watch_rule_macd_cross";
+  if (suffix.startsWith("watch-rule:kdj-cross")) return "watch_rule_kdj_cross";
+  if (suffix.startsWith("watch-rule:rsi-threshold")) return "watch_rule_rsi_threshold";
+  if (suffix.startsWith("watch-rule:boll-break")) return "watch_rule_boll_break";
+  if (suffix.startsWith("watch-rule:wr-threshold")) return "watch_rule_wr_threshold";
+  if (suffix.startsWith("watch-rule:volume-ratio")) return "watch_rule_volume_ratio";
+  if (suffix.startsWith("watch-rule:near-plan-level")) return "watch_rule_near_plan_level";
   if (suffix.startsWith("composite:")) return `composite_${suffix.split(":")[1] ?? "unknown"}`;
   if (suffix.startsWith("script:")) return `script_${suffix.split(":")[1] ?? "unknown"}`;
   return suffix || "unknown";
@@ -1124,7 +1265,17 @@ function indicatorKeyFromSignal(signalKey: string) {
 
 function timeframeFromIndicator(indicatorKey: string) {
   if (indicatorKey === "volume_price_divergence") return "1m";
-  if (indicatorKey === "macd" || indicatorKey === "breakout_with_volume") return "daily";
+  if (
+    indicatorKey === "macd" ||
+    indicatorKey === "breakout_with_volume" ||
+    indicatorKey.startsWith("watch_rule_ma") ||
+    indicatorKey.startsWith("watch_rule_macd") ||
+    indicatorKey.startsWith("watch_rule_kdj") ||
+    indicatorKey.startsWith("watch_rule_rsi") ||
+    indicatorKey.startsWith("watch_rule_boll") ||
+    indicatorKey.startsWith("watch_rule_wr") ||
+    indicatorKey.startsWith("watch_rule_volume")
+  ) return "daily";
   return "realtime";
 }
 
@@ -1336,6 +1487,12 @@ const HARDWIRED_PRIORITY_MAP: Record<string, RiskLevel> = {
   "macd-death-cross": "P1",
   "kdj-oversold": "P2",
   "kdj-overbought": "P2",
+  "watch-rule:macd-cross": "P1",
+  "watch-rule:kdj-cross": "P2",
+  "watch-rule:rsi-threshold": "P2",
+  "watch-rule:boll-break": "P1",
+  "watch-rule:wr-threshold": "P2",
+  "watch-rule:volume-ratio": "P1",
   "composite": "P1",
   "script": "P2",
 };

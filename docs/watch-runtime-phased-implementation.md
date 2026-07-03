@@ -64,7 +64,7 @@
 - `config/schedules.yaml` 中的复盘计划。
 - `config/watch.yaml` / `config/schedules.yaml` 中的固定盘中巡检窗口。
 - scheduler 对 `userId + instanceId` 的 scope 扫描。
-- 定时任务调用 workspace-scoped Hermes。
+- 定时任务调用 workspace-scoped ACP backend。
 - 复盘报告保存和微信推送。
 - 盘中定时任务的 NO_PUSH / 推送结果处理。
 - 失败日志、trace、审计和重试可见性。
@@ -151,6 +151,11 @@
 | `percent_change` | 涨跌幅超过阈值 |
 | `near_plan_level` | 接近支撑/压力/目标/止损 |
 | `ma_cross` | 突破/跌破指定均线 |
+| `macd_cross` | MACD 金叉/死叉 |
+| `kdj_cross` | KDJ 金叉/死叉 |
+| `rsi_threshold` | RSI 超买/超卖阈值 |
+| `boll_break` | 突破/跌破 BOLL 轨道 |
+| `wr_threshold` | WR 阈值 |
 | `volume_ratio` | 量比超过阈值 |
 | `breakout_with_volume` | 放量突破压力位 |
 | `break_support` | 跌破支撑位 |
@@ -163,7 +168,7 @@
 | `ma_cross` | 必做 |
 | `near_plan_level` | 必做 |
 
-`volume_ratio`、`breakout_with_volume`、`break_support` 可以作为阶段二后续批次,不要求与首发同时上线。
+2026-07-02 当前实现已超过最小首发集:技术指标规则已扩展到 MACD/KDJ/RSI/BOLL/WR/量比。`breakout_with_volume`、`break_support` 仍更适合作为组合规则或系统信号复用场景,不应在没有明确状态机和数据窗口时用自然语言即兴执行。
 
 ### 4.3 规则目录与实例分层
 
@@ -367,7 +372,7 @@ Agent 可以负责:
 
 ### 4.12 当前落地进展
 
-2026-06-28 当前代码已完成阶段二的第一段服务层落地:
+2026-07-02 当前代码已完成阶段二服务层落地和技术指标扩展:
 
 - 已新增服务层规则目录:
   - `GET /api/watch-rules/catalog`
@@ -380,18 +385,31 @@ Agent 可以负责:
   - `POST /api/watch-rules/validate`
   - `POST /api/watch-rules/:id/dry-run`
   - sandbox 对应接口同名挂在 `/api/sandbox/watch-rules*`
-- 已让 scheduler 接入阶段二最小三类规则:
+- 已让 scheduler 接入独立 `rule-alert-check` 任务,与 market-watch 定时简报分离:
+  - 交易日按 `alert_check_interval_minutes` 采样,默认 5 分钟
+  - 只按采样当刻可取得的最新价格/K 线/预案事实判断
+  - 不回溯"盘中曾经触达",不做收盘确认变体
+  - 触发事实写入 `alert_events` / `alert_signal_states` / `indicator_results`,运行记录写入 `scheduled_task_runs.task_type = rule-alert-check`
+- 已接入当前规则目录:
   - `price_cross`
   - `ma_cross`
+  - `macd_cross`
+  - `kdj_cross`
+  - `rsi_threshold`
+  - `boll_break`
+  - `wr_threshold`
+  - `volume_ratio`
   - `near_plan_level`
 - 已补服务层烟测:
   - `npm run smoke:stage2-watch-rules`
+- 已补 Platform 专用审计页:
+  - `/platform#rule-alerts`
+  - `GET /api/platform/rule-alerts`
 
 当前仍未完成的部分:
 
-- Workspace skill 还没有正式改为"先读取目录,再通过 API 创建规则实例"。
-- Dashboard 还没有新的专用 watch-rules 操作界面,当前只有 API。
-- 主用户 `primary / invest-agent-primary` 的真实盘中触发验收还需要单独做一轮。
+- Dashboard 还没有完整的 watch-rule 编辑界面；当前 Platform 只提供规则巡检审计和只读观察。
+- 真实盘中触发验收仍需按具体用户/规则单独观察,尤其要区分"采样点未命中"与"规则未运行"。
 
 ## 5. 阶段三:新闻/事件类主观盯盘
 
@@ -495,12 +513,51 @@ Agent 可以负责:
 5. 阶段三新闻源从哪里来,先接公告/财报/研报/新闻中的哪一类?
 6. 阶段三粗筛规则由平台默认模板提供,还是允许用户后续自定义?
 
+## 9.1 2026-07-02 当前边界与后续扩展
+
+当前已打通的是阶段二服务层明确规则巡检,不是完整任意规则系统。
+
+已验证范围:
+
+- 服务层规则实例可通过 Workspace skill 创建。
+- 当前规则集:
+  - `price_cross`:价格上穿/下破阈值。
+  - `ma_cross`:突破/跌破指定均线。
+  - `macd_cross`:日线 MACD 金叉/死叉。
+  - `kdj_cross`:日线 KDJ 金叉/死叉,可带阈值过滤。
+  - `rsi_threshold`:RSI 高于/低于阈值。
+  - `boll_break`:突破/跌破 BOLL 上下轨。
+  - `wr_threshold`:WR 高于/低于阈值。
+  - `volume_ratio`:量比或成交量相对均量阈值。
+  - `near_plan_level`:接近预案支撑/压力/目标/止损位。
+- 规则 dry-run 已改用服务层 market-data facade,返回行情来源、时间、置信度和 warnings。
+- 主用户 `primary / invest-agent-primary` 已通过微信创建 `赣锋锂业 >= 66` 规则,落库为 `alert_rules.relation_to_plan = stage2_watch_rule`。
+- u3 旧式 `config/watch.yaml` 价格提醒已迁移为服务层 watch-rule 实例,workspace 文件只保留迁移说明。
+- 所有现有 workspace 与 `templates/workspace` 的 market-watch 规则资产已同步:明确价格/均线/预案位规则必须走 `/api/sandbox/watch-rules*`,不能用写 `config/watch.yaml` 冒充创建成功。
+- Platform 已新增独立 `规则巡检` 菜单,用于查看 interval、规则、recent `rule-alert-check` runs 和 alert events。
+
+当前只需要继续观察和验收:
+
+- 规则巡检与定时盯盘是否互不混淆:market-watch 是固定窗口简报/摘要,rule-alert-check 是按采样间隔执行确定性规则。
+- 规则巡检与复盘推送是否互不干扰:复盘只消费提醒与行情事实,不承担创建或执行明确价格规则。
+- 触发时是否写入 alert event / push queue,未触发时是否不制造噪音。
+- P0/P1/P2 的推送时机是否符合用户低打扰或严格推送配置。
+
+后续可扩展方向,暂不纳入当前验收:
+
+- **服务层巡检频率配置**:支持用户说"每 N 分钟巡检一次",由服务层 scheduler 读取 workspace `config/schedules.yaml` / `config/watch.yaml` 的窗口和间隔后执行,而不是让 Agent 自己轮询。
+- **更多组合规则**:例如放量突破、突破后回踩、组合回撤、行业集中度等。新增前应先进入规则目录 catalog,再支持 validate/create/dry-run,并明确状态机、确认口径和数据窗口。
+- **更复杂的组合规则**:例如"突破 20 日线且回踩 5 日线不破"这类多条件规则,需要明确状态机、确认口径和数据窗口,不能用自然语言直接即兴执行。
+- **事件/文本粗筛**:公告、新闻、财报、政策等可先用服务层低成本规则或正则粗筛,命中后再交给 Agent 判断重要性。当前先不处理政策/新闻主观判断。
+- **规则 UI / Dashboard**:后续可增加专用 watch-rules 列表、启停、dry-run 和触发历史视图。
+- **规则迁移清理**:逐步把各 workspace 中可执行的 `custom_rules` 迁移为服务层 watch-rule 实例,`config/watch.yaml` 只保留窗口、低打扰策略和说明性规则。
+
 ## 10. 执行代理提示
 
 Executor prompt:
 
 ```markdown
-请基于 `docs/watch-runtime-phased-implementation.md` 实施当前指定阶段。严格遵守阶段范围和不做事项。先验证阶段一的定时任务与推送可靠性,不要提前实现阶段二/三。每个改动都需要对应验收方式,并保留现有 Hermes stdio ACP 直通主链路。
+请基于 `docs/watch-runtime-phased-implementation.md` 实施当前指定阶段。严格遵守阶段范围和不做事项。先验证阶段一的定时任务与推送可靠性,不要提前实现阶段二/三。每个改动都需要对应验收方式,并保留现有 workspace-scoped ACP 直通主链路。
 ```
 
 Reviewer prompt:

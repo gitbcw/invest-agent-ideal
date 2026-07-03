@@ -3,12 +3,13 @@
 日期: 2026-06-26
 
 > 更新说明(2026-06-28):本文保留为讨论记录,其中"结构化规则放入 workspace 配置"的思路已不是当前首选。当前更推荐的阶段二方向见 `docs/watch-runtime-phased-implementation.md`:服务层拥有规则目录与规则实例 API,Workspace skill 通过 API 发现和管理规则。
+> 运行时名称说明(2026-07-02):本文中的 Hermes 是历史讨论语境。当前默认 backend 是 Codex ACP,应按 workspace-scoped ACP backend 理解。
 
 本文记录盘中巡检规则问题的阶段性分析,用于晚间讨论后再决定是否执行。本文不是已落地设计,也不要求立即修改代码。
 
 ## 1. 背景
 
-当前主链路是:服务层 scheduler 按配置触发 workspace-scoped Hermes,让 Hermes 执行一轮 market-watch 任务。服务层还保留确定性 API、行情数据、SQLite 事件记录、推送队列和微信连接。
+当前主链路是:服务层 scheduler 按配置触发 workspace-scoped ACP backend 执行一轮 market-watch 任务。服务层还保留确定性 API、行情数据、SQLite 事件记录、推送队列和微信连接。
 
 这次暴露的问题是:
 

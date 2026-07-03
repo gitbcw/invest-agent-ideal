@@ -5,12 +5,16 @@ import { logger } from "./lib/logger.js";
 import { disposeAllAcp, startDefaultAcp } from "./acp/stdio-agent.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { stopPlatformWeixinListeners } from "./routes/platform.js";
+import { registerDataQualityAlertSink } from "./handlers/data-quality-report.js";
 
 async function main() {
   logger.info("正在启动投资选股智能体...");
 
   // 初始化数据库
   initDb();
+
+  // 注册数据质量告警 sink(给 services/market-data-providers.ts 用,避免循环依赖)
+  registerDataQualityAlertSink();
 
   // 启动 HTTP 服务
   const app = await startServer();

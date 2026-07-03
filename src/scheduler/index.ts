@@ -1,13 +1,16 @@
 import { startReviewScheduler, stopReviewScheduler, getReviewPushTime, triggerReviewNow, type ReviewScope } from "./review.js";
+import { startDataQualityScheduler, stopDataQualityScheduler } from "./data-quality.js";
 import { logger } from "../lib/logger.js";
 import { db } from "../db/index.js";
-import { aiInstances, alerts, channelIdentities, channelIdentityInstances, settings, users } from "../db/schema.js";
+import { aiInstances, alertRules, alerts, channelIdentities, channelIdentityInstances, settings, users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { beijingDateKey, beijingNow, isBeijingTradingDay, readSchedules, type SchedulesYaml } from "../lib/schedules-loader.js";
 import { runScheduledMarketWatchTask } from "../acp/scheduled-tasks.js";
 import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/scheduled-task-runs.js";
+import { formatUnknownError } from "../lib/errors.js";
+import { formatAlerts, runAlertCheck } from "./alert-check.js";
 
 export type PushCallback = (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => Promise<void | boolean | string>;
 
@@ -18,6 +21,8 @@ let pushFn: PushCallback | null = null;
 let alertIntervalId: ReturnType<typeof setInterval> | null = null;
 const marketWatchFiredKeys = new Set<string>();
 const runningMarketWatchTasks = new Set<string>();
+const ruleAlertFiredKeys = new Set<string>();
+const runningRuleAlertTasks = new Set<string>();
 
 interface SchedulableScope {
   userId: string;
@@ -56,7 +61,7 @@ async function getSchedulableScopes(): Promise<SchedulableScope[]> {
   const scopes = new Map<string, SchedulableScope>();
   addScope(scopes, { userId: DEFAULT_USER_ID, instanceId: DEFAULT_INSTANCE_ID, projectId: DEFAULT_PROJECT_ID });
 
-  const [activeUsers, instances, identityInstances, enabledAlerts] = await Promise.all([
+  const [activeUsers, instances, identityInstances, enabledAlerts, enabledAlertRules] = await Promise.all([
     db.select({ id: users.id }).from(users).where(eq(users.status, "active")),
     db
       .select({ userId: aiInstances.ownerUserId, instanceId: aiInstances.id, projectId: aiInstances.projectId })
@@ -72,6 +77,7 @@ async function getSchedulableScopes(): Promise<SchedulableScope[]> {
       .innerJoin(channelIdentities, eq(channelIdentityInstances.channelIdentityId, channelIdentities.id))
       .where(eq(channelIdentities.channel, "weixin-mobile")),
     db.select({ userId: alerts.userId, instanceId: alerts.instanceId }).from(alerts).where(eq(alerts.enabled, true)),
+    db.select({ userId: alertRules.userId, instanceId: alertRules.instanceId }).from(alertRules).where(eq(alertRules.enabled, true)),
   ]);
 
   const activeUserIds = new Set(activeUsers.map((user) => user.id));
@@ -82,6 +88,9 @@ async function getSchedulableScopes(): Promise<SchedulableScope[]> {
     if (activeUserIds.has(scope.userId)) addScope(scopes, scope);
   }
   for (const scope of enabledAlerts) {
+    if (activeUserIds.has(scope.userId)) addScope(scopes, scope);
+  }
+  for (const scope of enabledAlertRules) {
     if (activeUserIds.has(scope.userId)) addScope(scopes, scope);
   }
   return [...scopes.values()];
@@ -158,7 +167,7 @@ function restartAlertInterval(_minutes: number) {
           } catch (error) {
             await finishScheduledTaskRun(runKey, {
               status: "error",
-              errorMessage: error instanceof Error ? error.message : String(error),
+              errorMessage: formatUnknownError(error),
             });
             throw error;
           }
@@ -166,6 +175,50 @@ function restartAlertInterval(_minutes: number) {
           logger.error(`行情巡检失败 (${userId}/${instanceId}):`, error);
         } finally {
           runningMarketWatchTasks.delete(runningKey);
+        }
+
+        try {
+          if (runningRuleAlertTasks.has(runningKey)) continue;
+          const hit = shouldRunRuleAlertCheckTask({ userId, instanceId, projectId }, fallbackInterval, now);
+          if (!hit) continue;
+          const claimed = await claimScheduledTaskRun({
+            taskKey: hit.taskKey,
+            taskType: "rule-alert-check",
+            scheduledFor: hit.scheduledFor,
+            userId,
+            projectId,
+            instanceId,
+          });
+          if (!claimed) {
+            logger.info(`跳过规则巡检 user=${userId} instance=${instanceId} slot=${hit.slot}: task 已被其他进程领取`);
+            continue;
+          }
+          runningRuleAlertTasks.add(runningKey);
+          try {
+            const items = await runAlertCheck({ force: true, userId, instanceId });
+            if (items.length > 0) {
+              const text = formatAlerts(items);
+              const pushResult = await getPushFn()(text, { userId, projectId, instanceId });
+              await finishScheduledTaskRun(hit.taskKey, {
+                status: "success",
+                pushJobId: typeof pushResult === "string" ? pushResult : undefined,
+              });
+              logger.info(`规则巡检命中 user=${userId} instance=${instanceId} slot=${hit.slot} alerts=${items.length}`);
+            } else {
+              await finishScheduledTaskRun(hit.taskKey, { status: "skipped" });
+              logger.info(`规则巡检无命中 user=${userId} instance=${instanceId} slot=${hit.slot}`);
+            }
+          } catch (error) {
+            await finishScheduledTaskRun(hit.taskKey, {
+              status: "error",
+              errorMessage: formatUnknownError(error),
+            });
+            throw error;
+          }
+        } catch (error) {
+          logger.error(`规则巡检失败 (${userId}/${instanceId}):`, error);
+        } finally {
+          runningRuleAlertTasks.delete(runningKey);
         }
       }
     } catch (error) {
@@ -186,8 +239,11 @@ export async function startScheduler() {
     await getPushFn()(message, options);
   }, getSchedulableScopes);
 
+  // 收盘后平台级数据质量汇总
+  await startDataQualityScheduler();
+
   const pushTime = await getReviewPushTime();
-  logger.info(`定时任务已启动（巡检: 每分钟扫描 workspace 配置,默认间隔 ${intervalMin}min / 复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}）`);
+  logger.info(`定时任务已启动（巡检: 每分钟扫描 workspace 配置,默认间隔 ${intervalMin}min / 复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")} / 数据质量 15:30）`);
 }
 
 /** 停止所有定时任务 */
@@ -197,11 +253,12 @@ export function stopScheduler() {
     alertIntervalId = null;
   }
   stopReviewScheduler();
+  stopDataQualityScheduler();
   logger.info("定时任务已停止");
 }
 
 async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<{ taskKey: string; scheduledFor: string; slot: string } | null> {
-  if (!isAshareMarketWatchTime(now)) return null;
+  if (!isBeijingTradingDay(now)) return null;
 
   const schedules = readSchedules(scope.userId);
   if (schedules.market_watch?.enabled === false || schedules.market_watch?.auto_run === false) return null;
@@ -213,7 +270,7 @@ async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackInterva
   const customInterval = resolveMarketWatchInterval(watch, schedules, fallbackIntervalMinutes, windows.length > 0);
   const slot = customInterval
     ? intervalSlot(now, customInterval)
-    : windowSlot(now, windows);
+    : windowSlot(now, windows, 3);
   if (!slot) return null;
 
   const dateKey = beijingDateKey(now);
@@ -221,6 +278,19 @@ async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackInterva
   if (marketWatchFiredKeys.has(key)) return null;
   marketWatchFiredKeys.add(key);
   logger.info(`命中盘中巡检 user=${scope.userId} instance=${scope.instanceId} slot=${slot}`);
+  return { taskKey: key, scheduledFor: `${dateKey}:${slot}`, slot };
+}
+
+function shouldRunRuleAlertCheckTask(scope: SchedulableScope, intervalMinutes: number, now: Date): { taskKey: string; scheduledFor: string; slot: string } | null {
+  if (!isBeijingTradingDay(now)) return null;
+  const interval = Number.isFinite(intervalMinutes) && intervalMinutes >= 1 ? intervalMinutes : DEFAULT_INTERVAL_MINUTES;
+  const slot = intervalSlot(now, interval);
+  if (!slot) return null;
+  const dateKey = beijingDateKey(now);
+  const key = `${dateKey}:rule-alert-check:${scope.userId}:${scope.instanceId}:${slot}`;
+  if (ruleAlertFiredKeys.has(key)) return null;
+  ruleAlertFiredKeys.add(key);
+  logger.info(`命中规则巡检 user=${scope.userId} instance=${scope.instanceId} slot=${slot}`);
   return { taskKey: key, scheduledFor: `${dateKey}:${slot}`, slot };
 }
 
@@ -264,7 +334,7 @@ export async function triggerScheduledMarketWatchNow(
   } catch (error) {
     await finishScheduledTaskRun(taskKey, {
       status: "error",
-      errorMessage: error instanceof Error ? error.message : String(error),
+      errorMessage: formatUnknownError(error),
     });
     throw error;
   }
@@ -349,11 +419,20 @@ function intervalSlot(now: Date, intervalMinutes: number) {
   return null;
 }
 
-function windowSlot(now: Date, windows: string[]) {
+function windowSlot(now: Date, windows: string[], graceMinutes = 0) {
   if (windows.length === 0) return null;
   const bj = beijingNow(now);
-  const current = `${String(bj.getHours()).padStart(2, "0")}:${String(bj.getMinutes()).padStart(2, "0")}`;
-  return windows.includes(current) ? current : null;
+  const currentMinutes = bj.getHours() * 60 + bj.getMinutes();
+  for (const window of windows) {
+    const [hourRaw, minuteRaw] = window.split(":");
+    const hour = Number(hourRaw);
+    const minute = Number(minuteRaw);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) continue;
+    const windowMinutes = hour * 60 + minute;
+    const delta = currentMinutes - windowMinutes;
+    if (delta >= 0 && delta <= graceMinutes) return window;
+  }
+  return null;
 }
 
 export const __test__ = {

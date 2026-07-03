@@ -40,10 +40,41 @@ export function sanitizeCustomerText(text: string) {
     .trim();
 }
 
+export function extractFinalCustomerReply(text: string) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) return normalized;
+
+  return extractAfterLastMarker(normalized, [
+    "最终回复：",
+    "最终回复:",
+    "微信正文：",
+    "微信正文:",
+    "给用户的回复：",
+    "给用户的回复:",
+    "客户可见正文：",
+    "客户可见正文:",
+  ]) || normalized;
+}
+
 export function dedupeRepeatedCustomerText(text: string) {
   const normalized = String(text || "").trim();
   if (!normalized) return normalized;
   return dedupeAdjacentBlocks(dedupeRepeatedSuffix(normalized)).trim();
+}
+
+function extractAfterLastMarker(text: string, markers: string[]) {
+  let bestIndex = -1;
+  let bestMarker = "";
+  for (const marker of markers) {
+    const idx = text.lastIndexOf(marker);
+    if (idx > bestIndex) {
+      bestIndex = idx;
+      bestMarker = marker;
+    }
+  }
+  if (bestIndex < 0) return "";
+  const candidate = text.slice(bestIndex + bestMarker.length).trim();
+  return candidate.length >= 10 ? candidate : "";
 }
 
 function dedupeAdjacentBlocks(text: string) {

@@ -42,6 +42,7 @@ export interface SchedulesYaml {
     default_windows?: string[];
     custom_frequency?: number | null;
     only_push_on_exception?: boolean;
+    push_mode?: string;
   };
 }
 
