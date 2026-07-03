@@ -2,7 +2,8 @@ import { db } from "../db/index.js";
 import { alertEvents } from "../db/schema.js";
 import { settings } from "../db/schema.js";
 import { eq, desc, gte, lte, and } from "drizzle-orm";
-import { getQuote, getKline, getMarketIndex } from "../services/stock.js";
+import { marketIndices, marketKline, marketQuote } from "../services/market-data.js";
+import type { StockKline, StockQuote } from "../services/stock.js";
 import { analyzeIndicators } from "../services/indicators.js";
 import { callDeepSeek } from "../services/deepseek.js";
 import { getStockInfoBatch, formatStockInfoForReview } from "../services/stock-news.js";
@@ -160,6 +161,65 @@ interface DailyReviewContextStock extends StockPlanItem {
   description: string;
 }
 
+async function reviewKlines(
+  code: string,
+  count: number,
+  userId: string,
+  options: { startDate?: string; endDate?: string } = {},
+): Promise<StockKline[]> {
+  const result = await marketKline({
+    code,
+    period: "day",
+    count,
+    startDate: options.startDate,
+    endDate: options.endDate,
+  }, userId);
+  return result.items as StockKline[];
+}
+
+async function reviewQuote(code: string, userId: string): Promise<StockQuote | undefined> {
+  const result = await marketQuote([code], userId);
+  if (result.warnings.length > 0) {
+    logger.warn(`复盘行情数据不完整 user=${userId} code=${code}: ${result.warnings.join(";")}`);
+  }
+  return result.items[0];
+}
+
+async function reviewMarketIndexLines(input: {
+  userId: string;
+  today: string;
+  isHistorical: boolean;
+}): Promise<string[]> {
+  try {
+    if (input.isHistorical) {
+      const indexCodes = [
+        { code: "000001", name: "上证指数", prefix: "sh" },
+        { code: "399001", name: "深证成指", prefix: "sz" },
+        { code: "399006", name: "创业板指", prefix: "sz" },
+        { code: "000300", name: "沪深300", prefix: "sh" },
+      ];
+      const lines: string[] = [];
+      for (const idx of indexCodes) {
+        const klines = await reviewKlines(idx.prefix + idx.code, 5, input.userId, { endDate: input.today });
+        const dayK = klines.find((k) => k.date === input.today) ?? klines[klines.length - 1];
+        if (dayK) {
+          const prevK = klines[klines.indexOf(dayK) - 1];
+          const pct = prevK ? ((dayK.close - prevK.close) / prevK.close * 100) : 0;
+          lines.push(`${idx.name} ${dayK.close} ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`);
+        }
+      }
+      return lines;
+    }
+    const indices = await marketIndices(input.userId);
+    if (indices.warnings.length > 0) {
+      logger.warn(`复盘指数数据不完整 user=${input.userId}: ${indices.warnings.join(";")}`);
+    }
+    return indices.items.map((i) => `${i.name} ${i.price} ${i.changePercent >= 0 ? "+" : ""}${i.changePercent}%`);
+  } catch {
+    return ["大盘指数数据获取失败"];
+  }
+}
+
 export interface DailyReviewContext {
   date: string;
   generatedAt: string;
@@ -241,7 +301,7 @@ export async function buildDailyReviewContext(options: { targetDate?: string; us
     .select()
     .from(alertEvents)
     .where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceId), eq(alertEvents.eventDate, today)));
-  await updateAlertFeedback(todayAlerts);
+  await updateAlertFeedback(userId, todayAlerts);
 
   const allCodes = new Map<string, { name: string; pool: "holding" | "watchlist" }>();
   for (const p of positions) allCodes.set(p.code, { name: p.name, pool: "holding" });
@@ -252,36 +312,12 @@ export async function buildDailyReviewContext(options: { targetDate?: string; us
   }
 
   const isHistorical = !!options.targetDate;
-  let marketIndexLines: string[] = [];
-  try {
-    if (isHistorical) {
-      const indexCodes = [
-        { code: "000001", name: "上证指数", prefix: "sh" },
-        { code: "399001", name: "深证成指", prefix: "sz" },
-        { code: "399006", name: "创业板指", prefix: "sz" },
-        { code: "000300", name: "沪深300", prefix: "sh" },
-      ];
-      for (const idx of indexCodes) {
-        const klines = await getKline(idx.prefix + idx.code, 5, undefined, today);
-        const dayK = klines.find(k => k.date === today) ?? klines[klines.length - 1];
-        if (dayK) {
-          const prevK = klines[klines.indexOf(dayK) - 1];
-          const pct = prevK ? ((dayK.close - prevK.close) / prevK.close * 100) : 0;
-          marketIndexLines.push(`${idx.name} ${dayK.close} ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`);
-        }
-      }
-    } else {
-      const indices = await getMarketIndex();
-      marketIndexLines = indices.map(i => `${i.name} ${i.price} ${i.changePercent >= 0 ? "+" : ""}${i.changePercent}%`);
-    }
-  } catch {
-    marketIndexLines = ["大盘指数数据获取失败"];
-  }
+  const marketIndexLines = await reviewMarketIndexLines({ userId, today, isHistorical });
 
   const stocks: DailyReviewContextStock[] = [];
   for (const [code, meta] of allCodes) {
     try {
-      const klines = await getKline(code, 120, undefined, isHistorical ? today : undefined);
+      const klines = await reviewKlines(code, 120, userId, { endDate: isHistorical ? today : undefined });
       const indicator = klines.length >= 30 ? analyzeIndicators(klines) : null;
       const levels = estimateLevels(klines);
 
@@ -293,8 +329,7 @@ export async function buildDailyReviewContext(options: { targetDate?: string; us
         if (dayK) price = dayK.close;
         if (dayK && prevK) changePercent = (dayK.close - prevK.close) / prevK.close * 100;
       } else {
-        const quotes = await getQuote([code]);
-        const quote = quotes[0];
+        const quote = await reviewQuote(code, userId);
         price = quote?.price;
         changePercent = quote?.changePercent;
       }
@@ -1028,7 +1063,7 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
     .select()
     .from(alertEvents)
     .where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceId), eq(alertEvents.eventDate, today)));
-  await updateAlertFeedback(todayAlerts);
+  await updateAlertFeedback(userId, todayAlerts);
 
   const allCodes = new Map<string, { name: string; pool: "holding" | "watchlist" }>();
   for (const p of positions) allCodes.set(p.code, { name: p.name, pool: "holding" });
@@ -1041,32 +1076,7 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
   const isHistorical = !!options.targetDate;
 
   // 2. 大盘指数
-  let marketIndexLines: string[] = [];
-  try {
-    if (isHistorical) {
-      // 历史日期：用K线获取指数数据
-      const indexCodes = [
-        { code: "000001", name: "上证指数", prefix: "sh" },
-        { code: "399001", name: "深证成指", prefix: "sz" },
-        { code: "399006", name: "创业板指", prefix: "sz" },
-        { code: "000300", name: "沪深300", prefix: "sh" },
-      ];
-      for (const idx of indexCodes) {
-        const klines = await getKline(idx.prefix + idx.code, 5, undefined, today);
-        const dayK = klines.find(k => k.date === today) ?? klines[klines.length - 1];
-        if (dayK) {
-          const prevK = klines[klines.indexOf(dayK) - 1];
-          const pct = prevK ? ((dayK.close - prevK.close) / prevK.close * 100) : 0;
-          marketIndexLines.push(`${idx.name} ${dayK.close} ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`);
-        }
-      }
-    } else {
-      const indices = await getMarketIndex();
-      marketIndexLines = indices.map(i => `${i.name} ${i.price} ${i.changePercent >= 0 ? "+" : ""}${i.changePercent}%`);
-    }
-  } catch {
-    marketIndexLines = ["大盘指数数据获取失败"];
-  }
+  const marketIndexLines = await reviewMarketIndexLines({ userId, today, isHistorical });
 
   // 3. 自选股行情（纯文字）
   const stockDescriptions: string[] = [];
@@ -1074,11 +1084,11 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
 
   for (const [code, meta] of allCodes) {
     try {
-      const klines = await getKline(code, 120, undefined, isHistorical ? today : undefined);
+      const klines = await reviewKlines(code, 120, userId, { endDate: isHistorical ? today : undefined });
       const indicator = klines.length >= 30 ? analyzeIndicators(klines) : null;
       const levels = estimateLevels(klines);
 
-      // 历史日期：从K线中取目标日的收盘价，实时则用 getQuote
+      // 历史日期从 K 线取目标日收盘价；实时日期走服务层行情 facade。
       let price: number | undefined;
       let changePercent: number | undefined;
 
@@ -1088,8 +1098,7 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
         if (dayK) price = dayK.close;
         if (dayK && prevK) changePercent = (dayK.close - prevK.close) / prevK.close * 100;
       } else {
-        const quotes = await getQuote([code]);
-        const quote = quotes[0];
+        const quote = await reviewQuote(code, userId);
         price = quote?.price;
         changePercent = quote?.changePercent;
       }
@@ -1144,7 +1153,7 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
     ? `\n用户自定义要求：${template.customInstructions}`
     : "";
 
-  const aiPrompt = `请根据以下数据生成投资复盘总结，用纯文字，不要表格和 Markdown 格式。
+  const aiPrompt = `请根据以下数据生成投资复盘总结，必须使用适合微信阅读的 Markdown；可以使用分段、列表和重点加粗，但不要机械套用复杂表格。
 
 大盘指数：${marketIndexLines.join("、")}
 持仓/自选股：${stockDescriptions.join("\n")}
@@ -1279,7 +1288,7 @@ export async function generateWeeklyReview(options: { userId?: string; instanceI
   const weeklyData: string[] = [];
   for (const item of watchItems) {
     try {
-      const klines = await getKline(item.code, 30);
+      const klines = await reviewKlines(item.code, 30, userId);
       // 取本周 K 线
       const weekKlines = klines.filter(k => k.date >= weekStartStr && k.date <= weekEndStr);
       if (weekKlines.length === 0) continue;
@@ -1363,6 +1372,7 @@ ${viewpointSummaryText}
 }
 
 async function updateAlertFeedback(
+  userId: string,
   alerts: Array<{
     id: number;
     stockCode: string;
@@ -1376,8 +1386,7 @@ async function updateAlertFeedback(
   for (const event of alerts) {
     if (event.status !== "pending" || event.price == null) continue;
 
-    const quotes = await getQuote([event.stockCode]);
-    const current = quotes[0]?.price;
+    const current = (await reviewQuote(event.stockCode, userId))?.price;
     if (!current) continue;
 
     const change = ((current - event.price) / event.price) * 100;

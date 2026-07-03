@@ -1,4 +1,13 @@
-# 用户可配置的信息源。复盘中需要记录来源，并持续验证可靠性。
+# 用户可配置的信息源。复盘中需要记录来源,并持续验证可靠性。
+#
+# 注意:本文件只描述**业务语义**的信息源分类与可靠性级别(给 skill / 复盘 / 证据归档用)。
+# Provider 实现细节(endpoint URL / confidence / category)是服务层契约,所有 workspace 共享,
+# 权威表在 src/services/market-data-providers.ts,不在 workspace 内。
+#
+# 数据源运行状态遥测(source_telemetry_event)与 provider 质量汇总属于服务层可观测/可评测资产:
+# - data/source-telemetry/YYYY-MM-DD.jsonl
+# - data/source-quality/YYYY-MM-DD.{md,json,jsonl}
+# 它们不进入 workspace。workspace 只记录与某次投资判断直接相关的信息源使用/缺失/冲突事件。
 minimum_source_set:
   required_for_mvp:
     - "A 股实时/延时行情"
@@ -19,74 +28,38 @@ minimum_source_set:
     - "新闻政策"
     - "研报"
 
-market_data:
-  - name: "A 股行情源"
-    type: "market_price"
-    asset_scope: ["stock"]
-    url: ""
-    reliability: "unverified"
-    update_frequency: "realtime_or_delayed"
-    latency_policy: "超过 config/evidence_policy.yaml 允许时效则降级"
+# 业务语义分类,给 skill / 复盘 / 证据归档使用。
+# 与服务层 provider 解耦:这里描述的是"用户视角的信息源类别",而非具体 endpoint。
+source_classes:
+  market_price:
+    reliability: "verified_market"
     failure_policy: "不输出精确价格结论"
-  - name: "指数行情源"
-    type: "index_price"
-    asset_scope: ["index"]
-    url: ""
-    reliability: "unverified"
-    update_frequency: "realtime_or_delayed"
-    latency_policy: "超过 config/evidence_policy.yaml 允许时效则降级"
+  index_price:
+    reliability: "verified_market"
     failure_policy: "不输出指数涨跌驱动结论"
-  - name: "ETF 行情源"
-    type: "etf_price"
-    asset_scope: ["etf"]
-    url: ""
-    reliability: "unverified"
-    update_frequency: "realtime_or_delayed"
-    latency_policy: "超过 config/evidence_policy.yaml 允许时效则降级"
+  etf_price:
+    reliability: "verified_market"
     failure_policy: "不输出 ETF 触发区间结论"
-
-trading_calendar:
-  - name: "交易日历源"
-    type: "trading_calendar"
-    market_scope: ["A股", "港股", "基金"]
-    url: ""
-    reliability: "unverified"
-    failure_policy: "无法判断自动任务是否应在交易日执行"
-
-financial_reports:
-  - name: "交易所/公司公告"
-    type: "announcement"
-    url: ""
+  announcement:
     reliability: "preferred_primary"
-    update_frequency: "on_announcement"
     failure_policy: "不触发公告类 P0/P1 判断"
-  - name: "官方财报源"
-    type: "primary_report"
-    url: ""
+  primary_report:
     reliability: "preferred_primary"
-    update_frequency: "on_report"
-    failure_policy: "提示缺少官方财报，不做确定性财务结论"
-
-industry_classification:
-  - name: "行业/主题分类源"
-    type: "industry_theme"
-    url: ""
-    reliability: "unverified"
-    usage_boundary: "用于集中度、主题暴露和观察池筛选"
-
-news_and_policy:
-  - name: "用户配置新闻/政策源"
-    type: "news_policy"
-    url: ""
-    reliability: "unverified"
-    cross_check_required: true
-
-research_reports:
-  - name: "用户配置研报源"
-    type: "research"
-    url: ""
+    failure_policy: "提示缺少官方财报,不做确定性财务结论"
+  trading_calendar:
+    reliability: "preferred_primary"
+    failure_policy: "无法判断自动任务是否应在交易日执行"
+  industry_theme:
     reliability: "secondary"
-    usage_boundary: "只能辅助判断，不能单独作为关键买卖证据"
+    usage_boundary: "用于集中度、主题暴露和观察池筛选"
+  news_policy:
+    reliability: "secondary"
+    cross_check_required: true
+  research:
+    reliability: "secondary"
+    usage_boundary: "只能辅助判断,不能单独作为关键买卖证据"
 
 source_audit_rule_path: "knowledge/source_audit.md"
+# 业务语义的 source_event(used/conflict/missing/stale...)仍写到此 jsonl;
+# 技术遥测 source_telemetry_event 不在此文件,改写到服务层 data/source-telemetry/
 source_event_output: "memory/source_events.jsonl"

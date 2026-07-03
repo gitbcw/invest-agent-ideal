@@ -4,6 +4,8 @@
 
 获取最新行情后，先标注 `data_as_of`、信息源和缺失数据，再计算持仓表。日复盘重点检查价格、盈亏、仓位、现金、买卖区间、观察仓距离、异常波动和风险分类，并按用户方法输出观点、理由、操作边界、验证点和失效信号。
 
+行情事实优先使用服务层行情 API 和当前 sandboxToken：先调用 `POST /api/sandbox/market/snapshot`，必要时补充 `GET /api/sandbox/market/quote` 或 `GET /api/sandbox/market/kline`。必须使用返回的 `source`、`marketTime`、`confidence`、`warnings` 标注数据质量；不要凭记忆编造精确价格。
+
 必须区分：
 
 - 事实：行情、仓位、公告、财报或用户确认规则。

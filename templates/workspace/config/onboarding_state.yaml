@@ -1,0 +1,30 @@
+# Workspace onboarding runtime state.
+# This file records progress only; onboarding workflow design stays in config/onboarding.yaml
+# and the workspace instructions.
+version: 1
+status: not_started
+current_step: welcome
+
+steps:
+  welcome:
+    done: false
+    completed_at: null
+  portfolio:
+    done: false
+    completed_at: null
+  style:
+    done: false
+    completed_at: null
+  review_schedule:
+    done: false
+    completed_at: null
+  notification:
+    done: false
+    completed_at: null
+  watch_rules:
+    done: false
+    completed_at: null
+
+completed_at: null
+updated_at: null
+notes: ""
