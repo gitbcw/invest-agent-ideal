@@ -24,6 +24,7 @@ import {
   pushJobs,
   reviewViewpoints,
   sandboxAuditLogs,
+  scheduledTaskRuns,
   stockPlans,
   tradeActions,
   users,
@@ -322,6 +323,7 @@ export async function deleteInvestAgentInstance(instanceId: string) {
     tx.delete(pendingSandboxConfirmations).where(and(eq(pendingSandboxConfirmations.userId, userId), eq(pendingSandboxConfirmations.instanceId, instanceIdValue))).run();
     tx.delete(conversationTasks).where(and(eq(conversationTasks.userId, userId), eq(conversationTasks.instanceId, instanceIdValue))).run();
     tx.delete(pushJobs).where(and(eq(pushJobs.userId, userId), eq(pushJobs.instanceId, instanceIdValue))).run();
+    tx.delete(scheduledTaskRuns).where(and(eq(scheduledTaskRuns.userId, userId), eq(scheduledTaskRuns.instanceId, instanceIdValue))).run();
     tx.delete(agentTraces).where(eq(agentTraces.userId, userId)).run();
 
     tx.delete(aiInstances).where(eq(aiInstances.id, instanceIdValue)).run();
