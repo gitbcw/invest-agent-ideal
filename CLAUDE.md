@@ -78,14 +78,14 @@ Workspace 默认根目录**不是**仓库内的 `./data/workspaces`。当前默�
 | `src/handlers/signal-config.ts` | 信号配置工具：14 个系统信号（含资金流信号、盘中放量滞涨/滞跌）开关和参数管理 |
 | `src/handlers/review.ts` | 复盘工具（`handleReviewTool`）：日/周复盘生成，含资金流数据和预案调整建议 |
 | `src/db/schema.ts` | 全部 Drizzle 表定义：settings、watchlist、portfolio、alerts、stockPlans、chatHistory、dailyPlans、alertEvents、tradeActions、agentTraces |
-| `src/scheduler/alert-check.ts` | 盘中巡检引擎（涨跌幅/预案价位/放量突破/资金流信号等触发条件） |
-| `src/scheduler/index.ts` | 定时任务调度：巡检间隔动态可调（settings 表持久化） |
+| `src/scheduler/alert-check.ts` | 规则巡检执行器：按采样当刻行情/K 线/预案事实执行服务层 watch-rule，写入 alert events / signal states / indicator results |
+| `src/scheduler/index.ts` | 定时任务调度：market-watch 定时简报、rule-alert-check 独立规则巡检、复盘、数据质量汇总 |
 | `src/routes/dashboard.ts` | Dashboard API（聚合数据 + CRUD 端点）和页面路由 |
 | `src/admin/dashboard-page.ts` | 统一看板前端（侧边栏导航，含持仓/自选/预案/提醒/信号/巡检/微信连接，自包含 HTML + Tailwind CDN） |
 
 ## 服务保留的确定性能力
 
-这些能力应保留在本项目中，供 Dashboard、巡检和未来 Hermes 工具调用使用。
+这些能力应保留在本项目中，供 Dashboard、巡检和当前 workspace ACP 工具调用使用。
 
 **持仓与自选：**
 - `query_holding_pool` / `add_holding_stocks` / `remove_holding_stocks`
@@ -94,8 +94,11 @@ Workspace 默认根目录**不是**仓库内的 `./data/workspaces`。当前默�
 **监控与提醒：**
 - `query_monitor_overview`：聚合监控全貌
 - `query_alert_rules` / `set_alert_rule` / `remove_alert_rule`：提醒规则管理
-- `GET /api/watch-rules/catalog` / `POST /api/watch-rules` / `PATCH /api/watch-rules/:id` / `DELETE /api/watch-rules/:id`：阶段二明确规则盯盘 API（服务层主通路）
-- `set_alert_interval`：巡检间隔调整（分钟，持久化）
+- `GET /api/watch-rules/catalog` / `POST /api/watch-rules` / `PATCH /api/watch-rules/:id` / `DELETE /api/watch-rules/:id`：阶段二明确规则盯盘 API（服务层主通路），当前 catalog 包含 `price_cross`、`ma_cross`、`macd_cross`、`kdj_cross`、`rsi_threshold`、`boll_break`、`wr_threshold`、`volume_ratio`、`near_plan_level`
+- `GET /api/platform/rule-alerts`：Platform 的独立规则巡检审计视图数据源
+- `set_alert_interval`：规则巡检采样间隔调整（分钟，持久化，默认 5 分钟）
+
+规则巡检当前语义：scheduler 在交易日按 `alert_check_interval_minutes` 形成采样点，执行 `rule-alert-check`；每次只用采样当刻可取得的最新价格/K 线/预案事实判断规则，不回溯“盘中曾经触达”、不做收盘确认变体。market-watch 是定时简报/摘要任务，和 rule-alert-check 是两条独立调度线。
 
 **信号配置：**
 - `query_signal_config` / `update_signal_config`：14 个系统信号开关和参数管理（price_change、near_support/resistance/target、stop_loss、breakout_with_volume、break_support、turnover、volume_ratio、macd、bid_ask_imbalance、capital_flow_main、capital_flow_super_large、volume_price_divergence）
@@ -105,7 +108,7 @@ Workspace 默认根目录**不是**仓库内的 `./data/workspaces`。当前默�
 - `/api/reviews/daily` / `/api/reviews/query`：复盘数据收集、生成入口和 artifact 查询。复盘方法与输出纪律应优先沉淀到 workspace 内 skills。
 
 **交易策略实体(第一版):**
-- `workspace/config/trading_strategies.yaml` 装用户多份策略(每份含 key/name/applicability/body/enabled);与 `strategy.yaml`(整体投资风格)平级,不合并。workspace 模板不内置示例,由用户/Hermes 自建
+- `workspace/config/trading_strategies.yaml` 装用户多份策略(每份含 key/name/applicability/body/enabled);与 `strategy.yaml`(整体投资风格)平级,不合并。workspace 模板不内置示例,由用户或 workspace ACP backend 自建
 - `/api/strategies` / `/api/sandbox/strategies/*`:策略 CRUD endpoint
 - `stock_plans.strategy_key` 是策略 → 预案的溯源软引用(可空,策略删除不级联清理)
 - 策略推荐 + 预案起草按 `AGENTS.md` 的 Strategy Plan Drafting 流程,两道闸门(策略匹配 + 预案起草),不做 AI 自主落库
@@ -117,7 +120,7 @@ Workspace 默认根目录**不是**仓库内的 `./data/workspaces`。当前默�
 
 ## Dashboard CRUD API
 
-Dashboard 可直接操作数据，不经过 Hermes：
+Dashboard 可直接操作数据，不经过 workspace ACP backend：
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -137,6 +140,8 @@ Dashboard 可直接操作数据，不经过 Hermes：
 | `/api/watch-rules` | GET/POST | 查询或创建阶段二明确规则 |
 | `/api/watch-rules/:id` | PATCH/DELETE | 更新或删除阶段二明确规则 |
 | `/api/watch-rules/:id/dry-run` | POST | 对单条阶段二明确规则做 dry-run |
+| `/api/platform/rule-alerts` | GET | Platform 规则巡检运行记录、规则、事件审计 |
+| `/api/platform/source-quality` | GET | Platform 数据源质量和服务层数据源告警 |
 | `/api/signals/update` | POST | 切换信号开关/参数 |
 | `/api/interval/set` | POST | 设置巡检间隔 |
 
@@ -147,11 +152,13 @@ Dashboard 可直接操作数据，不经过 Hermes：
 | 实时行情 | 腾讯行情 API | 最新价、涨跌幅、成交量、换手率 |
 | 日 K 线 | 腾讯行情 API | 120 日历史，计算 MA/MACD/量比 |
 | 资金流向 | 东方财富 emdatah5 | 主力/超大单/大单/中单/小单净流入 |
-| L1 筹码分布 | 自研近似模型 | `src/services/chip-distribution.ts` 提供 `computeChipDistribution` / `winner`（reliability=experimental，需走告知协议）；workspace 沙箱脚本示例已移除，需要时由用户/Hermes 自建 |
+| L1 筹码分布 | 自研近似模型 | `src/services/chip-distribution.ts` 提供 `computeChipDistribution` / `winner`（reliability=experimental，需走告知协议）；workspace 沙箱脚本示例已移除，需要时由用户或 workspace ACP backend 自建 |
+
+数据源决策见 `docs/data-source-policy-decision.md`：MVP 默认市场数据现金预算为 0 RMB/年，本地可靠数据服务优先，AI 外部搜索只作为补充证据，无法取得可追溯来源时必须明确说明数据缺口。服务级数据源遥测与质量报告位于 `data/source-telemetry/` 和 `data/source-quality/`，不写入用户 workspace。
 
 ## 复合指标系统（5 层）
 
-服务侧 L1 算子、L3a/L3b 引擎和告知协议门禁完整保留在 `src/services/`，workspace 模板不内置示例 yaml/ts，需要时由用户/Hermes 在 workspace 内自建。完整 RFC 见 `docs/composite-indicator-system.md`。
+服务侧 L1 算子、L3a/L3b 引擎和告知协议门禁完整保留在 `src/services/`，workspace 模板不内置示例 yaml/ts，需要时由用户或 workspace ACP backend 在 workspace 内自建。完整 RFC 见 `docs/composite-indicator-system.md`。
 
 | 层 | 形态 | 落点 | 适用 |
 |---|---|---|---|
@@ -176,7 +183,7 @@ Dashboard 可直接操作数据，不经过 Hermes：
 3. 用户不需要记指令，不需要提供股票代码。股票名称通过 `stock-resolver` 解析。
 4. 不确定时追问；能从上下文判断时不多余确认。
 5. 投资输出必须说明不确定性，不承诺收益，不自动交易。
-6. 定性推理和工作流应沉淀到 workspace 模板的 `AGENTS.md` 与 `skills/`(Hermes 在 workspace 内读取)。
+6. 定性推理和工作流应沉淀到 workspace 模板的 `AGENTS.md` 与 `skills/`，由 workspace-scoped ACP backend 在 workspace 内读取。
 7. `agent_traces` 是旧 Runtime 历史表，可保留数据，不作为当前对话追踪方案。
 
 ## 数据库

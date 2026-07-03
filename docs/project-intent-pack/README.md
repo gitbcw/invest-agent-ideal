@@ -17,4 +17,3 @@
 7. `06-do-not-inherit.md`
 8. `07-open-questions.md`
 9. `08-agent-guidance.md`
-10. `09-wechat-bridge-appendix.md`

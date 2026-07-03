@@ -3,12 +3,12 @@
 ```yaml
 do_not_inherit:
   - item: "服务层普通消息 triage / fast-lane / onboarding 包装"
-    reason: "与当前直通 workspace Hermes 的主链路冲突。"
+    reason: "与当前直通 workspace-scoped ACP backend 的主链路冲突。"
     risk_if_inherited: "把产品重新做复杂，削弱工作空间自治。"
     confidence: high
-  - item: "Codex 作为 invest-agent 运行时 backend"
-    reason: "当前统一 backend 已明确收敛为 Hermes stdio ACP。"
-    risk_if_inherited: "制造不一致的 runtime 语义。"
+  - item: "把 Hermes 当成当前唯一或默认 invest-agent backend"
+    reason: "2026-06-30 后当前默认后端是 Codex ACP；Hermes 仅保留为兼容/实验 backend。"
+    risk_if_inherited: "让后续 Agent 按过期 runtime 语义改错路径。"
     confidence: high
   - item: "把历史表和旧实现直接当成未来业务结构"
     reason: "旧表中有大量兼容、考古和过渡性内容。"

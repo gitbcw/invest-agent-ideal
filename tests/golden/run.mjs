@@ -65,8 +65,10 @@ function validateConversationGolden() {
   const p0Cases = [];
   const scenarios = new Set();
   const categories = new Map();
+  const reviewTiers = new Map();
   let edgeCaseCount = 0;
   const allowedCategories = new Set(["core_golden", "principle_probe", "incident_regression", "safety_redline", "smoke"]);
+  const allowedReviewTiers = new Set(["golden_core", "regression", "principle_probe", "smoke", "archived_candidate"]);
   for (const item of cases) {
     assertString(item.id, "case.id");
     assert.ok(!ids.has(item.id), `duplicate case id: ${item.id}`);
@@ -75,6 +77,8 @@ function validateConversationGolden() {
     scenarios.add(item.scenario);
     assert.ok(allowedCategories.has(item.category), `${item.id}.category must be one of ${[...allowedCategories].join("/")}`);
     categories.set(item.category, (categories.get(item.category) ?? 0) + 1);
+    assert.ok(allowedReviewTiers.has(item.review_tier), `${item.id}.review_tier must be one of ${[...allowedReviewTiers].join("/")}`);
+    reviewTiers.set(item.review_tier, (reviewTiers.get(item.review_tier) ?? 0) + 1);
     assertStringArray(item.principles, `${item.id}.principles`);
     assert.ok(["P0", "P1", "P2"].includes(item.priority), `${item.id}.priority must be P0/P1/P2`);
     if (item.priority === "P0") p0Cases.push(item.id);
@@ -114,6 +118,7 @@ function validateConversationGolden() {
     edgeCases: edgeCaseCount,
     expandedCases: cases.length + edgeCaseCount,
     categories: Object.fromEntries([...categories.entries()].sort()),
+    reviewTiers: Object.fromEntries([...reviewTiers.entries()].sort()),
     p0Cases,
     scenarios: [...scenarios].sort(),
   };

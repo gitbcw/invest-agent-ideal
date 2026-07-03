@@ -2,7 +2,7 @@
 
 ## 背景与意图
 
-当前系统已经从单用户投资助手演进出可复用的平台沙箱能力。当前主路径应理解为 Hermes stdio ACP + sandbox token。业务数据正在从单用户模型迁移到多用户/多 AI Project 模型，系统已经具备 `users`、`channel_identities`、多张业务表的 `user_id` 字段，以及微信会话到业务用户的自动映射。
+当前系统已经从单用户投资助手演进出可复用的平台沙箱能力。当前主路径应理解为 workspace-scoped ACP backend + sandbox token，2026-06-30 后默认 backend 是 Codex ACP，Hermes 仅作为兼容/实验 backend。业务数据正在从单用户模型迁移到多用户/多 AI Project 模型，系统已经具备 `users`、`channel_identities`、多张业务表的 `user_id` 字段，以及微信会话到业务用户的自动映射。
 
 但这还不是完整沙箱。真正的沙箱目标不是让 AI “记得传正确 userId”，而是让服务端强制保证：AI 即使幻觉、误调用、伪造参数，也只能影响当前微信用户自己的数据，不能读写其他用户，也不能修改全局运行配置。
 
@@ -13,7 +13,7 @@
 - 微信消息进入时会通过 `channel_identities` 映射到内部 `userId`。
 - `watchlist`、`portfolio`、`stock_plans`、`daily_plans`、`alert_events`、`alert_signal_states`、`indicator_results`、`codex_acp_traces` 等核心业务表已具备 `user_id`，调度与推送链路的实际运行 scope 已进一步收敛到 `user_id + instance_id`。
 - Dashboard 聚合查询、持仓、自选、预案、复盘、巡检等路径已经部分按 `userId` 过滤。
-- Hermes ACP、微信通道和 Dashboard/Workbench 之间已经形成了通道概念。
+- workspace ACP backend、微信通道和 Dashboard/Workbench 之间已经形成了通道概念。
 
 ### 尚未具备的沙箱能力
 
@@ -290,7 +290,7 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 1. 在 `buildMobilePrompt` 中加入 sandbox token 的内部执行说明。
 2. 修改 `.codex/skills/invest-agent-service-tools/SKILL.md`，所有微信/ACP 示例使用 Bearer token。
 3. 从 prompt 中删除“调用 API 必须传 userId=xxx”的表述，改为“使用提供的 sandbox token；不要传 userId”。
-4. Hermes ACP 链路生成对应 token。
+4. workspace ACP 链路生成对应 token。
 5. trace 记录 sandbox token id、userId、permissions。
 
 验收：

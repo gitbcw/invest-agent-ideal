@@ -22,6 +22,8 @@ Prefer the "AGENTS.md + .codex/skills" workflow for investment reasoning:
 - Use skills for investment judgment workflows: review structure, screening reasoning, evidence requirements, risk language, and user-specific decision discipline.
 - Keep the long-running service for GUI, WeChat connection, scheduler, alert push, and local HTTP APIs.
 - Let the active ACP backend invoke deterministic service capabilities through skills, usually by calling the local `invest-agent` HTTP API.
+- Rule inspection is service-owned and deterministic: sample the current/latest market fact at the scheduler tick, evaluate the persisted rule, record audit/event state, and push only according to priority/cooldown. Do not broaden it into "intraday touched high" or close-confirmation semantics unless explicitly redesigned.
+- Market facts follow the accepted data-source policy: local reliable data service first, external AI search second, explicit data gap last. Do not assume expensive paid data access in the MVP.
 - Keep investment conclusions auditable: facts, inference, action, and future validation signals should be separated.
 - Do not promise returns or imply automatic trading.
 - If data is unavailable, say exactly what is missing instead of filling gaps with invented detail.
@@ -58,6 +60,8 @@ Use these files first:
 - `docs/trading-strategy-design.md`: trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation.
 - `docs/02-investment-methodology.md`: user's investment methodology.
 - `docs/04-core-workflows.md`: business workflows across screening, review, alerts, and feedback.
+- `docs/data-source-policy-decision.md`: accepted data-source policy and cost posture for reliable data.
+- `docs/watch-runtime-phased-implementation.md`: scheduler, market-watch, and deterministic rule-inspection boundary.
 
 ## Current Review Direction
 
@@ -90,19 +94,19 @@ The service should keep running because it owns stateful and time-based responsi
 - Dashboard GUI.
 - WeChat login and listener.
 - Active alert push.
-- Scheduler and intraday inspection.
+- Scheduler, scheduled market-watch briefs, and deterministic rule inspection.
 - SQLite persistence.
 - Market data fetching.
 - Local HTTP APIs.
 
-Skills should own how Hermes uses these capabilities:
+Skills should own how the workspace ACP backend uses these capabilities:
 
 - Which API to call for each user intent.
 - How to interpret API results.
 - How to produce cautious investment language.
 - How to decide whether a deterministic action needs confirmation.
 
-In short: the service is the machine room; skills are the operating manual Hermes uses to run it.
+In short: the service is the machine room; skills are the operating manual the workspace ACP backend uses to run it.
 
 ## Strategy Plan Drafting (硬约束)
 

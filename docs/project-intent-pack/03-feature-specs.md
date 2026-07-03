@@ -8,7 +8,7 @@ feature_specs:
     user_value: "少操作、少心智负担、消息即任务。"
     must_have_behavior:
       - "仅添加最小通道上下文"
-      - "把原始消息交给 workspace-scoped Hermes"
+      - "把原始消息交给 workspace-scoped ACP backend，当前默认 Codex"
       - "不在服务层做普通消息意图 triage"
     success_standard:
       - "用户不需要学习路由规则"

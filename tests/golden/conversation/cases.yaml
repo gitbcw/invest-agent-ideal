@@ -51,6 +51,7 @@ quality_gates:
 cases:
   - id: greeting-001
     category: core_golden
+    review_tier: golden_core
     priority: P1
     scenario: workspace_greeting
     tags: [onboarding, greeting, workspace]
@@ -82,6 +83,7 @@ cases:
 
   - id: model-001
     category: core_golden
+    review_tier: golden_core
     priority: P0
     scenario: investment_model_guided_setup
     tags: [investment_model, onboarding, confirmation]
@@ -110,6 +112,7 @@ cases:
 
   - id: model-002
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: investment_model_query_empty
     tags: [investment_model, query, routing]
@@ -135,6 +138,7 @@ cases:
 
   - id: model-003
     category: incident_regression
+    review_tier: golden_core
     priority: P0
     scenario: investment_model_freeform_draft
     tags: [investment_model, write, confirmation]
@@ -178,6 +182,7 @@ cases:
 
   - id: boundary-001
     category: safety_redline
+    review_tier: golden_core
     priority: P0
     scenario: out_of_scope_boundary
     tags: [boundary, redline, workspace]
@@ -196,6 +201,7 @@ cases:
 
   - id: portfolio-001
     category: core_golden
+    review_tier: golden_core
     priority: P0
     scenario: portfolio_add_no_plan_hint
     tags: [portfolio, write, plan_gate, privacy]
@@ -217,6 +223,7 @@ cases:
 
   - id: portfolio-002
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: portfolio_movement_answer_composition
     tags: [portfolio, read, fast_lane, composer]
@@ -240,6 +247,7 @@ cases:
 
   - id: portfolio-003
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: portfolio_movement_natural_question
     tags: [portfolio, read, fast_lane, composer]
@@ -262,6 +270,7 @@ cases:
 
   - id: watchlist-001
     category: smoke
+    review_tier: smoke
     priority: P1
     scenario: watchlist_add
     tags: [watchlist, write]
@@ -280,6 +289,7 @@ cases:
 
   - id: watchlist-004
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: watchlist_remove_confirm
     tags: [watchlist, write, confirmation, tool_runtime]
@@ -310,6 +320,7 @@ cases:
 
   - id: watchlist-002
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: watchlist_movement_answer_composition
     tags: [watchlist, read, fast_lane, composer]
@@ -333,6 +344,7 @@ cases:
 
   - id: watchlist-003
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: watchlist_entry_condition_query
     tags: [watchlist, read, fast_lane, composer, anti_hallucination]
@@ -354,6 +366,7 @@ cases:
 
   - id: plans-001
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: plan_trigger_answer_composition
     tags: [plans, read, fast_lane, composer]
@@ -376,6 +389,7 @@ cases:
 
   - id: plans-002
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: plan_update_answer_composition
     tags: [plans, read, fast_lane, composer]
@@ -397,6 +411,7 @@ cases:
 
   - id: portfolio-004
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: portfolio_update_cost_confirm
     tags: [portfolio, write, confirmation, tool_runtime]
@@ -431,6 +446,7 @@ cases:
 
   - id: context-001
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: contextual_watchlist_add
     tags: [watchlist, write, memory, policy]
@@ -479,6 +495,7 @@ cases:
 
   - id: context-002
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: contextual_expand_latest
     tags: [context, memory, followup, read]
@@ -515,6 +532,7 @@ cases:
 
   - id: context-003
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: contextual_write_policy_guard
     tags: [watchlist, write, memory, policy, redline]
@@ -551,6 +569,7 @@ cases:
 
   - id: context-004
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: contextual_write_no_code_guessing
     tags: [watchlist, write, memory, policy, contract]
@@ -588,6 +607,7 @@ cases:
 
   - id: alert-001
     category: core_golden
+    review_tier: golden_core
     priority: P0
     scenario: alert_set_simple_price
     tags: [alert, confirmation]
@@ -607,6 +627,7 @@ cases:
 
   - id: alert-002
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: alert_set_confirm_two_turn
     tags: [alert, confirmation, multi_turn]
@@ -643,6 +664,7 @@ cases:
 
   - id: alert-004
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: pending_confirmation_can_be_ambiguous
     tags: [alert, confirmation, multi_turn, context]
@@ -680,6 +702,7 @@ cases:
 
   - id: alert-003
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: alert_set_breakout_price_cancel
     tags: [alert, confirmation, multi_turn, cancel]
@@ -720,6 +743,7 @@ cases:
 
   - id: monitor-001
     category: incident_regression
+    review_tier: regression
     priority: P1
     scenario: alert_rules_query
     tags: [monitor, alert, read]
@@ -745,6 +769,7 @@ cases:
 
   - id: alert-005
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: alert_near_trigger_answer_composition
     tags: [alert, read, fast_lane, composer]
@@ -767,6 +792,7 @@ cases:
 
   - id: alert-006
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: alert_invalid_answer_composition
     tags: [alert, read, fast_lane, composer]
@@ -787,6 +813,7 @@ cases:
 
   - id: alert-007
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: alert_remove_confirm
     tags: [alert, write, confirmation, tool_runtime]
@@ -819,6 +846,7 @@ cases:
 
   - id: strategy-001
     category: smoke
+    review_tier: smoke
     priority: P1
     scenario: strategy_list_query
     tags: [strategy, read]
@@ -837,6 +865,7 @@ cases:
 
   - id: strategy-002
     category: core_golden
+    review_tier: golden_core
     priority: P0
     scenario: strategy_plan_drafting_gate_one
     tags: [strategy, plan, two_gate_confirmation]
@@ -857,6 +886,7 @@ cases:
 
   - id: model-004
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: investment_model_plan_drafting_confirm
     tags: [investment_model, plan, confirmation, multi_turn]
@@ -911,6 +941,7 @@ cases:
 
   - id: profile-001
     category: principle_probe
+    review_tier: principle_probe
     priority: P1
     scenario: investment_style_set_confirm
     tags: [profile, investment_style, write, confirmation]
@@ -935,6 +966,7 @@ cases:
 
   - id: methodology-001
     category: principle_probe
+    review_tier: principle_probe
     priority: P1
     scenario: methodology_set_confirm
     tags: [methodology, write, confirmation]
@@ -959,6 +991,7 @@ cases:
 
   - id: methodology-002
     category: core_golden
+    review_tier: golden_core
     priority: P0
     scenario: screening_methodology_overlay_draft
     tags: [methodology, screening, skill_overlay, confirmation]
@@ -1046,6 +1079,7 @@ cases:
 
   - id: strategy-003
     category: principle_probe
+    review_tier: principle_probe
     priority: P1
     scenario: trading_strategy_set_confirm
     tags: [strategy, write, confirmation]
@@ -1072,6 +1106,7 @@ cases:
 
   - id: strategy-004
     category: core_golden
+    review_tier: golden_core
     priority: P0
     scenario: trading_strategy_indicator_draft
     tags: [strategy, indicator, signal, confirmation]
@@ -1126,6 +1161,7 @@ cases:
 
   - id: review-001
     category: core_golden
+    review_tier: golden_core
     priority: P0
     scenario: daily_review_request
     tags: [review, daily, slow_loop]
@@ -1148,6 +1184,7 @@ cases:
 
   - id: review-004
     category: incident_regression
+    review_tier: regression
     priority: P0
     scenario: daily_review_summary_then_expand
     tags: [review, daily, summary, followup]
@@ -1183,6 +1220,7 @@ cases:
 
   - id: review-002
     category: principle_probe
+    review_tier: principle_probe
     priority: P1
     scenario: weekly_review_request
     tags: [review, weekly, slow_loop]
@@ -1207,6 +1245,7 @@ cases:
 
   - id: review-003
     category: principle_probe
+    review_tier: principle_probe
     priority: P1
     scenario: monthly_review_request
     tags: [review, monthly, slow_loop]
@@ -1231,6 +1270,7 @@ cases:
 
   - id: screening-001
     category: core_golden
+    review_tier: golden_core
     priority: P0
     scenario: stock_screening_qa
     tags: [screening, qa, research]
@@ -1256,6 +1296,7 @@ cases:
 
   - id: screening-002
     category: principle_probe
+    review_tier: principle_probe
     priority: P1
     scenario: stock_screening_ambiguous
     tags: [screening, qa, clarification]

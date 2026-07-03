@@ -13,6 +13,9 @@
  *   npm run eval:conversation -- --only=review-002 --run-id=review-002-solo
  *   npm run eval:conversation -- --shared-conversation       # 整个批次复用同一会话(默认每 case 隔离)
  *   npm run eval:conversation -- --no-wait-async             # 不等待后台推送 trace
+ *   npm run eval:conversation -- --judge=static              # 生成结构化 rubric verdict(默认)
+ *   npm run eval:conversation -- --judge=model               # 使用外部 judge 模型(需要 EVAL_JUDGE_MODEL)
+ *   npm run eval:conversation -- --judge=none                # 只产出原始输出,不判分
  *   npm run eval:conversation -- --dry-run                # 只解析+列出 case,不真跑
  *
  * 输出:
@@ -29,11 +32,56 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { parse } from "yaml";
+import {
+  buildJudgeInput,
+  buildJudgeSystemPrompt,
+  modelJudgeConfigFromEnv,
+  normalizeJudgeOutput,
+  parseJudgeJson,
+  unconfiguredModelJudgeResult,
+} from "./judge-contract.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function loadEnvFileIfPresent(filePath, { override = false } = {}) {
+  if (!existsSync(filePath)) return;
+  const content = readFileSync(filePath, "utf-8");
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    if (!override && process.env[key] !== undefined) continue;
+    process.env[key] = rawValue
+      .trim()
+      .replace(/^(['"])([\s\S]*)\1$/, "$2");
+  }
+}
+
+function applyGenericJudgeApiKey(config) {
+  if (!process.env.EVAL_JUDGE_API_KEY) return;
+  const keyByProvider = {
+    deepseek: "DEEPSEEK_API_KEY",
+    stepfun: "STEPFUN_API_KEY",
+    doubao: "DOUBAO_API_KEY",
+    openai: "OPENAI_API_KEY",
+  };
+  const keyName = keyByProvider[config.provider];
+  if (keyName && !process.env[keyName]) {
+    process.env[keyName] = process.env.EVAL_JUDGE_API_KEY;
+  }
+}
+
+function exportedFunction(moduleValue, name) {
+  return moduleValue?.[name] || moduleValue?.default?.[name];
+}
+
 const casesPath = resolve(__dirname, "..", "golden", "conversation", "cases.yaml");
+const repoRoot = resolve(__dirname, "..", "..");
+loadEnvFileIfPresent(resolve(repoRoot, ".env"));
+loadEnvFileIfPresent(resolve(repoRoot, ".hermes", ".env"));
 
 // 解析 CLI 参数
 const args = process.argv.slice(2);
@@ -59,6 +107,8 @@ const dryRun = args.includes("--dry-run");
 const sharedConversation = args.includes("--shared-conversation") || Boolean(conversationIdOverride);
 const waitAsync = !args.includes("--no-wait-async");
 const asyncWaitTimeoutMs = Number(args.find((a) => a.startsWith("--async-timeout-ms="))?.slice("--async-timeout-ms=".length) ?? 180_000);
+const judgeMode = args.find((a) => a.startsWith("--judge="))?.slice("--judge=".length).trim() || "static";
+const judgeEnabled = judgeMode !== "none";
 
 const SCENARIO_NAMES = {
   workspace_greeting: "问候引导",
@@ -186,6 +236,7 @@ if (priorityFilters.size > 0) console.log(`priority: ${[...priorityFilters].join
 if (conversationIdOverride) console.log(`conversationId: ${conversationIdOverride}`);
 console.log(`conversation 模式: ${sharedConversation ? "shared" : "per-case"}`);
 console.log(`等待后台任务: ${waitAsync ? `yes (${asyncWaitTimeoutMs}ms)` : "no"}`);
+console.log(`judge: ${judgeEnabled ? judgeMode : "none"}`);
 if (dryRun) console.log(`[dry-run] 只解析,不真跑通道`);
 console.log("");
 
@@ -323,6 +374,157 @@ function readDailyReviewArtifactIfExists(afterIso) {
   return null;
 }
 
+function includesLoose(text, needle) {
+  const source = String(text || "").toLowerCase();
+  const target = String(needle || "").toLowerCase().trim();
+  if (!target) return true;
+  return source.includes(target);
+}
+
+function expectedChecksForResult(result) {
+  const checks = [];
+  if (result.turns?.length) {
+    for (const turn of result.turns) {
+      checks.push({
+        scope: `turn-${turn.index}`,
+        expected: turn.expected || {},
+        actual: turn.actual_output || "",
+      });
+    }
+  }
+  checks.push({
+    scope: "final",
+    expected: result.expected || {},
+    actual: result.actual_output || "",
+  });
+  return checks;
+}
+
+function staticRubricJudge(result) {
+  if (result.error) {
+    return normalizeJudgeOutput({
+      judge_type: "static_rubric",
+      verdict: "fail",
+      confidence: "high",
+      reason: `运行错误: ${result.error}`,
+      missing_must: [],
+      forbidden_hits: [],
+      global_forbidden_hits: [],
+      needs_human_review: true,
+    });
+  }
+
+  const missingMust = [];
+  const forbiddenHits = [];
+  const globalForbiddenHits = [];
+
+  for (const check of expectedChecksForResult(result)) {
+    for (const item of check.expected.must_contain || []) {
+      if (!includesLoose(check.actual, item)) {
+        missingMust.push({ scope: check.scope, text: item });
+      }
+    }
+    for (const item of check.expected.must_not_contain || []) {
+      if (includesLoose(check.actual, item)) {
+        forbiddenHits.push({ scope: check.scope, text: item });
+      }
+    }
+  }
+
+  for (const item of raw.quality_gates?.global_must_not_contain || []) {
+    if (includesLoose(result.actual_output, item)) {
+      globalForbiddenHits.push(item);
+    }
+  }
+
+  const hasForbidden = forbiddenHits.length > 0 || globalForbiddenHits.length > 0;
+  const hasMissing = missingMust.length > 0;
+  const verdict = hasForbidden ? "fail" : hasMissing ? "warn" : "pass";
+  const reason = hasForbidden
+    ? "命中禁止项或全局禁词"
+    : hasMissing
+      ? "缺少部分 must_contain 要点"
+      : "静态 rubric 未发现缺失或越界";
+
+  return normalizeJudgeOutput({
+    judge_type: "static_rubric",
+    verdict,
+    confidence: hasForbidden ? "high" : hasMissing ? "medium" : "medium",
+    reason,
+    missing_must: missingMust,
+    forbidden_hits: forbiddenHits,
+    global_forbidden_hits: globalForbiddenHits,
+    needs_human_review: verdict !== "pass",
+  });
+}
+
+async function modelJudge(result) {
+  const config = modelJudgeConfigFromEnv();
+  if (!config.model || !config.apiKeyPresent) {
+    return unconfiguredModelJudgeResult(config);
+  }
+  applyGenericJudgeApiKey(config);
+  const judgeInput = buildJudgeInput({
+    result,
+    suite: raw.suite,
+    qualityGates: raw.quality_gates,
+  });
+
+  try {
+    if (config.provider === "openai") {
+      throw new Error("openai provider is not implemented in this project judge runner");
+    }
+    const deepseekModule = await import("../../src/services/deepseek.js");
+    const callDeepSeek = exportedFunction(deepseekModule, "callDeepSeek");
+    if (typeof callDeepSeek !== "function") {
+      throw new Error("callDeepSeek export was not found");
+    }
+    const reply = await callDeepSeek(
+      JSON.stringify(judgeInput, null, 2),
+      buildJudgeSystemPrompt(),
+      [],
+      {
+        provider: config.provider,
+        profile: "light",
+        model: config.model,
+        thinking: false,
+        temperature: 0,
+        maxTokens: 1200,
+      },
+    );
+    const parsed = parseJudgeJson(reply);
+    return normalizeJudgeOutput(parsed, {
+      judge_type: "model",
+      judge_model: `${config.provider}/${config.model}`,
+    });
+  } catch (error) {
+    return normalizeJudgeOutput({
+      judge_type: "model_error",
+      judge_model: `${config.provider}/${config.model}`,
+      verdict: "unknown",
+      confidence: "low",
+      reason: `model judge failed: ${error instanceof Error ? error.message : String(error)}`,
+      needs_human_review: true,
+    });
+  }
+}
+
+async function judgeResult(result) {
+  if (!judgeEnabled) return null;
+  if (judgeMode === "static") return staticRubricJudge(result);
+  if (judgeMode === "model") return modelJudge(result);
+  return normalizeJudgeOutput({
+    judge_type: judgeMode,
+    verdict: "unknown",
+    confidence: "low",
+    reason: `未知 judge 模式: ${judgeMode}`,
+    missing_must: [],
+    forbidden_hits: [],
+    global_forbidden_hits: [],
+    needs_human_review: true,
+  });
+}
+
 async function waitForAsyncTraceIfNeeded(conversationId, afterIso) {
   if (!waitAsync) return null;
   const deadline = Date.now() + asyncWaitTimeoutMs;
@@ -408,7 +610,7 @@ for (const c of cases) {
     error = e instanceof Error ? e.message : String(e);
   }
   const elapsedMs = Date.now() - startedAt;
-  results.push({
+  const result = {
     id: c.id,
     scenario: c.scenario,
     conversation_id: caseConversationId,
@@ -422,12 +624,15 @@ for (const c of cases) {
     error,
     elapsed_ms: elapsedMs,
     ran_at: new Date().toISOString(),
-  });
+  };
+  result.judge = await judgeResult(result);
+  results.push(result);
   if (error) {
     console.log(`ERROR (${elapsedMs}ms): ${error}`);
   } else {
     const preview = actual.slice(0, 60).replace(/\n/g, " ");
-    console.log(`OK (${elapsedMs}ms): ${preview}...`);
+    const verdict = result.judge?.verdict ? ` ${result.judge.verdict.toUpperCase()}` : "";
+    console.log(`OK${verdict} (${elapsedMs}ms): ${preview}...`);
   }
 }
 
@@ -445,8 +650,30 @@ const autoRunIdParts = [
 ].filter(Boolean);
 const runId = slug(runIdOverride) || autoRunIdParts.join("__");
 
+function verdictCounts(rows) {
+  const counts = { pass: 0, warn: 0, fail: 0, unknown: 0, none: 0 };
+  for (const row of rows) {
+    const verdict = row.judge?.verdict || "none";
+    counts[verdict] = (counts[verdict] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function needsHumanReview(row) {
+  return Boolean(row.judge?.needs_human_review || ["warn", "fail", "unknown"].includes(row.judge?.verdict));
+}
+
+function formatJudgeIssueList(items) {
+  if (!items?.length) return ["- 无"];
+  return items.map((item) => {
+    if (typeof item === "string") return `- ${item}`;
+    return `- ${item.scope ? `[${item.scope}] ` : ""}${item.text ?? JSON.stringify(item)}`;
+  });
+}
+
 function buildMarkdownReport(group) {
   const scenarioName = scenarioDisplayName(group.scenario);
+  const counts = verdictCounts(group.results);
   const mdLines = [];
   mdLines.push(`# ${scenarioName}`);
   mdLines.push("");
@@ -458,11 +685,13 @@ function buildMarkdownReport(group) {
   mdLines.push(`- 跑批时间: ${finishedAt.toISOString()}`);
   mdLines.push(`- run id: \`${runId}\``);
   mdLines.push(`- 等待后台任务: ${waitAsync ? `yes (${asyncWaitTimeoutMs}ms)` : "no"}`);
+  mdLines.push(`- judge: ${judgeEnabled ? judgeMode : "none"}`);
   mdLines.push(`- case 总数: ${group.results.length}`);
   mdLines.push(`- 出错数: ${group.results.filter((r) => r.error).length}`);
+  mdLines.push(`- verdict: pass ${counts.pass} / warn ${counts.warn} / fail ${counts.fail} / unknown ${counts.unknown}`);
   mdLines.push("");
-  mdLines.push(`> 评估说明: 本报告只保留该场景最新一次实际输出,用于人工审计。`);
-  mdLines.push(`> 逐条对照 expected 判断语义匹配度,找出缺漏 / 越界 / 风格问题。`);
+  mdLines.push(`> 评估说明: 本报告保留该场景最新一次实际输出和结构化 judge 结果。`);
+  mdLines.push(`> 人工优先看 warn / fail / unknown; pass 不代表收益或投资结论正确,只代表当前 rubric 未发现明显违背。`);
   mdLines.push("");
   mdLines.push("---");
   mdLines.push("");
@@ -471,6 +700,9 @@ function buildMarkdownReport(group) {
   mdLines.push(`## ${r.id} [${r.scenario}]`);
   mdLines.push("");
   if (r.category) mdLines.push(`**分类**: ${r.category}`);
+  if (r.judge) {
+    mdLines.push(`**Judge**: ${r.judge.verdict.toUpperCase()} (${r.judge.judge_type}, ${r.judge.confidence}) — ${r.judge.reason}`);
+  }
   mdLines.push(`**conversationId**: \`${r.conversation_id}\``);
   if (r.principles?.length) {
     mdLines.push("");
@@ -495,6 +727,16 @@ function buildMarkdownReport(group) {
   }
   if (r.expected.style_notes) {
     mdLines.push(`- 风格: ${r.expected.style_notes}`);
+  }
+  if (r.judge && r.judge.verdict !== "pass") {
+    mdLines.push("");
+    mdLines.push(`**Judge 问题**:`);
+    mdLines.push(`- 缺失 must_contain:`);
+    mdLines.push(...formatJudgeIssueList(r.judge.missing_must).map((line) => `  ${line}`));
+    mdLines.push(`- 命中 must_not_contain:`);
+    mdLines.push(...formatJudgeIssueList(r.judge.forbidden_hits).map((line) => `  ${line}`));
+    mdLines.push(`- 命中全局禁词:`);
+    mdLines.push(...formatJudgeIssueList(r.judge.global_forbidden_hits).map((line) => `  ${line}`));
   }
   mdLines.push("");
   mdLines.push(`**实际输出** (${r.elapsed_ms}ms${r.error ? " / ERROR" : ""}):`);
@@ -554,6 +796,54 @@ function buildMarkdownReport(group) {
   return mdLines.join("\n");
 }
 
+function buildReviewQueueMarkdown(rows) {
+  const counts = verdictCounts(rows);
+  const reviewRows = rows.filter(needsHumanReview);
+  const mdLines = [];
+  mdLines.push(`# 对话语义评估人工待审`);
+  mdLines.push("");
+  mdLines.push(`- run id: \`${runId}\``);
+  mdLines.push(`- 跑批时间: ${finishedAt.toISOString()}`);
+  mdLines.push(`- judge: ${judgeEnabled ? judgeMode : "none"}`);
+  mdLines.push(`- case 总数: ${rows.length}`);
+  mdLines.push(`- verdict: pass ${counts.pass} / warn ${counts.warn} / fail ${counts.fail} / unknown ${counts.unknown}`);
+  mdLines.push(`- 人工待审: ${reviewRows.length}`);
+  mdLines.push("");
+  mdLines.push(`> 人工只需要优先处理本文件中的 warn / fail / unknown。`);
+  mdLines.push(`> 如果某个失败可以程序化判断,应下沉到 L1 测试,不要长期留在人工审查队列。`);
+  mdLines.push("");
+
+  if (!reviewRows.length) {
+    mdLines.push("暂无人工待审项。");
+    mdLines.push("");
+    return mdLines.join("\n");
+  }
+
+  for (const r of reviewRows) {
+    mdLines.push(`## ${r.judge?.verdict?.toUpperCase() || "UNKNOWN"} · ${r.id}`);
+    mdLines.push("");
+    mdLines.push(`- 场景: \`${r.scenario}\` (${scenarioDisplayName(r.scenario)})`);
+    mdLines.push(`- 分类: ${r.category || "-"}`);
+    mdLines.push(`- reason: ${r.judge?.reason || "-"}`);
+    mdLines.push(`- report: \`${scenarioDisplayName(r.scenario)}\``);
+    mdLines.push("");
+    mdLines.push(`**输入**:`);
+    mdLines.push(quoteMarkdown(r.user_input || r.turns?.[0]?.user_input || ""));
+    mdLines.push("");
+    mdLines.push(`**问题摘要**:`);
+    mdLines.push(`- 缺失 must_contain: ${r.judge?.missing_must?.length || 0}`);
+    mdLines.push(`- 命中 must_not_contain: ${r.judge?.forbidden_hits?.length || 0}`);
+    mdLines.push(`- 命中全局禁词: ${r.judge?.global_forbidden_hits?.length || 0}`);
+    mdLines.push("");
+    mdLines.push(`**实际输出预览**:`);
+    mdLines.push(quoteMarkdown(String(r.actual_output || r.error || "").slice(0, 800)));
+    mdLines.push("");
+    mdLines.push("---");
+    mdLines.push("");
+  }
+  return mdLines.join("\n");
+}
+
 const groups = new Map();
 for (const result of results) {
   const existing = groups.get(result.scenario) ?? { scenario: result.scenario, results: [] };
@@ -564,6 +854,7 @@ for (const result of results) {
 const writtenReports = [];
 for (const group of groups.values()) {
   const scenarioName = scenarioDisplayName(group.scenario);
+  const counts = verdictCounts(group.results);
   const basename = filenameSafeChinese(scenarioName) || filenameSafeChinese(group.scenario) || "未命名场景";
   const mdFilename = `${basename}.md`;
   const jsonFilename = `${basename}.json`;
@@ -576,6 +867,12 @@ for (const group of groups.values()) {
     suite: raw.suite,
     test_user: testUser,
     quality_gates: raw.quality_gates,
+    judge: {
+      enabled: judgeEnabled,
+      mode: judgeEnabled ? judgeMode : "none",
+      verdict_counts: counts,
+      review_count: group.results.filter(needsHumanReview).length,
+    },
     results: group.results,
   }, null, 2);
   writeFileSync(resolve(outDir, mdFilename), reportMarkdown);
@@ -583,8 +880,40 @@ for (const group of groups.values()) {
   writtenReports.push({ scenario: group.scenario, mdFilename, jsonFilename });
 }
 
+const totalVerdictCounts = verdictCounts(results);
+const reviewQueue = results.filter(needsHumanReview);
+const reviewQueueJson = {
+  ran_at: finishedAt.toISOString(),
+  run_id: runId,
+  suite: raw.suite,
+  test_user: testUser,
+  judge: {
+    enabled: judgeEnabled,
+    mode: judgeEnabled ? judgeMode : "none",
+    verdict_counts: totalVerdictCounts,
+    review_count: reviewQueue.length,
+  },
+  review_queue: reviewQueue.map((row) => ({
+    id: row.id,
+    scenario: row.scenario,
+    scenario_name: scenarioDisplayName(row.scenario),
+    category: row.category,
+    conversation_id: row.conversation_id,
+    user_input: row.user_input || row.turns?.[0]?.user_input || "",
+    actual_output_preview: String(row.actual_output || row.error || "").slice(0, 1200),
+    judge: row.judge,
+    elapsed_ms: row.elapsed_ms,
+    ran_at: row.ran_at,
+  })),
+  reports: writtenReports,
+};
+writeFileSync(resolve(outDir, "_review-queue.md"), buildReviewQueueMarkdown(results));
+writeFileSync(resolve(outDir, "_review-queue.json"), JSON.stringify(reviewQueueJson, null, 2));
+
 console.log("");
 console.log(`=== 完成 ===`);
+console.log(`verdict: pass ${totalVerdictCounts.pass} / warn ${totalVerdictCounts.warn} / fail ${totalVerdictCounts.fail} / unknown ${totalVerdictCounts.unknown}`);
+console.log(`人工待审: ${reviewQueue.length} -> eval-reports/_review-queue.md`);
 for (const report of writtenReports) {
   console.log(`${scenarioDisplayName(report.scenario)}: eval-reports/${report.mdFilename}`);
 }

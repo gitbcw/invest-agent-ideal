@@ -20,7 +20,7 @@ business_architecture:
       business_role: "入口与路由"
       required: true
       replaceable_implementation: false
-    - name: "Hermes workspace agent"
+    - name: "workspace-scoped ACP agent"
       business_role: "复杂判断与工作流执行"
       required: true
       replaceable_implementation: true
