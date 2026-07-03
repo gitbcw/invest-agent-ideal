@@ -3,7 +3,8 @@ import type { AcpMessage, AcpResponse } from "./protocol.js";
 import { textResponse } from "./protocol.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
-import { getCurrentAcpAgent, loadCurrentBackendId, type AcpModelTier } from "./stdio-agent.js";
+import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
+import { resolveChatModelTier } from "./model-router.js";
 import { dedupeRepeatedCustomerText, sanitizeCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { recordAcpTrace } from "./trace.js";
@@ -144,15 +145,4 @@ function buildChannelForwardPrompt(text: string, context: UserContext): string {
     "【用户消息】",
     text,
   ].filter(Boolean).join("\n");
-}
-
-function resolveChatModelTier(text: string): AcpModelTier {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return "simple";
-  if (
-    /(复盘|选股|筛选|筛股|研究|研判|分析.+股票|股票.+分析|行业.+分析|主题.+分析|估值|财报|公告|交易计划|出预案|策略匹配|投资模型)/i.test(normalized)
-  ) {
-    return "complex";
-  }
-  return "simple";
 }

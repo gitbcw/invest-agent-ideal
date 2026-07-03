@@ -24,6 +24,7 @@ import { db } from "../db/index.js";
 import { settings } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
+import type { AcpModelTier } from "./model-router.js";
 
 const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
 const ACP_DEBUG_PREVIEW_CHARS = Number(process.env.ACP_DEBUG_PREVIEW_CHARS) || 120;
@@ -73,7 +74,6 @@ type RequestPermissionRequest = {
 };
 
 export type AcpBackendId = "hermes" | "codex";
-export type AcpModelTier = "simple" | "complex";
 
 export interface AcpBackendDef {
   id: AcpBackendId;
