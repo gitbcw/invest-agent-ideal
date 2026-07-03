@@ -1,6 +1,7 @@
 import { describe, test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
+  isChatModelRouterEnabled,
   parseChatRouteDecision,
   resolveChatModelTier,
   resolveScheduledModelTier,
@@ -9,6 +10,7 @@ import {
 describe("ACP model tier router", () => {
   test("uses model judge output for routine chat", async () => {
     const tier = await resolveChatModelTier("今天有哪些提醒？", {
+      routerEnabled: true,
       judge: async () => JSON.stringify({
         tier: "simple",
         confidence: 0.91,
@@ -21,6 +23,7 @@ describe("ACP model tier router", () => {
 
   test("uses model judge output for ambiguous investment decisions", async () => {
     const tier = await resolveChatModelTier("能买吗？", {
+      routerEnabled: true,
       judge: async () => JSON.stringify({
         tier: "complex",
         confidence: 0.88,
@@ -29,6 +32,23 @@ describe("ACP model tier router", () => {
       }),
     });
     assert.equal(tier, "complex");
+  });
+
+  test("uses simple tier without model judge when router is disabled", async () => {
+    const tier = await resolveChatModelTier("帮我看看这个票", {
+      routerEnabled: false,
+      judge: async () => {
+        throw new Error("judge should not be called");
+      },
+    });
+    assert.equal(tier, "simple");
+  });
+
+  test("parses router enabled environment flag", () => {
+    assert.equal(isChatModelRouterEnabled({}), true);
+    assert.equal(isChatModelRouterEnabled({ ACP_MODEL_ROUTER_ENABLED: "true" }), true);
+    assert.equal(isChatModelRouterEnabled({ ACP_MODEL_ROUTER_ENABLED: "false" }), false);
+    assert.equal(isChatModelRouterEnabled({ ACP_MODEL_ROUTER_ENABLED: "0" }), false);
   });
 
   test("passes compact context to model judge", async () => {
@@ -54,6 +74,7 @@ describe("ACP model tier router", () => {
         toolManifest: [],
       },
     }, {
+      routerEnabled: true,
       judge: async (input) => {
         userMessage = input.userMessage;
         return JSON.stringify({
@@ -71,6 +92,7 @@ describe("ACP model tier router", () => {
 
   test("falls back to complex when model judge fails", async () => {
     const tier = await resolveChatModelTier("帮我看看这个票", {
+      routerEnabled: true,
       judge: async () => "not json",
     });
     assert.equal(tier, "complex");

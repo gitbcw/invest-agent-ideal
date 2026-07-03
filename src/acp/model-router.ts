@@ -25,11 +25,15 @@ const ROUTER_TIMEOUT_MS = Number(process.env.ACP_MODEL_ROUTER_TIMEOUT_MS) || 3_0
 
 export async function resolveChatModelTier(
   input: string | ChatModelRouteInput,
-  options: { judge?: ChatRouteJudge } = {},
+  options: { judge?: ChatRouteJudge; routerEnabled?: boolean } = {},
 ): Promise<AcpModelTier> {
   const routeInput = typeof input === "string" ? { text: input } : input;
   const text = routeInput.text.trim();
   if (!text) return "simple";
+  if (options.routerEnabled === false || (options.routerEnabled === undefined && !isChatModelRouterEnabled())) {
+    logger.info("ACP model route disabled, using simple tier");
+    return "simple";
+  }
 
   try {
     const raw = await withTimeout(
@@ -53,6 +57,12 @@ export async function resolveChatModelTier(
 export function resolveScheduledModelTier(mode: string): AcpModelTier {
   if (/^scheduled-(daily|weekly|monthly)-review$/.test(mode)) return "complex";
   return "simple";
+}
+
+export function isChatModelRouterEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.ACP_MODEL_ROUTER_ENABLED;
+  if (raw === undefined || raw.trim() === "") return true;
+  return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase());
 }
 
 export function parseChatRouteDecision(raw: string): ChatRouteDecision {
