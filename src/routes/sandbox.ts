@@ -351,81 +351,14 @@ function isOnboardingStep(value: unknown): value is OnboardingStepKey {
   return typeof value === "string" && (ONBOARDING_STEPS as string[]).includes(value);
 }
 
-const DEFAULT_WATCH_CHECK_WINDOWS = [
-  { name: "开盘后", time: "09:55", purpose: "检查核心持仓、观察仓和市场风格是否出现开盘异常。" },
-  { name: "午盘前", time: "11:20", purpose: "检查风格切换、板块异动和持仓是否偏离日复盘判断。" },
-  { name: "收盘前", time: "14:30", purpose: "检查是否触发买入区、减仓区或风险阈值。" },
-];
-
-const WATCH_WINDOW_PURPOSES: Record<string, { name: string; purpose: string }> = {
-  "09:30": { name: "开盘简报", purpose: "检查开盘状态、核心/非核心是否异常跳空。" },
-  "10:00": { name: "早盘简报", purpose: "检查早盘第一轮走势、是否接近触发区。" },
-  "11:00": { name: "上午趋势简报", purpose: "检查上午趋势确认、强弱分化。" },
-  "12:00": { name: "午间简报", purpose: "汇总上午结论和下午关注点。" },
-  "13:00": { name: "午后开盘简报", purpose: "检查午后开盘状态。" },
-  "14:00": { name: "尾盘前简报", purpose: "检查尾盘前风险和是否接近操作触发。" },
-  "15:00": { name: "收盘快照", purpose: "汇总收盘状态，识别晚间日复盘重点。" },
-};
-
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function normalizeTimeToken(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
-  if (!match) return null;
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-}
-
-function normalizeTimeList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const times: string[] = [];
-  for (const item of value) {
-    const time = normalizeTimeToken(item);
-    if (!time || seen.has(time)) continue;
-    seen.add(time);
-    times.push(time);
-  }
-  return times;
-}
-
-function buildWatchWindowsFromTimes(times: string[]) {
-  return times.map((time) => ({
-    name: WATCH_WINDOW_PURPOSES[time]?.name ?? `${time}简报`,
-    time,
-    purpose: WATCH_WINDOW_PURPOSES[time]?.purpose ?? "按用户确认的固定盘中时间检查组合状态和规则触发。",
-  }));
-}
-
-function deriveWatchWindows(input: {
-  watch: Record<string, unknown>;
-  watchDefaults: Record<string, unknown>;
-  schedules: Record<string, unknown>;
-  notification: Record<string, unknown>;
-}) {
-  const explicitWatchWindows = Array.isArray(input.watchDefaults.default_check_windows) && input.watchDefaults.default_check_windows.length > 0
-    ? input.watchDefaults.default_check_windows
-    : null;
-  if (explicitWatchWindows) return explicitWatchWindows;
-
-  const explicitWatchTimes = normalizeTimeList(asRecord(input.watchDefaults.fixed_intraday_brief).times);
-  if (explicitWatchTimes.length > 0) return buildWatchWindowsFromTimes(explicitWatchTimes);
-
-  const notificationTimes = normalizeTimeList(asRecord(input.notification.intraday_push).times);
-  if (notificationTimes.length > 0) return buildWatchWindowsFromTimes(notificationTimes);
-
-  const scheduleTimes = normalizeTimeList(asRecord(input.schedules.market_watch).default_windows);
-  if (scheduleTimes.length > 0) return buildWatchWindowsFromTimes(scheduleTimes);
-
-  return Array.isArray(input.watch.default_check_windows) && input.watch.default_check_windows.length > 0
-    ? input.watch.default_check_windows
-    : DEFAULT_WATCH_CHECK_WINDOWS;
+function pickWatchPolicyOverrides(value: unknown): Record<string, unknown> {
+  const input = asRecord(value);
+  const { default_check_windows: _defaultCheckWindows, fixed_intraday_brief: _fixedIntradayBrief, ...rest } = input;
+  return rest;
 }
 
 async function applyOnboardingStepDefaults(
@@ -499,23 +432,12 @@ async function applyOnboardingStepDefaults(
 
   if (step === "watch_rules") {
     const watch = await store.readWatch() ?? {};
-    const schedules = await store.readSchedules() ?? {};
-    const notification = await store.readNotification() ?? {};
-    const watchDefaults = body.watchPolicy && typeof body.watchPolicy === "object"
-      ? body.watchPolicy as Record<string, unknown>
-      : {};
-    const defaultCheckWindows = deriveWatchWindows({
-      watch: watch as Record<string, unknown>,
-      watchDefaults,
-      schedules,
-      notification,
-    });
+    const watchDefaults = pickWatchPolicyOverrides(body.watchPolicy);
     await store.writeWatch({
       ...watch,
       mode: typeof watch.mode === "string" ? watch.mode : "default",
       only_push_on_exception: true,
       priority_policy: "P0 立即推送；P1 晚间汇总；P2 仅记录。详见 config/notification.yaml。",
-      default_check_windows: defaultCheckWindows,
       exception_rules: Array.isArray(watch.exception_rules) && watch.exception_rules.length > 0
         ? watch.exception_rules
         : [

@@ -26,7 +26,8 @@
 - 所有必需步骤完成后，将 `status` 改为 `completed` 并写入 `completed_at`；之后不要重复展开新手引导，除非用户明确要求重新配置。
 - 涉及长期记忆或规则写入时，仍必须遵守“生成结构化草案 → 用户确认 → 写入”的确认规则。
 - `review_schedule`、`notification`、`watch_rules` 三个 onboarding 步骤确认时，应走 `confirm-step` 快通道，只保存默认复盘时间、低打扰通知策略和盯盘偏好。
-- 确认 `watch_rules` 只表示用户接受默认盯盘策略和窗口；不要因此自动调用 watch-rule catalog/validate/create 批量创建具体均线、价格或指标规则。只有用户明确说“现在创建这些提醒规则/批量创建均线提醒”时，才另起草案并走 watch-rule API。
+- 盯盘固定时间的唯一事实源是 `config/schedules.yaml` 的 `market_watch.default_windows`；不要把盘中固定时间同步写入 `config/watch.yaml` 或 `config/notification.yaml`。
+- 确认 `watch_rules` 只表示用户接受默认盯盘策略和低打扰边界；不要因此自动调用 watch-rule catalog/validate/create 批量创建具体均线、价格或指标规则。只有用户明确说“现在创建这些提醒规则/批量创建均线提醒”时，才另起草案并走 watch-rule API。
 
 ## 长期记忆位置
 

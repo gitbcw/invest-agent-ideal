@@ -66,7 +66,7 @@
 - A 股交易时段判断。
 - `config/schedules.yaml` 的 `market_watch.enabled` / `auto_run`。
 - `config/watch.yaml` 的 `mode: disabled/off`。
-- `watch.default_check_windows` 或 `schedules.market_watch.default_windows`。
+- `schedules.market_watch.default_windows` 是盘中固定时间任务的唯一调度来源；`watch.default_check_windows` 不再参与调度判定。
 - `watch.check_interval_minutes` / `watch.custom_frequency` / `schedules.market_watch.custom_frequency`。
 - 进程内 `marketWatchFiredKeys` 去重。
 - 同一 scope 的 `runningMarketWatchTasks` 并发防重。

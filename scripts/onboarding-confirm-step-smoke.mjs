@@ -99,12 +99,18 @@ try {
 
   const state = await store.readOnboardingState();
   const watch = await store.readWatch();
+  const schedules = await store.readSchedules();
   assert.equal(state.status, "completed");
   assert(Array.isArray(watch?.confirmed_watch_rule_summary), "watch summary written");
   assert.deepEqual(
-    watch?.default_check_windows?.map((window) => window.time),
+    schedules?.market_watch?.default_windows,
     EXPECTED_WINDOWS,
-    "confirm-step must sync watch.yaml windows from confirmed intraday push settings"
+    "market-watch schedule windows must live in schedules.yaml"
+  );
+  assert.deepEqual(
+    watch?.default_check_windows?.map((window) => window.time),
+    ["09:55", "11:20", "14:30"],
+    "confirm-step must not rewrite watch.yaml scheduling windows"
   );
 
   console.log(JSON.stringify({
@@ -113,6 +119,7 @@ try {
     status: state.status,
     didCreateWatchRules: body.didCreateWatchRules,
     alertRuleCount: rules.length,
+    scheduleWindows: schedules?.market_watch?.default_windows,
     watchWindows: watch?.default_check_windows?.map((window) => window.time),
   }, null, 2));
 } finally {

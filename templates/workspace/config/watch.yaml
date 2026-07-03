@@ -4,17 +4,6 @@ only_push_on_exception: true
 priority_policy: "P0 立即推送；P1 晚间汇总；P2 仅记录。详见 config/notification.yaml。"
 purpose_boundary: "盯盘用于发现规则触发和重大风险，不用于制造连续行情陪伴。"
 
-default_check_windows:
-  - name: "开盘后"
-    time: "09:55"
-    purpose: "检查核心持仓、观察仓和市场风格是否出现开盘异常。"
-  - name: "午盘前"
-    time: "11:20"
-    purpose: "检查风格切换、板块异动和持仓是否偏离日复盘判断。"
-  - name: "收盘前"
-    time: "14:30"
-    purpose: "检查是否触发买入区、减仓区或风险阈值。"
-
 exception_rules:
   - "核心持仓接近用户设定的买入区或减仓区。"
   - "观察仓进入用户设定的配置区。"

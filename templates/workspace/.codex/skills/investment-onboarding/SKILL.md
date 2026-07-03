@@ -24,6 +24,8 @@ Reduce setup cost through WeChat while preventing memory pollution. Every long-t
 
 For the `review_schedule`, `notification`, and `watch_rules` onboarding steps, prefer the lightweight service endpoint `POST /api/sandbox/onboarding/confirm-step`. It updates onboarding progress and default workspace preferences without expanding the turn into many file edits.
 
+Market-watch schedule times have exactly one source of truth: `config/schedules.yaml` field `market_watch.default_windows`. Do not copy fixed intraday schedule times into `config/watch.yaml` or `config/notification.yaml`.
+
 Confirming the `watch_rules` onboarding step means the user accepts the default watch policy and quiet notification boundaries. It must not automatically call watch-rule catalog/validate/create or batch-create concrete MA, price, or indicator rules. Create concrete watch rules only after a separate explicit user request such as “现在创建这些提醒规则” or “批量创建均线提醒”.
 
 ## Confirmation Rules

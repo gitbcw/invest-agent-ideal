@@ -5,6 +5,7 @@ import { __test__ } from "../dist/scheduler/index.js";
 const {
   readIntervalMinutes,
   normalizeWatchWindows,
+  resolveMarketWatchWindows,
   intervalSlot,
   windowSlot,
 } = __test__;
@@ -24,6 +25,15 @@ const windows = normalizeWatchWindows([
   { time: "bad" },
 ]);
 assert.deepEqual(windows, ["09:30", "10:30", "11:30"]);
+assert.deepEqual(
+  resolveMarketWatchWindows({
+    market_watch: {
+      default_windows: ["09:30", "10:00", "11:00"],
+    },
+  }),
+  ["09:30", "10:00", "11:00"],
+  "market-watch schedule must come from schedules.market_watch.default_windows only"
+);
 
 assert.equal(windowSlot(new Date("2026-06-30T01:30:00.000Z"), windows), "09:30");
 assert.equal(windowSlot(new Date("2026-06-30T01:39:00.000Z"), windows), null);

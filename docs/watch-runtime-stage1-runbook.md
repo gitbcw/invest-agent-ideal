@@ -269,7 +269,7 @@ curl -s -X POST http://localhost:22655/api/testing/scheduler/trigger \
 - `pushJobId`: 空
 - 手机微信: 未收到额外消息,符合预期
 
-如果需要排查交易时段自然命中问题,再把 `market_watch.default_windows` 或 `watch.default_check_windows` 改到一个足够靠后的时间,例如当前北京时间 3-5 分钟后。该方法仅作辅助观察。
+如果需要排查交易时段自然命中问题,把 `config/schedules.yaml` 的 `market_watch.default_windows` 改到一个足够靠后的时间,例如当前北京时间 3-5 分钟后。`watch.yaml` 不再作为盘中固定时间任务的调度来源。
 
 通过标准:
 

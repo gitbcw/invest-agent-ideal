@@ -266,7 +266,7 @@ async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackInterva
   const watch = await readWatchConfig(scope.userId);
   if (watch?.mode === "disabled" || watch?.mode === "off") return null;
 
-  const windows = normalizeWatchWindows(watch?.default_check_windows ?? schedules.market_watch?.default_windows);
+  const windows = resolveMarketWatchWindows(schedules);
   const customInterval = resolveMarketWatchInterval(watch, schedules, fallbackIntervalMinutes, windows.length > 0);
   const slot = customInterval
     ? intervalSlot(now, customInterval)
@@ -377,6 +377,10 @@ function normalizeWatchWindows(value: unknown): string[] {
     .filter((time) => /^(\d{1,2}):(\d{2})$/.test(time));
 }
 
+function resolveMarketWatchWindows(schedules: SchedulesYaml): string[] {
+  return normalizeWatchWindows(schedules.market_watch?.default_windows);
+}
+
 function resolveMarketWatchInterval(
   watch: Awaited<ReturnType<typeof readWatchConfig>>,
   schedules: SchedulesYaml,
@@ -437,6 +441,7 @@ function windowSlot(now: Date, windows: string[], graceMinutes = 0) {
 
 export const __test__ = {
   normalizeWatchWindows,
+  resolveMarketWatchWindows,
   readIntervalMinutes,
   intervalSlot,
   windowSlot,
