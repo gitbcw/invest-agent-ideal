@@ -16,11 +16,18 @@ export type PushCallback = (message: string, options?: { userId?: string; projec
 
 const INTERVAL_SETTINGS_KEY = "alert_check_interval_minutes";
 const DEFAULT_INTERVAL_MINUTES = 5;
+const MARKET_WATCH_CONCURRENCY = normalizePositiveInteger(process.env.MARKET_WATCH_CONCURRENCY, 2);
+const MARKET_WATCH_MAX_QUEUE_DELAY_MS = normalizePositiveInteger(
+  process.env.MARKET_WATCH_MAX_QUEUE_DELAY_MS,
+  5 * 60 * 1000
+);
 
 let pushFn: PushCallback | null = null;
 let alertIntervalId: ReturnType<typeof setInterval> | null = null;
 const marketWatchFiredKeys = new Set<string>();
 const runningMarketWatchTasks = new Set<string>();
+const marketWatchQueue: MarketWatchQueueItem[] = [];
+let activeMarketWatchWorkers = 0;
 const ruleAlertFiredKeys = new Set<string>();
 const runningRuleAlertTasks = new Set<string>();
 
@@ -32,6 +39,25 @@ interface SchedulableScope {
 
 interface ManualScheduledTriggerScope extends ReviewScope {
   projectId?: string;
+}
+
+interface MarketWatchHit {
+  taskKey: string;
+  scheduledFor: string;
+  slot: string;
+}
+
+interface MarketWatchQueueItem {
+  scope: Required<SchedulableScope>;
+  hit: MarketWatchHit;
+  runningKey: string;
+  enqueuedAt: number;
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.floor(n);
 }
 
 /** 注册消息推送回调（由 server 调用） */
@@ -138,9 +164,8 @@ function restartAlertInterval(_minutes: number) {
           if (runningMarketWatchTasks.has(runningKey)) continue;
           const hit = await shouldRunMarketWatchTask({ userId, instanceId, projectId }, fallbackInterval, now);
           if (!hit) continue;
-          const runKey = hit.taskKey;
           const claimed = await claimScheduledTaskRun({
-            taskKey: runKey,
+            taskKey: hit.taskKey,
             taskType: "market-watch",
             scheduledFor: hit.scheduledFor,
             userId,
@@ -152,29 +177,14 @@ function restartAlertInterval(_minutes: number) {
             continue;
           }
           runningMarketWatchTasks.add(runningKey);
-          try {
-            const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId });
-            if (text) {
-              const pushResult = await getPushFn()(text, { userId, projectId, instanceId });
-              await finishScheduledTaskRun(runKey, {
-                status: "success",
-                pushJobId: typeof pushResult === "string" ? pushResult : undefined,
-              });
-            } else {
-              logger.info(`盘中巡检无推送 user=${userId} instance=${instanceId}`);
-              await finishScheduledTaskRun(runKey, { status: "skipped" });
-            }
-          } catch (error) {
-            await finishScheduledTaskRun(runKey, {
-              status: "error",
-              errorMessage: formatUnknownError(error),
-            });
-            throw error;
-          }
+          enqueueMarketWatchTask({
+            scope: { userId, instanceId, projectId: projectId ?? DEFAULT_PROJECT_ID },
+            hit,
+            runningKey,
+            enqueuedAt: Date.now(),
+          });
         } catch (error) {
           logger.error(`行情巡检失败 (${userId}/${instanceId}):`, error);
-        } finally {
-          runningMarketWatchTasks.delete(runningKey);
         }
 
         try {
@@ -227,6 +237,65 @@ function restartAlertInterval(_minutes: number) {
   }, 60 * 1000);
 }
 
+function enqueueMarketWatchTask(item: MarketWatchQueueItem) {
+  marketWatchQueue.push(item);
+  logger.info(
+    `盘中巡检入队 user=${item.scope.userId} instance=${item.scope.instanceId} slot=${item.hit.slot} queue=${marketWatchQueue.length} active=${activeMarketWatchWorkers}/${MARKET_WATCH_CONCURRENCY}`
+  );
+  drainMarketWatchQueue();
+}
+
+function drainMarketWatchQueue() {
+  while (activeMarketWatchWorkers < MARKET_WATCH_CONCURRENCY && marketWatchQueue.length > 0) {
+    const item = marketWatchQueue.shift();
+    if (!item) return;
+    activeMarketWatchWorkers += 1;
+    runQueuedMarketWatchTask(item)
+      .catch((error) => {
+        logger.error(`盘中巡检 worker 失败 (${item.scope.userId}/${item.scope.instanceId}):`, error);
+      })
+      .finally(() => {
+        activeMarketWatchWorkers -= 1;
+        runningMarketWatchTasks.delete(item.runningKey);
+        drainMarketWatchQueue();
+      });
+  }
+}
+
+async function runQueuedMarketWatchTask(item: MarketWatchQueueItem) {
+  const { userId, instanceId, projectId } = item.scope;
+  const ageMs = Date.now() - item.enqueuedAt;
+  if (ageMs > MARKET_WATCH_MAX_QUEUE_DELAY_MS) {
+    const message = `market-watch task stale before start ageMs=${ageMs}`;
+    logger.warn(`盘中巡检过期跳过 user=${userId} instance=${instanceId} slot=${item.hit.slot} ageMs=${ageMs}`);
+    await finishScheduledTaskRun(item.hit.taskKey, {
+      status: "skipped",
+      errorMessage: message,
+    });
+    return;
+  }
+
+  try {
+    const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId });
+    if (text) {
+      const pushResult = await getPushFn()(text, { userId, projectId, instanceId });
+      await finishScheduledTaskRun(item.hit.taskKey, {
+        status: "success",
+        pushJobId: typeof pushResult === "string" ? pushResult : undefined,
+      });
+    } else {
+      logger.info(`盘中巡检无推送 user=${userId} instance=${instanceId}`);
+      await finishScheduledTaskRun(item.hit.taskKey, { status: "skipped" });
+    }
+  } catch (error) {
+    await finishScheduledTaskRun(item.hit.taskKey, {
+      status: "error",
+      errorMessage: formatUnknownError(error),
+    });
+    throw error;
+  }
+}
+
 /** 启动所有定时任务 */
 export async function startScheduler() {
   logger.info("启动定时任务调度器...");
@@ -243,7 +312,7 @@ export async function startScheduler() {
   await startDataQualityScheduler();
 
   const pushTime = await getReviewPushTime();
-  logger.info(`定时任务已启动（巡检: 每分钟扫描 workspace 配置,默认间隔 ${intervalMin}min / 复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")} / 数据质量 15:30）`);
+  logger.info(`定时任务已启动（巡检: 每分钟扫描 workspace 配置,盘中盯盘并发 ${MARKET_WATCH_CONCURRENCY},默认间隔 ${intervalMin}min / 复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")} / 数据质量 15:30）`);
 }
 
 /** 停止所有定时任务 */
@@ -252,12 +321,14 @@ export function stopScheduler() {
     clearInterval(alertIntervalId);
     alertIntervalId = null;
   }
+  for (const item of marketWatchQueue) runningMarketWatchTasks.delete(item.runningKey);
+  marketWatchQueue.length = 0;
   stopReviewScheduler();
   stopDataQualityScheduler();
   logger.info("定时任务已停止");
 }
 
-async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<{ taskKey: string; scheduledFor: string; slot: string } | null> {
+async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<MarketWatchHit | null> {
   if (!isBeijingTradingDay(now)) return null;
 
   const schedules = readSchedules(scope.userId);
