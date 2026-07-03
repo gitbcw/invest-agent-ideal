@@ -20,13 +20,16 @@ import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import { readSchedules, entryHitsNow, beijingNow, beijingDateKey } from "../lib/schedules-loader.js";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { runScheduledReviewTask } from "../acp/scheduled-tasks.js";
 import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/scheduled-task-runs.js";
+import { formatUnknownError } from "../lib/errors.js";
 
 const PUSH_TIME_KEY = "review_push_time";
 const DEFAULT_HOUR = 21;
 const DEFAULT_MINUTE = 30;
+const REVIEW_PREPARE_LEAD_MINUTES = normalizePositiveInteger(process.env.REVIEW_PREPARE_LEAD_MINUTES, 10);
 
 type ReviewKind = "daily" | "weekly" | "monthly";
 
@@ -39,6 +42,22 @@ export interface ReviewScope {
   userId: string;
   instanceId: string;
   projectId?: string;
+}
+
+interface PreparedReviewPush {
+  kind: ReviewKind;
+  userId: string;
+  instanceId: string;
+  projectId: string;
+  dateKey: string;
+  text: string;
+  preparedAt: string;
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.floor(n);
 }
 
 /** 从 settings 表读取 DEFAULT_USER_ID 的兜底日复盘时间(workspace 不存在时使用)。 */
@@ -79,7 +98,7 @@ async function hasExistingDailyReview(scope: ReviewScope, dateKey: string): Prom
   return Boolean(row);
 }
 
-async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date): Promise<boolean> {
+async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date, options: { skipExistingDailyReview?: boolean } = {}): Promise<boolean> {
   if (kind === "daily" && !isAfterDailyReviewScanStart(now)) return false;
   const dateKey = beijingDateKey(now);
 
@@ -89,7 +108,7 @@ async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date): Prom
     if (kind === "daily") hit = entryHitsNow(schedules.daily_review, now);
     else if (kind === "weekly") hit = entryHitsNow(schedules.weekly_review, now);
     else if (kind === "monthly") hit = entryHitsNow(schedules.monthly_review, now);
-    if (hit && kind === "daily" && schedules.run_policy?.skip_automatic_if_manual_report_exists !== false) {
+    if (hit && options.skipExistingDailyReview !== false && kind === "daily" && schedules.run_policy?.skip_automatic_if_manual_report_exists !== false) {
       if (await hasExistingDailyReview(scope, dateKey)) {
         logger.info(`跳过自动日复盘 user=${scope.userId} instance=${scope.instanceId} date=${dateKey}: 当日已有复盘记录`);
         hit = false;
@@ -101,6 +120,114 @@ async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date): Prom
   }
 
   return hit;
+}
+
+async function shouldPrepare(kind: ReviewKind, scope: ReviewScope, now: Date): Promise<{ dateKey: string } | null> {
+  if (!hasWorkspace(scope.userId)) return null;
+  const prepareFor = addMinutes(now, REVIEW_PREPARE_LEAD_MINUTES);
+  if (!(await shouldFire(kind, scope, prepareFor, { skipExistingDailyReview: true }))) return null;
+  return { dateKey: beijingDateKey(prepareFor) };
+}
+
+function addMinutes(date: Date, minutes: number) {
+  return new Date(date.getTime() + minutes * 60 * 1000);
+}
+
+function preparedReviewPath(scope: ReviewScope, kind: ReviewKind, dateKey: string) {
+  const safeInstance = (scope.instanceId || DEFAULT_INSTANCE_ID).replace(/[^a-zA-Z0-9_-]/g, "-");
+  return join(resolveWorkspacePath(scope.userId), ".state", "scheduled-reviews", safeInstance, `${dateKey}-${kind}.json`);
+}
+
+async function readPreparedReviewPush(scope: ReviewScope, kind: ReviewKind, dateKey: string): Promise<PreparedReviewPush | null> {
+  try {
+    const file = preparedReviewPath(scope, kind, dateKey);
+    if (!existsSync(file)) return null;
+    const parsed = JSON.parse(await readFile(file, "utf-8")) as Partial<PreparedReviewPush>;
+    if (parsed.kind !== kind || parsed.dateKey !== dateKey || typeof parsed.text !== "string" || !parsed.text.trim()) return null;
+    return {
+      kind,
+      userId: String(parsed.userId || scope.userId),
+      instanceId: String(parsed.instanceId || scope.instanceId || DEFAULT_INSTANCE_ID),
+      projectId: String(parsed.projectId || scope.projectId || DEFAULT_PROJECT_ID),
+      dateKey,
+      text: parsed.text,
+      preparedAt: String(parsed.preparedAt || ""),
+    };
+  } catch (error) {
+    logger.warn(`读取预生成复盘失败 kind=${kind} user=${scope.userId}: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+async function writePreparedReviewPush(scope: ReviewScope, kind: ReviewKind, dateKey: string, text: string) {
+  const file = preparedReviewPath(scope, kind, dateKey);
+  await mkdir(dirname(file), { recursive: true });
+  const payload: PreparedReviewPush = {
+    kind,
+    userId: scope.userId,
+    instanceId: scope.instanceId,
+    projectId: scope.projectId ?? DEFAULT_PROJECT_ID,
+    dateKey,
+    text,
+    preparedAt: new Date().toISOString(),
+  };
+  await writeFile(file, JSON.stringify(payload, null, 2), "utf-8");
+}
+
+async function shouldSkipFallbackDailyGeneration(kind: ReviewKind, scope: ReviewScope, dateKey: string, manualReason?: string) {
+  if (kind !== "daily" || manualReason) return false;
+  if (!hasWorkspace(scope.userId)) return false;
+  const schedules = readSchedules(scope.userId);
+  if (schedules.run_policy?.skip_automatic_if_manual_report_exists === false) return false;
+  return hasExistingDailyReview(scope, dateKey);
+}
+
+async function getScheduledPreparedDailyReview(scope: ReviewScope, dateKey: string): Promise<string | null> {
+  const row = await dailyPlanBackend.get(scope.userId, scope.instanceId, dateKey).catch(() => null);
+  if (!row?.content) return null;
+  const data = row.data && typeof row.data === "object" ? row.data as Record<string, unknown> : {};
+  const context = data.context && typeof data.context === "object" ? data.context as Record<string, unknown> : {};
+  return context.source === "scheduled-acp" ? row.content : null;
+}
+
+async function triggerReviewPrepareNow(
+  kind: ReviewKind,
+  scope: ReviewScope,
+  dateKey: string,
+): Promise<{ taskKey: string; skipped: boolean }> {
+  const projectId = scope.projectId ?? DEFAULT_PROJECT_ID;
+  const taskKey = `${dateKey}:${kind}-review-prepare:${scope.userId}:${scope.instanceId}`;
+  const claimed = await claimScheduledTaskRun({
+    taskKey,
+    taskType: `${kind}-review-prepare`,
+    scheduledFor: dateKey,
+    userId: scope.userId,
+    projectId,
+    instanceId: scope.instanceId,
+  });
+  if (!claimed) {
+    logger.info(`跳过 ${kind} 复盘预生成 user=${scope.userId} instance=${scope.instanceId}: task 已被其他进程领取`);
+    return { taskKey, skipped: true };
+  }
+
+  try {
+    const text = await runScheduledReviewTask({ userId: scope.userId, instanceId: scope.instanceId, projectId }, kind);
+    if (!text) {
+      await finishScheduledTaskRun(taskKey, { status: "skipped" });
+      return { taskKey, skipped: true };
+    }
+    await writePreparedReviewPush({ ...scope, projectId }, kind, dateKey, text);
+    await finishScheduledTaskRun(taskKey, { status: "success" });
+    logger.info(`复盘已预生成 kind=${kind} user=${scope.userId} instance=${scope.instanceId} date=${dateKey}`);
+    return { taskKey, skipped: false };
+  } catch (error) {
+    logger.error(`复盘预生成失败 kind=${kind} user=${scope.userId} instance=${scope.instanceId}: ${error}`);
+    await finishScheduledTaskRun(taskKey, {
+      status: "error",
+      errorMessage: formatUnknownError(error),
+    });
+    throw error;
+  }
 }
 
 export async function triggerReviewNow(
@@ -128,7 +255,20 @@ export async function triggerReviewNow(
   }
 
   try {
-    const text = await runScheduledReviewTask({ userId: scope.userId, instanceId: scope.instanceId, projectId }, kind);
+    const prepared = await readPreparedReviewPush({ ...scope, projectId }, kind, dateKey);
+    let text = prepared?.text ?? null;
+    if (!text && kind === "daily" && !options.manualReason) {
+      text = await getScheduledPreparedDailyReview({ ...scope, projectId }, dateKey);
+    }
+    if (!text) {
+      text = await shouldSkipFallbackDailyGeneration(kind, { ...scope, projectId }, dateKey, options.manualReason)
+        ? null
+        : await runScheduledReviewTask({ userId: scope.userId, instanceId: scope.instanceId, projectId }, kind);
+    }
+    if (!text) {
+      await finishScheduledTaskRun(taskKey, { status: "skipped" });
+      return { taskKey, skipped: true };
+    }
     const pushResult = text
       ? await pushFn(text, { userId: scope.userId, projectId, instanceId: scope.instanceId })
       : undefined;
@@ -172,7 +312,12 @@ export async function startReviewScheduler(
       const scopes = await getScopes();
       for (const scope of scopes) {
         for (const kind of ["daily", "weekly", "monthly"] as ReviewKind[]) {
-          if (await shouldFire(kind, scope, now)) {
+          const prepare = await shouldPrepare(kind, scope, now);
+          if (prepare) {
+            logger.info(`提前预生成 ${kind} 复盘 user=${scope.userId} instance=${scope.instanceId} date=${prepare.dateKey}`);
+            await triggerReviewPrepareNow(kind, scope, prepare.dateKey);
+          }
+          if (await shouldFire(kind, scope, now, { skipExistingDailyReview: false })) {
             logger.info(`触发 ${kind} 复盘 user=${scope.userId} instance=${scope.instanceId}`);
             await triggerReviewNow(kind, scope, pushFn, now);
           }
@@ -183,7 +328,7 @@ export async function startReviewScheduler(
     }
   }, 60 * 1000);
 
-  logger.info(`复盘调度器已启动(workspace schedules.yaml + DEFAULT 用户兜底 ${fallbackHour}:${String(fallbackMinute).padStart(2, "0")})`);
+  logger.info(`复盘调度器已启动(workspace schedules.yaml + DEFAULT 用户兜底 ${fallbackHour}:${String(fallbackMinute).padStart(2, "0")}; 提前预生成 ${REVIEW_PREPARE_LEAD_MINUTES}min)`);
 }
 
 export function stopReviewScheduler() {
@@ -192,3 +337,11 @@ export function stopReviewScheduler() {
     reviewIntervalId = null;
   }
 }
+
+export const __test__ = {
+  addMinutes,
+  preparedReviewPath,
+  readPreparedReviewPush,
+  shouldPrepare,
+  writePreparedReviewPush,
+};
