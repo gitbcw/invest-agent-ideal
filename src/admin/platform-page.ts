@@ -2052,8 +2052,9 @@ function renderDetail(item) {
       '<a class="btn btn-primary" href="/dashboard?userId=' + encodeURIComponent(item.owner?.id || '') + '&instanceId=' + encodeURIComponent(item.instanceId) + '">打开 Dashboard</a>' +
       '<a class="btn" href="/dashboard">返回当前 Dashboard</a>' +
       (item.workspace?.exists ? '' : '<button class="btn" onclick="ensureSelectedWorkspace()">补建 Workspace</button>') +
-      (isDefaultTestInstance ? '<button class="btn" onclick="resetSelectedTestInstance()">重置测试实例</button>' : '<button class="btn" onclick="archiveSelectedInstance()">删除用户助手</button>') +
+      (isDefaultTestInstance ? '<button class="btn" onclick="showResetTestInstancePanel()">重置测试实例</button>' : '<button class="btn" onclick="archiveSelectedInstance()">删除用户助手</button>') +
     '</div>' +
+    (isDefaultTestInstance ? renderResetTestInstancePanel() : '') +
     '<div class="section"><h3>运行概况</h3><div class="metrics">' +
       metric(item.planCount, '预案') +
       metric(item.traceCount, '对话') +
@@ -2062,6 +2063,37 @@ function renderDetail(item) {
     '<div class="section"><h3>微信扫码绑定</h3>' + renderWeixinPanel(item) + '</div>' +
     '<div class="section"><h3>微信绑定</h3>' + renderBindings(item.channelBindings || []) + '</div>';
   refreshWeixinStatus(item.instanceId);
+}
+
+function renderResetTestInstancePanel() {
+  return '<div class="item" id="resetTestInstancePanel" style="display:none;margin-top:10px">' +
+    '<div class="item-line"><strong>重置默认测试实例</strong><span class="muted">保留实例，清空测试数据</span></div>' +
+    '<div class="muted" style="margin-top:6px">会清空微信绑定、业务数据、对话 trace、任务和 workspace，并重新套用模板。请输入 RESET 后执行。</div>' +
+    '<div class="ops">' +
+      '<input id="resetTestInstanceInput" class="input" placeholder="输入 RESET 确认" />' +
+      '<button class="btn btn-primary" onclick="resetSelectedTestInstance()">确认重置</button>' +
+      '<button class="btn" onclick="hideResetTestInstancePanel()">取消</button>' +
+    '</div>' +
+    '<div id="resetTestInstanceError" class="error" style="display:none;margin-top:8px"></div>' +
+  '</div>';
+}
+
+function showResetTestInstancePanel() {
+  const panel = document.getElementById('resetTestInstancePanel');
+  if (!panel) return;
+  panel.style.display = 'block';
+  const input = document.getElementById('resetTestInstanceInput');
+  if (input) {
+    input.value = '';
+    input.focus();
+  }
+}
+
+function hideResetTestInstancePanel() {
+  const panel = document.getElementById('resetTestInstancePanel');
+  if (panel) panel.style.display = 'none';
+  const error = document.getElementById('resetTestInstanceError');
+  if (error) error.style.display = 'none';
 }
 
 function renderWeixinPanel(item) {
@@ -2154,20 +2186,37 @@ async function archiveSelectedInstance() {
 async function resetSelectedTestInstance() {
   const item = selectedInstance();
   if (!item) return;
+  const error = document.getElementById('resetTestInstanceError');
+  if (error) error.style.display = 'none';
   if (item.instanceId !== 'invest-agent-primary') {
-    alert('目前只有默认测试实例支持重置。');
+    if (error) {
+      error.textContent = '目前只有默认测试实例支持重置。';
+      error.style.display = 'block';
+    }
     return;
   }
-  const typed = prompt('这会清空默认测试实例的微信绑定、业务数据、对话 trace、任务和 workspace，并重新套用模板。\\n\\n请输入 RESET 确认重置。', '');
-  if (typed !== 'RESET') return;
-  await platformJson('/api/platform/instances/' + encodeURIComponent(item.instanceId) + '/reset-test', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm: 'RESET_DEFAULT_TEST_INSTANCE' }),
-  });
-  selectedInstanceId = item.instanceId;
-  await loadPlatform();
-  alert('默认测试实例已重置。');
+  const typed = (document.getElementById('resetTestInstanceInput')?.value || '').trim();
+  if (typed !== 'RESET') {
+    if (error) {
+      error.textContent = '请输入 RESET 确认重置。';
+      error.style.display = 'block';
+    }
+    return;
+  }
+  try {
+    await platformJson('/api/platform/instances/' + encodeURIComponent(item.instanceId) + '/reset-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'RESET_DEFAULT_TEST_INSTANCE' }),
+    });
+    selectedInstanceId = item.instanceId;
+    await loadPlatform();
+  } catch (err) {
+    if (error) {
+      error.textContent = err.message;
+      error.style.display = 'block';
+    }
+  }
 }
 
 async function ensureSelectedWorkspace() {
