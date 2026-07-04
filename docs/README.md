@@ -24,6 +24,7 @@ Read these first, in this order:
 | [quality/evaluation-system-design.md](./quality/evaluation-system-design.md) | Current evaluation system design: L1 programmatic checks, L2 AI semantic judging, and L3 human review boundaries |
 | [quality/golden-test-set.md](./quality/golden-test-set.md) | Conversation semantic case library and golden/regression case guidance under the evaluation system |
 | [user-portal-design.md](./user-portal-design.md) | Cloud user portal and relay design: keep local invest-agent as runtime, expose a server-hosted login/history/chat entrance for users |
+| [user-portal-goal-and-acceptance.md](./user-portal-goal-and-acceptance.md) | Goal, acceptance, loop validation, and exit criteria contract for the first user portal delivery |
 | [investment-model-design.md](./investment-model-design.md) | Investment model v1: user-facing container for selection, trading, risk, review, and exit loops |
 | [trading-strategy-design.md](./trading-strategy-design.md) | Trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation, three trigger scenarios, review boundary |
 | [04-core-workflows.md](./04-core-workflows.md) | Core product loops: monitoring, alerts, reviews, screening, feedback |
@@ -56,6 +57,7 @@ Read these first, in this order:
 - **Platform has dedicated operations pages for rule inspection and data-source quality**: `/platform#rule-alerts` reads `GET /api/platform/rule-alerts`; `/platform#source-quality` reads `GET /api/platform/source-quality`. Rule inspection should not be mixed into generic log audit.
 - **Data-source policy is accepted** (2026-07-02): local reliable data service first, AI external search second, explicit data gap last. MVP should not depend on expensive paid financial data; source telemetry and quality reports are service/platform assets under `data/source-telemetry/` and `data/source-quality/`, not workspace files.
 - **User portal is a separate cloud entrance, not a Dashboard/Platform rewrite** (2026-07-04): keep the local invest-agent service as the runtime for workspace, ACP, SQLite, WeChat, scheduler, and deterministic APIs. The server-hosted portal should handle login, conversation history, and web chat through a cloud relay plus local connector. See [user-portal-design.md](./user-portal-design.md).
+- **User portal delivery should be loop-verifiable**: use [user-portal-goal-and-acceptance.md](./user-portal-goal-and-acceptance.md) as the completion contract for implementation and review loops, separate from the design document.
 
 ## Keep Or Archive Rule
 
