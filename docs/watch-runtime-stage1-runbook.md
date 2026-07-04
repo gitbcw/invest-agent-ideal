@@ -65,7 +65,7 @@ npm run smoke:stage1-scheduler
 - 会创建临时 `push_jobs` 记录并在结束前删除。
 - 不会调用真实微信发送。
 
-不要把 `smoke:schedules-loader` 当作本轮必跑项;它会创建临时测试 workspace,不符合本阶段"只用主用户投资助手实例"的验收约束。
+不要把 `smoke:schedules-loader` 当作本轮必跑项;它会创建临时测试 workspace,不符合本阶段"只用主用户投资助手"的验收约束。
 
 通过标准:
 
@@ -92,14 +92,14 @@ sed -n '1,220p' ../../my-data/projects/invest-agent-ideal/workspaces/primary/con
 - `market_watch.default_windows`
 - `watch.yaml` 的 `mode`
 
-## 4. 手动验证主用户实例推送
+## 4. 手动验证主用户助手推送
 
 这个步骤会真实推送到主用户微信。
 
 ```bash
 curl -s -X POST http://localhost:22655/api/platform/instances/invest-agent-primary/weixin/push/test \
   -H 'Content-Type: application/json' \
-  -d '{"message":"阶段一验收：主用户投资助手实例推送测试"}'
+  -d '{"message":"阶段一验收：主用户投资助手推送测试"}'
 ```
 
 通过标准:
@@ -107,7 +107,7 @@ curl -s -X POST http://localhost:22655/api/platform/instances/invest-agent-prima
 - 手机微信收到测试消息。
 - 如果没有收到,查看返回体里的 `state` 和服务日志。
 
-不要使用 `/api/weixin/push/test` 验主用户实例;该接口走旧全局微信管理器,可能显示未连接,不能代表 `invest-agent-primary` 实例推送状态。
+不要使用 `/api/weixin/push/test` 验主用户助手;该接口走旧全局微信管理器,可能显示未连接,不能代表 `invest-agent-primary` 用户助手推送状态。
 
 ## 5. 手动触发巡检并进入队列
 

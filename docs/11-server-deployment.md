@@ -221,7 +221,7 @@ curl http://127.0.0.1:22655/api/weixin/status
 
 - 当前默认使用 Codex ACP 作为 workspace 推理后端；Hermes 仅保留为兼容/实验 backend。
 - 盘中巡检与日/周/月复盘都由服务侧 scheduler 触发，再进入当前用户的 workspace。
-- 自动复盘去重已按 `userId + instanceId + period` 生效；同一实例下若用户已手动生成同周期报告，自动任务默认不重复生成。
+- 自动复盘去重已按用户助手 scope 生效；内部仍使用 `userId + instanceId + period` 作为兼容隔离键。若用户已手动生成同周期报告，自动任务默认不重复生成。
 
 ## 12. 当前已知限制
 

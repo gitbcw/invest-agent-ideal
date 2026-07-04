@@ -275,7 +275,7 @@ scripts/stage1-scheduled-tasks-smoke.mjs
 1. 先补 `smoke:stage1-scheduler` 的最小版本,覆盖纯函数和 push queue。
 2. 补可控的立即触发入口,避免再靠"下一分钟"验收。
 3. 再补 scheduler / scheduled task 的日志与可观测性。
-4. 写人工 runbook,统一用主用户实例验证 daily review 和 market-watch `NO_PUSH`。
+4. 写人工 runbook,统一用主用户助手验证 daily review 和 market-watch `NO_PUSH`。
 5. 再用真实微信 push 通道验证 `push_jobs` 状态流转。
 6. 保留真实验收发现:多进程重复触发已通过持久化 task run 去重修复。
 

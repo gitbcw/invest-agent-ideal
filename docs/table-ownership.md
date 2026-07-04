@@ -5,7 +5,7 @@
 
 ## 背景
 
-理想形态下,每用户一份工作空间(由 `templates/workspace/` 复制而来),投资判断、风格规则、方法沉淀、复盘产物、记忆事件都落到工作空间内的 yaml/jsonl。SQLite 持久层只保留模板覆盖不到的**系统性、时间化、平台级**职责。
+理想形态下,每用户一份工作空间(由 `templates/workspace/` 复制而来),投资判断、风格规则、方法沉淀、复盘产物、记忆事件都落到工作空间内的 yaml/jsonl。当前产品语义是一用户一助手一 workspace；SQLite 中的 `instance_id` 继续作为内部兼容与隔离键，不代表用户产品层支持一用户多助手。SQLite 持久层只保留模板覆盖不到的**系统性、时间化、平台级**职责。
 
 本文档定义每张表归属哪一层,作为后续工作包(3 协议层合并 / 4 SQLite 写入冻结 + jsonl 双写 / 5 自演进闭环)的依据。
 
@@ -20,9 +20,9 @@
 | `users` | 平台用户身份 | 跨项目共享;被 `channel_identities` 和 `ai_instances` 外键引用 |
 | `channel_accounts` | 微信账号(桥接 SDK 侧) | 平台资源,与具体用户无关 |
 | `channel_identities` | 微信外部身份 → 平台 userId | 接入层映射,跨用户注册查询频繁 |
-| `channel_identity_instances` | 渠道身份默认实例绑定 | 路由查询高频,工作空间不擅长关系映射 |
+| `channel_identity_instances` | 渠道身份默认用户助手绑定 | 路由查询高频,工作空间不擅长关系映射 |
 | `ai_projects` | AI 项目类型注册表 | 平台元数据,跨用户 |
-| `ai_instances` | 项目实例注册 | 平台元数据 + 路由依据 |
+| `ai_instances` | 用户助手注册(历史表名) | 平台元数据 + 路由依据;产品语义上一用户一助手 |
 | `settings` | 系统级 KV(signal_config、巡检间隔、复盘模板) | 平台默认值,跨用户共享 |
 | `codex_acp_traces` | ACP 调用审计(历史表名保留) | 系统审计,与用户方法无关 |
 | `sandbox_audit_logs` | 沙箱令牌调用审计 | 合规/安全审计 |

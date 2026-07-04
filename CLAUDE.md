@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-微信入口的 AI 投资决策助手，实验分支当前采用极简主链路：微信消息解析出用户、实例和 workspace 后，直接转发给在该 workspace 中运行的当前 ACP 后端，默认 Codex。服务层不再做普通微信消息的 triage、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Dashboard、行情数据、巡检、提醒、sandbox/API、落库和微信推送。
+微信入口的 AI 投资决策助手，实验分支当前采用极简主链路：微信消息解析出用户、用户助手和 workspace 后，直接转发给在该 workspace 中运行的当前 ACP 后端，默认 Codex。当前产品语义是一用户一助手一 workspace；代码和数据库中的 `instanceId` / `instance_id` 只作为内部兼容与隔离键，不代表用户门户里可选择多个实例。服务层不再做普通微信消息的 triage、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Dashboard、行情数据、巡检、提醒、sandbox/API、落库和微信推送。
 
 ## 常用命令
 
@@ -36,7 +36,7 @@ Workspace 默认根目录**不是**仓库内的 `./data/workspaces`。当前默�
 
 ```
 用户微信消息 → weixin-agent-sdk → InvestAgentMobileBridge
-  → 解析 user / instance / workspace
+  → 解析 user / assistant(instanceId) / workspace
   → AcpAgent.handleMessage()
   → workspace-scoped ACP session(cwd = 用户 workspace)
   → Codex 使用 workspace 的 AGENTS.md + .codex/skills 进行推理和工具调用
@@ -50,11 +50,11 @@ Workspace 默认根目录**不是**仓库内的 `./data/workspaces`。当前默�
 > - 主链路微信桥只剩 `InvestAgentMobileBridge`(主桥);`backend==="codex"` 是当前默认运行时后端标识
 > - `src/platform/` 简化为 `project-registry.ts`(实例查询)+ `tool-registry.ts`(sandbox 工具白名单),不再有 project-type manifest / skill-bundle catalog
 > - 技能说明以 workspace 模板中的 `AGENTS.md` 和 `.codex/skills` 为准；服务层不再注入固定 skill-bundle prompt
-> - `/platform` 当前保留为轻量实例管理与实例级微信运维入口；复杂平台化抽象仍已删除，`src/routes/platform.ts` 主要负责实例查询、workspace ensure 和实例级 weixin 管理
+> - `/platform` 当前保留为轻量用户助手管理与微信运维入口；复杂平台化抽象仍已删除，`src/routes/platform.ts` 主要负责用户助手查询、workspace ensure 和助手级 weixin 管理
 > - DB 表 `ai_projects` / `ai_instances` / `investment_profiles` / `conversation_tasks` 保留作考古,数据不迁出
 
 > **2026-06-28 阶段一验收更新**:
-> - 主用户实例 `invest-agent-primary` 已完成一轮真实验收
+> - 主用户助手 `invest-agent-primary` 已完成一轮真实验收
 > - `POST /api/testing/scheduler/trigger` 可立即触发 `daily-review` / `market-watch`
 > - `daily-review` 已真实推送到主用户手机
 > - `market-watch` 在无异常时已正确返回 `NO_PUSH` 并记为 `skipped`
