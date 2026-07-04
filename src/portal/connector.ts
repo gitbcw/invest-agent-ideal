@@ -90,31 +90,37 @@ function send(socket: AnyWebSocket, message: PortalEnvelope | PortalResponse) {
   socket.send(JSON.stringify(message));
 }
 
+function localPayloadScope(payload: any) {
+  const localUserId = env("PORTAL_USER_ID", DEFAULT_USER_ID)!;
+  const localInstanceId = env("PORTAL_INSTANCE_ID", DEFAULT_INSTANCE_ID)!;
+  return {
+    userId: localUserId,
+    assistantId: env("PORTAL_ASSISTANT_ID", localInstanceId)!,
+    instanceId: localInstanceId,
+    projectId: env("PORTAL_PROJECT_ID", DEFAULT_PROJECT_ID)!,
+    channel: payload?.channel,
+  };
+}
+
 async function handleCommand(message: PortalEnvelope) {
+  const scope = localPayloadScope(message.payload);
   switch (message.type) {
     case TYPES.CONVERSATION_LIST:
       return ok(message.type, message.requestId, listConversations({
-        userId: message.payload?.userId,
-        assistantId: message.payload?.assistantId,
-        instanceId: message.payload?.instanceId,
-        channel: message.payload?.channel,
+        ...scope,
         cursor: message.payload?.cursor,
         limit: message.payload?.limit,
       }));
     case TYPES.CONVERSATION_GET:
       return ok(message.type, message.requestId, getConversation({
-        userId: message.payload?.userId,
-        assistantId: message.payload?.assistantId,
-        instanceId: message.payload?.instanceId,
+        ...scope,
         conversationId: String(message.payload?.conversationId || ""),
         cursor: message.payload?.cursor,
         limit: message.payload?.limit,
       }));
     case TYPES.CONVERSATION_CHAT:
       return ok(message.type, message.requestId, await chatViaConversationLog({
-        userId: message.payload?.userId,
-        assistantId: message.payload?.assistantId,
-        instanceId: message.payload?.instanceId,
+        ...scope,
         conversationId: String(message.payload?.conversationId || ""),
         userMessageId: message.payload?.userMessageId,
         text: String(message.payload?.text || ""),
