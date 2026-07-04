@@ -1,11 +1,12 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { Document, isMap, isSeq, parseDocument } from "yaml";
 import { renderPlatformPage } from "../admin/platform-page.js";
-import { db } from "../db/index.js";
+import { db, sqlite } from "../db/index.js";
 import { aiInstances, alertEvents, alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, pushJobs, scheduledTaskRuns, users } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { createInvestAgentInstance, deleteInvestAgentInstance, getProjectRuntimeContext, listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
@@ -13,7 +14,7 @@ import { WeixinMobileManager } from "../channels/weixin-mobile.js";
 import { config } from "../lib/config.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
-import { disposeAcpForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
+import { disposeAcpForWorkspace, ensureCodexRuntimeForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
 import { loadCodexWorkspaceUsageSummary, type CodexUsageGroupBy } from "../services/codex-usage.js";
 import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
 import { marketHealth } from "../services/market-data.js";
@@ -786,6 +787,85 @@ function deletePlatformWeixinManager(instanceId: string) {
   projectWeixinManagers.delete(instanceId);
 }
 
+async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
+  if (project.instanceId !== DEFAULT_INSTANCE_ID) {
+    throw new Error("ONLY_DEFAULT_TEST_INSTANCE_CAN_RESET");
+  }
+  const now = new Date().toISOString();
+  const userId = project.ownerUserId;
+  const instanceId = project.instanceId;
+  const workspacePath = resolveWorkspacePath(userId);
+  deletePlatformWeixinManager(instanceId);
+  const disposedAcpCount = disposeAcpForWorkspace(workspacePath);
+
+  const userInstanceTables = [
+    "portfolio",
+    "watchlist",
+    "alerts",
+    "stock_plans",
+    "chat_history",
+    "daily_plans",
+    "investment_profiles",
+    "methodology_profiles",
+    "method_change_candidates",
+    "review_viewpoints",
+    "alert_events",
+    "alert_signal_states",
+    "trade_actions",
+    "codex_acp_traces",
+    "indicator_results",
+    "alert_rules",
+    "sandbox_audit_logs",
+    "pending_sandbox_confirmations",
+    "conversation_tasks",
+    "push_jobs",
+    "scheduled_task_runs",
+  ];
+  const changes: Record<string, number> = {};
+  const resetDb = sqlite.transaction(() => {
+    const channelInstanceResult = sqlite.prepare(`
+      DELETE FROM channel_identity_instances
+      WHERE instance_id = ?
+         OR channel_identity_id IN (SELECT id FROM channel_identities WHERE user_id = ?)
+    `).run(instanceId, userId);
+    changes.channel_identity_instances = channelInstanceResult.changes;
+
+    const channelIdentityResult = sqlite.prepare("DELETE FROM channel_identities WHERE user_id = ?").run(userId);
+    changes.channel_identities = channelIdentityResult.changes;
+
+    for (const table of userInstanceTables) {
+      const result = sqlite.prepare(`DELETE FROM ${table} WHERE user_id = ? OR instance_id = ?`).run(userId, instanceId);
+      changes[table] = result.changes;
+    }
+
+    const agentTraceResult = sqlite.prepare("DELETE FROM agent_traces WHERE owner_user_id = ? OR user_id = ?").run(userId, userId);
+    changes.agent_traces = agentTraceResult.changes;
+
+    sqlite.prepare("UPDATE users SET display_name = ?, status = 'active', updated_at = ? WHERE id = ?")
+      .run("默认测试用户", now, userId);
+    sqlite.prepare("UPDATE ai_instances SET name = ?, status = 'active', config = ?, updated_at = ? WHERE id = ?")
+      .run("默认测试实例", JSON.stringify({ autoCreated: true, role: "default_test_instance", resetAt: now }), now, instanceId);
+  });
+  resetDb();
+
+  await rm(workspacePath, { recursive: true, force: true });
+  const workspace = await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
+  if (project.backend === "codex") {
+    await ensureCodexRuntimeForWorkspace(workspace.path);
+  } else {
+    await ensureHermesRuntimeForWorkspace(workspace.path);
+  }
+  logger.info(`Platform 默认测试实例已重置 userId=${userId} instanceId=${instanceId}`);
+  return {
+    userId,
+    instanceId,
+    workspace,
+    disposedAcpCount,
+    changes,
+    resetAt: now,
+  };
+}
+
 function stableSuffix(value?: string | null) {
   return createHash("sha256").update(String(value || "")).digest("hex").slice(0, 10);
 }
@@ -1163,6 +1243,25 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       updatedAt: new Date().toISOString(),
       disposedAcpCount,
       deleted,
+    };
+  }));
+
+  app.post<{ Params: { instanceId: string }; Body: { confirm?: string } }>("/api/platform/instances/:instanceId/reset-test", safe(async (request, reply) => {
+    const project = await getProjectRuntimeContext(request.params.instanceId).catch(() => null);
+    if (!project) return reply.status(404).send({ ok: false, error: "实例不存在" });
+    if (project.instanceId !== DEFAULT_INSTANCE_ID) {
+      return reply.status(400).send({ ok: false, error: "目前仅默认测试实例支持重置" });
+    }
+    if (request.body?.confirm !== "RESET_DEFAULT_TEST_INSTANCE") {
+      return reply.status(400).send({ ok: false, error: "缺少重置确认" });
+    }
+    const reset = await resetDefaultTestInstance(project);
+    const nextProject = await getProjectRuntimeContext(project.instanceId);
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      reset,
+      instance: await summarizeInstance(nextProject),
     };
   }));
 

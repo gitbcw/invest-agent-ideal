@@ -2035,9 +2035,10 @@ function renderDetail(item) {
     root.innerHTML = '<div class="empty">请选择一个用户助手</div>';
     return;
   }
+  const isDefaultTestInstance = item.instanceId === 'invest-agent-primary';
   root.innerHTML =
     '<dl class="kv">' +
-      '<dt>助手名称</dt><dd>' + esc(item.name) + '</dd>' +
+      '<dt>助手名称</dt><dd>' + esc(item.name) + (isDefaultTestInstance ? ' ' + badge('默认测试实例', 'warn') : '') + '</dd>' +
       '<dt>助手 ID</dt><dd class="mono">' + esc(item.instanceId) + '</dd>' +
       '<dt>用户</dt><dd>' + esc(item.owner?.displayName || '-') + ' <span class="mono">' + esc(item.owner?.id || '') + '</span></dd>' +
       '<dt>项目类型</dt><dd>' + esc(item.projectType || 'invest-agent') + '</dd>' +
@@ -2051,7 +2052,7 @@ function renderDetail(item) {
       '<a class="btn btn-primary" href="/dashboard?userId=' + encodeURIComponent(item.owner?.id || '') + '&instanceId=' + encodeURIComponent(item.instanceId) + '">打开 Dashboard</a>' +
       '<a class="btn" href="/dashboard">返回当前 Dashboard</a>' +
       (item.workspace?.exists ? '' : '<button class="btn" onclick="ensureSelectedWorkspace()">补建 Workspace</button>') +
-      (item.instanceId === 'invest-agent-primary' ? '' : '<button class="btn" onclick="archiveSelectedInstance()">删除用户助手</button>') +
+      (isDefaultTestInstance ? '<button class="btn" onclick="resetSelectedTestInstance()">重置测试实例</button>' : '<button class="btn" onclick="archiveSelectedInstance()">删除用户助手</button>') +
     '</div>' +
     '<div class="section"><h3>运行概况</h3><div class="metrics">' +
       metric(item.planCount, '预案') +
@@ -2140,14 +2141,33 @@ async function archiveSelectedInstance() {
   const item = selectedInstance();
   if (!item) return;
   if (item.instanceId === 'invest-agent-primary') {
-    alert('主用户助手不能删除');
+    alert('默认测试实例不能删除；请使用“重置测试实例”。');
     return;
   }
-  const ok = confirm('确认删除用户助手「' + item.name + '」？\\n\\n这会删除该用户助手的数据库记录、微信绑定、业务数据和 Workspace。主用户助手不能删除。');
+  const ok = confirm('确认删除用户助手「' + item.name + '」？\\n\\n这会删除该用户助手的数据库记录、微信绑定、业务数据和 Workspace。默认测试实例不能删除，只能重置。');
   if (!ok) return;
   await platformJson('/api/platform/instances/' + encodeURIComponent(item.instanceId), { method: 'DELETE' });
   selectedInstanceId = '';
   await loadPlatform();
+}
+
+async function resetSelectedTestInstance() {
+  const item = selectedInstance();
+  if (!item) return;
+  if (item.instanceId !== 'invest-agent-primary') {
+    alert('目前只有默认测试实例支持重置。');
+    return;
+  }
+  const typed = prompt('这会清空默认测试实例的微信绑定、业务数据、对话 trace、任务和 workspace，并重新套用模板。\\n\\n请输入 RESET 确认重置。', '');
+  if (typed !== 'RESET') return;
+  await platformJson('/api/platform/instances/' + encodeURIComponent(item.instanceId) + '/reset-test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm: 'RESET_DEFAULT_TEST_INSTANCE' }),
+  });
+  selectedInstanceId = item.instanceId;
+  await loadPlatform();
+  alert('默认测试实例已重置。');
 }
 
 async function ensureSelectedWorkspace() {
