@@ -13,8 +13,8 @@
 - 给普通用户提供一个服务器上的网页入口：登录、查看对话历史、发起网页对话。
 - 保持本地 invest-agent 服务作为真实运行时：workspace、ACP、调度器、微信、数据源和确定性 API 仍在本地。
 - 本地服务主动连接云端，避免把本机服务直接暴露到公网。
-- 让微信端和网页端共享同一个用户实例和 workspace，但保留不同 channel 标识。
-- 为后续多用户、多实例、远程运维和云端部署迁移留下清晰边界。
+- 让微信端和网页端共享同一个用户助手和 workspace，但保留不同 channel 标识。
+- 为后续多用户、远程运维和云端部署迁移留下清晰边界。
 
 ## 非目标
 
@@ -27,6 +27,8 @@
 ## 核心判断
 
 云端用户门户是“入口”和“中转”，本地 invest-agent 是“运行时”和“状态源”。
+
+当前产品语义按“一用户一助手”收敛：一个用户默认只有一个用户助手，这个助手对应一个 workspace。代码和数据库里仍可能保留 `instanceId` 作为历史兼容和内部技术键，但产品设计、用户门户和用户可见文案都不应暗示“一个用户下面可选择多个实例”。
 
 ```text
 用户浏览器
@@ -66,7 +68,7 @@
 职责：
 
 - 用户登录和会话管理。
-- 展示用户可访问的投资助手实例。
+- 登录后直接进入该用户自己的投资助手。
 - 展示对话历史列表和消息详情。
 - 提供网页聊天入口。
 - 将用户请求转发给对应本地 connector。
@@ -122,7 +124,7 @@ local connector -> cloud relay WebSocket
 
 - `connectorId`
 - `projectId`
-- `instanceIds`
+- `assistantIds`
 - `capabilities`
 - `version`
 - `startedAt`
@@ -138,6 +140,7 @@ local connector -> cloud relay WebSocket
 {
   "requestId": "req_...",
   "userId": "primary",
+  "assistantId": "invest-agent-primary",
   "instanceId": "invest-agent-primary",
   "channel": "web",
   "type": "chat",
@@ -177,8 +180,9 @@ local connector -> cloud relay WebSocket
 建议能力：
 
 - 用户名/密码或邮箱验证码登录。
-- 云端用户和本地 `userId + instanceId` 的绑定表。
-- 只允许用户访问绑定给自己的实例。
+- 云端用户和本地用户助手的绑定表。
+- 当前阶段一个云端用户只绑定一个用户助手。
+- 用户登录后直接进入自己的助手，不展示实例选择器。
 
 ### 对话历史
 
@@ -255,9 +259,9 @@ cloud -> browser response
 ## 权限与安全原则
 
 1. 用户身份由云端登录态决定。
-2. 实例访问由云端绑定表决定，用户不能通过 URL 参数访问其他实例。
+2. 用户助手访问由云端绑定表决定，用户不能通过 URL 参数访问其他用户助手。
 3. 云端发给本地的命令必须包含云端签名或 connector 会话上下文。
-4. 本地仍需校验 `userId + instanceId` 是否存在且允许通过 portal 调用。
+4. 本地仍需校验该 `userId` 对应的用户助手是否存在且允许通过 portal 调用；`instanceId` 只作为内部兼容键使用。
 5. 本地 connector 只暴露用户态命令，不暴露 Platform 管理命令。
 6. 删除、重置、微信连接管理、全局配置修改不进入用户门户第一阶段范围。
 7. 对话内容属于用户敏感数据；云端缓存策略需要可配置，默认少存。
@@ -268,7 +272,7 @@ cloud -> browser response
 
 ```text
 portal.ping
-portal.list_instances
+portal.get_assistant
 conversation.list
 conversation.get
 conversation.chat
@@ -356,21 +360,21 @@ debug.trace_raw
 验收：
 
 - 本地不开放公网端口。
-- 云端可显示某个实例在线/离线。
+- 云端可显示该用户助手在线/离线。
 - connector 断线后能重连。
 
 ### Phase 3: 网页端对话 MVP
 
 目标：
 
-- 用户登录后进入自己的实例。
+- 用户登录后直接进入自己的用户助手。
 - 能新建网页会话并发送消息。
 - 本地 workspace ACP 返回回复。
 - 对话记录落本地 canonical log。
 
 验收：
 
-- 普通用户不能访问其他实例。
+- 普通用户不能访问其他用户助手。
 - 网页消息以 `channel=web` 记录。
 - 微信链路不受影响。
 
@@ -401,9 +405,8 @@ debug.trace_raw
 1. 云端门户使用什么技术栈和部署方式？
 2. 登录方式第一版选用户名密码、邮箱验证码，还是第三方登录？
 3. 云端是否保存完整对话正文，还是只保存索引和最近 N 条？
-4. 一个云端用户是否可能绑定多个本地实例？
-5. 网页聊天第一版是否需要流式输出？
-6. 是否需要支持多个本地 connector 同时在线，并按实例路由？
+4. 网页聊天第一版是否需要流式输出？
+5. 是否需要支持多个本地 connector 同时在线，并按用户助手路由？
 
 ## 执行交接提示
 

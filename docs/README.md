@@ -32,7 +32,7 @@ Read these first, in this order:
 
 ## Current Consensus
 
-- The product is a WeChat-first AI investment decision assistant centered on workspace-backed investment assistant instances.
+- The product is a WeChat-first AI investment decision assistant centered on workspace-backed user assistants. In the current product semantics, one user maps to one user assistant and one workspace; `instanceId` remains an internal compatibility key.
 - The durable product assets are Skills, Strategy Skill skeleton plus instance expansion, sandbox/tool protocols, deterministic service APIs, context building, confirmation workflows, audit, and saved artifacts.
 - WeChat user messages now follow the direct workspace path: WeChat bridge resolves user/instance/workspace, then forwards the raw user message plus minimal channel context to the active ACP backend, normally Codex, running with that workspace as cwd.
 - The service must not classify normal WeChat messages into review/onboarding/fast-lane intents. Those behaviors belong in the workspace template, AGENTS.md, skills, and user config.
