@@ -27,6 +27,28 @@
 
 如果本文档和设计文档冲突，优先以本文档的验收项判断“第一阶段是否完成”，再回到设计文档修正不一致处。
 
+## Repository Boundary
+
+云端门户建议放在独立项目中开发和部署。本项目负责本地运行时能力和对接契约，新门户项目负责云端 Web 产品。
+
+本项目必须提供：
+
+- portal protocol definition。
+- 本地 canonical conversation log。
+- 真实 local connector。
+- mock connector fixtures 或 mock connector server。
+- 联调 runbook。
+
+新门户项目必须提供：
+
+- Next.js 用户门户。
+- 登录、改密、管理员重置密码。
+- 云端 Relay endpoint。
+- 云端 conversation mirror。
+- 聊天 UI 和历史 UI。
+
+新门户项目不得直接 import 本项目内部源码。两边通过协议和运行时连接协作。
+
 ## Done Definition
 
 第一阶段完成必须同时满足以下条件：
@@ -43,6 +65,8 @@
 10. connector 离线时，用户能看到明确离线提示；可查看缓存历史，但不能发送消息。
 11. 普通用户不能访问其他用户助手，也不能访问 Platform 管理能力。
 12. 微信直达 workspace ACP 主链路无回归。
+13. 新门户项目可以在 mock connector 下完成 UI、登录、历史、发送、失败和离线状态验收。
+14. 新门户项目可以切换到真实本地 connector 完成一次端到端消息验收。
 
 缺少以上任一项，都不能宣称第一阶段完成。
 
@@ -138,6 +162,20 @@
 - connector 恢复后，页面能恢复发送能力，或刷新后恢复。
 
 ## Technical Acceptance
+
+### Protocol and fixtures
+
+- 本项目提供 portal protocol 文档或 schema。
+- 协议覆盖 connector register、heartbeat、chat request、chat response、history sync、error。
+- 本项目提供 mock fixtures 或 mock connector server，至少覆盖：
+  - connector online。
+  - connector offline。
+  - 正常完整回复。
+  - 慢回复。
+  - 失败回复。
+  - 历史会话分页。
+  - 空历史。
+- 新门户项目可以只依赖协议和 mock fixtures 完成第一轮 UI 与云端 Relay 开发。
 
 ### 推荐技术栈与部署
 
@@ -247,7 +285,7 @@ npm run build
 
 ### 用户门户验收
 
-第一阶段完成前必须人工或自动验证：
+第一阶段完成前必须先用 mock connector 验证：
 
 - 未登录访问会进入登录页。
 - 账号密码登录成功。
@@ -266,6 +304,15 @@ npm run build
 - 本地 canonical log 可查到同一会话。
 - connector 离线时禁用发送。
 - 退出登录后不能继续访问会话 API。
+
+随后必须用真实本地 connector 验证：
+
+- connector 能注册到 Relay。
+- 云端能看到用户助手在线。
+- 网页发送消息能到达本地 connector。
+- 本地 connector 能进入 workspace ACP。
+- 回复能回到网页端。
+- 同一会话能同时写入本地 canonical log 和云端镜像。
 
 ### 安全验收
 
@@ -305,12 +352,14 @@ npm run build
 - connector 离线时页面仍允许发送。
 - 回复慢时页面没有明确等待状态。
 - 修改密码或管理员重置密码没有落地。
+- 只能在 mock connector 下通过，不能接真实本地 connector。
+- 门户项目直接 import 本项目内部源码。
 - 微信链路出现回归。
 
 ## Executor Prompt
 
 ```text
-请基于 docs/user-portal-design.md 和 docs/user-portal-goal-and-acceptance.md 实现用户门户第一阶段。以 goal-and-acceptance 文档作为完成判定标准。每轮只处理明确验收项，完成后按 Loop Validation Protocol 报告通过、失败、未知项。不要把云端实现成第二套 invest-agent 运行时，不要开放 Platform 管理能力，不要改变微信直达 workspace ACP 主链路。
+请基于 docs/user-portal-design.md 和 docs/user-portal-goal-and-acceptance.md 实现用户门户第一阶段。云端门户应在独立项目中开发；本项目只作为协议、mock fixtures、本地 connector 和运行时来源。以 goal-and-acceptance 文档作为完成判定标准。每轮只处理明确验收项，完成后按 Loop Validation Protocol 报告通过、失败、未知项。先用 mock connector 完成门户项目验收，再切到真实本地 connector 做端到端验收。不要把云端实现成第二套 invest-agent 运行时，不要开放 Platform 管理能力，不要改变微信直达 workspace ACP 主链路。
 ```
 
 ## Reviewer Prompt

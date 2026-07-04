@@ -87,6 +87,46 @@
 - 用户门户是普通用户使用的远程产品入口。
 - 两者可以复用部分只读展示能力，但权限模型和信息架构必须分开。
 
+## 仓库边界与开发顺序
+
+推荐把云端门户做成独立项目，例如 `invest-agent-portal`。本项目继续作为本地 invest-agent 运行时。
+
+```text
+invest-agent-ideal
+  - 本地 connector
+  - canonical conversation log
+  - portal protocol definition
+  - mock connector / fixtures
+  - workspace ACP runtime
+
+invest-agent-portal
+  - Next.js 用户门户
+  - 账号密码登录 / 改密 / 管理员重置密码
+  - 左侧会话历史 + 右侧 Chatbot UI
+  - 云端 conversation mirror
+  - Relay endpoint
+```
+
+开发顺序建议：
+
+1. 先在本项目沉淀协议和测试夹具。
+2. 新门户项目基于协议和 mock connector 独立开发 UI、登录、会话镜像和 Relay。
+3. 本项目实现真实 local connector 和 canonical conversation log。
+4. 用同一套协议测试把门户项目从 mock connector 切到真实 connector。
+5. 最后做端到端验收：网页登录 -> 发消息 -> 云端 Relay -> 本地 connector -> workspace ACP -> 回复 -> 双层历史落库。
+
+这意味着门户项目不需要等本地 connector 完全写好才能开工。它可以先用 mock connector 完成大部分产品验收；本项目随后补齐真实 connector，并用同一套测试用例完成联调。
+
+本项目应提前准备：
+
+- `docs/user-portal-design.md` 和 `docs/user-portal-goal-and-acceptance.md` 作为新项目输入。
+- portal protocol 文档或 schema，定义 register / heartbeat / chat / history sync / error 格式。
+- mock connector fixtures，允许门户项目模拟在线、离线、慢回复、失败回复、历史分页等状态。
+- 本地 connector 测试模式，能连到本地或云端 Relay。
+- 端到端验收脚本或 runbook，说明如何从 mock 切到真实 connector。
+
+新门户项目不应直接依赖本项目内部源码。两边只通过协议、fixtures 和运行时连接协作。
+
 ## 推荐部署形态
 
 ```text

@@ -58,6 +58,7 @@ Read these first, in this order:
 - **Data-source policy is accepted** (2026-07-02): local reliable data service first, AI external search second, explicit data gap last. MVP should not depend on expensive paid financial data; source telemetry and quality reports are service/platform assets under `data/source-telemetry/` and `data/source-quality/`, not workspace files.
 - **User portal is a separate cloud entrance, not a Dashboard/Platform rewrite** (2026-07-04): keep the local invest-agent service as the runtime for workspace, ACP, SQLite, WeChat, scheduler, and deterministic APIs. The server-hosted portal should handle login, conversation history, and web chat through a cloud relay plus local connector. See [user-portal-design.md](./user-portal-design.md).
 - **User portal delivery should be loop-verifiable**: use [user-portal-goal-and-acceptance.md](./user-portal-goal-and-acceptance.md) as the completion contract for implementation and review loops, separate from the design document.
+- **User portal should be developed as a separate project**: this repo should provide the local connector, canonical conversation log, protocol definition, mock connector fixtures, and final integration runbook. The portal project should depend on protocol/fixtures/runtime connection, not this repo's internal source code.
 
 ## Keep Or Archive Rule
 
