@@ -25,6 +25,7 @@ Read these first, in this order:
 | [quality/golden-test-set.md](./quality/golden-test-set.md) | Conversation semantic case library and golden/regression case guidance under the evaluation system |
 | [user-portal-design.md](./user-portal-design.md) | Cloud user portal and relay design: keep local invest-agent as runtime, expose a server-hosted login/history/chat entrance for users |
 | [user-portal-goal-and-acceptance.md](./user-portal-goal-and-acceptance.md) | Goal, acceptance, loop validation, and exit criteria contract for the first user portal delivery |
+| [user-portal-protocol.md](./user-portal-protocol.md) | Relay protocol draft between the separate cloud portal project and the local invest-agent connector, including mock scenarios |
 | [investment-model-design.md](./investment-model-design.md) | Investment model v1: user-facing container for selection, trading, risk, review, and exit loops |
 | [trading-strategy-design.md](./trading-strategy-design.md) | Trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation, three trigger scenarios, review boundary |
 | [04-core-workflows.md](./04-core-workflows.md) | Core product loops: monitoring, alerts, reviews, screening, feedback |

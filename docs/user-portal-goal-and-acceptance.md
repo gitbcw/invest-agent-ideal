@@ -21,6 +21,7 @@
 ## Source Of Truth
 
 - 产品与架构设计：[user-portal-design.md](./user-portal-design.md)
+- Relay 协议草案：[user-portal-protocol.md](./user-portal-protocol.md)
 - 当前运行时边界：[../CLAUDE.md](../CLAUDE.md)
 - SQLite 与 workspace 边界：[table-ownership.md](./table-ownership.md)
 - 沙箱与权限边界：[23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md)
@@ -166,6 +167,7 @@
 ### Protocol and fixtures
 
 - 本项目提供 portal protocol 文档或 schema。
+- 第一版协议以 [user-portal-protocol.md](./user-portal-protocol.md) 为准。
 - 协议覆盖 connector register、heartbeat、chat request、chat response、history sync、error。
 - 本项目提供 mock fixtures 或 mock connector server，至少覆盖：
   - connector online。
