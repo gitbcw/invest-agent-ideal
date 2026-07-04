@@ -135,6 +135,40 @@ export const chatHistory = sqliteTable("chat_history", {
   createdAt: text("created_at").notNull(),
 });
 
+export const conversationSessions = sqliteTable("conversation_sessions", {
+  conversationId: text("conversation_id").primaryKey(),
+  userId: text("user_id").notNull().default("primary"),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  instanceId: text("instance_id").notNull().default("invest-agent-primary"),
+  assistantId: text("assistant_id").notNull().default("invest-agent-primary"),
+  channel: text("channel").notNull().default("web"),
+  title: text("title").notNull(),
+  lastMessagePreview: text("last_message_preview"),
+  messageCount: integer("message_count").notNull().default(0),
+  status: text("status").notNull().default("active"),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const conversationMessages = sqliteTable("conversation_messages", {
+  messageId: text("message_id").primaryKey(),
+  conversationId: text("conversation_id").notNull(),
+  userId: text("user_id").notNull().default("primary"),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  instanceId: text("instance_id").notNull().default("invest-agent-primary"),
+  assistantId: text("assistant_id").notNull().default("invest-agent-primary"),
+  channel: text("channel").notNull().default("web"),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  status: text("status").notNull().default("sent"),
+  traceId: text("trace_id"),
+  requestId: text("request_id"),
+  idempotencyKey: text("idempotency_key"),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
+});
+
 export const dailyPlans = sqliteTable("daily_plans", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull().default("primary"),

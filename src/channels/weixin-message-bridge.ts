@@ -6,6 +6,7 @@ import { logger } from "../lib/logger.js";
 import { resolveOrCreateChannelUser } from "../lib/user-identity.js";
 import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
+import { appendConversationMessage } from "../services/conversation-log.js";
 import { config } from "../lib/config.js";
 import { resolveWeixinAccount } from "./weixin-account-store.js";
 
@@ -187,6 +188,30 @@ export class InvestAgentMobileBridge {
 
     const text = response.content.text ?? "处理完成，但没有生成文本回复。";
     await rememberWeixinTurn(userContext, request.text || "", text);
+    appendConversationMessage({
+      scope: {
+        userId: userContext.userId,
+        projectId: userContext.projectId,
+        instanceId: userContext.instanceId,
+        assistantId: userContext.instanceId,
+      },
+      conversationId,
+      channel: "weixin-mobile",
+      role: "user",
+      content: request.text || "",
+    });
+    appendConversationMessage({
+      scope: {
+        userId: userContext.userId,
+        projectId: userContext.projectId,
+        instanceId: userContext.instanceId,
+        assistantId: userContext.instanceId,
+      },
+      conversationId,
+      channel: "weixin-mobile",
+      role: "assistant",
+      content: text,
+    });
     const chunks = splitWeixinText(text);
     if (chunks.length > 1) {
       setTimeout(() => {

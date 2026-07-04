@@ -54,7 +54,7 @@ export function createAgent(): AcpAgent {
 
       try {
         const userChannel: UserContext["channel"] =
-          channel === "weixin-mobile" || channel === "dashboard" || channel === "api" ? channel : "api";
+          channel === "weixin-mobile" || channel === "dashboard" || channel === "api" || channel === "web" ? channel : "api";
         const activeBackend = await loadCurrentBackendId();
         const userContext: UserContext = {
           userId,

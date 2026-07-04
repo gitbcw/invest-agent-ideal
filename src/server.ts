@@ -9,6 +9,7 @@ import { listAcpBackends } from "./acp/stdio-agent.js";
 import { renderWeixinAdminPage } from "./admin/weixin-page.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { registerDashboardRoutes } from "./routes/dashboard.js";
+import { registerPortalRoutes } from "./routes/portal.js";
 import { registerSandboxRoutes } from "./routes/sandbox.js";
 import { autoStartPlatformWeixinListeners, projectWeixinManagerForInstance, registerPlatformRoutes } from "./routes/platform.js";
 import { ensureBuiltInIndicatorDefinitions } from "./handlers/indicator-definitions.js";
@@ -59,6 +60,7 @@ export async function createServer() {
   await syncAllLegacyAlertsToAlertRules();
 
   registerDashboardRoutes(app);
+  registerPortalRoutes(app);
   registerSandboxRoutes(app);
   registerPlatformRoutes(app);
 

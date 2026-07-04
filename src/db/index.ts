@@ -153,6 +153,39 @@ export function initDb() {
       content TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS conversation_sessions (
+      conversation_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      assistant_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      channel TEXT NOT NULL DEFAULT 'web',
+      title TEXT NOT NULL,
+      last_message_preview TEXT,
+      message_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS conversation_messages (
+      message_id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      assistant_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      channel TEXT NOT NULL DEFAULT 'web',
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'sent',
+      trace_id TEXT,
+      request_id TEXT,
+      idempotency_key TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(conversation_id) REFERENCES conversation_sessions(conversation_id)
+    );
     CREATE TABLE IF NOT EXISTS daily_plans (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL DEFAULT 'primary',
@@ -490,6 +523,16 @@ export function initDb() {
   ensureColumn("chat_history", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("chat_history", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("chat_history", "conversation_id", "TEXT");
+  ensureColumn("conversation_sessions", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("conversation_sessions", "assistant_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("conversation_sessions", "status", "TEXT NOT NULL DEFAULT 'active'");
+  ensureColumn("conversation_sessions", "metadata", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("conversation_messages", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("conversation_messages", "assistant_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("conversation_messages", "trace_id", "TEXT");
+  ensureColumn("conversation_messages", "request_id", "TEXT");
+  ensureColumn("conversation_messages", "idempotency_key", "TEXT");
+  ensureColumn("conversation_messages", "metadata", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("daily_plans", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("daily_plans", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("investment_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
@@ -574,6 +617,11 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_user_conversation ON codex_acp_traces(user_id, conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_instance ON codex_acp_traces(instance_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_status ON codex_acp_traces(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_sessions_scope_time ON conversation_sessions(instance_id, user_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_sessions_channel_time ON conversation_sessions(channel, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_time ON conversation_messages(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_scope_time ON conversation_messages(instance_id, user_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_idempotency ON conversation_messages(idempotency_key) WHERE idempotency_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_conversation_tasks_scope_status ON conversation_tasks(instance_id, user_id, conversation_id, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_indicator_definitions_key ON indicator_definitions(key);
     CREATE INDEX IF NOT EXISTS idx_indicator_results_key_stock_time ON indicator_results(indicator_key, stock_code, data_time);

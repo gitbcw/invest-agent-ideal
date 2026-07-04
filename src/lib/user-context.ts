@@ -9,7 +9,7 @@ export interface UserContext {
   instanceId?: string;
   instanceExpansionPath?: string;
   projectName?: string;
-  channel?: "weixin-mobile" | "dashboard" | "api";
+  channel?: "weixin-mobile" | "dashboard" | "api" | "web";
   backend?: RuntimeBackend;
   conversationId?: string;
   externalUserId?: string;

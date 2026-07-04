@@ -29,6 +29,7 @@
     "smoke:stage1-scheduler": "npm run build && node scripts/stage1-scheduled-tasks-smoke.mjs",
     "smoke:stage2-watch-rules": "npm run build && node scripts/watch-rules-stage2-smoke.mjs",
     "smoke:weixin-complex-ack": "npm run build && node scripts/weixin-complex-ack-smoke.mjs",
+    "smoke:portal-conversation-log": "npm run build && node scripts/portal-conversation-log-smoke.mjs",
     "logs": "node scripts/recent-logs.mjs",
     "logs:errors": "node scripts/recent-logs.mjs errors",
     "cache:clear-indicator": "node scripts/clear-indicator-cache.mjs",
@@ -36,6 +37,7 @@
     "scan:convergence": "node scripts/convergence-responsibility-scan.mjs",
     "verify:convergence": "node scripts/verify-convergence.mjs",
     "weixin:mobile": "npm run build && node scripts/weixin-mobile.mjs",
+    "portal:connector": "tsx src/portal/connector.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

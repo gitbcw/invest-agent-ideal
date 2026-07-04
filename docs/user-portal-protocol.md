@@ -371,7 +371,11 @@ interface DashboardSnapshotResult {
 ### 真实 connector 联调
 
 1. 启动本地 invest-agent 服务。
+   - `npm run dev`
+   - 本地健康检查：`GET http://localhost:22655/api/portal/health`
 2. 启动本地 portal connector 测试模式。
+   - 默认连接 `ws://localhost:3199`：`PORTAL_CONNECTOR_TOKEN=<token> npm run portal:connector`
+   - 可覆盖：`PORTAL_RELAY_URL=ws://<portal-host>:3199 PORTAL_USER_ID=primary PORTAL_INSTANCE_ID=invest-agent-primary npm run portal:connector`
 3. connector 注册到门户 Relay。
 4. 门户显示用户助手 online。
 5. 网页发送一条消息。
@@ -380,6 +384,18 @@ interface DashboardSnapshotResult {
 8. 回复返回网页。
 9. 云端镜像写入同一 `messageId`。
 10. 刷新页面后历史仍可读取。
+
+本地侧也提供调试 API，便于在 Relay 联调前确认 canonical log：
+
+- `GET /api/portal/conversations?userId=primary&instanceId=invest-agent-primary`
+- `GET /api/portal/conversations/:conversationId?userId=primary&instanceId=invest-agent-primary`
+- `POST /api/portal/conversations/:conversationId/messages`
+
+基础烟测：
+
+```bash
+npm run smoke:portal-conversation-log
+```
 
 ## Versioning
 

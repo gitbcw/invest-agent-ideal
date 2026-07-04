@@ -15,7 +15,7 @@ export interface ContextPacket {
     instanceId: string;
     projectId?: string;
     conversationId?: string;
-    channel: "weixin-mobile" | "dashboard" | "api";
+    channel: "weixin-mobile" | "dashboard" | "api" | "web";
   };
   workspace: {
     path?: string;
