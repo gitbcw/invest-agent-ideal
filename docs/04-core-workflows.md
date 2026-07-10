@@ -116,6 +116,12 @@
 
 - 盘中出现技术信号、消息事件或价格条件。
 
+运行约束：
+
+- 明确规则提醒由 stage2 watch_rules 驱动,即服务层 `alert_rules.relation_to_plan=stage2_watch_rule` 的规则实例。
+- legacy `alerts` 只保留作旧 UI/API 兼容,不参与规则巡检、不再自动镜像成运行时规则。
+- `market-watch` 是固定时间盘中简报;`rule-alert-check` 是按 interval 独立采样的明确规则巡检。
+
 步骤：
 
 1. 系统发送提醒。

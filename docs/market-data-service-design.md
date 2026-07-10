@@ -119,7 +119,18 @@ Stage 1 uses lightweight staleness rules:
 
 ## Codex / Skill Usage
 
-Workspace skills should prefer these local APIs for market facts:
+Workspace skills should prefer `invest-agent-service-tools` MCP tools for market facts when available:
+
+```text
+market.snapshot
+market.quote
+market.health
+portfolio.read
+watchlist.read
+plans.read
+```
+
+If MCP tools are unavailable, fall back to the local sandbox APIs:
 
 ```bash
 curl -s "http://127.0.0.1:$PORT/api/sandbox/market/quote?codes=002460" \
@@ -138,7 +149,7 @@ Skills must:
 1. Add `src/services/market-data.ts` as the unified facade.
 2. Add sandbox tool id `invest.market.read` using existing `read:self` permission.
 3. Add sandbox routes under `/api/sandbox/market/*`.
-4. Add ACP tool manifest entries for market quote/K-line/indices/capital-flow/snapshot.
+4. Expose market quote/K-line/indices/capital-flow/snapshot through the service-tools MCP or sandbox fallback instructions.
 5. Build and manually smoke test quote, kline, indices, capital-flow, resolve, snapshot, and health.
 6. Later migration: update review, watch-rules, dashboard, and alert-check to call the facade directly.
 
@@ -173,7 +184,7 @@ Review the implementation against this design. Focus on whether market APIs are 
 
 > Updated: 2026-07-02
 
-Provider telemetry, provider health summaries, golden/eval reports, and cross-instance data-quality scoring are platform/service observability assets. They should live under service-owned `data/` or `tests/`, not under a user's workspace.
+Provider telemetry, provider health summaries, and cross-instance data-quality scoring are platform/service observability assets. They should live under service-owned `data/`, not under a user's workspace.
 
 Workspace files are only for user-instance business memory and decision artifacts. It is still valid to write a workspace `memory/source_events.jsonl` entry when a specific review, alert, or investment conclusion used, missed, or downgraded a source. It is not valid to put raw provider telemetry or global quality evaluation there.
 
@@ -186,9 +197,9 @@ Current service-level paths:
 
 - Service-layer market data facade exists for quote, K-line, indices, capital flow, resolve, snapshot, and health.
 - Sandbox routes are available under `/api/sandbox/market/*` and require the sandbox token.
-- ACP tool manifest and workspace prompts expose the market read capability to Codex.
-- Codex ACP is started with sandbox network access, so workspace skills can call the local service APIs.
-- Golden case `portfolio-003` verified that Codex can call `market.snapshot` and use returned prices.
+- `invest-agent-service-tools` MCP exposes market read capability to Codex without depending on shell network access.
+- Codex ACP shell network may still be isolated; workspace skills should not treat failed localhost curl as proof that the market service is unavailable.
+- Production smoke `npm run smoke:mcp-service-tools` verifies that Codex-visible MCP tools can call `market.snapshot` and return prices.
 - Scheduled market-watch and daily-review flows can use the market service and push WeChat output.
 
 ### P0: Make Runtime Use The Facade Consistently
@@ -203,7 +214,7 @@ Current service-level paths:
 - Update review, market-watch, weekly-review, monthly-review, and QA skills to consistently say: use local market APIs first for prices, indices, K-lines, watchlist snapshots, and plan trigger facts.
 - Keep prompts encouraging Markdown when useful, but do not force Markdown for every user answer.
 - Add explicit instruction that API paths, curl commands, sandbox tokens, and tool execution notes must not be exposed to the user.
-- Acceptance: golden cases for holdings price questions, daily review, and market-watch do not invent prices and do not leak internal execution process.
+- Acceptance: real audited interactions for holdings price questions, daily review, and market-watch do not invent prices or leak internal execution process.
 
 ### P1: Add Provider Health And Freshness Observability
 
@@ -237,15 +248,15 @@ Current service-level paths:
 - Keep the default snapshot fast enough for WeChat review and market-watch.
 - Acceptance: Codex can answer "哪些持仓接近预案触发位" without doing its own distance math from incomplete data.
 
-### P2: Tests And Golden Coverage
+### P2: Tests And Audit Coverage
 
 - Add route-level tests or smoke scripts for quote, kline, indices, resolve, capital-flow, snapshot, and health.
-- Add golden cases that specifically check:
+- Review audited interactions that specifically check:
   - current holding price question uses market API;
   - missing quote produces a data-gap answer;
   - daily review uses final response only and does not leak internal thought/process;
   - market-watch `NO_PUSH` stays silent and triggered alerts push concise text.
-- Acceptance: these tests are listed in `docs/quality/golden-test-set.md` with when-to-run guidance.
+- Acceptance: findings are resolved in the relevant workspace Skill, service contract, or operational documentation.
 
 ### P2: Documentation Cleanup
 

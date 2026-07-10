@@ -13,6 +13,8 @@ import {
   channelIdentityInstances,
   chatHistory,
   codexAcpTraces,
+  conversationMessages,
+  conversationSessions,
   conversationTasks,
   dailyPlans,
   indicatorResults,
@@ -33,7 +35,7 @@ import {
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { SandboxPermission } from "../lib/sandbox-context.js";
-import { ensureHermesRuntimeForWorkspace, ensureCodexRuntimeForWorkspace } from "../acp/stdio-agent.js";
+import { disposeAcpForWorkspace, ensureHermesRuntimeForWorkspace, ensureCodexRuntimeForWorkspace } from "../acp/stdio-agent.js";
 
 export const INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID = "invest-agent-default";
 
@@ -289,6 +291,11 @@ export async function deleteInvestAgentInstance(instanceId: string) {
   const project = await getProjectRuntimeContext(instanceId);
   const userId = project.ownerUserId;
   const instanceIdValue = project.instanceId;
+  const workspacePath = resolveWorkspacePath(userId);
+
+  // Instance deletion is also used by automated evaluations, which do not own
+  // the HTTP route's explicit runtime disposal.
+  disposeAcpForWorkspace(workspacePath);
 
   const identityRows = await db
     .select({ id: channelIdentities.id })
@@ -322,6 +329,8 @@ export async function deleteInvestAgentInstance(instanceId: string) {
     tx.delete(sandboxAuditLogs).where(and(eq(sandboxAuditLogs.userId, userId), eq(sandboxAuditLogs.instanceId, instanceIdValue))).run();
     tx.delete(pendingSandboxConfirmations).where(and(eq(pendingSandboxConfirmations.userId, userId), eq(pendingSandboxConfirmations.instanceId, instanceIdValue))).run();
     tx.delete(conversationTasks).where(and(eq(conversationTasks.userId, userId), eq(conversationTasks.instanceId, instanceIdValue))).run();
+    tx.delete(conversationMessages).where(and(eq(conversationMessages.userId, userId), eq(conversationMessages.instanceId, instanceIdValue))).run();
+    tx.delete(conversationSessions).where(and(eq(conversationSessions.userId, userId), eq(conversationSessions.instanceId, instanceIdValue))).run();
     tx.delete(pushJobs).where(and(eq(pushJobs.userId, userId), eq(pushJobs.instanceId, instanceIdValue))).run();
     tx.delete(scheduledTaskRuns).where(and(eq(scheduledTaskRuns.userId, userId), eq(scheduledTaskRuns.instanceId, instanceIdValue))).run();
     tx.delete(agentTraces).where(eq(agentTraces.userId, userId)).run();
@@ -330,7 +339,7 @@ export async function deleteInvestAgentInstance(instanceId: string) {
     tx.delete(users).where(eq(users.id, userId)).run();
   });
 
-  await rm(resolveWorkspacePath(userId), { recursive: true, force: true });
+  await rm(workspacePath, { recursive: true, force: true });
 
   return { userId, instanceId: instanceIdValue };
 }

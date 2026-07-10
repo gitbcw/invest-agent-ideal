@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { dedupeRepeatedCustomerText, extractFinalCustomerReply, sanitizeCustomerText, redactSensitiveText } from "../dist/lib/customer-output.js";
+import {
+  dedupeRepeatedCustomerText,
+  extractFinalCustomerReply,
+  sanitizeCustomerText,
+  sanitizeWeixinCustomerText,
+  redactSensitiveText,
+} from "../dist/lib/customer-output.js";
 
 const unsafeLeakPatterns = [
   /localhost:\d+/i,
@@ -55,6 +61,22 @@ const markdownTable = sanitizeCustomerText([
 ].join("\n"));
 assert.match(markdownTable, /\| 类型 \| 标的 \| 仓位 \|/);
 assert.match(markdownTable, /\|---\|---\|---:\|/);
+
+const weixinSourceText = sanitizeWeixinCustomerText([
+  "## 数据来源与质量",
+  "- 大盘指数：`https://qt.gtimg.cn/q=sh000001,sz399001,sz399006,sh000300`",
+  "- 赛轮轮胎：[行情](https://qt.gtimg.cn/q=sh601058)",
+  "- 日K：https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh601058,day,,,320,qfq",
+  "- 新闻：https://np-listapi.eastmoney.com/comm/wap/getListInfo?client=wap&type=1",
+  "- 公告：https://www.cninfo.com.cn/new/hisAnnouncement/query?stock=601058",
+  "部分实时行情标记为 stale_market_time。",
+].join("\n"));
+assert.doesNotMatch(weixinSourceText, /https?:\/\//i);
+assert.match(weixinSourceText, /腾讯行情/);
+assert.match(weixinSourceText, /腾讯日K/);
+assert.match(weixinSourceText, /东方财富新闻/);
+assert.match(weixinSourceText, /巨潮资讯公告/);
+assert.match(weixinSourceText, /stale_market_time/);
 
 const repeatedOnboarding = dedupeRepeatedCustomerText([
   "我可以帮你做这些投资辅助：",

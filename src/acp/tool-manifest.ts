@@ -26,6 +26,8 @@ const TOOL_MANIFEST: ToolManifestItem[] = [
   },
   { name: "trade_log.query", policy: "read", description: "查看交易日志、操作记录、买卖记录、持仓变更记录" },
   { name: "review_records.query", policy: "read", description: "查看复盘记录、历史复盘、最近复盘、复盘存档" },
+  { name: "conversation.history", policy: "read", description: "查询当前实例/会话的权威对话记录；用于会话上下文不足时理解“确认”“继续”等短句" },
+  { name: "confirmations.pending", policy: "read", description: "查询当前实例/会话仍待用户确认的服务端操作；用于执行确认前消除歧义" },
   { name: "monitor.overview", policy: "read", description: "查看监控、巡检、整体状态、概览" },
   { name: "market.quote", policy: "read", description: "通过服务层读取股票实时/延时行情，返回来源、抓取时间、行情时间和数据质量提示" },
   { name: "market.kline", policy: "read", description: "通过服务层读取日 K 或 5 分钟 K 线，用于技术指标、复盘和巡检事实输入" },

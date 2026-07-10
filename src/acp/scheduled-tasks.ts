@@ -5,7 +5,7 @@ import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
 import { resolveScheduledModelTier, type AcpModelTier } from "./model-router.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
 import { recordAcpTrace } from "./trace.js";
-import { extractFinalCustomerReply, sanitizeCustomerText } from "../lib/customer-output.js";
+import { extractFinalCustomerReply, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
@@ -76,7 +76,8 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
         "你正在当前用户 Workspace 中执行自动日复盘。",
         "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
         "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 daily-review 相关 skills；结构和详略由 Workspace 规则决定。",
-        "只输出给用户看的复盘正文，不要输出执行过程、工具调用过程、接口、token 或内部路径。",
+        "只输出给用户看的微信复盘正文，不要输出执行过程、工具调用过程、token、本地 sandbox 接口或内部路径；数据来源章节只写可读来源摘要，禁止展示原始 URL、endpoint 或接口路径。",
+        "完整 URL、endpoint、confidence、warnings 只适合保存到完整 Markdown 复盘或 Platform Audit，不适合微信正文。",
         "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
       ].join("\n"),
       reviewContext,
@@ -107,20 +108,20 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
         source: "scheduled-acp",
       },
     });
-    return cleaned;
+    return sanitizeWeixinCustomerText(cleaned);
   }
 
   if (kind === "weekly") {
     const context = await buildWeeklyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
     const content = await runStructuredReviewPrompt(userContext, "weekly", context);
     await writeWorkspaceReview(userContext.userId, "weekly", `${context.weekStart}_weekly`, content);
-    return buildScheduledReviewPush("周复盘", content);
+    return sanitizeWeixinCustomerText(buildScheduledReviewPush("周复盘", content));
   }
 
   const context = await buildMonthlyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
   const content = await runStructuredReviewPrompt(userContext, "monthly", context);
   await writeWorkspaceReview(userContext.userId, "monthly", context.monthKey, content);
-  return buildScheduledReviewPush("月复盘", content);
+  return sanitizeWeixinCustomerText(buildScheduledReviewPush("月复盘", content));
 }
 
 async function buildScheduledUserContext(scope: ScheduledScope, taskName: string): Promise<UserContext> {
@@ -148,7 +149,8 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
       "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
       "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 review/market 相关 skills。",
       "结构和详略由 Workspace 规则决定；不要在服务层任务中自行压缩成固定字数摘要。",
-      "只输出给用户看的复盘正文，不要输出执行过程、工具调用过程或内部路径。",
+      "只输出给用户看的微信复盘正文，不要输出执行过程、工具调用过程或内部路径。",
+      "数据来源只写可读来源摘要，禁止展示原始 URL、endpoint 或接口路径；完整来源链接只保存在网页/Markdown artifact/Audit。",
       "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
       `复盘上下文 JSON：${JSON.stringify(context)}`,
     ].join("\n"),
@@ -254,14 +256,16 @@ function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: MarketWa
   const api = `http://127.0.0.1:${config.port}/api/sandbox/alerts/check`;
   const isBriefMode = pushMode === "scheduled_intraday_brief";
   return [
-    "【后台任务：智能盯盘】",
-    "你正在当前用户 Workspace 中执行自动盘中巡检。",
+    "【后台任务：盘中定时简报】",
+    "你正在当前用户 Workspace 中生成盘中定时简报。",
     "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
     "请读取 AGENTS.md、config/watch.yaml、config/notification.yaml、config/portfolio.yaml、reports/daily/ 和 market-watch skill。",
-    "是否推送、推送频率、推送内容和提醒规则均以 Workspace 配置与 market-watch skill 为准。",
+    "market-watch 是盘中定时简报/摘要任务，不是明确规则巡检；明确规则巡检只由 rule-alert-check 执行 alert_rules。",
+    "是否推送、推送频率、推送内容和提醒边界均以 Workspace 配置与 market-watch skill 为准。",
     "结构和详略由 Workspace 规则决定；不要输出执行过程。",
+    "数据来源只写可读来源摘要，例如“腾讯行情、腾讯日K、东方财富新闻线索”；禁止展示原始 URL、endpoint 或接口路径。",
     "",
-    "可调用确定性巡检 API 获取本轮触发结果（sandbox token 已写入 workspace 根目录的 .sandbox-token 文件，curl 必须用 shell 展开，禁止在命令里写出 token 字面值）：",
+    "可调用确定性提醒检查 API 获取本轮异常/提醒结果（sandbox token 已写入 workspace 根目录的 .sandbox-token 文件，curl 必须用 shell 展开，禁止在命令里写出 token 字面值）：",
     `curl -s -X POST ${api} -H "Authorization: Bearer $(cat .sandbox-token)" -H "Content-Type: application/json" -d '{"force":true}'`,
     "",
     "输出契约：",
@@ -287,7 +291,7 @@ function buildMarketWatchFallbackBrief() {
 }
 
 export function sanitizeScheduledReply(reply: string) {
-  const cleaned = sanitizeCustomerText(extractFinalCustomerReply(reply)).trim();
+  const cleaned = sanitizeWeixinCustomerText(extractFinalCustomerReply(reply)).trim();
   if (/^NO_PUSH[。.!！\s]*$/i.test(cleaned)) return "NO_PUSH";
   if (/NO_PUSH[。.!！\s]*$/i.test(cleaned) && !/^#{1,3}\s/m.test(cleaned)) return "NO_PUSH";
   if (/^(当前无提醒|暂无提醒|无提醒|无需推送|没有需要推送)/.test(cleaned)) return "NO_PUSH";

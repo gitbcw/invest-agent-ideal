@@ -69,7 +69,7 @@ interface SandboxContext {
   userId: string;
   role: SandboxRole;
   channel: SandboxChannel;
-  backend?: "hermes";
+  backend?: "codex" | "hermes";
   conversationId?: string;
   externalUserId?: string;
   channelAccountId?: string;
@@ -88,14 +88,14 @@ Token 内容绑定：
 - `userId`
 - `role=user`
 - `channel=weixin-mobile`
-- `backend=hermes`
+- `backend=codex`（Hermes 仅兼容/实验）
 - `conversationId`
 - `externalUserId`
 - `permissions`
 - `expiresAt`
 - `nonce/jti`
 
-推荐实现：HMAC 签名的 compact token，不需要先上 OAuth。密钥从环境变量读取，例如 `INVEST_AGENT_SANDBOX_SECRET`，没有则启动时生成临时密钥并记录 warning。
+推荐实现：HMAC 签名的 compact token，不需要先上 OAuth。生产密钥从 `INVEST_AGENT_SANDBOX_SECRET` 读取；本地开发若未配置,使用 `data/.sandbox-secret` 作为持久 secret,避免服务进程和评测进程各自生成临时密钥导致验签失败。
 
 请求方式：
 
@@ -109,11 +109,15 @@ Authorization: Bearer <sandboxToken>
 
 #### 用户态 API
 
-建议新增 `/api/sandbox/*` 或 `/api/user/*`，专供微信/AI 调用。
+当前用户态 API 使用 `/api/sandbox/*`,专供微信/AI/workspace Agent 调用。
 
-首批能力：
+常用能力：
 
+- `GET /api/sandbox/me`
 - `GET /api/sandbox/dashboard`
+- `GET /api/sandbox/onboarding/state`
+- `POST /api/sandbox/onboarding/confirm-portfolio`
+- `POST /api/sandbox/onboarding/confirm-step`
 - `POST /api/sandbox/watchlist/add`
 - `POST /api/sandbox/watchlist/remove`
 - `POST /api/sandbox/plans/set`
@@ -141,7 +145,7 @@ Authorization: Bearer <sandboxToken>
 
 #### 系统态 API/函数
 
-scheduler 不走 HTTP token，可直接创建 `SandboxContext{role:"system"}` 或直接调用 handler，但必须显式传 `userId + instanceId`。scheduler 的 scope 枚举来自 `users`、`ai_instances`、`channel_identity_instances` 和启用中的提醒规则，不是 AI 输入。
+scheduler 不走 HTTP token，可直接创建 `SandboxContext{role:"system"}` 或直接调用 handler，但必须显式传 `userId + instanceId`。scheduler 的 scope 枚举来自 `users`、`ai_instances`、`channel_identity_instances` 和启用中的 stage2 watch_rules(`alert_rules`)；legacy `alerts` 不再纳入调度 scope，也不参与规则巡检。
 
 ### 4. AI 调用方式调整
 
@@ -216,8 +220,8 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 ### 当前进度
 
 - Phase 0 已完成第一轮硬隔离补洞：提醒规则 CRUD 和 mirrored `alert_rules` 已按 `userId` 隔离，复盘查询已支持用户目录。
-- Phase 1 已完成 token 基础工具：`SandboxContext`、HMAC sandbox token 生成/验证、过期/篡改 smoke 测试已落地。
-- Phase 2 已完成首批用户态 HTTP API：`/api/sandbox/me`、dashboard、自选、预案、复盘、巡检接口已接入 Bearer token，并验证请求体伪造 `userId` 不生效。
+- Phase 1 已完成 token 基础工具：`SandboxContext`、HMAC sandbox token 生成/验证、过期/篡改 smoke 测试已落地。本地开发使用 `data/.sandbox-secret` 兜底持久化,生产应设置 `INVEST_AGENT_SANDBOX_SECRET`。
+- Phase 2 已完成首批用户态 HTTP API：`/api/sandbox/me`、dashboard、onboarding、策略、自选、预案、复盘、巡检接口已接入 Bearer token，并验证请求体伪造 `userId` 不生效。
 - 微信/backend prompt 和 service skill 已开始切换到 Bearer token 方式，不再要求 AI 传裸 `userId`。
 - Phase 4 已完成会话级 pending confirmation 第一版：sandbox 写操作已记录到 `sandbox_audit_logs`，删除自选/删除预案需要 `pending_sandbox_confirmations.confirmationId`，未确认/错误确认操作会记录 denied 审计。
 - 尚未完成：alert rule mutation sandbox endpoint、Dashboard/admin token 分离、批量/关闭类操作统一接入 confirmation。

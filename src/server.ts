@@ -13,13 +13,15 @@ import { registerPortalRoutes } from "./routes/portal.js";
 import { registerSandboxRoutes } from "./routes/sandbox.js";
 import { autoStartPlatformWeixinListeners, projectWeixinManagerForInstance, registerPlatformRoutes } from "./routes/platform.js";
 import { ensureBuiltInIndicatorDefinitions } from "./handlers/indicator-definitions.js";
-import { syncAllLegacyAlertsToAlertRules } from "./handlers/alert-rules.js";
 import { enqueuePushJob, getPushJob, getPushQueueSummary, processDuePushJobs, type PushBackend } from "./services/push-queue.js";
 import { ensureBuiltInAiProjects } from "./platform/project-registry.js";
 import { instanceIdFromRequest, userIdFromRequest } from "./lib/user-context.js";
 import { db } from "./db/index.js";
 import { codexAcpTraces, pushJobs, scheduledTaskRuns } from "./db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
+import { assertServiceAuthConfiguration, hasServiceApiAuthorization, isPublicServicePath, isSandboxPath } from "./lib/service-auth.js";
+import { hasPlatformSession, isLoopbackAddress } from "./lib/platform-session.js";
+import { consumeRequestRateLimit } from "./lib/request-rate-limit.js";
 
 const agent = createAgent();
 
@@ -51,13 +53,41 @@ function startPushQueueWorker() {
   tick();
 }
 
-export async function createServer() {
-  const app = Fastify({ logger: false });
+export function stopPushQueueWorker() {
+  if (!pushQueueInterval) return;
+  clearInterval(pushQueueInterval);
+  pushQueueInterval = null;
+}
 
-  await app.register(cors, { origin: true });
+export async function createServer() {
+  assertServiceAuthConfiguration();
+  const app = Fastify({ logger: false, bodyLimit: Number(process.env.INVEST_AGENT_MAX_REQUEST_BYTES) || 60 * 1024 * 1024 });
+
+  await app.register(cors, { origin: false });
+  app.addHook("onClose", async () => {
+    stopPushQueueWorker();
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    const requestPath = request.url.split("?")[0];
+    const localPlatformPageRequest = requestPath === "/platform" && isLoopbackAddress(request.ip);
+    if (isPublicServicePath(request.url) || localPlatformPageRequest) return;
+    const sandboxRequest = isSandboxPath(request.url);
+    const platformSessionRequest = requestPath.startsWith("/api/platform/") && isLoopbackAddress(request.ip) && hasPlatformSession(request.headers.cookie);
+    if (!sandboxRequest && !platformSessionRequest && !hasServiceApiAuthorization(request.headers)) {
+      return reply
+        .header("www-authenticate", "Basic realm=\"Invest Agent Local API\"")
+        .status(401)
+        .send({ ok: false, error: "service api authorization required" });
+    }
+    const clientKey = `${request.ip}:${request.url.split("?")[0]}`;
+    const limit = request.url.startsWith("/acp/message") ? 30 : 120;
+    const result = consumeRequestRateLimit({ key: clientKey, max: limit, windowMs: 60_000 });
+    if (!result.allowed) {
+      return reply.header("retry-after", String(result.retryAfterSeconds)).status(429).send({ ok: false, error: "rate limit exceeded" });
+    }
+  });
   await ensureBuiltInAiProjects();
   await ensureBuiltInIndicatorDefinitions();
-  await syncAllLegacyAlertsToAlertRules();
 
   registerDashboardRoutes(app);
   registerPortalRoutes(app);
@@ -83,16 +113,8 @@ export async function createServer() {
 
   // 健康检查
   app.get("/health", async () => {
-    const { backends } = await listAcpBackends();
     return {
       status: "ok",
-      agent: agent.agentName,
-      agentId: agent.agentId,
-      capabilities: agent.capabilities,
-      acpBackends: { backends },
-      activeAcpBackend: backends.find((b) => b.id === config.acp.backend) ?? null,
-      pendingAlerts: pendingAlerts.length,
-      pushQueue: await getPushQueueSummary(),
       timestamp: new Date().toISOString(),
     };
   });
@@ -221,12 +243,26 @@ export async function createServer() {
     }
   );
 
-  app.post<{ Body: { message?: string; conversationId?: string; instanceId?: string; accountId?: string; contextToken?: string } }>(
+  app.post<{ Body: {
+    message?: string;
+    conversationId?: string;
+    instanceId?: string;
+    accountId?: string;
+    contextToken?: string;
+    media?: {
+      type?: "image" | "audio" | "video" | "file";
+      filePath?: string;
+      mimeType?: string;
+      fileName?: string;
+    };
+  } }>(
     "/api/testing/weixin-simulate",
     async (request, reply) => {
       const message = request.body?.message?.trim();
-      if (!message) {
-        return reply.status(400).send({ ok: false, error: "message is required" });
+      const media = request.body?.media;
+      if (!message && !media) return reply.status(400).send({ ok: false, error: "message or media is required" });
+      if (media && (!media.type || !media.filePath || !media.mimeType)) {
+        return reply.status(400).send({ ok: false, error: "media.type, media.filePath and media.mimeType are required" });
       }
       const conversationId = request.body?.conversationId?.trim() || `sim-weixin-${Date.now()}`;
       const instanceId = request.body?.instanceId?.trim();
@@ -234,12 +270,25 @@ export async function createServer() {
         ? await projectWeixinManagerForInstance(instanceId)
         : weixinMobileManager;
       const startedAt = Date.now();
-      const response = await manager.simulateIncomingText({
-        text: message,
-        conversationId,
-        accountId: request.body?.accountId,
-        contextToken: request.body?.contextToken,
-      });
+      const response = media
+        ? await manager.simulateIncomingMedia({
+            text: message,
+            conversationId,
+            accountId: request.body?.accountId,
+            contextToken: request.body?.contextToken,
+            media: {
+              type: media.type!,
+              filePath: media.filePath!,
+              mimeType: media.mimeType!,
+              fileName: media.fileName,
+            },
+          })
+        : await manager.simulateIncomingText({
+            text: message!,
+            conversationId,
+            accountId: request.body?.accountId,
+            contextToken: request.body?.contextToken,
+          });
       return {
         ok: true,
         elapsedMs: Date.now() - startedAt,
@@ -378,9 +427,9 @@ export async function startServer() {
   const app = await createServer();
 
   try {
-    await app.listen({ port: config.port, host: "0.0.0.0" });
+    await app.listen({ port: config.port, host: config.host });
     logger.info(
-      `🚀 ${agent.agentName} 启动成功 — http://0.0.0.0:${config.port}`
+      `🚀 ${agent.agentName} 启动成功 — http://${config.host}:${config.port}`
     );
     logger.info(`健康检查: http://localhost:${config.port}/health`);
     logger.info(`ACP 端点: http://localhost:${config.port}/acp/message`);

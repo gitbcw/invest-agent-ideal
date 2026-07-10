@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "yaml";
 import { config } from "./config.js";
@@ -35,6 +35,7 @@ export async function ensureWorkspace(identity: WorkspaceIdentity): Promise<Ensu
   const targetPath = resolveWorkspacePath(identity.userId);
   await migrateLegacyWorkspaceIfNeeded(identity.userId, targetPath);
   if (existsSync(path.join(targetPath, "AGENTS.md"))) {
+    await ensureManagedRuntimeSkills(targetPath);
     await stampTenantIdentity(targetPath, identity).catch((error) => {
       logger.warn(`workspace.stampTenantIdentity failed (existing) path=${targetPath}: ${error}`);
     });
@@ -47,11 +48,21 @@ export async function ensureWorkspace(identity: WorkspaceIdentity): Promise<Ensu
 
   await mkdir(config.workspace.root, { recursive: true });
   await cp(workspaceTemplatePath(), targetPath, { recursive: true });
+  await ensureManagedRuntimeSkills(targetPath);
   await stampTenantIdentity(targetPath, identity).catch((error) => {
     logger.warn(`workspace.stampTenantIdentity failed (fresh) path=${targetPath}: ${error}`);
   });
   logger.info(`workspace.created userId=${identity.userId} path=${targetPath}`);
   return { path: targetPath, created: true };
+}
+
+async function ensureManagedRuntimeSkills(workspacePath: string) {
+  const relativePath = path.join(".codex", "skills", "conversation-recovery", "SKILL.md");
+  const sourcePath = path.join(workspaceTemplatePath(), relativePath);
+  const targetPath = path.join(workspacePath, relativePath);
+  if (!existsSync(sourcePath) || existsSync(targetPath)) return;
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await copyFile(sourcePath, targetPath);
 }
 
 async function migrateLegacyWorkspaceIfNeeded(userId: string, targetPath: string) {

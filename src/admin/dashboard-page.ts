@@ -222,13 +222,13 @@ export function renderDashboardPage(): string {
           <div class="filter-field">
             <label>用户</label>
             <select class="form-select" id="userSelect" onchange="switchUser(this.value)">
-              <option value="primary">主用户</option>
+              <option value="primary">默认测试用户</option>
             </select>
           </div>
           <div class="filter-field filter-field-wide">
             <label>投资助手</label>
             <select class="form-select" id="instanceSelect" onchange="switchInstance(this.value)">
-              <option value="invest-agent-primary">主用户投资助手</option>
+              <option value="invest-agent-primary">默认测试投资助手</option>
             </select>
           </div>
         </div>
@@ -443,21 +443,21 @@ export function renderDashboardPage(): string {
         <div class="card"><div class="card-body" id="signalsTable"></div></div>
       </section>
 
-      <!-- ═══════ 巡检设置 ═══════ -->
+      <!-- ═══════ 规则巡检设置 ═══════ -->
       <section id="page-patrol" class="page">
         <div class="page-header">
-          <h1>巡检设置</h1>
+          <h1>规则巡检设置</h1>
           <button class="btn btn-gray" onclick="loadData()">刷新</button>
         </div>
         <div class="card">
           <div class="card-body">
             <div class="form-row">
-              <span class="form-label">巡检间隔</span>
+              <span class="form-label">规则巡检间隔</span>
               <input class="form-input form-input-sm" id="patrolInterval" type="number" min="1" placeholder="分钟" />
               <span class="text-sm text-gray-500">分钟</span>
               <button class="btn btn-green" onclick="doSetInterval()">保存</button>
             </div>
-            <p class="text-xs text-gray-500 mt-2">设置盘中巡检的时间间隔，单位为分钟。建议 3~10 分钟。</p>
+            <p class="text-xs text-gray-500 mt-2">设置明确规则巡检的采样间隔，单位为分钟。盘中定时简报时间不在这里配置。</p>
           </div>
         </div>
         <div class="card mt-4">
@@ -480,10 +480,10 @@ export function renderDashboardPage(): string {
           <div class="card-header"><h2>手动操作</h2></div>
           <div class="card-body">
             <div class="section-actions">
-              <button class="btn btn-amber" onclick="doCheckAlerts()">立即巡检</button>
+              <button class="btn btn-amber" onclick="doCheckAlerts()">立即规则巡检</button>
               <button class="btn btn-blue" onclick="doMockAlert()">模拟触发</button>
             </div>
-            <p class="text-xs text-gray-500 mt-2">立即巡检会强制执行一次盘中巡检并推送结果。模拟触发会发送一条测试提醒。</p>
+            <p class="text-xs text-gray-500 mt-2">立即规则巡检会强制执行一次提醒/规则检查并推送命中结果。模拟触发会发送一条测试提醒。</p>
           </div>
         </div>
       </section>

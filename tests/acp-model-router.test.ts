@@ -2,15 +2,30 @@ import { describe, test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
   isChatModelRouterEnabled,
+  isSimpleModelTierEnabled,
   parseChatRouteDecision,
   resolveChatModelTier,
   resolveScheduledModelTier,
 } from "../src/acp/model-router.js";
 
 describe("ACP model tier router", () => {
-  test("uses model judge output for routine chat", async () => {
+  test("uses complex tier by default while simple tier is disabled", async () => {
     const tier = await resolveChatModelTier("今天有哪些提醒？", {
       routerEnabled: true,
+      judge: async () => JSON.stringify({
+        tier: "simple",
+        confidence: 0.91,
+        category: "status_query",
+        reason: "用户只是查询提醒状态",
+      }),
+    });
+    assert.equal(tier, "complex");
+  });
+
+  test("uses model judge output for routine chat when simple tier is enabled", async () => {
+    const tier = await resolveChatModelTier("今天有哪些提醒？", {
+      routerEnabled: true,
+      simpleEnabled: true,
       judge: async () => JSON.stringify({
         tier: "simple",
         confidence: 0.91,
@@ -24,6 +39,7 @@ describe("ACP model tier router", () => {
   test("uses model judge output for ambiguous investment decisions", async () => {
     const tier = await resolveChatModelTier("能买吗？", {
       routerEnabled: true,
+      simpleEnabled: true,
       judge: async () => JSON.stringify({
         tier: "complex",
         confidence: 0.88,
@@ -34,14 +50,15 @@ describe("ACP model tier router", () => {
     assert.equal(tier, "complex");
   });
 
-  test("uses simple tier without model judge when router is disabled", async () => {
+  test("uses complex tier without model judge when router is disabled", async () => {
     const tier = await resolveChatModelTier("帮我看看这个票", {
       routerEnabled: false,
+      simpleEnabled: true,
       judge: async () => {
         throw new Error("judge should not be called");
       },
     });
-    assert.equal(tier, "simple");
+    assert.equal(tier, "complex");
   });
 
   test("parses router enabled environment flag", () => {
@@ -49,6 +66,13 @@ describe("ACP model tier router", () => {
     assert.equal(isChatModelRouterEnabled({ ACP_MODEL_ROUTER_ENABLED: "true" }), true);
     assert.equal(isChatModelRouterEnabled({ ACP_MODEL_ROUTER_ENABLED: "false" }), false);
     assert.equal(isChatModelRouterEnabled({ ACP_MODEL_ROUTER_ENABLED: "0" }), false);
+  });
+
+  test("simple tier is opt-in", () => {
+    assert.equal(isSimpleModelTierEnabled({}), false);
+    assert.equal(isSimpleModelTierEnabled({ ACP_SIMPLE_MODEL_ENABLED: "true" }), true);
+    assert.equal(isSimpleModelTierEnabled({ ACP_SIMPLE_MODEL_ENABLED: "1" }), true);
+    assert.equal(isSimpleModelTierEnabled({ ACP_SIMPLE_MODEL_ENABLED: "false" }), false);
   });
 
   test("passes compact context to model judge", async () => {
@@ -75,6 +99,7 @@ describe("ACP model tier router", () => {
       },
     }, {
       routerEnabled: true,
+      simpleEnabled: true,
       judge: async (input) => {
         userMessage = input.userMessage;
         return JSON.stringify({
@@ -93,6 +118,7 @@ describe("ACP model tier router", () => {
   test("falls back to complex when model judge fails", async () => {
     const tier = await resolveChatModelTier("帮我看看这个票", {
       routerEnabled: true,
+      simpleEnabled: true,
       judge: async () => "not json",
     });
     assert.equal(tier, "complex");
@@ -105,9 +131,9 @@ describe("ACP model tier router", () => {
     );
   });
 
-  test("keeps scheduled market watch on simple tier", () => {
-    assert.equal(resolveScheduledModelTier("scheduled-market-watch"), "simple");
-    assert.equal(resolveScheduledModelTier("rule-alert-check"), "simple");
+  test("keeps scheduled tasks on complex tier while simple tier is disabled", () => {
+    assert.equal(resolveScheduledModelTier("scheduled-market-watch"), "complex");
+    assert.equal(resolveScheduledModelTier("rule-alert-check"), "complex");
   });
 
   test("routes scheduled reviews to complex tier", () => {

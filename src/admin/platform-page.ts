@@ -1,4 +1,7 @@
-export function renderPlatformPage(): string {
+export function renderPlatformPage(options: { portalPublicUrl?: string } = {}): string {
+  const platformConfig = {
+    portalPublicUrl: options.portalPublicUrl || "http://localhost:3100",
+  };
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -25,8 +28,11 @@ export function renderPlatformPage(): string {
     .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .btn { border: 1px solid #cbd5e1; background: #fff; color: #1f2937; border-radius: 7px; padding: 7px 11px; font-size: 12px; cursor: pointer; box-shadow: 0 1px 1px rgba(15,23,42,.04); }
     .btn:hover { background: #f1f5f9; border-color: #94a3b8; }
+    .btn:disabled { opacity: .58; cursor: not-allowed; box-shadow: none; }
     .btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
     .btn-primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
+    .btn-danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+    .btn-danger:hover { background: #b91c1c; border-color: #b91c1c; }
     .input { background: #fff; border: 1px solid #cbd5e1; color: #1f2937; border-radius: 7px; padding: 7px 10px; min-width: 230px; outline: none; }
     .input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
     .stats { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -87,6 +93,11 @@ export function renderPlatformPage(): string {
     .item-line { display: flex; justify-content: space-between; gap: 10px; color: #334155; font-size: 12px; }
     .empty { color: #94a3b8; text-align: center; padding: 24px 10px; font-size: 13px; }
     .error { background: #fff1f2; border: 1px solid #fda4af; color: #9f1239; border-radius: 8px; padding: 12px; font-size: 13px; margin-bottom: 14px; display: none; }
+    .notice { position: fixed; right: 22px; bottom: 22px; z-index: 30; min-width: 260px; max-width: min(420px, calc(100vw - 44px)); border: 1px solid #bfdbfe; background: #eff6ff; color: #1e3a8a; border-radius: 8px; padding: 11px 13px; box-shadow: 0 14px 40px rgba(15,23,42,.16); font-size: 13px; line-height: 1.45; display: none; }
+    .notice strong { display: block; color: #0f172a; font-size: 13px; margin-bottom: 3px; }
+    .notice-ok { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
+    .notice-warn { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+    .notice-error { border-color: #fecdd3; background: #fff1f2; color: #9f1239; }
     .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.32); display: none; align-items: center; justify-content: center; padding: 18px; z-index: 20; }
     .modal { width: min(520px, 100%); background: #fff; border: 1px solid #d9e0ea; border-radius: 8px; padding: 16px; box-shadow: 0 20px 80px rgba(15,23,42,.18); }
     .modal h2 { margin: 0 0 12px; color: #111827; font-size: 15px; }
@@ -137,18 +148,50 @@ export function renderPlatformPage(): string {
     .tab:hover { color: #1d4ed8; }
     .cost-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 0 0 12px; margin-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
     .cost-toolbar .field { min-width: 150px; }
-    .golden-list-panel, .golden-detail-panel { min-height: 0; display: flex; flex-direction: column; }
-    .golden-list-body { min-height: 0; display: flex; flex-direction: column; }
-    .golden-list-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-    .golden-list-scroll { flex: 1; min-height: 0; overflow: auto; padding-right: 4px; }
-    .golden-detail-body { min-height: 0; overflow: auto; }
-    .golden-tier-filter { display: flex; flex-wrap: wrap; gap: 6px; }
-    .tier-chip { border: 1px solid #cbd5e1; background: #fff; color: #475569; border-radius: 999px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
-    .tier-chip.active { border-color: #2563eb; background: #dbeafe; color: #1d4ed8; font-weight: 650; }
     .eval-list { display: flex; flex-direction: column; gap: 9px; padding-bottom: 4px; }
     .eval-card { border: 1px solid #d9e0ea; background: #fff; border-radius: 8px; padding: 12px; cursor: pointer; }
     .eval-card:hover { background: #f8fafc; border-color: #9db3d1; }
     .eval-card.selected { background: #eff6ff; border-color: #60a5fa; box-shadow: 0 0 0 1px rgba(96,165,250,.22); }
+    .review-card { padding: 0; overflow: hidden; cursor: default; }
+    .review-card:hover { background: #fff; border-color: #9db3d1; }
+    .review-card-head { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: start; padding: 14px 15px; border-bottom: 1px solid #e2e8f0; background: #fbfdff; }
+    .review-card-title { min-width: 0; }
+    .review-eyebrow { color: #64748b; font-size: 11px; font-weight: 650; margin-bottom: 5px; }
+    .review-card-title strong { display: block; color: #0f172a; font-size: 15px; line-height: 1.35; word-break: break-word; }
+    .review-card-sub { color: #64748b; font-size: 12px; margin-top: 5px; line-height: 1.45; }
+    .review-card-status { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; max-width: 360px; }
+    .review-card-body { padding: 14px 15px 15px; }
+    .review-focus { display: grid; grid-template-columns: minmax(180px, .82fr) minmax(260px, 1.18fr); gap: 12px; align-items: stretch; }
+    .review-block { border: 1px solid #e2e8f0; background: #f8fafc; border-radius: 8px; padding: 11px; min-width: 0; }
+    .review-block.input { background: #f8fafc; border-color: #d9e0ea; }
+    .review-block.output { background: #ffffff; border-color: #cbd5e1; }
+    .review-block-title { color: #475569; font-size: 11px; font-weight: 750; margin-bottom: 7px; }
+    .review-reason { color: #172033; font-size: 13px; line-height: 1.6; }
+    .review-output-preview { white-space: pre-wrap; word-break: break-word; color: #172033; font-size: 13px; line-height: 1.65; max-height: 170px; overflow: auto; }
+    .review-judge { margin-top: 12px; border: 1px solid #fde68a; background: #fffbeb; border-radius: 8px; padding: 11px; }
+    .review-judge-title { color: #92400e; font-size: 12px; font-weight: 750; margin-bottom: 7px; }
+    .review-judge-summary { color: #78350f; font-size: 13px; line-height: 1.55; }
+    .review-issue-list { margin: 8px 0 0; padding-left: 18px; color: #78350f; font-size: 12px; line-height: 1.55; }
+    .review-issue-list li { margin: 3px 0; }
+    .review-record { margin-top: 12px; border: 1px solid #bbf7d0; background: #f0fdf4; color: #166534; border-radius: 8px; padding: 9px 10px; font-size: 12px; line-height: 1.5; }
+    .review-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .review-action-group { border: 1px solid #e2e8f0; background: #fbfdff; border-radius: 8px; padding: 10px; min-width: 0; }
+    .review-action-title { color: #0f172a; font-size: 12px; font-weight: 750; margin-bottom: 4px; }
+    .review-action-help { color: #64748b; font-size: 11px; line-height: 1.45; min-height: 32px; }
+    .review-action-group .ops { margin-top: 8px; gap: 6px; }
+    .review-action-group .btn { padding: 6px 9px; }
+    .review-technical { margin-top: 10px; }
+    .review-technical summary { cursor: pointer; color: #64748b; font-size: 12px; font-weight: 650; }
+    .review-technical .eval-tags { margin-top: 8px; }
+    .case-meta { margin: 0 0 12px; border: 1px solid #e2e8f0; background: #f8fafc; border-radius: 8px; padding: 10px 12px; }
+    .case-meta summary { cursor: pointer; color: #334155; font-size: 12px; font-weight: 750; }
+    .case-meta .kv { margin-top: 10px; }
+    .eval-standard { display: grid; gap: 10px; }
+    .eval-standard-block { border: 1px solid #dbe4ef; background: #fbfdff; border-radius: 8px; padding: 11px; }
+    .eval-standard-title { color: #475569; font-size: 11px; font-weight: 750; margin-bottom: 7px; }
+    .eval-standard-text { color: #172033; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+    .eval-standard-list { margin: 0; padding-left: 18px; color: #172033; font-size: 13px; line-height: 1.6; }
+    .eval-standard-list li { margin: 3px 0; }
     .eval-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .eval-title strong { min-width: 0; color: #0f172a; font-size: 13px; line-height: 1.45; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .eval-desc { color: #475569; font-size: 12px; line-height: 1.5; margin-top: 7px; }
@@ -157,8 +200,6 @@ export function renderPlatformPage(): string {
     .eval-output { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 11px; max-height: 360px; overflow: auto; font-size: 12px; line-height: 1.55; }
     .eval-output.empty-output { background: #f8fafc; color: #94a3b8; border: 1px solid #e2e8f0; }
     .eval-result-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-    .golden-editor { width: 100%; min-height: 430px; box-sizing: border-box; resize: vertical; background: #fbfdff; border: 1px solid #cbd5e1; color: #1f2937; border-radius: 8px; padding: 11px; outline: none; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.55; }
-    .golden-editor:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
     @media (max-width: 980px) {
       .shell { display: block; }
       .sidebar { border-right: 0; border-bottom: 1px solid #d9e0ea; }
@@ -172,8 +213,10 @@ export function renderPlatformPage(): string {
       .eval-workbench { height: auto; min-height: 0; }
       .eval-grid { grid-template-columns: 1fr; height: auto; min-height: 0; }
       .eval-workbench-grid { grid-template-columns: 1fr; }
-      .golden-list-panel, .golden-detail-panel { max-height: none; }
-      .golden-list-scroll, .golden-detail-body { overflow: visible; }
+      .review-card-head { grid-template-columns: 1fr; }
+      .review-card-status { justify-content: flex-start; max-width: none; }
+      .review-focus { grid-template-columns: 1fr; }
+      .review-actions { grid-template-columns: 1fr; }
       .audit-item { grid-template-columns: 1fr; }
       .audit-rail { border-right: 0; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; gap: 12px; }
       .audit-columns { grid-template-columns: 1fr; }
@@ -190,7 +233,6 @@ export function renderPlatformPage(): string {
         <a id="nav-cost" href="#cost" onclick="setView('cost')">成本统计 <span>›</span></a>
         <a id="nav-audit" href="#audit" onclick="setView('audit')">日志审计 <span>›</span></a>
         <a id="nav-rule-alerts" href="#rule-alerts" onclick="setView('rule-alerts')">规则巡检 <span>›</span></a>
-        <a id="nav-golden" href="#golden" onclick="setView('golden')">评测工作台 <span>›</span></a>
         <a href="/dashboard">投资工作台 <span>↗</span></a>
         <a id="nav-source-quality" href="#source-quality" onclick="setView('source-quality')">数据源质量 <span>›</span></a>
       </nav>
@@ -222,12 +264,9 @@ export function renderPlatformPage(): string {
           <button class="btn btn-primary" onclick="loadSourceQuality()">刷新质量</button>
           <button class="btn" onclick="setView('instances')">返回用户助手</button>
         </div>
-        <div class="actions" id="goldenActions" style="display:none">
-          <button class="btn btn-primary" onclick="loadGoldenCases()">刷新评测资产</button>
-          <button class="btn" onclick="setView('instances')">返回用户助手</button>
-        </div>
       </div>
       <div id="error" class="error"></div>
+      <div id="notice" class="notice"></div>
       <section id="view-instances" class="view active">
         <section class="stats" id="stats"></section>
         <section class="grid">
@@ -343,86 +382,6 @@ export function renderPlatformPage(): string {
           <div class="panel-body" id="ruleAlertPanel"><div class="empty">选择用户后加载规则巡检记录</div></div>
         </div>
       </section>
-      <section id="view-golden" class="view eval-workbench">
-        <div class="tabs">
-          <button id="evalTabOverview" class="tab active" onclick="setGoldenTab('overview')">总览</button>
-          <button id="evalTabReview" class="tab" onclick="setGoldenTab('review')">人工待审</button>
-          <button id="evalTabCases" class="tab" onclick="setGoldenTab('cases')">黄金 Case 库</button>
-          <button id="evalTabRuns" class="tab" onclick="setGoldenTab('runs')">运行记录</button>
-        </div>
-        <div id="eval-view-overview" class="eval-tab-view active">
-          <div class="eval-workbench-grid">
-            <div class="panel">
-              <div class="panel-head">
-                <h2>评测分层</h2>
-                <span class="muted">L1 / L2 / L3</span>
-              </div>
-              <div class="panel-body" id="evalOverview"></div>
-            </div>
-            <div class="panel">
-              <div class="panel-head">
-                <h2>资产概览</h2>
-                <span class="muted" id="goldenUpdated">未加载</span>
-              </div>
-              <div class="panel-body" id="evalAssetOverview"><div class="empty">加载中...</div></div>
-            </div>
-          </div>
-        </div>
-        <div id="eval-view-review" class="eval-tab-view">
-          <div class="panel">
-            <div class="panel-head">
-              <h2>人工待审</h2>
-              <span class="muted" id="evalReviewHint">等待评测结果</span>
-            </div>
-            <div class="panel-body" id="evalReviewQueue"><div class="empty">加载中...</div></div>
-          </div>
-        </div>
-        <div id="eval-view-cases" class="eval-tab-view case-library">
-          <div class="eval-grid">
-            <div class="panel golden-list-panel">
-              <div class="panel-head">
-                <h2>黄金 Case 库</h2>
-                <span class="muted" id="goldenCount">0 项</span>
-              </div>
-              <div class="panel-body golden-list-body">
-                <div class="metrics" id="goldenStats"></div>
-                <div class="section">
-                  <div class="form-grid">
-                    <input id="goldenSearch" class="input" placeholder="搜索 case、场景、输入、原则" oninput="renderGoldenCases()" />
-                    <div class="golden-tier-filter" id="goldenTierFilter"></div>
-                    <div class="audit-columns">
-                      <select id="goldenDomain" class="select" onchange="renderGoldenCases()"></select>
-                      <select id="goldenCategory" class="select" onchange="renderGoldenCases()"></select>
-                    </div>
-                    <div class="audit-columns">
-                      <select id="goldenPriority" class="select" onchange="renderGoldenCases()"></select>
-                    </div>
-                  </div>
-                </div>
-                <div class="section golden-list-section">
-                  <div class="golden-list-scroll" id="goldenList"><div class="empty">加载中...</div></div>
-                </div>
-              </div>
-            </div>
-            <div class="panel golden-detail-panel">
-              <div class="panel-head">
-                <h2>Case 详情</h2>
-                <span class="muted">YAML / 单条运行</span>
-              </div>
-              <div class="panel-body golden-detail-body" id="goldenDetail"><div class="empty">选择一个 case</div></div>
-            </div>
-          </div>
-        </div>
-        <div id="eval-view-runs" class="eval-tab-view">
-          <div class="panel">
-            <div class="panel-head">
-              <h2>运行记录</h2>
-              <span class="muted">本页单条运行</span>
-            </div>
-            <div class="panel-body" id="evalRunHistory"><div class="empty">尚未运行 case</div></div>
-          </div>
-        </div>
-      </section>
     </main>
   </div>
 
@@ -453,6 +412,7 @@ export function renderPlatformPage(): string {
 
 <script>
 let DATA = { instances: [] };
+const PLATFORM_CONFIG = ${JSON.stringify(platformConfig)};
 let selectedInstanceId = '';
 let AUDIT = { users: [], instances: [], items: [], filters: {} };
 let AUDIT_ITEM_BY_ID = {};
@@ -462,13 +422,7 @@ let COST_TAB = 'overview';
 let COST_FILTERS = { days: '30' };
 let selectedCostInstanceId = '';
 let SOURCE_QUALITY = null;
-let GOLDEN = { cases: [], stats: {}, suite: {}, qualityGates: {} };
-let EVAL_REVIEW_QUEUE = null;
-let selectedGoldenId = '';
-let GOLDEN_RUNS = {};
-let GOLDEN_TAB = 'overview';
-let GOLDEN_ACTIVE_TIERS = new Set(['golden_core', 'regression']);
-const VALID_VIEWS = new Set(['instances', 'cost', 'source-quality', 'audit', 'rule-alerts', 'golden']);
+const VALID_VIEWS = new Set(['instances', 'cost', 'source-quality', 'audit', 'rule-alerts']);
 let ACTIVE_VIEW = VALID_VIEWS.has(location.hash.slice(1)) ? location.hash.slice(1) : 'instances';
 let AUDIT_SCOPE = 'conversation';
 
@@ -486,6 +440,19 @@ function badge(text, kind = 'gray') {
   return '<span class="badge badge-' + kind + '">' + esc(text) + '</span>';
 }
 
+let noticeTimer = null;
+function showNotice(title, detail = '', kind = 'ok') {
+  const node = document.getElementById('notice');
+  if (!node) return;
+  node.className = 'notice notice-' + kind;
+  node.innerHTML = '<strong>' + esc(title) + '</strong>' + (detail ? '<div>' + esc(detail) + '</div>' : '');
+  node.style.display = 'block';
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    node.style.display = 'none';
+  }, 3600);
+}
+
 async function loadPlatform() {
   document.getElementById('error').style.display = 'none';
   try {
@@ -497,9 +464,6 @@ async function loadPlatform() {
     initAuditFromSelection();
     initRuleAlertsFromSelection();
     initCostFromSelection();
-    if (ACTIVE_VIEW === 'golden') {
-      loadGoldenCases();
-    }
     if (ACTIVE_VIEW === 'source-quality' && !SOURCE_QUALITY) {
       loadSourceQuality();
     }
@@ -528,11 +492,6 @@ function setView(view) {
   if (ACTIVE_VIEW === 'source-quality' && !SOURCE_QUALITY) {
     loadSourceQuality();
   }
-  if (ACTIVE_VIEW === 'golden' && !(GOLDEN.cases || []).length) {
-    loadGoldenCases();
-  } else if (ACTIVE_VIEW === 'golden') {
-    renderGoldenWorkbench();
-  }
 }
 
 function renderChrome() {
@@ -541,25 +500,21 @@ function renderChrome() {
   document.getElementById('view-source-quality').classList.toggle('active', ACTIVE_VIEW === 'source-quality');
   document.getElementById('view-audit').classList.toggle('active', ACTIVE_VIEW === 'audit');
   document.getElementById('view-rule-alerts').classList.toggle('active', ACTIVE_VIEW === 'rule-alerts');
-  document.getElementById('view-golden').classList.toggle('active', ACTIVE_VIEW === 'golden');
   document.getElementById('nav-instances').classList.toggle('active', ACTIVE_VIEW === 'instances');
   document.getElementById('nav-cost').classList.toggle('active', ACTIVE_VIEW === 'cost');
   document.getElementById('nav-source-quality').classList.toggle('active', ACTIVE_VIEW === 'source-quality');
   document.getElementById('nav-audit').classList.toggle('active', ACTIVE_VIEW === 'audit');
   document.getElementById('nav-rule-alerts').classList.toggle('active', ACTIVE_VIEW === 'rule-alerts');
-  document.getElementById('nav-golden').classList.toggle('active', ACTIVE_VIEW === 'golden');
   document.getElementById('instanceActions').style.display = ACTIVE_VIEW === 'instances' ? 'flex' : 'none';
   document.getElementById('costActions').style.display = ACTIVE_VIEW === 'cost' ? 'flex' : 'none';
   document.getElementById('sourceQualityActions').style.display = ACTIVE_VIEW === 'source-quality' ? 'flex' : 'none';
   document.getElementById('auditActions').style.display = ACTIVE_VIEW === 'audit' ? 'flex' : 'none';
   document.getElementById('ruleAlertActions').style.display = ACTIVE_VIEW === 'rule-alerts' ? 'flex' : 'none';
-  document.getElementById('goldenActions').style.display = ACTIVE_VIEW === 'golden' ? 'flex' : 'none';
   document.getElementById('pageTitle').textContent =
     ACTIVE_VIEW === 'cost' ? '成本统计' :
     ACTIVE_VIEW === 'source-quality' ? '数据源质量' :
     ACTIVE_VIEW === 'audit' ? '日志审计' :
-    ACTIVE_VIEW === 'rule-alerts' ? '规则巡检' :
-    ACTIVE_VIEW === 'golden' ? '评测工作台' : '用户助手';
+    ACTIVE_VIEW === 'rule-alerts' ? '规则巡检' : '用户助手';
 }
 
 function setAuditScope(scope) {
@@ -576,7 +531,7 @@ function renderAuditScope() {
   document.getElementById('auditTimelineTitle').textContent = isPush ? '推送时间线' : '对话时间线';
   document.getElementById('auditHelp').textContent = isPush
     ? '推送审计查看主动推送入队正文、调度任务状态和关联的 scheduler LLM trace。'
-    : '对话审计查看微信用户消息进入 Codex 后的原始回复、清洗回复和入站提示。';
+    : '对话审计查看微信/Web 用户消息进入 Codex 后的原始回复、清洗回复和入站提示。';
 }
 
 async function loadAudit() {
@@ -1124,45 +1079,10 @@ function renderAuditItem(item) {
       '</div>' +
       (item.errorMessage ? auditSection('错误', item.errorMessage, 'audit-error') : '') +
       visibleBody +
-      renderAuditCandidateAction(item) +
       renderAuditUsage(item) +
       details +
     '</div>' +
   '</div>';
-}
-
-function renderAuditCandidateAction(item) {
-  if (item.kind !== 'trace' || !item.userText) return '';
-  return '<div class="ops">' +
-    '<button class="btn" onclick="createCandidateFromAudit(\\'' + esc(String(item.id)) + '\\')">生成候选 case</button>' +
-  '</div>';
-}
-
-async function createCandidateFromAudit(id) {
-  const item = AUDIT_ITEM_BY_ID[String(id)];
-  if (!item) return;
-  const note = prompt('给这个候选 case 加一句备注，说明为什么值得评测。', '');
-  if (note === null) return;
-  const actualOutput = item.replyTextSanitized || item.replyTextRaw || item.errorMessage || '';
-  try {
-    await platformJson('/api/platform/evaluation/candidates', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source: 'audit',
-        sourceId: String(item.id),
-        userInput: item.userText,
-        actualOutput,
-        scenario: 'candidate_from_audit',
-        priority: item.errorMessage ? 'P0' : 'P1',
-        note,
-      }),
-    });
-    if (ACTIVE_VIEW === 'golden') await loadGoldenCases();
-    alert('已生成候选 case 草稿，可在评测工作台查看。');
-  } catch (error) {
-    alert('生成候选 case 失败: ' + error.message);
-  }
 }
 
 function renderAuditUsage(item) {
@@ -1188,7 +1108,7 @@ function auditItemTitle(item) {
   if (item.kind === 'push_run') return '调度推送链路';
   if (item.kind === 'push') return '微信推送正文';
   if (item.kind === 'task') return '调度任务记录';
-  return AUDIT_SCOPE === 'push' ? '推送生成 Trace' : '微信对话 Trace';
+  return AUDIT_SCOPE === 'push' ? '推送生成 Trace' : '对话 Trace';
 }
 
 function auditSection(title, text, extraClass = '') {
@@ -1266,682 +1186,6 @@ function formatAuditTime(value) {
     date: date.toLocaleDateString('zh-CN'),
     time: date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
   };
-}
-
-async function loadGoldenCases() {
-  try {
-    const [golden, reviewQueue] = await Promise.all([
-      platformJson('/api/platform/golden-cases'),
-      loadEvaluationReviewQueue(),
-    ]);
-    GOLDEN = golden;
-    EVAL_REVIEW_QUEUE = reviewQueue;
-    selectedGoldenId = selectedGoldenId || GOLDEN.cases?.[0]?.id || '';
-    renderGoldenFilters();
-    renderGoldenWorkbench();
-  } catch (error) {
-    const detail = document.getElementById('goldenDetail');
-    if (detail) detail.innerHTML = '<div class="error" style="display:block">评测资产加载失败: ' + esc(error.message) + '</div>';
-    const overview = document.getElementById('evalAssetOverview');
-    if (overview) overview.innerHTML = '<div class="error" style="display:block">评测资产加载失败: ' + esc(error.message) + '</div>';
-  }
-}
-
-async function loadEvaluationReviewQueue() {
-  try {
-    return await platformJson('/api/platform/evaluation/review-queue');
-  } catch (error) {
-    return {
-      ok: false,
-      exists: false,
-      error: error.message,
-      judge: { verdict_counts: {}, review_count: 0 },
-      reviewQueue: [],
-      reports: [],
-    };
-  }
-}
-
-function setGoldenTab(tab) {
-  GOLDEN_TAB = ['overview', 'review', 'cases', 'runs'].includes(tab) ? tab : 'overview';
-  renderGoldenWorkbench();
-}
-
-function renderGoldenWorkbench() {
-  for (const tab of ['overview', 'review', 'cases', 'runs']) {
-    document.getElementById('evalTab' + tabName(tab))?.classList.toggle('active', GOLDEN_TAB === tab);
-    document.getElementById('eval-view-' + tab)?.classList.toggle('active', GOLDEN_TAB === tab);
-  }
-  const updated = document.getElementById('goldenUpdated');
-  if (updated) updated.textContent = GOLDEN.updatedAt ? '更新于 ' + fmtTime(GOLDEN.updatedAt) : '未加载';
-  renderEvaluationOverview();
-  renderEvaluationReviewQueue();
-  renderEvaluationRunHistory();
-  renderGoldenCases();
-}
-
-function tabName(tab) {
-  return tab === 'overview' ? 'Overview' : tab === 'review' ? 'Review' : tab === 'cases' ? 'Cases' : 'Runs';
-}
-
-function renderEvaluationOverview() {
-  const root = document.getElementById('evalOverview');
-  const assets = document.getElementById('evalAssetOverview');
-  if (!root || !assets) return;
-  const stats = GOLDEN.stats || {};
-  const workflowStats = GOLDEN.workflowSuites?.stats || {};
-  const tiers = stats.reviewTiers || {};
-  const queue = EVAL_REVIEW_QUEUE || {};
-  const verdicts = queue.judge?.verdict_counts || {};
-  root.innerHTML =
-    '<div class="eval-stage-list">' +
-      renderEvalStage('L1 程序化评测', '确定性 contract、格式、状态机、权限、禁词、调度和推送队列。失败时直接修代码或契约。', 'npm run build · npm test · npm run eval:golden · smoke:*', 'ok') +
-      renderEvalStage('L2 AI 语义评估', '真实或模拟对话跑出 actual output，再由 AI judge 按 rubric 判定 pass / warn / fail / unknown。', 'npm run eval:conversation -- --judge=model', 'info') +
-      renderEvalStage('L3 人工审核', '只处理 AI judge 的 warn / fail / unknown、新核心样本和产品标准取舍。', 'Platform 评测工作台', 'warn') +
-    '</div>';
-  assets.innerHTML =
-    '<div class="cost-summary">' +
-      stat(fmtNumber(stats.total || 0), 'Case 总数') +
-      stat(fmtNumber(workflowStats.total || 0), '业务流程') +
-      stat(fmtNumber(tiers.golden_core || 0), '黄金核心') +
-      stat(fmtNumber(tiers.regression || 0), '事故回归') +
-      stat(fmtNumber(stats.scenarioCount || 0), '场景数') +
-      stat(fmtNumber(queue.judge?.review_count || 0), '人工待审') +
-    '</div>' +
-    '<div class="cost-source">' +
-      badge('黄金集属于 L2 case 库', 'info') +
-      badge('eval:golden 是 L1 结构校验', 'ok') +
-      badge(queue.exists ? ('最近评测 ' + fmtTime(queue.ranAt || queue.updatedAt)) : '尚未生成评测队列', queue.exists ? 'ok' : 'warn') +
-    '</div>' +
-    '<div class="section"><h3>最近 L2 Verdict</h3><div class="cost-summary">' +
-      stat(fmtNumber(verdicts.pass || 0), 'Pass') +
-      stat(fmtNumber(verdicts.warn || 0), 'Warn') +
-      stat(fmtNumber(verdicts.fail || 0), 'Fail') +
-      stat(fmtNumber(verdicts.unknown || 0), 'Unknown') +
-    '</div></div>' +
-    '<div class="section"><h3>业务流程套件</h3>' + renderWorkflowSuiteTable(GOLDEN.workflowSuites?.workflows || []) + '</div>' +
-    '<div class="section"><h3>当前 Case 层级</h3>' + renderTierTable(tiers) + '</div>';
-}
-
-function renderEvalStage(title, desc, command, badgeKind) {
-  return '<div class="eval-stage">' +
-    '<div class="eval-stage-head"><h3>' + esc(title) + '</h3>' + badge(title.slice(0, 2), badgeKind) + '</div>' +
-    '<p>' + esc(desc) + '</p>' +
-    '<div class="eval-command mono">' + esc(command) + '</div>' +
-  '</div>';
-}
-
-function renderTierTable(tiers) {
-  const rows = Object.entries(tiers || {});
-  if (!rows.length) return '<div class="empty">暂无 case 层级统计</div>';
-  return '<div style="overflow:auto"><table class="cost-table">' +
-    '<thead><tr><th>层级</th><th>数量</th><th>工作台含义</th></tr></thead>' +
-    '<tbody>' + rows.map(([tier, count]) =>
-      '<tr><td>' + esc(reviewTierLabel(tier)) + '<div class="mono">' + esc(tier) + '</div></td><td>' + esc(fmtNumber(count)) + '</td><td>' + esc(reviewTierMeaning(tier)) + '</td></tr>'
-    ).join('') + '</tbody></table></div>';
-}
-
-function renderWorkflowSuiteTable(rows) {
-  if (!rows.length) return '<div class="empty">暂无业务流程套件</div>';
-  return '<div style="overflow:auto"><table class="cost-table">' +
-    '<thead><tr><th>流程</th><th>业务域</th><th>轮数</th><th>运行命令</th></tr></thead>' +
-    '<tbody>' + rows.map((row) =>
-      '<tr>' +
-        '<td><strong>' + esc(row.title || row.id) + '</strong><div class="mono">' + esc(row.id || '-') + '</div></td>' +
-        '<td>' + esc(row.domain || '-') + '</td>' +
-        '<td>' + esc(row.turnCount || 0) + (row.createNewUser ? '<div class="muted">新用户</div>' : '') + '</td>' +
-        '<td class="mono">' + esc(row.command || '-') + '</td>' +
-      '</tr>'
-    ).join('') + '</tbody></table></div>';
-}
-
-
-function reviewTierMeaning(tier) {
-  return ({
-    golden_core: '定义产品形态和投资纪律，新增或修改后需要人工校准',
-    regression: '历史事故和关键回归，L2 fail 后进入人工复核',
-    principle_probe: '验证 AGENTS.md / skills 原则是否被执行',
-    smoke: '基础链路样本，后续应尽量下沉到 L1',
-    archived_candidate: '暂不参与常规审查的候选样本',
-  })[tier] || '未分类样本';
-}
-
-function renderEvaluationReviewQueue() {
-  const root = document.getElementById('evalReviewQueue');
-  if (!root) return;
-  const hint = document.getElementById('evalReviewHint');
-  const queue = EVAL_REVIEW_QUEUE;
-  if (!queue) {
-    if (hint) hint.textContent = '加载中';
-    root.innerHTML = '<div class="empty">正在加载评测队列...</div>';
-    return;
-  }
-  if (!queue.exists) {
-    if (hint) hint.textContent = '暂无评测结果';
-    root.innerHTML =
-      '<div class="cost-source">' +
-        badge('尚未生成 _review-queue.json', 'warn') +
-        badge('先跑 L2 对话评测', 'info') +
-      '</div>' +
-      '<div class="section"><h3>生成方式</h3>' +
-        '<div class="eval-command mono">npm run eval:conversation -- --judge=static --only=&lt;case-id&gt;</div>' +
-        '<div class="eval-command mono">npm run eval:conversation -- --judge=model --priority=P0</div>' +
-        '<div class="muted" style="margin-top:8px">跑完后会生成 eval-reports/_review-queue.json 和 _review-queue.md，本页刷新后展示 warn / fail / unknown。</div>' +
-      '</div>' +
-      '<div class="section"><h3>核心样本校准入口</h3>' + renderManualCandidateList((GOLDEN.cases || []).filter((item) => ['golden_core', 'regression'].includes(item.reviewTier)).slice(0, 12)) + '</div>';
-    return;
-  }
-  const rows = queue.reviewQueue || [];
-  if (hint) hint.textContent = rows.length ? rows.length + ' 条待审' : '无需人工处理';
-  if (!rows.length) {
-    root.innerHTML =
-      '<div class="cost-source">' +
-        badge('最近评测全部通过', 'ok') +
-        badge('run ' + (queue.runId || '-'), 'gray') +
-        badge('judge ' + (queue.judge?.mode || 'none'), 'info') +
-      '</div>' +
-      '<div class="empty">暂无 warn / fail / unknown。人工可以只抽查黄金核心样本。</div>';
-    return;
-  }
-  root.innerHTML =
-    '<div class="cost-source">' +
-      badge('run ' + (queue.runId || '-'), 'gray') +
-      badge('judge ' + (queue.judge?.mode || 'none'), 'info') +
-      badge('更新 ' + fmtTime(queue.ranAt || queue.updatedAt), 'ok') +
-      badge('只显示 warn / fail / unknown', 'warn') +
-    '</div>' +
-    '<div class="section"><h3>待审项</h3>' + renderEvalReviewQueueList(rows) + '</div>';
-}
-
-function renderEvalReviewQueueList(rows) {
-  return '<div class="eval-list">' + rows.map((row) => {
-    const verdict = row.judge?.verdict || 'unknown';
-    const decision = latestReviewDecision(row.id);
-    return '<div class="eval-card" onclick="openGoldenCase(\\'' + esc(row.id || '') + '\\')">' +
-      '<div class="eval-title"><strong>' + esc(row.id || '-') + '</strong>' + badge(verdict.toUpperCase(), verdictBadgeKind(verdict)) + '</div>' +
-      '<div class="eval-desc">' + esc(row.judge?.reason || '-') + '</div>' +
-      '<div class="eval-tags">' +
-        badge(row.scenario_name || row.scenario || '-', 'gray') +
-        badge((row.judge?.judge_type || '-') + (row.judge?.confidence ? ' · ' + row.judge.confidence : ''), 'info') +
-        badge(String(row.elapsed_ms || 0) + 'ms', 'gray') +
-        (decision ? badge(decisionLabel(decision.action), 'ok') : badge('未处理', 'warn')) +
-      '</div>' +
-      '<div class="section"><div class="audit-text primary">' + esc(summarizeAuditText(row.actual_output_preview || row.user_input || '-')) + '</div></div>' +
-      '<div class="ops" onclick="event.stopPropagation()">' +
-        renderDecisionButton(row, 'accept_judge', '接受 judge') +
-        renderDecisionButton(row, 'override_pass', '改判 Pass') +
-        renderDecisionButton(row, 'override_fail', '改判 Fail') +
-        renderDecisionButton(row, 'needs_fix', '需要修复') +
-        renderDecisionButton(row, 'move_to_l1', '下沉 L1') +
-        renderDecisionButton(row, 'update_case', '更新 case') +
-      '</div>' +
-    '</div>';
-  }).join('') + '</div>';
-}
-
-function latestReviewDecision(caseId) {
-  const rows = EVAL_REVIEW_QUEUE?.decisions || [];
-  return rows.find((item) => item.caseId === caseId) || null;
-}
-
-function decisionLabel(action) {
-  return ({
-    accept_judge: '已接受',
-    override_pass: '改判 Pass',
-    override_fail: '改判 Fail',
-    needs_fix: '需修复',
-    move_to_l1: '下沉 L1',
-    update_case: '更新 case',
-  })[action] || action || '已处理';
-}
-
-function renderDecisionButton(row, action, label) {
-  return '<button class="btn" onclick="saveReviewDecision(\\'' + esc(row.id || '') + '\\', \\'' + esc(action) + '\\')">' + esc(label) + '</button>';
-}
-
-async function saveReviewDecision(caseId, action) {
-  const note = prompt('处理备注，可写修复方向、改判原因或需要下沉的测试点。', '');
-  if (note === null) return;
-  const finalVerdict = action === 'override_pass' ? 'pass' : action === 'override_fail' ? 'fail' : '';
-  try {
-    const res = await platformJson('/api/platform/evaluation/review-decisions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        caseId,
-        action,
-        finalVerdict,
-        note,
-        sourceRunId: EVAL_REVIEW_QUEUE?.runId || '',
-      }),
-    });
-    EVAL_REVIEW_QUEUE.decisions = res.decisions || [];
-    renderEvaluationReviewQueue();
-  } catch (error) {
-    alert('保存处理结果失败: ' + error.message);
-  }
-}
-
-function verdictBadgeKind(verdict) {
-  return verdict === 'pass' ? 'ok' : verdict === 'warn' ? 'warn' : verdict === 'fail' ? 'warn' : 'gray';
-}
-
-function renderManualCandidateList(rows) {
-  if (!rows.length) return '<div class="empty">暂无核心样本</div>';
-  return '<div class="eval-list">' + rows.map((item) =>
-    '<div class="eval-card" onclick="openGoldenCase(\\'' + esc(item.id) + '\\')">' +
-      '<div class="eval-title"><strong>' + esc(humanGoldenTitle(item)) + '</strong>' + badge(item.priority || '-', item.priority === 'P0' ? 'warn' : 'gray') + '</div>' +
-      '<div class="eval-desc">' + esc(summarizeAuditText(item.userInput || item.styleNotes || item.scenario)) + '</div>' +
-      '<div class="eval-tags">' + badge(reviewTierLabel(item.reviewTier), item.reviewTier === 'golden_core' ? 'ok' : 'info') + badge(scenarioLabel(item.scenario), 'gray') + '</div>' +
-    '</div>'
-  ).join('') + '</div>';
-}
-
-function renderCandidateCaseList() {
-  const rows = EVAL_REVIEW_QUEUE?.candidates || [];
-  if (!rows.length) return '<div class="empty">暂无候选 case 草稿；可在日志审计里从真实对话生成。</div>';
-  return '<div class="eval-list">' + rows.map((item) =>
-    '<div class="eval-card">' +
-      '<div class="eval-title"><strong>' + esc(item.id || '-') + '</strong>' + badge(item.priority || 'P1', item.priority === 'P0' ? 'warn' : 'gray') + '</div>' +
-      '<div class="eval-desc">' + esc(summarizeAuditText(item.userInput || '-')) + '</div>' +
-      '<div class="eval-tags">' + badge(item.reviewTier || 'archived_candidate', 'gray') + badge(item.source || '-', 'info') + badge(fmtTime(item.createdAt), 'gray') + '</div>' +
-      '<div class="section"><div class="audit-text">' + esc(item.note || item.actualOutput || '-') + '</div></div>' +
-    '</div>'
-  ).join('') + '</div>';
-}
-
-function renderEvaluationRunHistory() {
-  const root = document.getElementById('evalRunHistory');
-  if (!root) return;
-  const rows = Object.values(GOLDEN_RUNS || {}).filter(Boolean).reverse();
-  const reports = EVAL_REVIEW_QUEUE?.reports || [];
-  const commandSection = renderEvalCommandBuilder();
-  const candidateSection = '<div class="section"><h3>候选 Case 草稿</h3>' + renderCandidateCaseList() + '</div>';
-  const reportSection = reports.length
-    ? '<div class="section" style="margin-top:0"><h3>最近评测报告</h3>' + renderEvalReportTable(reports) + '</div>'
-    : '<div class="section" style="margin-top:0"><h3>最近评测报告</h3><div class="empty">暂无 _review-queue.json 报告索引</div></div>';
-  if (!rows.length) {
-    root.innerHTML = commandSection + reportSection + candidateSection + '<div class="section"><h3>本页单条运行</h3><div class="empty">尚未运行 case；可在“黄金 Case 库”中选择单条发送。</div></div>';
-    return;
-  }
-  root.innerHTML = commandSection + reportSection + candidateSection + '<div class="section"><h3>本页单条运行</h3><div class="eval-list">' + rows.map((row) => {
-    const ok = row.ok !== false && !row.error && !row.running;
-    const title = row.id || row.target?.instanceId || '运行中';
-    return '<div class="eval-card" onclick="rowIdToCase(\\'' + esc(row.id || '') + '\\')">' +
-      '<div class="eval-title"><strong>' + esc(title) + '</strong>' + badge(row.running ? '运行中' : ok ? '已完成' : '异常', row.running ? 'info' : ok ? 'ok' : 'warn') + '</div>' +
-      '<div class="eval-desc">' + esc(row.error || row.userInput || '-') + '</div>' +
-      '<div class="eval-case-id mono">' + esc(row.conversationId || '-') + '</div>' +
-    '</div>';
-  }).join('') + '</div></div>';
-}
-
-function renderEvalCommandBuilder() {
-  const scenarios = Object.keys(GOLDEN.stats?.categories || {}).length ? [...new Set((GOLDEN.cases || []).map((item) => item.scenario).filter(Boolean))].sort() : [];
-  const workflows = GOLDEN.workflowSuites?.workflows || [];
-  return '<div class="section" style="margin-top:0"><h3>运行命令生成</h3>' +
-    '<div class="cost-toolbar">' +
-      '<div class="field"><label>Judge</label><select id="evalJudgeMode" class="select" onchange="generateEvalCommand()">' +
-        '<option value="static">static</option><option value="model">model</option><option value="none">none</option>' +
-      '</select></div>' +
-      '<div class="field"><label>范围</label><select id="evalRunScope" class="select" onchange="generateEvalCommand()">' +
-        '<option value="workflow">业务流程</option><option value="priority-p0">P0</option><option value="case">单条 case</option><option value="scenario">场景</option><option value="all">全部</option>' +
-      '</select></div>' +
-      '<div class="field"><label>Workflow</label><select id="evalRunWorkflow" class="select" onchange="generateEvalCommand()">' +
-        workflows.map((item) => '<option value="' + esc((item.file || '').replace('.yaml', '')) + '">' + esc(item.title || item.id) + ' · ' + esc(item.id) + '</option>').join('') +
-      '</select></div>' +
-      '<div class="field"><label>Case ID</label><input id="evalRunCaseId" class="input" value="' + esc(selectedGoldenId || '') + '" oninput="generateEvalCommand()" /></div>' +
-      '<div class="field"><label>Scenario</label><select id="evalRunScenario" class="select" onchange="generateEvalCommand()">' +
-        scenarios.map((item) => '<option value="' + esc(item) + '">' + esc(scenarioLabel(item)) + ' · ' + esc(item) + '</option>').join('') +
-      '</select></div>' +
-      '<button class="btn btn-primary" onclick="generateEvalCommand()">生成命令</button>' +
-      '<button class="btn" onclick="copyEvalCommand()">复制</button>' +
-    '</div>' +
-    '<textarea id="evalCommandOutput" class="golden-editor" style="min-height:92px" readonly></textarea>' +
-    '<div class="section"><h3>对比入口</h3><div class="muted">建议先用两个不同 run id 跑同一范围，再比较两个 _review-queue.json 的 verdict 分布和待审项变化。</div>' +
-      '<div class="eval-command mono">npm run eval:conversation -- --judge=static --priority=P0 --run-id=baseline</div>' +
-      '<div class="eval-command mono">npm run eval:conversation -- --judge=static --priority=P0 --run-id=candidate</div>' +
-    '</div>' +
-  '</div>';
-}
-
-function generateEvalCommand() {
-  const judge = document.getElementById('evalJudgeMode')?.value || 'static';
-  const scope = document.getElementById('evalRunScope')?.value || 'priority-p0';
-  const caseId = (document.getElementById('evalRunCaseId')?.value || selectedGoldenId || '').trim();
-  const scenario = document.getElementById('evalRunScenario')?.value || '';
-  const workflow = document.getElementById('evalRunWorkflow')?.value || 'onboarding';
-  let cmd = scope === 'workflow'
-    ? 'npm run eval:workflow -- --workflow=' + workflow
-    : 'npm run eval:conversation -- --judge=' + judge;
-  if (scope === 'priority-p0') cmd += ' --priority=P0';
-  else if (scope === 'case' && caseId) cmd += ' --only=' + caseId;
-  else if (scope === 'scenario' && scenario) cmd += ' --scenario=' + scenario;
-  cmd += ' --run-id=' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
-  const output = document.getElementById('evalCommandOutput');
-  if (output) output.value = cmd;
-}
-
-async function copyEvalCommand() {
-  generateEvalCommand();
-  const value = document.getElementById('evalCommandOutput')?.value || '';
-  try {
-    await navigator.clipboard.writeText(value);
-    alert('已复制评测命令');
-  } catch {
-    prompt('复制评测命令', value);
-  }
-}
-
-function renderEvalReportTable(rows) {
-  return '<div style="overflow:auto"><table class="cost-table">' +
-    '<thead><tr><th>场景</th><th>Markdown</th><th>JSON</th></tr></thead>' +
-    '<tbody>' + rows.map((row) =>
-      '<tr>' +
-        '<td><strong>' + esc(row.scenario_name || row.scenario || '-') + '</strong><div class="mono">' + esc(row.scenario || '-') + '</div></td>' +
-        '<td class="mono">' + esc(row.mdFilename || '-') + '</td>' +
-        '<td class="mono">' + esc(row.jsonFilename || '-') + '</td>' +
-      '</tr>'
-    ).join('') + '</tbody></table></div>';
-}
-
-function openGoldenCase(id) {
-  selectedGoldenId = id;
-  GOLDEN_TAB = 'cases';
-  renderGoldenWorkbench();
-}
-
-function rowIdToCase(id) {
-  if (!id) return;
-  openGoldenCase(id);
-}
-
-function selectedGoldenCase() {
-  return (GOLDEN.cases || []).find((item) => item.id === selectedGoldenId) || (GOLDEN.cases || [])[0] || null;
-}
-
-function renderGoldenFilters() {
-  const domains = Object.keys(GOLDEN.stats?.domains || {});
-  const categories = Object.keys(GOLDEN.stats?.categories || {});
-  const priorities = Object.keys(GOLDEN.stats?.priorities || {});
-  renderGoldenTierFilter();
-  if (!document.getElementById('goldenDomain') || !document.getElementById('goldenCategory') || !document.getElementById('goldenPriority')) return;
-  document.getElementById('goldenDomain').innerHTML = '<option value="">全部业务域</option>' + domains.map((item) => '<option value="' + esc(item) + '">' + esc(item) + ' · ' + esc(GOLDEN.stats?.domains?.[item] || 0) + '</option>').join('');
-  document.getElementById('goldenCategory').innerHTML = '<option value="">全部分类</option>' + categories.map((item) => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
-  document.getElementById('goldenPriority').innerHTML = '<option value="">全部优先级</option>' + priorities.map((item) => '<option value="' + esc(item) + '">' + esc(item) + '</option>').join('');
-}
-
-function renderGoldenTierFilter() {
-  const root = document.getElementById('goldenTierFilter');
-  if (!root) return;
-  const tiers = Object.keys(GOLDEN.stats?.reviewTiers || {});
-  const knownOrder = ['golden_core', 'regression', 'principle_probe', 'smoke', 'archived_candidate'];
-  const ordered = knownOrder.filter((tier) => tiers.includes(tier)).concat(tiers.filter((tier) => !knownOrder.includes(tier)));
-  root.innerHTML = ordered.map((tier) => {
-    const active = GOLDEN_ACTIVE_TIERS.has(tier) ? ' active' : '';
-    const count = GOLDEN.stats?.reviewTiers?.[tier] || 0;
-    return '<button class="tier-chip' + active + '" onclick="toggleGoldenTier(\\'' + esc(tier) + '\\')">' + esc(reviewTierLabel(tier)) + ' ' + esc(count) + '</button>';
-  }).join('') + '<button class="tier-chip" onclick="showAllGoldenTiers()">全部</button>';
-}
-
-function toggleGoldenTier(tier) {
-  if (GOLDEN_ACTIVE_TIERS.has(tier)) {
-    GOLDEN_ACTIVE_TIERS.delete(tier);
-  } else {
-    GOLDEN_ACTIVE_TIERS.add(tier);
-  }
-  if (!GOLDEN_ACTIVE_TIERS.size) GOLDEN_ACTIVE_TIERS.add(tier);
-  renderGoldenTierFilter();
-  renderGoldenCases();
-}
-
-function showAllGoldenTiers() {
-  GOLDEN_ACTIVE_TIERS = new Set(Object.keys(GOLDEN.stats?.reviewTiers || {}));
-  renderGoldenTierFilter();
-  renderGoldenCases();
-}
-
-function filteredGoldenCases() {
-  const keyword = (document.getElementById('goldenSearch')?.value || '').trim().toLowerCase();
-  const domain = document.getElementById('goldenDomain')?.value || '';
-  const category = document.getElementById('goldenCategory')?.value || '';
-  const priority = document.getElementById('goldenPriority')?.value || '';
-  return (GOLDEN.cases || []).filter((item) => {
-    if (GOLDEN_ACTIVE_TIERS.size && !GOLDEN_ACTIVE_TIERS.has(item.reviewTier)) return false;
-    if (domain && item.domain !== domain) return false;
-    if (category && item.category !== category) return false;
-    if (priority && item.priority !== priority) return false;
-    if (!keyword) return true;
-    return [
-      item.id,
-      item.category,
-      item.domain,
-      item.reviewTier,
-      item.priority,
-      item.scenario,
-      item.userInput,
-      item.styleNotes,
-      ...(item.tags || []),
-      ...(item.principles || []),
-    ].some((value) => String(value || '').toLowerCase().includes(keyword));
-  });
-}
-
-function renderGoldenCases() {
-  const cases = filteredGoldenCases();
-  if (!cases.some((item) => item.id === selectedGoldenId)) {
-    selectedGoldenId = cases[0]?.id || GOLDEN.cases?.[0]?.id || '';
-  }
-  const count = document.getElementById('goldenCount');
-  const stats = document.getElementById('goldenStats');
-  const root = document.getElementById('goldenList');
-  if (!count || !stats || !root) return;
-  count.textContent = (GOLDEN.stats?.total || 0) + ' 条';
-  stats.innerHTML = [
-    metric(cases.length, '当前显示'),
-    metric((GOLDEN.stats?.reviewTiers || {}).golden_core || 0, '黄金核心'),
-    metric((GOLDEN.stats?.reviewTiers || {}).regression || 0, '事故回归'),
-    metric((GOLDEN.stats?.domains || {}).Onboarding || 0, 'Onboarding'),
-  ].join('');
-  if (!cases.length) {
-    root.innerHTML = '<div class="empty">没有匹配的 case</div>';
-  } else {
-    root.innerHTML = '<div class="eval-list">' + cases.map(renderGoldenCard).join('') + '</div>';
-  }
-  renderGoldenDetail();
-}
-
-function renderGoldenCard(item) {
-  const selected = item.id === selectedGoldenId ? ' selected' : '';
-  const summary = summarizeAuditText(item.userInput || item.styleNotes || item.scenario);
-  const title = humanGoldenTitle(item);
-  const turnLabel = (item.turnCount || 1) > 1 ? (item.turnCount || 1) + ' 轮对话' : '单轮';
-  return '<div class="eval-card' + selected + '" onclick="selectGoldenCase(\\'' + esc(item.id) + '\\')">' +
-    '<div class="eval-title"><strong>' + esc(title) + '</strong>' + badge(item.priority || '-', item.priority === 'P0' ? 'warn' : 'gray') + '</div>' +
-    '<div class="eval-desc">' + esc(summary) + '</div>' +
-    '<div class="eval-case-id mono">' + esc(item.id || '-') + '</div>' +
-    '<div class="eval-tags">' +
-      badge(item.domain || '其他', item.domain === 'Onboarding' ? 'warn' : 'gray') +
-      badge(reviewTierLabel(item.reviewTier), item.reviewTier === 'golden_core' ? 'ok' : 'info') +
-      badge(turnLabel, 'gray') +
-      badge(scenarioLabel(item.scenario), 'gray') +
-    '</div>' +
-  '</div>';
-}
-
-function humanGoldenTitle(item) {
-  const firstLine = String(item.userInput || item.styleNotes || item.scenario || item.id || '')
-    .split('\\n')
-    .map((line) => line.trim())
-    .find(Boolean);
-  return firstLine || item.id || '未命名 case';
-}
-
-function categoryLabel(value) {
-  return ({
-    core_golden: '核心样本',
-    principle_probe: '原则探针',
-    incident_regression: '回归样本',
-    safety_redline: '安全红线',
-    smoke: '冒烟样本',
-  })[value] || value || '-';
-}
-
-function reviewTierLabel(value) {
-  return ({
-    golden_core: '黄金核心',
-    regression: '事故回归',
-    principle_probe: '原则探针',
-    smoke: '冒烟样本',
-    archived_candidate: '候选归档',
-  })[value] || value || '-';
-}
-
-function scenarioLabel(value) {
-  const labels = {
-    workspace_greeting: '开场',
-    onboarding_market_watch_custom_times: 'Onboarding 盯盘时间',
-    onboarding_notification_custom_times: 'Onboarding 通知偏好',
-    out_of_scope_boundary: '越界拒答',
-    investment_model_guided_setup: '投资模型',
-    investment_model_query_empty: '投资模型',
-    investment_model_freeform_draft: '投资模型',
-    investment_model_plan_drafting_confirm: '模型预案',
-    portfolio_add_no_plan_hint: '持仓',
-    portfolio_movement_answer_composition: '持仓查询',
-    portfolio_movement_natural_question: '持仓查询',
-    portfolio_update_cost_confirm: '持仓修改',
-    watchlist_add: '自选',
-    watchlist_remove_confirm: '自选移除',
-    watchlist_movement_answer_composition: '自选查询',
-    watchlist_entry_condition_query: '自选买点',
-    plan_trigger_answer_composition: '预案查询',
-    plan_update_answer_composition: '预案更新',
-    contextual_watchlist_add: '上下文写入',
-    contextual_expand_latest: '上下文追问',
-    contextual_write_policy_guard: '写入拦截',
-    contextual_write_no_code_guessing: '上下文绑定',
-    alert_set_simple_price: '提醒草案',
-    alert_set_confirm_two_turn: '提醒确认',
-    pending_confirmation_can_be_ambiguous: '短确认',
-    alert_set_breakout_price_cancel: '提醒取消',
-    alert_rules_query: '提醒查询',
-    alert_near_trigger_answer_composition: '提醒查询',
-    alert_invalid_answer_composition: '提醒诊断',
-    alert_remove_confirm: '提醒关闭',
-    strategy_list_query: '策略查询',
-    strategy_plan_drafting_gate_one: '策略闸门',
-    investment_style_set_confirm: '风格草案',
-    methodology_set_confirm: '方法论',
-    screening_methodology_overlay_draft: '选股方法',
-    trading_strategy_set_confirm: '交易策略',
-    trading_strategy_indicator_draft: '指标草案',
-    daily_review_request: '日复盘',
-    daily_review_summary_then_expand: '复盘查看',
-    weekly_review_request: '周复盘',
-    monthly_review_request: '月复盘',
-    stock_screening_qa: '选股问答',
-    stock_screening_ambiguous: '选股澄清',
-  };
-  return labels[value] || '其他场景';
-}
-
-function selectGoldenCase(id) {
-  selectedGoldenId = id;
-  renderGoldenCases();
-}
-
-function goldenRunResult(id) {
-  return GOLDEN_RUNS[id] || null;
-}
-
-function renderGoldenDetail() {
-  const item = selectedGoldenCase();
-  const root = document.getElementById('goldenDetail');
-  if (!item) {
-    root.innerHTML = '<div class="empty">选择一个 case</div>';
-    return;
-  }
-  root.innerHTML =
-    '<dl class="kv">' +
-      '<dt>Case ID</dt><dd class="mono">' + esc(item.id) + '</dd>' +
-      '<dt>场景</dt><dd>' + esc(item.scenario || '-') + '</dd>' +
-      '<dt>业务域</dt><dd>' + esc(item.domain || '其他') + '</dd>' +
-      '<dt>审查层级</dt><dd>' + esc(reviewTierLabel(item.reviewTier)) + ' · ' + esc(item.priority || '-') + '</dd>' +
-      '<dt>原始分类</dt><dd>' + esc(categoryLabel(item.category)) + '</dd>' +
-      '<dt>标签</dt><dd>' + esc((item.tags || []).join(', ') || '-') + '</dd>' +
-      '<dt>轮数</dt><dd>' + esc(item.turnCount || 1) + '</dd>' +
-    '</dl>' +
-    '<div class="section"><h3>原则</h3>' + auditSection('Principles', (item.principles || []).map((line) => '- ' + line).join('\\n') || '-') + '</div>' +
-    '<div class="section"><h3>单条运行</h3>' +
-      '<div class="ops">' +
-        '<button id="goldenRunBtn" class="btn btn-primary" onclick="runGoldenCase()">发送到主用户投资助手</button>' +
-        '<button class="btn" onclick="setView(\\'audit\\')">查看审计</button>' +
-      '</div>' +
-      '<div id="goldenRunError" class="error" style="display:none;margin-top:10px"></div>' +
-      '<div id="goldenRunResult">' + renderGoldenRunResult(item) + '</div>' +
-    '</div>' +
-    '<div class="section"><h3>编辑 YAML</h3><textarea id="goldenRawEditor" class="golden-editor">' + esc(item.rawYaml || '') + '</textarea></div>' +
-    '<div id="goldenSaveError" class="error" style="display:none"></div>' +
-    '<div class="ops">' +
-      '<button class="btn btn-primary" onclick="saveGoldenCase()">保存这条 case</button>' +
-      '<button class="btn" onclick="renderGoldenDetail()">放弃修改</button>' +
-    '</div>';
-}
-
-function renderGoldenRunResult(item) {
-  const result = goldenRunResult(item.id);
-  if (!result) return '<div class="empty">尚未运行。点击后会通过微信入站链路发送 case 的 user_input。</div>';
-  if (result.running) return '<div class="empty">正在发送并等待回复...</div>';
-  if (result.error) return '<div class="error" style="display:block;margin-top:10px">' + esc(result.error) + '</div>';
-  return '<div class="section">' +
-    '<dl class="kv">' +
-      '<dt>目标</dt><dd>' + esc(result.target?.name || result.target?.instanceId || '-') + ' · <span class="mono">' + esc(result.target?.instanceId || '-') + '</span></dd>' +
-      '<dt>耗时</dt><dd>' + esc(result.elapsedMs || 0) + 'ms</dd>' +
-      '<dt>会话</dt><dd class="mono">' + esc(result.conversationId || '-') + '</dd>' +
-      '<dt>输入</dt><dd>' + esc(result.userInput || '-') + '</dd>' +
-    '</dl>' +
-    auditSection('助手回复', result.text || '-', 'primary') +
-  '</div>';
-}
-
-async function runGoldenCase() {
-  const item = selectedGoldenCase();
-  if (!item) return;
-  GOLDEN_RUNS[item.id] = { running: true };
-  renderGoldenDetail();
-  try {
-    const result = await platformJson('/api/platform/golden-cases/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: item.id, instanceId: 'invest-agent-primary' }),
-    });
-    GOLDEN_RUNS[item.id] = result;
-  } catch (error) {
-    GOLDEN_RUNS[item.id] = { error: error.message };
-  }
-  renderEvaluationRunHistory();
-  renderEvaluationReviewQueue();
-  renderGoldenDetail();
-}
-
-async function saveGoldenCase() {
-  const item = selectedGoldenCase();
-  if (!item) return;
-  const error = document.getElementById('goldenSaveError');
-  error.style.display = 'none';
-  try {
-    GOLDEN = await platformJson('/api/platform/golden-cases', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: item.id, rawYaml: document.getElementById('goldenRawEditor').value }),
-    });
-    selectedGoldenId = item.id;
-    renderGoldenFilters();
-    renderGoldenCases();
-  } catch (err) {
-    error.textContent = err.message;
-    error.style.display = 'block';
-  }
 }
 
 function filteredInstances() {
@@ -2050,11 +1294,13 @@ function renderDetail(item) {
     '</dl>' +
     '<div class="ops">' +
       '<a class="btn btn-primary" href="/dashboard?userId=' + encodeURIComponent(item.owner?.id || '') + '&instanceId=' + encodeURIComponent(item.instanceId) + '">打开 Dashboard</a>' +
+      '<button class="btn btn-primary" onclick="provisionSelectedPortalCredential()">生成并复制门户登录信息</button>' +
       '<a class="btn" href="/dashboard">返回当前 Dashboard</a>' +
       (item.workspace?.exists ? '' : '<button class="btn" onclick="ensureSelectedWorkspace()">补建 Workspace</button>') +
       (isDefaultTestInstance ? '<button class="btn" onclick="showResetTestInstancePanel()">重置测试实例</button>' : '<button class="btn" onclick="archiveSelectedInstance()">删除用户助手</button>') +
     '</div>' +
     (isDefaultTestInstance ? renderResetTestInstancePanel() : '') +
+    '<div id="portalCredentialResult" class="item" style="display:none;margin-top:10px"></div>' +
     '<div class="section"><h3>运行概况</h3><div class="metrics">' +
       metric(item.planCount, '预案') +
       metric(item.traceCount, '对话') +
@@ -2152,9 +1398,77 @@ async function createInstance() {
     selectedInstanceId = data.instance.instanceId;
     closeCreateModal();
     await loadPlatform();
+    if (data.portalCredential) {
+      await copyPortalCredential(data.portalCredential);
+      alert('用户助手已创建，门户登录信息已复制到剪贴板。');
+    }
   } catch (err) {
     error.textContent = err.message;
     error.style.display = 'block';
+  }
+}
+
+function portalChatUrl() {
+  const baseUrl = String(PLATFORM_CONFIG.portalPublicUrl || 'http://localhost:3100').replace(/\\/+$/, '');
+  return baseUrl.endsWith('/chat') ? baseUrl : baseUrl + '/chat';
+}
+
+function portalCredentialText(credential) {
+  return [
+    '你的投资助手门户已开通：',
+    '访问地址：' + portalChatUrl(),
+    '账号：' + (credential.username || ''),
+    '临时密码：' + (credential.temporaryPassword || ''),
+    '首次登录后请按页面提示修改密码。'
+  ].join('\\n');
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
+}
+
+async function copyPortalCredential(credential) {
+  await copyText(portalCredentialText(credential));
+}
+
+async function provisionSelectedPortalCredential() {
+  const item = selectedInstance();
+  if (!item) return;
+  const box = document.getElementById('portalCredentialResult');
+  if (box) {
+    box.style.display = 'block';
+    box.innerHTML = '<div class="muted">正在生成门户临时密码...</div>';
+  }
+  try {
+    const data = await platformJson('/api/platform/instances/' + encodeURIComponent(item.instanceId) + '/portal/credential', {
+      method: 'POST',
+    });
+    await copyPortalCredential(data.portalCredential);
+    if (box) {
+      box.innerHTML =
+        '<div class="item-line"><strong>门户登录信息已复制</strong><span>' + esc(fmtTime(data.updatedAt)) + '</span></div>' +
+        '<div class="muted" style="margin-top:6px">账号 ' + esc(data.portalCredential.username) +
+        ' · 临时密码已生成；再次点击会重置为新的临时密码。</div>' +
+        '<pre class="log" style="margin-top:8px">' + esc(portalCredentialText(data.portalCredential)) + '</pre>';
+    }
+  } catch (err) {
+    if (box) {
+      box.innerHTML = '<div class="error" style="display:block;margin:0">' + esc(err.message) + '</div>';
+    } else {
+      alert(err.message);
+    }
   }
 }
 

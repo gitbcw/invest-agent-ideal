@@ -1,8 +1,9 @@
-# 智能盯盘规则。默认基于日复盘观察点，只在异常触发时推送。
+# 盘中定时简报与提醒边界。
+# 本文件不是明确规则巡检的落库位置；可执行价格/均线/指标规则必须写入服务层 alert_rules。
 mode: default
 only_push_on_exception: true
-priority_policy: "P0 立即推送；P1 晚间汇总；P2 仅记录。详见 config/notification.yaml。"
-purpose_boundary: "盯盘用于发现规则触发和重大风险，不用于制造连续行情陪伴。"
+priority_policy: "用户可见口径：立即提醒、当天汇总、仅记录。内部优先级映射详见 config/notification.yaml。"
+purpose_boundary: "盘中简报用于按固定时间汇总市场与持仓状态；明确规则巡检用于执行 alert_rules；二者都不用于制造连续行情陪伴。"
 
 exception_rules:
   - "核心持仓接近用户设定的买入区或减仓区。"

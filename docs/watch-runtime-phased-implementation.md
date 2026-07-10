@@ -2,7 +2,7 @@
 
 日期: 2026-06-28
 
-状态: 阶段方案,阶段一已完成首轮主用户真实验收,阶段二设计已收敛
+状态: 当前 watch runtime 源文档;阶段一已完成首轮主用户真实验收,阶段二已进入运行时主通路
 
 关联文档:
 
@@ -148,8 +148,8 @@
 | Primitive | 说明 |
 | --- | --- |
 | `price_cross` | 价格上穿/下破固定阈值 |
-| `percent_change` | 涨跌幅超过阈值 |
-| `near_plan_level` | 接近支撑/压力/目标/止损 |
+| `percent_change` | 暂不作为 stage2 watch-rule catalog 暴露;旧 alerts 兼容层不再参与运行时巡检 |
+| `near_plan_level` | 接近支撑/压力/目标/止损(beta) |
 | `ma_cross` | 突破/跌破指定均线 |
 | `macd_cross` | MACD 金叉/死叉 |
 | `kdj_cross` | KDJ 金叉/死叉 |
@@ -157,8 +157,8 @@
 | `boll_break` | 突破/跌破 BOLL 轨道 |
 | `wr_threshold` | WR 阈值 |
 | `volume_ratio` | 量比超过阈值 |
-| `breakout_with_volume` | 放量突破压力位 |
-| `break_support` | 跌破支撑位 |
+| `breakout_with_volume` | 暂不作为 stage2 watch-rule catalog 暴露;更适合作为组合规则或系统信号复用 |
+| `break_support` | 暂不作为 stage2 watch-rule catalog 暴露;更适合作为组合规则或预案派生规则 |
 
 建议阶段二最小首发集,优先收敛到 3 个:
 
@@ -169,6 +169,13 @@
 | `near_plan_level` | 必做 |
 
 2026-07-02 当前实现已超过最小首发集:技术指标规则已扩展到 MACD/KDJ/RSI/BOLL/WR/量比。`breakout_with_volume`、`break_support` 仍更适合作为组合规则或系统信号复用场景,不应在没有明确状态机和数据窗口时用自然语言即兴执行。
+
+2026-07-09 运行时收敛:
+
+- `rule-alert-check` 只执行 stage2 watch_rules,即 `alert_rules.relation_to_plan=stage2_watch_rule` 的明确规则实例。
+- legacy `alerts` 表不再参与规则巡检,不再作为 scheduler scope 来源,也不再在服务启动时自动镜像到 `alert_rules`。
+- `/api/alerts/*` 仍作为 legacy UI/API 兼容面保留,但不会生成运行时 watch-rule;新规则必须走 `/api/watch-rules*` 或 MCP `watch_rules.*`。
+- `market-watch` 固定盘中简报和 `rule-alert-check` 是两条独立调度线。若同一 scheduler tick 两者同时命中,规则巡检仍记录事件,但压制单独规则推送,避免同分钟微信重复打扰。
 
 ### 4.3 规则目录与实例分层
 

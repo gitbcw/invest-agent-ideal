@@ -6,8 +6,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         PORT: 22655,
-        WEIXIN_AUTO_START: "true",
-        INVEST_AGENT_WEIXIN_STATE_DIR: "./.state",
+        HOST: "127.0.0.1",
       },
       autorestart: true,
       max_memory_restart: "500M",

@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { fork, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import QRCode from "qrcode";
 import { db, initDb } from "../db/index.js";
 import { channelIdentities, channelIdentityInstances } from "../db/schema.js";
 import { config } from "../lib/config.js";
-import { sanitizeCustomerText } from "../lib/customer-output.js";
+import { sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import { and, desc, eq } from "drizzle-orm";
@@ -17,6 +20,7 @@ import {
 } from "./weixin-account-store.js";
 import { InvestAgentMobileBridge } from "./weixin-message-bridge.js";
 import { fetchWeixinQRCode, isLoginFresh, pollWeixinQRStatus, type WeixinLoginSession } from "./weixin-login-flow.js";
+import type { IncomingMediaAttachment } from "../lib/attachment-store.js";
 
 type WeixinBackend = "hermes" | "codex";
 type LoginStage = "idle" | "waiting_scan" | "scanned" | "connected" | "error";
@@ -51,25 +55,29 @@ const MAX_QR_REFRESH_COUNT = 3;
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
 const WEIXIN_MESSAGE_STATE_FINISH = 2;
-const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 1000;
+const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 2000;
 
-let weixinSdkPromise: Promise<{
-  start: (
-    agent: { chat(request: { conversationId: string; text: string; media?: { type: string } }): Promise<{ text?: string }>; clearSession?: (conversationId: string) => void },
-    opts?: { accountId?: string; abortSignal?: AbortSignal; log?: (msg: string) => void }
-  ) => Promise<void>;
-}> | null = null;
-
-function syncWeixinSdkStateDirEnv(stateDir = config.weixin.stateDir) {
-  process.env.OPENCLAW_STATE_DIR = stateDir;
-}
-
-function loadWeixinSdk(stateDir = config.weixin.stateDir) {
-  syncWeixinSdkStateDirEnv(stateDir);
-  if (!weixinSdkPromise) {
-    weixinSdkPromise = import("weixin-agent-sdk");
+type WeixinListenerMessage =
+  | {
+    type: "chat";
+    requestId: string;
+    request: {
+      conversationId: string;
+      text: string;
+      contextToken?: string;
+      media?: IncomingMediaAttachment;
+    };
   }
-  return weixinSdkPromise;
+  | { type: "log"; message: string }
+  | { type: "error"; error: string };
+
+function resolveListenerWorkerPath() {
+  const compiledPath = path.join(__dirname, "weixin-listener-worker.js");
+  if (existsSync(compiledPath)) return { path: compiledPath, execArgv: process.execArgv };
+  return {
+    path: path.join(__dirname, "weixin-listener-worker.ts"),
+    execArgv: ["--import", "tsx"],
+  };
 }
 
 async function resolvePushConversation(params: {
@@ -199,11 +207,13 @@ export class WeixinMobileManager {
   };
 
   private loginSession: WeixinLoginSession | null = null;
-  private listenerAbortControllers = new Map<string, AbortController>();
+  private listenerWorkers = new Map<string, ChildProcess>();
+  private stoppingListenerAccounts = new Set<string>();
   private loginPollTask: Promise<void> | null = null;
   private readonly backend: WeixinBackend;
   private readonly stateDir: string;
   private readonly label: string;
+  private readonly bridges = new Map<string, InvestAgentMobileBridge>();
   private readonly projectBinding?: {
     projectId: string;
     instanceId: string;
@@ -253,7 +263,12 @@ export class WeixinMobileManager {
   }
 
   private buildBridge(accountId: string) {
-    return new InvestAgentMobileBridge(accountId, this.stateDir, this.projectBinding);
+    const normalized = normalizeAccountId(accountId);
+    const existing = this.bridges.get(normalized);
+    if (existing) return existing;
+    const bridge = new InvestAgentMobileBridge(normalized, this.stateDir, this.projectBinding);
+    this.bridges.set(normalized, bridge);
+    return bridge;
   }
 
   getState(): WeixinConnectState {
@@ -299,11 +314,10 @@ export class WeixinMobileManager {
   }
 
   stop() {
-    const stoppedCount = this.listenerAbortControllers.size;
-    for (const controller of this.listenerAbortControllers.values()) {
-      controller.abort();
+    const stoppedCount = this.listenerWorkers.size;
+    for (const accountId of this.listenerWorkers.keys()) {
+      this.stopAccountListener(accountId);
     }
-    this.listenerAbortControllers.clear();
     this.loginSession = null;
     this.loginPollTask = null;
     this.withState({
@@ -318,7 +332,6 @@ export class WeixinMobileManager {
   }
 
   async ensureListenerStarted(accountId?: string) {
-    syncWeixinSdkStateDirEnv(this.stateDir);
     const accountIds = accountId ? [normalizeAccountId(accountId)] : listWeixinAccountIds(this.stateDir);
     if (accountIds.length === 0) {
       throw new Error("当前没有已连接的微信账号");
@@ -336,7 +349,7 @@ export class WeixinMobileManager {
       enabled: accounts.length > 0,
       stage: accounts.length > 0 ? "connected" : this.state.stage,
       accountId: started[started.length - 1] || this.state.accountId || accounts[accounts.length - 1]?.accountId,
-      listenerRunning: this.listenerAbortControllers.size > 0,
+      listenerRunning: this.listenerWorkers.size > 0,
       message: started.length > 0
         ? `${this.label}消息监听中：${started.length} 个账号`
         : `${this.label}已无新增账号需要启动监听`,
@@ -363,37 +376,93 @@ export class WeixinMobileManager {
     };
   }
 
+  async simulateIncomingMedia(input: {
+    text?: string;
+    conversationId: string;
+    media: IncomingMediaAttachment;
+    accountId?: string;
+    contextToken?: string;
+  }): Promise<{ text?: string; accountId: string; conversationId: string }> {
+    const accountId = normalizeAccountId(input.accountId || this.state.accountId || `${this.backend}-simulator`);
+    const bridge = this.buildBridge(accountId);
+    const response = await bridge.chat({
+      conversationId: input.conversationId,
+      text: input.text || "",
+      media: input.media,
+      contextToken: input.contextToken,
+    });
+    return {
+      ...response,
+      accountId,
+      conversationId: input.conversationId,
+    };
+  }
+
   private async startAccountListener(accountId: string): Promise<boolean> {
     const account = resolveWeixinAccount(accountId, this.stateDir);
     if (!account.configured || !account.accountId) {
       logger.warn(`${this.label}监听跳过：账号 ${accountId} 未配置 token`);
       return false;
     }
-    if (this.listenerAbortControllers.has(account.accountId)) {
+    if (this.listenerWorkers.has(account.accountId)) {
       return false;
     }
 
-    const { start } = await loadWeixinSdk(this.stateDir);
     initDb();
-    const bridge = this.buildBridge(account.accountId);
-    const abortController = new AbortController();
-    this.listenerAbortControllers.set(account.accountId, abortController);
-
-    start(bridge, {
-      accountId: account.accountId,
-      abortSignal: abortController.signal,
-      log: (msg) => logger.info(`[weixin-mobile:${this.backend}:${account.accountId}] ${msg}`),
-    }).catch((error) => {
-      this.listenerAbortControllers.delete(account.accountId);
+    const worker = resolveListenerWorkerPath();
+    const child = fork(worker.path, [], {
+      env: {
+        ...process.env,
+        OPENCLAW_STATE_DIR: this.stateDir,
+        INVEST_AGENT_WEIXIN_ACCOUNT_ID: account.accountId,
+      },
+      execArgv: worker.execArgv,
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    });
+    this.listenerWorkers.set(account.accountId, child);
+    child.on("message", (message: WeixinListenerMessage) => {
+      if (message.type === "log") {
+        logger.info(`[weixin-mobile:${this.backend}:${account.accountId}] ${message.message}`);
+        return;
+      }
+      if (message.type === "error") {
+        logger.error(`${this.label}账号 ${account.accountId} 消息监听失败: ${message.error}`);
+        return;
+      }
+      if (message.type !== "chat") return;
+      const respond = (payload: { type: "chat-result"; requestId: string; response?: { text?: string }; error?: string }) => {
+        if (!child.connected) return;
+        child.send(payload, (error) => {
+          if (error) logger.warn(`${this.label}账号 ${account.accountId} 微信监听响应转发失败: ${error.message}`);
+        });
+      };
+      this.buildBridge(account.accountId).chat(message.request)
+        .then((response) => respond({ type: "chat-result", requestId: message.requestId, response }))
+        .catch((error) => respond({ type: "chat-result", requestId: message.requestId, error: error instanceof Error ? error.message : String(error) }));
+    });
+    child.once("exit", (code, signal) => {
+      const wasStopping = this.stoppingListenerAccounts.delete(account.accountId);
+      this.listenerWorkers.delete(account.accountId);
+      if (wasStopping) return;
+      const reason = `exit=${code ?? "-"} signal=${signal ?? "-"}`;
       this.withState({
         stage: "error",
-        listenerRunning: this.listenerAbortControllers.size > 0,
+        listenerRunning: this.listenerWorkers.size > 0,
         message: `${this.label}账号 ${account.accountId} 消息监听异常退出`,
-        lastError: (error as Error).message,
+        lastError: reason,
       });
-      logger.error(`${this.label}账号 ${account.accountId} 消息监听失败:`, error);
+      logger.error(`${this.label}账号 ${account.accountId} 消息监听异常退出: ${reason}`);
     });
     return true;
+  }
+
+  private stopAccountListener(accountId: string) {
+    const worker = this.listenerWorkers.get(accountId);
+    if (!worker) return;
+    this.stoppingListenerAccounts.add(accountId);
+    worker.send({ type: "stop" });
+    const terminateTimer = setTimeout(() => worker.kill("SIGTERM"), 5_000);
+    terminateTimer.unref();
   }
 
   async pushText(message: string, options: { userId?: string; instanceId?: string } = {}): Promise<boolean> {
@@ -419,10 +488,10 @@ export class WeixinMobileManager {
       }
 
       logger.info(
-        `微信主动推送命中 account=${account.accountId} user=${options.userId || DEFAULT_USER_ID} instance=${options.instanceId || "-"} conversation=${target.conversationId} contextToken=${target.contextToken ? "yes" : "no"} chunks=${splitWeixinText(sanitizeCustomerText(message)).length}`
+        `微信主动推送命中 account=${account.accountId} user=${options.userId || DEFAULT_USER_ID} instance=${options.instanceId || "-"} conversation=${target.conversationId} contextToken=${target.contextToken ? "yes" : "no"} chunks=${splitWeixinText(sanitizeWeixinCustomerText(message)).length}`
       );
 
-      const chunks = splitWeixinText(sanitizeCustomerText(message));
+      const chunks = splitWeixinText(sanitizeWeixinCustomerText(message));
       try {
         await this.buildBridge(account.accountId).pushToConversation(
           target.conversationId,
@@ -434,13 +503,11 @@ export class WeixinMobileManager {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("errcode=-14") || message.toLowerCase().includes("session timeout")) {
-          const controller = this.listenerAbortControllers.get(account.accountId);
-          controller?.abort();
-          this.listenerAbortControllers.delete(account.accountId);
+          this.stopAccountListener(account.accountId);
           this.withState({
             accountId: account.accountId,
             pushReady: false,
-            listenerRunning: this.listenerAbortControllers.size > 0,
+            listenerRunning: this.listenerWorkers.size > 0,
             stage: "error",
             message: `${this.label}登录态已过期，请重新扫码连接。`,
             lastError: message,
@@ -602,10 +669,10 @@ export class WeixinMobileManager {
       if (!account.configured || !account.accountId) continue;
       summaries.push({
         accountId: account.accountId,
-        listenerRunning: this.listenerAbortControllers.has(account.accountId),
+        listenerRunning: this.listenerWorkers.has(account.accountId),
         lastConversationId: account.lastConversationId,
         lastConversationAt: account.lastConversationAt,
-        pushReady: Boolean(account.token && account.lastConversationId && this.listenerAbortControllers.has(account.accountId)),
+        pushReady: Boolean(account.token && account.lastConversationId && this.listenerWorkers.has(account.accountId)),
       });
     }
     return summaries;

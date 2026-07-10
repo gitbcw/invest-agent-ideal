@@ -11,7 +11,7 @@
 
 ## 三类归属
 
-### 🟢 服务层保留(17 张)
+### 🟢 服务层保留(20 张)
 
 这些表承载平台基础设施,不与具体用户的投资判断耦合,继续留在 SQLite。
 
@@ -25,14 +25,17 @@
 | `ai_instances` | 用户助手注册(历史表名) | 平台元数据 + 路由依据;产品语义上一用户一助手 |
 | `settings` | 系统级 KV(signal_config、巡检间隔、复盘模板) | 平台默认值,跨用户共享 |
 | `codex_acp_traces` | ACP 调用审计(历史表名保留) | 系统审计,与用户方法无关 |
+| `conversation_sessions` | canonical conversation log 会话索引 | 用户门户与微信共享的权威对话历史索引;云端 portal 只保存镜像,本地 SQLite 是权威源 |
+| `conversation_messages` | canonical conversation log 消息明细 | 用户门户 `conversation.list/get/chat` 和微信对话审计共用;需要分页、幂等和跨 channel 查询索引 |
 | `sandbox_audit_logs` | 沙箱令牌调用审计 | 合规/安全审计 |
 | `pending_sandbox_confirmations` | 待确认的沙箱操作 | 跨进程状态(微信消息 ↔ 沙箱执行) |
 | `conversation_tasks` | 旧会话任务草案表 | 保留作考古；conversation-task 草案系统已于 2026-06-23 删除 |
 | `push_jobs` | 微信推送队列(重试、调度) | 系统调度器职责 |
+| `scheduled_task_runs` | 定时任务运行记录 | scheduler claim / 去重 / 状态审计,用于复盘与巡检任务运行观测 |
 | `indicator_definitions` | 指标定义库(系统级) | 平台元数据,owner=system |
-| `alerts` | 旧式提醒规则(legacy) | 已被 `alert_rules` 取代,仅 `alert-rules.ts:139` 一次性读 legacy 做迁移;保留 SQLite 作历史回退 |
-| `alert_rules` | 新式提醒规则(用户配置 + 调度器高频读) | 调度器每轮巡检都读全表(`alert-check.ts:73`),需要 SQL 索引;watch.yaml 的 `exception_rules` 是协议层文本,与字段化结构不对齐,迁移需扩展 yaml schema(WP4.10 决策保留) |
-| `alert_events` | 已触发提醒事件 | 系统调度器写入(`alert-check.ts:672`),数据量大(每交易日数百条),cooldown 去重查询需要 SQL 索引;用户 feedback 字段补丁通过 UPDATE 完成,迁移到 jsonl 需 read-modify-write 大文件(WP4.10 决策保留) |
+| `alerts` | 旧式提醒规则(legacy) | 已被 stage2 `watch_rules` / `alert_rules` 主通路取代;2026-07-09 起不再参与规则巡检、不再启动时镜像到 `alert_rules`,仅保留 SQLite 作旧 UI/API 兼容和历史回退 |
+| `alert_rules` | stage2 watch-rule 规则实例(用户配置 + 调度器高频读) | 运行时规则巡检只执行 `relation_to_plan=stage2_watch_rule` 的规则实例;需要 SQL 索引;watch.yaml 的 `exception_rules` 是协议层文本,不作为机器规则源 |
+| `alert_events` | 已触发提醒事件 | 系统调度器写入(`alert-check.ts`),数据量大(每交易日数百条),cooldown 去重查询需要 SQL 索引;用户 feedback 字段补丁通过 UPDATE 完成,迁移到 jsonl 需 read-modify-write 大文件(WP4.10 决策保留) |
 | `alert_signal_states` | 跨进程去重缓存 | 调度器 + server 都访问,跨进程协同(类似 `push_jobs` 性质),必须在 SQLite(WP4.10 决策保留) |
 
 ### 🔴 迁移至工作空间(10 张)
@@ -60,7 +63,7 @@
 | `agent_traces` | 旧自研 Runtime 历史表,`src/` 中已 0 引用,只有 docs/archive 提及 |
 
 > `agent_traces` 当前 `src/` 引用计数为 0,可立即停止写入并冻结数据。
-> `chat_history` 当前 `src/lib/weixin-conversation-memory.ts` 在 workspace 模式下已切到 `memory/behavior_events.jsonl`;SQLite 模式下仍写入此表(workspace 切换前回退用)。90 天后由 `scripts/drop-migrated-tables.mjs` 统一清理。
+> `chat_history` 当前仅作为旧式对话记忆回退表保留;新用户可见对话历史以 `conversation_sessions` / `conversation_messages` 为 canonical conversation log。90 天后由 `scripts/drop-migrated-tables.mjs` 统一清理。
 
 ## 归属判断标准
 
@@ -72,7 +75,7 @@
 4. **以上都不是 + 含用户投资判断?** → 工作空间。
 
 边界 case:
-- `alerts` / `alert_rules` / `alert_events` / `alert_signal_states`(WP4.10 决策:全部保留 SQLite):虽含用户配置成分,但调度器每轮巡检高频读 / 大流量写入 / 跨进程协同 / cooldown 去重查询需要 SQL 索引,迁移收益不抵风险。历史讨论详见 `docs/archive/ideal-refactor-plan.md` WP4.10。
+- `alerts` / `alert_rules` / `alert_events` / `alert_signal_states`(WP4.10 决策:全部保留 SQLite):`alerts` 已降级为 legacy 兼容表,不参与巡检;`alert_rules` 中 stage2 watch_rules 是当前规则巡检机器源。调度器高频读 / 大流量写入 / 跨进程协同 / cooldown 去重查询需要 SQL 索引,迁移收益不抵风险。历史讨论详见 `docs/archive/ideal-refactor-plan.md` WP4.10。
 - `indicator_results`:既包含用户视角的指标计算结果,也复用 `indicator_definitions` 平台元数据。归到迁移,但平台元数据(定义)留在服务层。
 - `daily_plans`:落 `plans/daily/<date>.yaml`(每 date 一份 yaml,upsert by plan_date)。语义是状态(非事件流),用 yaml 不用 jsonl。
 
@@ -98,14 +101,14 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 - ✅ `stock_plans` 读写 → `config/portfolio.yaml`(stock_plans) — `planBackend`
 - ✅ `trade_actions` 写 → `memory/behavior_events.jsonl`(event_type=action_confirmed)
 - ✅ Dashboard CRUD API(/api/portfolio, /api/watchlist, /api/plans)已切到 backend
-- ✅ 调度器 alert-check / scheduled market-watch 已切到 backend/workspace 配置读；自动 pre-market 推送已删除
+- ✅ 调度器 alert-check 已收敛到 stage2 watch_rules;scheduled market-watch 已切到 backend/workspace 配置读；自动 pre-market 推送已删除
 - ✅ monitor / alert / review handler 已切到 backend 读
 - ✅ `daily_plans` 读写 → `plans/daily/<date>.yaml` — `dailyPlanBackend`(2026-06-21 WP4.7)
 - ✅ `method_change_candidates` 读写 → `memory/method_changes.jsonl`(版本快照,append-only) — `methodChangeBackend`(2026-06-21 WP4.9)
 - ✅ `review_viewpoints` 读写 → `memory/review_viewpoints.jsonl`(read-modify-write,按 sourceDate 整组替换) — `reviewViewpointBackend`(2026-06-21 WP4.8)
 
 未完成(残留双轨):
-- 无(WP4.10 已决策:`alerts` / `alert_rules` / `alert_events` / `alert_signal_states` 全部保留 SQLite,详见 `docs/archive/ideal-refactor-plan.md` WP4.10)
+- `alerts` 表仍作为 legacy UI/API 兼容表存在,但不再镜像到 `alert_rules`,也不参与运行时巡检。当前运行时主通路是 stage2 watch_rules。
 
 已完成(2026-06-21):
 - ✅ `chat_history` 写入路径切到 `memory/behavior_events.jsonl`(event_type=wechat_conversation_turn);SQLite 表保留只读回退,由 `WORKSPACE_BACKEND` 切换
@@ -128,6 +131,7 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 - 周复盘读 jsonl 回看日观点(viewpoints)
 - 月复盘读 jsonl 回看周归因(method_changes)
 - `alert_signal_states` / `indicator_results` 改为工作空间内运行时缓存
+- `conversation_sessions` / `conversation_messages` 不迁移到 workspace:它们是用户门户、微信、审计和云端镜像对账共用的服务级 canonical conversation log。
 
 ## 旧表的处置策略
 

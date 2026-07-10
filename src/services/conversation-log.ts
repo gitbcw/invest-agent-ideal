@@ -6,6 +6,13 @@ import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstan
 import { ensureDefaultAiInstanceForUser } from "../lib/user-identity.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { getProjectRuntimeContext } from "../platform/project-registry.js";
+import { rememberConversationTurn } from "../lib/weixin-conversation-memory.js";
+import {
+  storePortalAttachments,
+  toPublicAttachmentMetadata,
+  type IncomingPortalAttachment,
+  type StoredAttachment,
+} from "../lib/attachment-store.js";
 
 export type ConversationChannel = "web" | "weixin-mobile";
 export type ConversationRole = "user" | "assistant" | "system";
@@ -50,6 +57,15 @@ export interface ConversationChatResult {
   assistantMessage: ConversationMessageRecord;
   traceId?: string;
 }
+
+export class ConversationScopeError extends Error {
+  constructor() {
+    super("CONVERSATION_SCOPE_MISMATCH");
+    this.name = "ConversationScopeError";
+  }
+}
+
+const pendingPortalChats = new Map<string, Promise<ConversationChatResult>>();
 
 function nowIso() {
   return new Date().toISOString();
@@ -107,13 +123,7 @@ function ensureSession(input: {
       conversation_id, user_id, project_id, instance_id, assistant_id, channel, title,
       last_message_preview, message_count, status, metadata, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, 'active', ?, ?, ?)
-    ON CONFLICT(conversation_id) DO UPDATE SET
-      user_id = excluded.user_id,
-      project_id = excluded.project_id,
-      instance_id = excluded.instance_id,
-      assistant_id = excluded.assistant_id,
-      channel = excluded.channel,
-      updated_at = conversation_sessions.updated_at
+    ON CONFLICT(conversation_id) DO NOTHING
   `).run(
     input.conversationId,
     input.scope.userId,
@@ -126,6 +136,13 @@ function ensureSession(input: {
     input.now,
     input.now
   );
+  const existing = sqlite.prepare(`
+    SELECT user_id AS userId, project_id AS projectId, instance_id AS instanceId, assistant_id AS assistantId
+    FROM conversation_sessions WHERE conversation_id = ?
+  `).get(input.conversationId) as ConversationScope | undefined;
+  if (!existing || existing.userId !== input.scope.userId || existing.projectId !== input.scope.projectId || existing.instanceId !== input.scope.instanceId || existing.assistantId !== input.scope.assistantId) {
+    throw new ConversationScopeError();
+  }
 }
 
 function refreshSession(input: {
@@ -289,6 +306,56 @@ export function getConversationMessage(messageId: string): ConversationMessageRe
   return row ? rowToMessage(row) : null;
 }
 
+export function getConversationMessageByIdempotencyKey(input: { idempotencyKey: string; scope: ConversationScope; conversationId: string }): ConversationMessageRecord | null {
+  const row = sqlite.prepare(`
+    SELECT
+      message_id AS messageId,
+      conversation_id AS conversationId,
+      user_id AS userId,
+      assistant_id AS assistantId,
+      instance_id AS instanceId,
+      channel,
+      role,
+      content,
+      status,
+      trace_id AS traceId,
+      request_id AS requestId,
+      metadata,
+      created_at AS createdAt
+    FROM conversation_messages
+    WHERE idempotency_key = ? AND conversation_id = ? AND user_id = ? AND instance_id = ?
+    LIMIT 1
+  `).get(input.idempotencyKey, input.conversationId, input.scope.userId, input.scope.instanceId);
+  return row ? rowToMessage(row) : null;
+}
+
+function getAssistantMessageByRequestId(input: {
+  conversationId: string;
+  requestId: string;
+}): ConversationMessageRecord | null {
+  const row = sqlite.prepare(`
+    SELECT
+      message_id AS messageId,
+      conversation_id AS conversationId,
+      user_id AS userId,
+      assistant_id AS assistantId,
+      instance_id AS instanceId,
+      channel,
+      role,
+      content,
+      status,
+      trace_id AS traceId,
+      request_id AS requestId,
+      metadata,
+      created_at AS createdAt
+    FROM conversation_messages
+    WHERE conversation_id = ? AND request_id = ? AND role = 'assistant'
+    ORDER BY created_at ASC, rowid ASC
+    LIMIT 1
+  `).get(input.conversationId, input.requestId);
+  return row ? rowToMessage(row) : null;
+}
+
 export function listConversations(input: {
   userId?: string;
   assistantId?: string;
@@ -390,25 +457,83 @@ export async function chatViaConversationLog(input: {
   projectId?: string;
   conversationId: string;
   userMessageId?: string;
-  text: string;
+  text?: string;
+  attachments?: IncomingPortalAttachment[];
+  idempotencyKey?: string;
+  clientSentAt?: string;
+}): Promise<ConversationChatResult> {
+  if (input.idempotencyKey) {
+    const pending = pendingPortalChats.get(input.idempotencyKey);
+    if (pending) return pending;
+  }
+  const operation = chatViaConversationLogOnce(input);
+  if (!input.idempotencyKey) return operation;
+  pendingPortalChats.set(input.idempotencyKey, operation);
+  try {
+    return await operation;
+  } finally {
+    pendingPortalChats.delete(input.idempotencyKey);
+  }
+}
+
+async function chatViaConversationLogOnce(input: {
+  userId?: string;
+  assistantId?: string;
+  instanceId?: string;
+  projectId?: string;
+  conversationId: string;
+  userMessageId?: string;
+  text?: string;
+  attachments?: IncomingPortalAttachment[];
   idempotencyKey?: string;
   clientSentAt?: string;
 }): Promise<ConversationChatResult> {
   const scope = normalizeConversationScope(input);
+  if (input.idempotencyKey) {
+    const existingUserMessage = getConversationMessageByIdempotencyKey({
+      idempotencyKey: input.idempotencyKey,
+      scope,
+      conversationId: input.conversationId,
+    });
+    if (existingUserMessage?.requestId) {
+      const existingAssistantMessage = getAssistantMessageByRequestId({
+        conversationId: input.conversationId,
+        requestId: existingUserMessage.requestId,
+      });
+      if (existingAssistantMessage) {
+        return {
+          conversationId: input.conversationId,
+          userMessage: existingUserMessage,
+          assistantMessage: existingAssistantMessage,
+          traceId: existingUserMessage.requestId,
+        };
+      }
+    }
+  }
+
   await ensureConversationRuntime(scope);
   const runtime = await getProjectRuntimeContext(scope.instanceId).catch(() => null);
   const workspace = await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
+  const storedAttachments = await storePortalAttachments({
+    workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
+    attachments: input.attachments,
+  });
+  const userTextForAgent = buildPortalUserText(input.text, storedAttachments);
+  const userMetadata = storedAttachments.length > 0
+    ? { attachments: storedAttachments.map(toPublicAttachmentMetadata) }
+    : undefined;
   const requestId = `portal-${randomUUID()}`;
   const userMessage = appendConversationMessage({
     scope,
     conversationId: input.conversationId,
     channel: "web",
     role: "user",
-    content: input.text,
+    content: userTextForAgent,
     messageId: input.userMessageId,
     idempotencyKey: input.idempotencyKey,
     requestId,
     createdAt: input.clientSentAt,
+    metadata: userMetadata,
   });
 
   const agent = createAgent();
@@ -416,7 +541,7 @@ export async function chatViaConversationLog(input: {
     id: requestId,
     from: input.conversationId,
     timestamp: Date.now(),
-    content: { type: "text", text: input.text },
+    content: { type: "text", text: userTextForAgent },
     context: {
       channel: "web",
       conversationId: input.conversationId,
@@ -425,6 +550,7 @@ export async function chatViaConversationLog(input: {
       instanceId: runtime?.instanceId || scope.instanceId,
       instanceExpansionPath: runtime?.instanceExpansionPath,
       workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
+      attachments: storedAttachments,
     },
   };
   const response = await agent.handleMessage(acpMessage);
@@ -442,10 +568,36 @@ export async function chatViaConversationLog(input: {
     content: assistantText,
     requestId,
   });
+  await rememberConversationTurn({
+    userId: scope.userId,
+    projectId: runtime?.projectId || scope.projectId,
+    instanceId: runtime?.instanceId || scope.instanceId,
+    instanceExpansionPath: runtime?.instanceExpansionPath,
+    workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
+    channel: "web",
+    conversationId: input.conversationId,
+  }, userTextForAgent, assistantText);
   return {
     conversationId: input.conversationId,
     userMessage,
     assistantMessage,
     traceId: requestId,
   };
+}
+
+function buildPortalUserText(text: string | undefined, attachments: StoredAttachment[]) {
+  const trimmed = text?.trim();
+  if (trimmed) return trimmed;
+  const hasDocument = attachments.some((item) => item.type === "document");
+  const hasImage = attachments.some((item) => item.type === "image");
+  if (hasDocument && !hasImage) {
+    return "用户上传了一份文档，请先概括内容并说明可提取的信息。";
+  }
+  if (hasImage && !hasDocument) {
+    return "用户上传了一张图片，请识别其中可能的持仓、观察仓、交易记录或投资相关信息。";
+  }
+  if (attachments.length > 0) {
+    return "用户上传了图片和文档，请先识别附件内容，并说明其中可提取的投资相关信息。";
+  }
+  return "";
 }

@@ -1,6 +1,6 @@
 {
   "name": "market-watch",
-  "description": "基于日复盘观察点和盘中异常触发低噪音提醒",
+  "description": "生成盘中定时简报，并在异常触发模式下按提醒边界输出低噪音提醒；明确规则巡检另走 watch-rules",
   "triggers": ["智能盯盘", "盘中提醒", "异动提醒", "设置盯盘"],
   "inputs": ["config/watch.yaml", "config/notification.yaml", "config/portfolio.yaml", "config/strategy.yaml", "reports/daily", "memory/decisions.jsonl"],
   "outputs": ["reports/alerts/YYYY-MM-DD.md"],

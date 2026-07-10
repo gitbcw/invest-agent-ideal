@@ -9,14 +9,18 @@ import {
   listWatchRules,
   validateWatchRule,
 } from "../dist/services/watch-rules.js";
+import { filterAndRecordAlerts } from "../dist/scheduler/alert-check.js";
 import { db } from "../dist/db/index.js";
-import { alertRules } from "../dist/db/schema.js";
+import { alertEvents, alertRules, alertSignalStates, indicatorResults } from "../dist/db/schema.js";
 
 const USER_ID = "stage2-watch-rules-smoke";
 const INSTANCE_ID = "stage2-watch-rules-smoke-instance";
 
 async function cleanup() {
   await db.delete(alertRules).where(eq(alertRules.userId, USER_ID));
+  await db.delete(alertEvents).where(eq(alertEvents.userId, USER_ID));
+  await db.delete(alertSignalStates).where(eq(alertSignalStates.userId, USER_ID));
+  await db.delete(indicatorResults).where(eq(indicatorResults.userId, USER_ID));
 }
 
 await cleanup();
@@ -132,6 +136,52 @@ try {
 
   const afterDelete = await listWatchRules(USER_ID, INSTANCE_ID);
   assert.equal(afterDelete.length, 0, "rule removed");
+
+  const cooldownItem = {
+    stockCode: "002460",
+    stockName: "赣锋锂业",
+    type: "price",
+    signalKey: "002460:watch-rule:price-cross:<=:61.18",
+    relationToPlan: "未找到预案",
+    price: 55.78,
+    priority: "P0",
+    severity: "high",
+    dedupe: { mode: "cooldown", minutes: 240 },
+    message: "冷却回归测试",
+  };
+  const watchPolicy = {
+    enabled: true,
+    onlyPushOnException: false,
+    defaultCheckWindows: [],
+    exceptionRules: [],
+    nonExceptionRules: [],
+  };
+
+  const first = await filterAndRecordAlerts(USER_ID, INSTANCE_ID, [cooldownItem], watchPolicy);
+  assert.equal(first.length, 1, "first rule hit is recorded");
+
+  const fiveMinutesLater = await filterAndRecordAlerts(USER_ID, INSTANCE_ID, [{ ...cooldownItem, price: 56.8 }], watchPolicy);
+  assert.equal(fiveMinutesLater.length, 0, "cooldown suppresses a repeated hit even when price changes");
+
+  await db.delete(alertEvents).where(eq(alertEvents.userId, USER_ID));
+  const oldCreatedAt = new Date(Date.now() - 241 * 60 * 1000).toISOString();
+  await db.insert(alertEvents).values({
+    userId: USER_ID,
+    instanceId: INSTANCE_ID,
+    stockCode: cooldownItem.stockCode,
+    stockName: cooldownItem.stockName,
+    eventDate: oldCreatedAt.slice(0, 10),
+    eventType: cooldownItem.type,
+    signalKey: cooldownItem.signalKey,
+    message: cooldownItem.message,
+    relationToPlan: cooldownItem.relationToPlan,
+    severity: cooldownItem.severity,
+    price: cooldownItem.price,
+    status: "pending",
+    createdAt: oldCreatedAt,
+  });
+  const afterCooldown = await filterAndRecordAlerts(USER_ID, INSTANCE_ID, [cooldownItem], watchPolicy);
+  assert.equal(afterCooldown.length, 1, "rule can trigger again after its configured cooldown");
 
   console.log("✓ stage2 watch-rules smoke passed");
 } finally {

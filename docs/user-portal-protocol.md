@@ -38,6 +38,8 @@ Authorization: Bearer <PORTAL_CONNECTOR_TOKEN>
 
 浏览器永远不能拿到 connector token。
 
+本地 runtime 的 `/api/portal/*` 仅供受信任的本机运维/relay 调用，必须携带 `Authorization: Bearer <INVEST_AGENT_API_TOKEN>`；浏览器不得直接访问本机端口或持有该令牌。
+
 ## Envelope
 
 所有 connector 与 relay 之间的消息都使用统一 envelope：
@@ -108,6 +110,7 @@ interface ConnectorRegisterPayload {
     | "conversation.list"
     | "conversation.get"
     | "conversation.sync"
+    | "conversation.attachments"
     | "dashboard.snapshot"
   >;
   mode: "real" | "mock";
@@ -131,7 +134,7 @@ interface ConnectorRegisterPayload {
     "displayName": "默认测试实例",
     "version": "0.1.0",
     "startedAt": "2026-07-04T09:59:50.000Z",
-    "capabilities": ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync"],
+    "capabilities": ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments"],
     "mode": "real"
   }
 }
@@ -241,17 +244,35 @@ interface ConversationGetResult {
 浏览器发消息后，Portal 生成 `conversation.chat` command 给 connector。
 
 ```ts
+interface PortalAttachmentInput {
+  kind?: "image" | "document";
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  base64?: string;
+  downloadUrl?: string;
+}
+
 interface ConversationChatRequest {
   userId: string;
   assistantId: string;
   instanceId: string;
   conversationId: string;
   userMessageId: string;
-  text: string;
+  text?: string;
+  attachments?: PortalAttachmentInput[];
   idempotencyKey: string;
   clientSentAt: string;
 }
 ```
+
+`text` 和 `attachments` 至少一个非空。第一版附件支持：
+
+- 图片：`jpg` / `jpeg` / `png` / `webp`，单个最大 10 MB。
+- 文档：`pdf` / `doc` / `docx` / `ppt` / `pptx` / `html` / `htm` / `md` / `txt`，单个最大 25 MB。
+- 单条消息最多 8 个附件，总大小最多 40 MB。
+- 推荐使用 `base64`；`downloadUrl` 默认关闭，只有其 HTTPS 主机被本地 `PORTAL_ATTACHMENT_DOWNLOAD_HOSTS` 精确列入白名单时才可用。本地 connector 下载后仍执行同一套类型、大小和 magic bytes 校验。
+- 云端消息镜像只能保存 `metadata.attachments` 中的安全字段：`id`、`type`、`mimeType`、`fileName`、`sizeBytes`、`relativePath`、`source`，不得保存或展示本地绝对路径。
 
 Connector 需要：
 

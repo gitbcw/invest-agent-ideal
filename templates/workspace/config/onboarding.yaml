@@ -5,7 +5,7 @@ levels:
     required:
       - "上传持仓截图或输入核心持仓"
       - "选择风格包"
-      - "确认盯盘固定时间"
+      - "确认盘中简报固定时间"
       - "选择通知偏好"
     writes:
       - "config/portfolio.yaml"

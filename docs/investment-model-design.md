@@ -93,7 +93,7 @@ models:
 
 - 模板新增 `config/investment_models.yaml`。
 - `WorkspaceStore` 支持读写删除投资模型。
-- 黄金测试集新增模型配置场景。
+- 用真实交互审计复核模型配置场景，并将稳定方法论沉淀到 workspace Skill。
 
 ### v2: 预案来源上移
 

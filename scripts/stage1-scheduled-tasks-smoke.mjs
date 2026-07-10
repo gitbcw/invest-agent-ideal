@@ -45,6 +45,14 @@ try {
   assert.equal(sanitizeScheduledReply("无需推送：没有 P0/P1。"), "NO_PUSH");
   assert.equal(sanitizeScheduledReply("我先核对低打扰规则，再调用本轮巡检接口。\nNO_PUSH"), "NO_PUSH");
   assert.match(sanitizeScheduledReply("赛轮轮胎触发 P0,需要确认。"), /赛轮轮胎/);
+  const sourceCleaned = sanitizeScheduledReply([
+    "数据来源：",
+    "- 大盘指数：https://qt.gtimg.cn/q=sh000001,sz399001",
+    "- 日K：https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh601058,day,,,320,qfq",
+  ].join("\n"));
+  assert.doesNotMatch(sourceCleaned, /https?:\/\//i);
+  assert.match(sourceCleaned, /腾讯行情/);
+  assert.match(sourceCleaned, /腾讯日K/);
   console.log("  ✓ NO_PUSH 与中文无推送语义清洗正确");
 
   log("scheduled review 推送保留最终正文");
@@ -131,6 +139,23 @@ try {
   assert.equal(okUpdated?.status, "sent");
   assert.equal(okUpdated?.attempts, 1);
   console.log("  ✓ push job 成功时进入 sent");
+
+  log("push_jobs 微信来源 URL 降噪");
+  const sourceJob = await enqueuePushJob({
+    userId: DEFAULT_USER_ID,
+    projectId: DEFAULT_PROJECT_ID,
+    instanceId: DEFAULT_INSTANCE_ID,
+    source: "stage1-smoke",
+    message: "来源：https://qt.gtimg.cn/q=sh601058\n日K：https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh601058,day,,,320,qfq",
+    maxAttempts: 2,
+  });
+  createdJobIds.push(sourceJob.id);
+  const sourceStored = await getPushJob(sourceJob.id);
+  assert.doesNotMatch(sourceStored?.message ?? "", /https?:\/\//i);
+  assert.match(sourceStored?.message ?? "", /腾讯行情/);
+  assert.match(sourceStored?.message ?? "", /腾讯日K/);
+  await db.delete(pushJobs).where(eq(pushJobs.id, sourceJob.id));
+  console.log("  ✓ 微信 push job 入库前会隐藏原始行情 URL");
 
   log("push_jobs 失败重试状态流转");
   const retryJob = await enqueuePushJob({

@@ -25,6 +25,7 @@ import { settings } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 import type { AcpModelTier } from "./model-router.js";
+import { defaultInstanceIdForUser, type UserContext } from "../lib/user-context.js";
 
 const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
 const ACP_DEBUG_PREVIEW_CHARS = Number(process.env.ACP_DEBUG_PREVIEW_CHARS) || 120;
@@ -427,6 +428,7 @@ export class StdioAcpAgent {
     messageId?: string;
     timeoutMs?: number;
     cwd?: string;
+    userContext?: UserContext;
   }): Promise<string> {
     const result = await this.chatWithUsage(params);
     return result.text;
@@ -438,6 +440,7 @@ export class StdioAcpAgent {
     messageId?: string;
     timeoutMs?: number;
     cwd?: string;
+    userContext?: UserContext;
   }): Promise<AcpChatResult> {
     if (this.activeConversations.has(params.conversationId)) {
       throw new Error("ACP_TURN_BUSY:上一条消息仍在处理中");
@@ -445,7 +448,7 @@ export class StdioAcpAgent {
     this.activeConversations.add(params.conversationId);
     const conn = await this.ensureReady();
     const sessionKey = params.cwd ? `${params.conversationId}::${params.cwd}` : params.conversationId;
-    const sessionId = await this.getOrCreateSession(sessionKey, conn, params.cwd);
+    const sessionId = await this.getOrCreateSession(sessionKey, conn, params.cwd, params.userContext);
     const prompt = [{ type: "text" as const, text: params.text }];
     const collector = new ResponseCollector();
     this.collectors.set(sessionId, collector);
@@ -588,19 +591,47 @@ export class StdioAcpAgent {
     return conn;
   }
 
-  private async getOrCreateSession(sessionKey: string, conn: ClientSideConnection, cwd = this.cwd) {
+  private async getOrCreateSession(
+    sessionKey: string,
+    conn: ClientSideConnection,
+    cwd = this.cwd,
+    userContext?: UserContext
+  ) {
     const existing = this.sessions.get(sessionKey);
     if (existing) return existing;
 
     const res = await conn.newSession({
       cwd,
-      mcpServers: [],
+      mcpServers: this.buildMcpServers(cwd, userContext),
     });
     this.sessions.set(sessionKey, res.sessionId);
     logger.info(
       `${this.label} ACP 新会话 key=${sessionKey} cwd=${cwd} session=${res.sessionId}`
     );
     return res.sessionId;
+  }
+
+  private buildMcpServers(cwd: string, userContext?: UserContext) {
+    if (this.def.id !== "codex") return [];
+    const scriptPath = path.resolve(process.cwd(), "dist/mcp/invest-agent-service-tools.js");
+    const userId = userContext?.userId || process.env.INVEST_AGENT_MCP_USER_ID || "primary";
+    const instanceId =
+      userContext?.instanceId || process.env.INVEST_AGENT_MCP_INSTANCE_ID || defaultInstanceIdForUser(userId);
+    const workspacePath = userContext?.workspacePath || cwd;
+    return [
+      {
+        name: "invest-agent-service-tools",
+        command: process.execPath,
+        args: [scriptPath],
+        env: [
+          { name: "INVEST_AGENT_MCP_USER_ID", value: userId },
+          { name: "INVEST_AGENT_MCP_INSTANCE_ID", value: instanceId },
+          { name: "INVEST_AGENT_MCP_WORKSPACE_PATH", value: workspacePath },
+          { name: "INVEST_AGENT_MCP_CONVERSATION_ID", value: userContext?.conversationId || "" },
+          { name: "INVEST_AGENT_PROJECT_ROOT", value: process.cwd() },
+        ],
+      },
+    ];
   }
 
   private timeoutAfter(ms: number): Promise<never> {
@@ -651,7 +682,12 @@ async function ensureHermesHome(hermesHome: string): Promise<void> {
         // lstatSync 抛错说明 target 不存在,继续走创建分支
       }
       if (needReplace) {
-        if (existsSync(target)) rmSync(target, { force: true });
+        try {
+          lstatSync(target);
+          rmSync(target, { force: true });
+        } catch {
+          // target missing
+        }
         symlinkSync(source, target);
       }
     } catch (error) {
@@ -704,7 +740,12 @@ async function ensureCodexHome(codexHome: string): Promise<void> {
         // target missing
       }
       if (needReplace) {
-        if (existsSync(target)) rmSync(target, { force: true });
+        try {
+          lstatSync(target);
+          rmSync(target, { force: true });
+        } catch {
+          // target missing
+        }
         symlinkSync(source, target);
       }
     } catch (error) {
@@ -870,7 +911,7 @@ export async function listAcpBackends(): Promise<{
 }
 
 export async function startDefaultAcp(): Promise<void> {
-  const agent = await getCurrentAcpAgent(undefined, { modelTier: "simple" });
+  const agent = await getCurrentAcpAgent(undefined, { modelTier: "complex" });
   await agent.ensureReady();
 }
 

@@ -6,6 +6,7 @@ import { disposeAllAcp, startDefaultAcp } from "./acp/stdio-agent.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { stopPlatformWeixinListeners } from "./routes/platform.js";
 import { registerDataQualityAlertSink } from "./handlers/data-quality-report.js";
+import { startPortalConnector } from "./portal/connector.js";
 
 async function main() {
   logger.info("正在启动投资选股智能体...");
@@ -25,6 +26,10 @@ async function main() {
   // 启动定时任务
   await startScheduler();
 
+  const portalConnector = process.env.PORTAL_CONNECTOR_AUTO_START === "false"
+    ? null
+    : startPortalConnector();
+
   logger.info("✅ 所有模块启动完成");
 
   let shuttingDown = false;
@@ -34,6 +39,7 @@ async function main() {
     logger.info(`收到 ${signal}，正在停止投资选股智能体...`);
     stopScheduler();
     stopPlatformWeixinListeners();
+    portalConnector?.stop();
     weixinMobileManager.stop();
     disposeAllAcp();
     await app.close();

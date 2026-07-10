@@ -4,13 +4,14 @@ import { textResponse } from "./protocol.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
-import { resolveChatModelTier } from "./model-router.js";
-import { dedupeRepeatedCustomerText, sanitizeCustomerText } from "../lib/customer-output.js";
+import { isChatModelRouterEnabled, isSimpleModelTierEnabled, resolveChatModelTier } from "./model-router.js";
+import { dedupeRepeatedCustomerText, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { recordAcpTrace } from "./trace.js";
 import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import type { UserContext } from "../lib/user-context.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
+import { WorkspaceStore } from "../lib/workspace-store.js";
 
 const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
   Number(process.env.WEIXIN_DIRECT_ACP_TIMEOUT_MS) || 600_000;
@@ -43,7 +44,7 @@ export function createAgent(): AcpAgent {
         return textResponse("请发送文字消息");
       }
 
-      logger.info(`微信直通 ACP 主链路: ${text.slice(0, 100)}`);
+      logger.info(`ACP 主链路收到消息: ${text.slice(0, 100)}`);
       const startedAt = Date.now();
       const conversationId = String(
         message.context?.conversationId || message.from || "invest-agent"
@@ -67,21 +68,26 @@ export function createAgent(): AcpAgent {
           conversationId,
         };
 
+        const includeRoutingContext = isChatModelRouterEnabled() && isSimpleModelTierEnabled();
         const promptContext = await buildAcpPromptContext({
-          userText: buildChannelForwardPrompt(text, userContext),
+          userText: buildChannelForwardPrompt(text, userContext, message.context?.attachments),
           userContext,
+          includeContextPacket: includeRoutingContext,
         });
-        const modelTier = await resolveChatModelTier({
-          text,
-          contextPacket: promptContext.contextPacket,
-        });
+        const modelTier = await shouldUseComplexForOnboarding(userContext)
+          ? "complex"
+          : await resolveChatModelTier({
+              text,
+              contextPacket: promptContext.contextPacket,
+            });
         const acpAgent = await getCurrentAcpAgent(userContext.workspacePath, { modelTier });
         const acpResult = await acpAgent.chatWithUsage({
           conversationId,
           text: promptContext.promptText,
           messageId: randomUUID(),
           timeoutMs: userChannel === "weixin-mobile" ? WEIXIN_DIRECT_ACP_TIMEOUT_MS : undefined,
-          cwd: userChannel === "weixin-mobile" ? userContext.workspacePath : undefined,
+          cwd: resolveAcpWorkspaceCwd(userContext),
+          userContext,
         });
         const postProcessed = await postProcessAcpReply({
           reply: acpResult.text,
@@ -89,7 +95,9 @@ export function createAgent(): AcpAgent {
           originalText: text,
         });
         const deduped = dedupeRepeatedCustomerText(postProcessed.finalReply);
-        const cleaned = sanitizeCustomerText(deduped);
+        const cleaned = userChannel === "weixin-mobile"
+          ? sanitizeWeixinCustomerText(deduped)
+          : sanitizeCustomerText(deduped);
         await recordAcpTrace({
           userId,
           projectId: userContext.projectId,
@@ -133,6 +141,16 @@ export function createAgent(): AcpAgent {
   };
 }
 
+async function shouldUseComplexForOnboarding(userContext: UserContext) {
+  if (!userContext.workspacePath) return false;
+  try {
+    const state = await new WorkspaceStore(userContext.userId).readOnboardingState();
+    return state.status !== "completed";
+  } catch {
+    return false;
+  }
+}
+
 async function postProcessAcpReply(input: {
   reply: string;
   userContext: UserContext;
@@ -141,11 +159,60 @@ async function postProcessAcpReply(input: {
   return { finalReply: input.reply };
 }
 
-function buildChannelForwardPrompt(text: string, context: UserContext): string {
-  if (context.channel !== "weixin-mobile") return text;
+function buildChannelForwardPrompt(text: string, context: UserContext, attachmentsInput?: unknown): string {
+  const channelContext = buildChannelContextInstruction(context.channel);
+  const attachmentContext = buildAttachmentPrompt(attachmentsInput);
+  if (!channelContext && !attachmentContext) return text;
   return [
-    "【通道上下文】这是一条来自微信用户的消息；你的回复会直接发回该用户微信。必须使用适合微信阅读的 Markdown 提升可读性，例如分段、列表、重点加粗或必要的表格；但请按内容场景选择，不要机械套用复杂格式。不要输出执行过程、内部路径或调试信息。",
+    channelContext,
+    attachmentContext,
     "【用户消息】",
     text,
   ].filter(Boolean).join("\n");
+}
+
+function buildAttachmentPrompt(input: unknown): string | null {
+  if (!Array.isArray(input) || input.length === 0) return null;
+  const lines = input
+    .map((item, index) => {
+      if (!item || typeof item !== "object") return null;
+      const data = item as Record<string, unknown>;
+      const type = String(data.type || "");
+      const mimeType = String(data.mimeType || "");
+      const fileName = String(data.fileName || "");
+      const filePath = String(data.path || "");
+      if (!filePath) return null;
+      return `${index + 1}. type=${type || "unknown"} mime=${mimeType || "unknown"} fileName=${fileName || "-"} localPath=${filePath}`;
+    })
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  return [
+    "【附件上下文】用户随消息发送了附件，附件已保存到当前 workspace 的受控目录。",
+    "图片附件：可以读取图片并识别截图内容；如附件是持仓/观察仓/交易记录截图，请先识别成结构化草案，列出股票名称/代码/数量或金额/成本价/关注原因/不确定字段，并明确要求用户确认后再写入；不要直接落库。",
+    "文档附件：PDF/doc/docx/ppt/pptx/html/md/txt 可以作为本地文件读取；请先概括内容，再提取和投资决策相关的结构化信息、事实依据和不确定字段。",
+    "所有附件：不要向用户暴露 localPath 或内部目录；如果当前后端无法读取或解析附件，必须如实说明限制，不要编造附件内容。",
+    ...lines,
+  ].join("\n");
+}
+
+function buildChannelContextInstruction(channel: UserContext["channel"]): string | null {
+  if (channel === "weixin-mobile") {
+    return [
+      "【通道上下文】这是一条来自微信用户的消息，回复会直接发回微信。",
+      "渠道只影响呈现方式，不改变投资助手身份、投资纪律、事实标准或结论口径。",
+      "请使用适合微信阅读的简洁 Markdown，例如分段、列表、重点加粗或必要的表格；不要输出执行过程、内部路径或调试信息。",
+    ].join("");
+  }
+  if (channel === "web") {
+    return [
+      "【通道上下文】这是一条来自门户网页聊天的消息。",
+      "这是同一个 workspace-backed 投资助手，必须沿用同一套投资纪律、事实标准和结论口径；渠道只影响呈现方式。",
+      "网页端可以稍微更结构化，但不要输出执行过程、内部路径或调试信息。",
+    ].join("");
+  }
+  return null;
+}
+
+function resolveAcpWorkspaceCwd(context: UserContext): string | undefined {
+  return context.workspacePath || undefined;
 }

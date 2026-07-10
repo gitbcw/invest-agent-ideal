@@ -1,10 +1,9 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { Document, isMap, isSeq, parseDocument } from "yaml";
 import { renderPlatformPage } from "../admin/platform-page.js";
 import { db, sqlite } from "../db/index.js";
 import { aiInstances, alertEvents, alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, pushJobs, scheduledTaskRuns, users } from "../db/schema.js";
@@ -19,332 +18,9 @@ import { loadCodexWorkspaceUsageSummary, type CodexUsageGroupBy } from "../servi
 import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
 import { marketHealth } from "../services/market-data.js";
 import { getAlertInterval } from "../scheduler/index.js";
+import { createPlatformSession, hasPlatformSession, isLoopbackAddress, platformSessionCookie } from "../lib/platform-session.js";
 
 const projectWeixinManagers = new Map<string, WeixinMobileManager>();
-const goldenCasesPath = path.resolve(process.cwd(), "tests/golden/conversation/cases.yaml");
-const goldenWorkflowsDir = path.resolve(process.cwd(), "tests/golden/workflows");
-const evalReportsDir = path.resolve(process.cwd(), "eval-reports");
-const reviewQueueJsonPath = path.join(evalReportsDir, "_review-queue.json");
-const reviewQueueMarkdownPath = path.join(evalReportsDir, "_review-queue.md");
-const reviewDecisionsPath = path.join(evalReportsDir, "_review-decisions.json");
-const candidateCasesPath = path.join(evalReportsDir, "_candidate-cases.json");
-
-function readGoldenDocument() {
-  const source = readFileSync(goldenCasesPath, "utf-8");
-  const doc = parseDocument(source);
-  if (doc.errors.length) {
-    throw new Error(`黄金数据集 YAML 解析失败: ${doc.errors[0]?.message}`);
-  }
-  return doc;
-}
-
-function readGoldenWorkflowDocuments() {
-  if (!existsSync(goldenWorkflowsDir)) return [];
-  return readdirSync(goldenWorkflowsDir)
-    .filter((file) => file.endsWith(".yaml"))
-    .sort()
-    .map((file) => {
-      const filePath = path.join(goldenWorkflowsDir, file);
-      const source = readFileSync(filePath, "utf-8");
-      const doc = parseDocument(source);
-      if (doc.errors.length) {
-        throw new Error(`业务流程评测 YAML 解析失败 ${file}: ${doc.errors[0]?.message}`);
-      }
-      return { file, filePath, doc };
-    });
-}
-
-function caseNodeToYaml(node: unknown) {
-  const value = isMap(node) ? node.toJSON() : node;
-  return String(new Document(value));
-}
-
-function yamlSeqToStrings(value: unknown) {
-  if (!isSeq(value)) return [];
-  return value.items.map((item) => String(item)).filter(Boolean);
-}
-
-function goldenCaseSummary(node: unknown) {
-  if (!isMap(node)) return null;
-  const expected = node.get("expected", true);
-  const turns = node.get("turns", true);
-  const turnCount = isSeq(turns) ? turns.items.length : 1;
-  const expectedMap = isMap(expected) ? expected : null;
-  const mustContain = expectedMap?.get("must_contain", true);
-  const mustNotContain = expectedMap?.get("must_not_contain", true);
-  const scenario = String(node.get("scenario") || "");
-  const tags = yamlSeqToStrings(node.get("tags", true));
-  return {
-    id: String(node.get("id") || ""),
-    category: String(node.get("category") || ""),
-    reviewTier: String(node.get("review_tier") || ""),
-    priority: String(node.get("priority") || ""),
-    scenario,
-    domain: inferGoldenDomain(scenario, tags),
-    tags,
-    principles: yamlSeqToStrings(node.get("principles", true)),
-    userInput: String(node.get("user_input") || ""),
-    turnCount,
-    mustContainCount: isSeq(mustContain) ? mustContain.items.length : 0,
-    mustNotContainCount: isSeq(mustNotContain) ? mustNotContain.items.length : 0,
-    styleNotes: expectedMap ? String(expectedMap.get("style_notes") || "") : "",
-    rawYaml: caseNodeToYaml(node),
-  };
-}
-
-function inferGoldenDomain(scenario: string, tags: string[]) {
-  const lowerTags = tags.map((item) => item.toLowerCase());
-  if (lowerTags.includes("onboarding") || scenario.startsWith("onboarding_")) return "Onboarding";
-  if (scenario.includes("review")) return "复盘";
-  if (scenario.includes("alert")) return "提醒";
-  if (scenario.includes("portfolio")) return "持仓";
-  if (scenario.includes("watchlist")) return "自选";
-  if (scenario.includes("screening")) return "选股";
-  if (scenario.includes("strategy") || scenario.includes("model") || scenario.includes("methodology")) return "投资模型/策略";
-  return "其他";
-}
-
-function goldenWorkflowSummary(item: { file: string; filePath: string; doc: Document }) {
-  const suite = item.doc.get("suite", true);
-  const workflow = item.doc.get("workflow", true);
-  if (!isMap(suite) || !isMap(workflow)) return null;
-  const turns = workflow.get("turns", true);
-  return {
-    id: String(workflow.get("id") || ""),
-    title: String(suite.get("title") || workflow.get("id") || ""),
-    domain: String(suite.get("domain") || ""),
-    reviewTier: String(workflow.get("review_tier") || ""),
-    priority: String(workflow.get("priority") || ""),
-    createNewUser: Boolean(workflow.get("create_new_user")),
-    turnCount: isSeq(turns) ? turns.items.length : 0,
-    sourcePath: item.filePath,
-    file: item.file,
-    command: `npm run eval:workflow -- --workflow=${item.file.replace(/\.yaml$/, "")}`,
-  };
-}
-
-function loadGoldenWorkflows() {
-  const workflows = readGoldenWorkflowDocuments().map(goldenWorkflowSummary).filter(Boolean);
-  const domains = new Map<string, number>();
-  for (const workflow of workflows) {
-    if (!workflow) continue;
-    domains.set(workflow.domain, (domains.get(workflow.domain) || 0) + 1);
-  }
-  return {
-    workflows,
-    stats: {
-      total: workflows.length,
-      domains: Object.fromEntries([...domains.entries()].sort()),
-    },
-  };
-}
-
-function loadGoldenCases() {
-  const doc = readGoldenDocument();
-  const casesNode = doc.getIn(["cases"], true);
-  if (!isSeq(casesNode)) throw new Error("黄金数据集缺少 cases 数组");
-  const cases = casesNode.items.map(goldenCaseSummary).filter(Boolean);
-  const categories = new Map<string, number>();
-  const priorities = new Map<string, number>();
-  const reviewTiers = new Map<string, number>();
-  const scenarios = new Map<string, number>();
-  const domains = new Map<string, number>();
-  for (const item of cases) {
-    if (!item) continue;
-    categories.set(item.category, (categories.get(item.category) || 0) + 1);
-    priorities.set(item.priority, (priorities.get(item.priority) || 0) + 1);
-    reviewTiers.set(item.reviewTier, (reviewTiers.get(item.reviewTier) || 0) + 1);
-    scenarios.set(item.scenario, (scenarios.get(item.scenario) || 0) + 1);
-    domains.set(item.domain, (domains.get(item.domain) || 0) + 1);
-  }
-  return {
-    suite: doc.get("suite") || {},
-    qualityGates: doc.get("quality_gates") || {},
-    sourcePath: goldenCasesPath,
-    workflowSuites: loadGoldenWorkflows(),
-    cases,
-    stats: {
-      total: cases.length,
-      categories: Object.fromEntries([...categories.entries()].sort()),
-      priorities: Object.fromEntries([...priorities.entries()].sort()),
-      reviewTiers: Object.fromEntries([...reviewTiers.entries()].sort()),
-      domains: Object.fromEntries([...domains.entries()].sort()),
-      scenarioCount: scenarios.size,
-    },
-  };
-}
-
-function loadEvaluationReviewQueue() {
-  const decisions = loadEvaluationReviewDecisions();
-  const candidates = loadEvaluationCandidateCases();
-  if (!existsSync(reviewQueueJsonPath)) {
-    return {
-      exists: false,
-      sourcePath: reviewQueueJsonPath,
-      markdownPath: reviewQueueMarkdownPath,
-      markdown: existsSync(reviewQueueMarkdownPath) ? readFileSync(reviewQueueMarkdownPath, "utf-8") : "",
-      updatedAt: null,
-      ranAt: null,
-      runId: null,
-      suite: null,
-      testUser: null,
-      judge: {
-        enabled: false,
-        mode: "none",
-        verdict_counts: { pass: 0, warn: 0, fail: 0, unknown: 0, none: 0 },
-        review_count: 0,
-      },
-      reviewQueue: [],
-      reports: [],
-      decisions,
-      candidates,
-    };
-  }
-  const parsed = JSON.parse(readFileSync(reviewQueueJsonPath, "utf-8"));
-  return {
-    exists: true,
-    sourcePath: reviewQueueJsonPath,
-    markdownPath: reviewQueueMarkdownPath,
-    markdown: existsSync(reviewQueueMarkdownPath) ? readFileSync(reviewQueueMarkdownPath, "utf-8") : "",
-    updatedAt: new Date(statSync(reviewQueueJsonPath).mtimeMs).toISOString(),
-    ranAt: parsed.ran_at || null,
-    runId: parsed.run_id || null,
-    suite: parsed.suite || null,
-    testUser: parsed.test_user || null,
-    judge: parsed.judge || {
-      enabled: false,
-      mode: "none",
-      verdict_counts: { pass: 0, warn: 0, fail: 0, unknown: 0, none: 0 },
-      review_count: 0,
-    },
-    reviewQueue: Array.isArray(parsed.review_queue) ? parsed.review_queue : [],
-    reports: Array.isArray(parsed.reports) ? parsed.reports : [],
-    decisions,
-    candidates,
-  };
-}
-
-function readJsonFile<T>(filePath: string, fallback: T): T {
-  if (!existsSync(filePath)) return fallback;
-  try {
-    return JSON.parse(readFileSync(filePath, "utf-8")) as T;
-  } catch (error) {
-    logger.warn(`Platform eval json read failed file=${filePath}: ${(error as Error).message}`);
-    return fallback;
-  }
-}
-
-function writeJsonFile(filePath: string, data: unknown) {
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
-}
-
-function loadEvaluationReviewDecisions() {
-  const data = readJsonFile<{ decisions?: unknown[] }>(reviewDecisionsPath, { decisions: [] });
-  return Array.isArray(data.decisions) ? data.decisions : [];
-}
-
-function saveEvaluationReviewDecision(input: {
-  caseId?: string;
-  action?: string;
-  finalVerdict?: string;
-  note?: string;
-  sourceRunId?: string;
-}) {
-  const caseId = String(input.caseId || "").trim();
-  if (!caseId) throw new Error("caseId 必填");
-  const allowedActions = new Set(["accept_judge", "override_pass", "override_fail", "needs_fix", "move_to_l1", "update_case"]);
-  const action = allowedActions.has(String(input.action)) ? String(input.action) : "";
-  if (!action) throw new Error("action 无效");
-  const now = new Date().toISOString();
-  const current = loadEvaluationReviewDecisions();
-  const next = [
-    {
-      id: `${caseId}:${now}`,
-      caseId,
-      action,
-      finalVerdict: input.finalVerdict ? String(input.finalVerdict) : null,
-      note: input.note ? String(input.note).slice(0, 2000) : "",
-      sourceRunId: input.sourceRunId ? String(input.sourceRunId) : null,
-      decidedAt: now,
-    },
-    ...current,
-  ].slice(0, 500);
-  writeJsonFile(reviewDecisionsPath, { updatedAt: now, decisions: next });
-  return next[0];
-}
-
-function loadEvaluationCandidateCases() {
-  const data = readJsonFile<{ candidates?: unknown[] }>(candidateCasesPath, { candidates: [] });
-  return Array.isArray(data.candidates) ? data.candidates : [];
-}
-
-function saveEvaluationCandidateCase(input: {
-  source?: string;
-  sourceId?: string;
-  userInput?: string;
-  actualOutput?: string;
-  scenario?: string;
-  priority?: string;
-  note?: string;
-}) {
-  const userInput = String(input.userInput || "").trim();
-  if (!userInput) throw new Error("userInput 必填");
-  const now = new Date().toISOString();
-  const idSeed = `${input.source || "manual"}:${input.sourceId || ""}:${userInput}:${now}`;
-  const candidate = {
-    id: `candidate-${createHash("sha256").update(idSeed).digest("hex").slice(0, 10)}`,
-    source: input.source || "manual",
-    sourceId: input.sourceId || null,
-    scenario: input.scenario || "candidate_from_audit",
-    priority: input.priority || "P1",
-    reviewTier: "archived_candidate",
-    userInput,
-    actualOutput: input.actualOutput ? String(input.actualOutput).slice(0, 4000) : "",
-    note: input.note ? String(input.note).slice(0, 2000) : "",
-    createdAt: now,
-  };
-  const current = loadEvaluationCandidateCases();
-  const next = [candidate, ...current].slice(0, 500);
-  writeJsonFile(candidateCasesPath, { updatedAt: now, candidates: next });
-  return candidate;
-}
-
-function updateGoldenCase(input: { id: string; rawYaml: string }) {
-  const nextCaseDoc = parseDocument(input.rawYaml);
-  if (nextCaseDoc.errors.length || !isMap(nextCaseDoc.contents)) {
-    throw new Error(nextCaseDoc.errors[0]?.message || "case YAML 必须是对象");
-  }
-  const nextId = String(nextCaseDoc.contents.get("id") || "").trim();
-  if (!nextId) throw new Error("case YAML 缺少 id");
-  if (nextId !== input.id) throw new Error("暂不支持通过编辑重命名 case id");
-
-  const doc = readGoldenDocument();
-  const casesNode = doc.getIn(["cases"], true);
-  if (!isSeq(casesNode)) throw new Error("黄金数据集缺少 cases 数组");
-  const index = casesNode.items.findIndex((item) => isMap(item) && String(item.get("id") || "") === input.id);
-  if (index < 0) throw new Error("未找到 case");
-  casesNode.items[index] = nextCaseDoc.contents;
-  writeFileSync(goldenCasesPath, String(doc), "utf-8");
-  return loadGoldenCases();
-}
-
-function getGoldenCaseById(id: string) {
-  const doc = readGoldenDocument();
-  const casesNode = doc.getIn(["cases"], true);
-  if (!isSeq(casesNode)) throw new Error("黄金数据集缺少 cases 数组");
-  const node = casesNode.items.find((item) => isMap(item) && String(item.get("id") || "") === id);
-  if (!node || !isMap(node)) throw new Error("未找到 case");
-  return node;
-}
-
-function goldenCaseUserInput(id: string) {
-  const node = getGoldenCaseById(id);
-  const userInput = String(node.get("user_input") || "").trim();
-  if (!userInput) throw new Error("该 case 缺少 user_input，暂不支持多轮 turns 直接运行");
-  return userInput;
-}
-
 function readSourceQualityReports(limit = 14) {
   const dir = config.runtimeData.sourceQualityDir;
   if (!existsSync(dir)) return [];
@@ -440,7 +116,7 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
   const conditions = [];
   if (input.userId) conditions.push(eq(codexAcpTraces.userId, input.userId));
   if (input.instanceId) conditions.push(eq(codexAcpTraces.instanceId, input.instanceId));
-  if (scope === "conversation") conditions.push(eq(codexAcpTraces.channel, "weixin-mobile"));
+  if (scope === "conversation") conditions.push(sql`${codexAcpTraces.channel} IN ('weixin-mobile', 'web')`);
   if (scope === "push") conditions.push(eq(codexAcpTraces.channel, "scheduler"));
   const pushConditions = [];
   if (input.userId) pushConditions.push(eq(pushJobs.userId, input.userId));
@@ -844,7 +520,7 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
     sqlite.prepare("UPDATE users SET display_name = ?, status = 'active', updated_at = ? WHERE id = ?")
       .run("默认测试用户", now, userId);
     sqlite.prepare("UPDATE ai_instances SET name = ?, status = 'active', config = ?, updated_at = ? WHERE id = ?")
-      .run("默认测试实例", JSON.stringify({ autoCreated: true, role: "default_test_instance", resetAt: now }), now, instanceId);
+      .run("默认测试投资助手", JSON.stringify({ autoCreated: true, role: "default_test_instance", resetAt: now }), now, instanceId);
   });
   resetDb();
 
@@ -868,6 +544,27 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
 
 function stableSuffix(value?: string | null) {
   return createHash("sha256").update(String(value || "")).digest("hex").slice(0, 10);
+}
+
+async function provisionPortalAccount(project: AiProjectRuntimeContext) {
+  const res = await fetch(config.portal.distributionUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${config.portal.distributionToken}`,
+    },
+    body: JSON.stringify({
+      username: project.ownerUserId,
+      displayName: project.name,
+      assistantId: project.instanceId,
+      instanceId: project.instanceId,
+    }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok || payload.ok === false) {
+    throw new Error(payload.error?.message || payload.error || `PORTAL_DISTRIBUTION_FAILED:${res.status}`);
+  }
+  return payload.data;
 }
 
 async function safePrivateAssetCount(label: string, project: AiProjectRuntimeContext, loader: () => Promise<unknown[]>): Promise<number> {
@@ -1005,8 +702,17 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       }
     };
 
-  app.get("/platform", async (_request, reply) => {
-    return reply.type("text/html; charset=utf-8").send(renderPlatformPage());
+  app.get("/platform", async (request, reply) => {
+    if (!isLoopbackAddress(request.ip)) {
+      return reply.status(403).send({ ok: false, error: "Platform 仅允许本机访问" });
+    }
+    if (!hasPlatformSession(request.headers.cookie)) {
+      const session = createPlatformSession();
+      reply.header("set-cookie", platformSessionCookie(session.id, session.maxAgeSeconds));
+    }
+    return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+      portalPublicUrl: config.portal.publicUrl,
+    }));
   });
 
   app.get("/api/platform/instances", safe(async () => {
@@ -1017,100 +723,6 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       updatedAt: new Date().toISOString(),
       count: instances.length,
       instances,
-    };
-  }));
-
-  app.get("/api/platform/golden-cases", safe(async () => {
-    const data = loadGoldenCases();
-    return {
-      ok: true,
-      updatedAt: new Date().toISOString(),
-      ...data,
-    };
-  }));
-
-  app.get("/api/platform/evaluation/review-queue", safe(async () => {
-    const data = loadEvaluationReviewQueue();
-    return {
-      ok: true,
-      ...data,
-      loadedAt: new Date().toISOString(),
-    };
-  }));
-
-  app.post<{ Body: { caseId?: string; action?: string; finalVerdict?: string; note?: string; sourceRunId?: string } }>(
-    "/api/platform/evaluation/review-decisions",
-    safe(async (request) => {
-      const decision = saveEvaluationReviewDecision(request.body || {});
-      return {
-        ok: true,
-        decision,
-        decisions: loadEvaluationReviewDecisions(),
-        updatedAt: new Date().toISOString(),
-      };
-    }),
-  );
-
-  app.post<{ Body: { source?: string; sourceId?: string; userInput?: string; actualOutput?: string; scenario?: string; priority?: string; note?: string } }>(
-    "/api/platform/evaluation/candidates",
-    safe(async (request) => {
-      const candidate = saveEvaluationCandidateCase(request.body || {});
-      return {
-        ok: true,
-        candidate,
-        candidates: loadEvaluationCandidateCases(),
-        updatedAt: new Date().toISOString(),
-      };
-    }),
-  );
-
-  app.put<{ Body: { id?: string; rawYaml?: string } }>("/api/platform/golden-cases", safe(async (request, reply) => {
-    const id = request.body?.id?.trim();
-    const rawYaml = request.body?.rawYaml;
-    if (!id) return reply.status(400).send({ ok: false, error: "id 必填" });
-    if (!rawYaml || typeof rawYaml !== "string") return reply.status(400).send({ ok: false, error: "rawYaml 必填" });
-    try {
-      const data = updateGoldenCase({ id, rawYaml });
-      return {
-        ok: true,
-        updatedAt: new Date().toISOString(),
-        ...data,
-      };
-    } catch (error) {
-      return reply.status(400).send({ ok: false, error: (error as Error).message });
-    }
-  }));
-
-  app.post<{ Body: { id?: string; instanceId?: string } }>("/api/platform/golden-cases/run", safe(async (request, reply) => {
-    const id = request.body?.id?.trim();
-    const instanceId = request.body?.instanceId?.trim() || DEFAULT_INSTANCE_ID;
-    if (!id) return reply.status(400).send({ ok: false, error: "id 必填" });
-    const userInput = goldenCaseUserInput(id);
-    const project = await getProjectRuntimeContext(instanceId).catch(() => null);
-    if (!project) return reply.status(404).send({ ok: false, error: `未找到用户助手 ${instanceId}` });
-    const manager = projectWeixinManager(project);
-    const conversationId = `golden:${id}:${Date.now()}`;
-    const startedAt = Date.now();
-    const response = await manager.simulateIncomingText({
-      text: userInput,
-      conversationId,
-      accountId: `${project.backend}-golden-runner`,
-    });
-    return {
-      ok: true,
-      id,
-      target: {
-        userId: project.ownerUserId,
-        instanceId: project.instanceId,
-        name: project.name,
-        backend: project.backend,
-      },
-      userInput,
-      text: response.text || "",
-      accountId: response.accountId,
-      conversationId,
-      elapsedMs: Date.now() - startedAt,
-      updatedAt: new Date().toISOString(),
     };
   }));
 
@@ -1215,10 +827,12 @@ export function registerPlatformRoutes(app: FastifyInstance) {
         instanceName: request.body?.instanceName,
         backend: config.acp.backend,
       });
+      const portalCredential = await provisionPortalAccount(project);
       return {
         ok: true,
         updatedAt: new Date().toISOString(),
         instance: await summarizeInstance(project),
+        portalCredential,
       };
     } catch (error) {
       if ((error as Error).message === "INVALID_USER_ID") {
@@ -1226,6 +840,19 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       }
       throw error;
     }
+  }));
+
+  app.post<{ Params: { instanceId: string } }>("/api/platform/instances/:instanceId/portal/credential", safe(async (request, reply) => {
+    const project = await getProjectRuntimeContext(request.params.instanceId).catch(() => null);
+    if (!project || project.status === "archived") {
+      return reply.status(404).send({ ok: false, error: "实例不存在或已归档" });
+    }
+    const portalCredential = await provisionPortalAccount(project);
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      portalCredential,
+    };
   }));
 
   app.delete<{ Params: { instanceId: string } }>("/api/platform/instances/:instanceId", safe(async (request, reply) => {

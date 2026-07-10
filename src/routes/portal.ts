@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { chatViaConversationLog, getConversation, listConversations } from "../services/conversation-log.js";
+import { ConversationScopeError, chatViaConversationLog, getConversation, listConversations } from "../services/conversation-log.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { logger } from "../lib/logger.js";
+import { AttachmentStoreError, type IncomingPortalAttachment } from "../lib/attachment-store.js";
 
 function scopeFrom(input: {
   userId?: string;
@@ -25,6 +26,17 @@ export function registerPortalRoutes(app: FastifyInstance) {
       try {
         return await handler(request, reply);
       } catch (error) {
+        if (error instanceof AttachmentStoreError) {
+          return reply.status(400).send({
+            ok: false,
+            error: error.message,
+            code: error.code,
+            details: error.details,
+          });
+        }
+        if (error instanceof ConversationScopeError) {
+          return reply.status(403).send({ ok: false, error: "conversation does not belong to this scope", code: "CONVERSATION_SCOPE_MISMATCH" });
+        }
         logger.error("Portal 本地接口失败:", error);
         return reply.status(500).send({
           ok: false,
@@ -36,7 +48,7 @@ export function registerPortalRoutes(app: FastifyInstance) {
   app.get("/api/portal/health", safe(async () => ({
     ok: true,
     mode: "local-runtime",
-    capabilities: ["conversation.chat", "conversation.list", "conversation.get"],
+    capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.attachments"],
     timestamp: new Date().toISOString(),
   })));
 
@@ -95,13 +107,15 @@ export function registerPortalRoutes(app: FastifyInstance) {
       projectId?: string;
       userMessageId?: string;
       text?: string;
+      attachments?: IncomingPortalAttachment[];
       idempotencyKey?: string;
       clientSentAt?: string;
     };
   }>("/api/portal/conversations/:conversationId/messages", safe(async (request, reply) => {
     const text = request.body?.text?.trim();
-    if (!text) {
-      return reply.status(400).send({ ok: false, error: "text is required" });
+    const attachments = Array.isArray(request.body?.attachments) ? request.body.attachments : [];
+    if (!text && attachments.length === 0) {
+      return reply.status(400).send({ ok: false, error: "text or attachments is required", code: "INVALID_REQUEST" });
     }
     const scope = scopeFrom(request.body || {});
     const result = await chatViaConversationLog({
@@ -109,6 +123,7 @@ export function registerPortalRoutes(app: FastifyInstance) {
       conversationId: request.params.conversationId,
       userMessageId: request.body?.userMessageId,
       text,
+      attachments,
       idempotencyKey: request.body?.idempotencyKey,
       clientSentAt: request.body?.clientSentAt,
     });

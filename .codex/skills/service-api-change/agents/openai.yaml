@@ -1,0 +1,5 @@
+interface:
+  display_name: "Service API Change"
+  short_description: "Add or change deterministic service APIs"
+  default_prompt: "Use $service-api-change to add or modify a sandbox, portal, MCP, Dashboard, or service API safely."
+

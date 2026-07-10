@@ -1,0 +1,5 @@
+interface:
+  display_name: "DB Migration"
+  short_description: "Plan and verify SQLite schema changes"
+  default_prompt: "Use $db-migration to change SQLite schema, migrations, backfills, or table ownership safely."
+

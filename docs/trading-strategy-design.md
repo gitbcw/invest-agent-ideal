@@ -1,7 +1,7 @@
 # 交易策略实体设计(第一版)
 
 > 状态:Approved / Implementing,2026-06-23
-> 关联:[ideal-refactor-plan.md](./ideal-refactor-plan.md)、[composite-indicator-system.md](./composite-indicator-system.md)、[04-core-workflows.md](./04-core-workflows.md)
+> 关联:[ideal-refactor-plan.md](./archive/ideal-refactor-plan.md)、[composite-indicator-system.md](./composite-indicator-system.md)、[04-core-workflows.md](./04-core-workflows.md)
 > 范围:把"交易策略"从隐式字段(`stock_plans.notes` / `investment_profiles`)提为系统一等公民,支撑"策略 → 预案"的单向生成链路。
 
 ## 1. 背景与动机
@@ -146,7 +146,7 @@ SQLite 里 `stock_plans` 表新增 `strategy_key`(text,可空):记录这条预�
 复盘产出后,系统在复盘报告末尾(或单独消息)附加**建议清单**,分两类:
 
 - **新建**:无交易预案的持仓股,各推荐一份策略 + 一句话理由
-- **调整**:已有预案但当天数据/趋势有显著变化的持仓股,提示"基于你的策略 X 和今天的行情,建议重新评估 Y"
+- **调整**:已有预案但当日数据/趋势有显著变化的持仓股,提示"基于你的策略 X 和当日行情,建议重新评估 Y"
 
 用户**主动**从清单中选择某一项,才进入对应的两次确认流程。系统不批量自动起草,不强制处理。
 
@@ -253,8 +253,8 @@ AI 需要吸收这些信息,结合策略对预案做变更建议,且**用户意�
 | P0 | 测试基建:引入 `node:test`,加 `npm test` 脚本,加 `tests/` 目录约定 | `npm test` 能跑空套件不报错 |
 | P1 | 模板 + 数据库小改:`templates/workspace/config/trading_strategies.yaml` 空模板 + `WorkspaceStore.readTradingStrategies / writeTradingStrategy / removeTradingStrategy`(TDD) + `stock_plans` 加 `strategy_key` 字段 | 模板存在,WorkspaceStore 单测全绿,DB schema 更新 |
 | P2 | 服务工具层:`query/get/set/remove` 策略 CRUD(内部调 WorkspaceStore) | Dashboard 能管理策略,工具层单测全绿 |
-| P3a | 评测集:`tests/eval/strategy-recommendation/` 5 只股票 × 3 份策略 + 期望推荐表 | 评测集 fixture 完整,可被 P3b 引用 |
-| P3b | Codex SKILL + 工具:`recommend_strategy_for_stock` + `draft_stock_plan_from_strategy` | 端到端跑通两次确认流程(场景 C 兜底入口),P3a 评测集 top-1 命中率 ≥ 60% |
+| P3a | 策略匹配材料与人工审阅标准 | 材料由对应 workspace Skill 在需要时使用，不维护独立量化推荐 runner |
+| P3b | Codex SKILL + 工具:`recommend_strategy_for_stock` + `draft_stock_plan_from_strategy` | 端到端跑通两次确认流程(场景 C 兜底入口)，由 Codex/用户审阅策略匹配理由与确认纪律 |
 | P4 | 场景 A 触发:持仓录入回复里附"无预案"轻量提示 + 概览页标注 | 用户在录入回复和概览页能看到标注,smoke 通过 |
 | P5 | 场景 B 触发:复盘报告末尾附"建议清单"(新建 + 调整两类) | 复盘报告含清单,用户选择后能进入流程,smoke 通过 |
 | P6 | 文档更新:CLAUDE.md / docs/README.md / 04-core-workflows.md | 文档一致性 |
@@ -287,7 +287,7 @@ P1 的 WorkspaceStore 测试用例(起草):
 - 空 yaml → `readTradingStrategies()` 返回 `[]`
 - `writeTradingStrategy({key, name, body, ...})` 新增 → 再读能读出来
 - 同 key 调 `writeTradingStrategy` → upsert,字段覆盖,数量不增
-- `writeTradingStrategy` 不传 `created_at` → 自动填今天
+- `writeTradingStrategy` 不传 `created_at` → 自动填当前日期
 - `removeTradingStrategy(key)` → 再读不含该 key
 - `removeTradingStrategy(不存在的 key)` → 不报错,返回 false
 
@@ -295,11 +295,11 @@ P1 的 WorkspaceStore 测试用例(起草):
 
 - 目录:`tests/eval/<capability>/`,含 `fixtures.yaml`(输入) + `expected.yaml`(期望) + `run.mjs`(执行 + 打分)
 - 评测对象:AI 推理工具,如 `recommend_strategy_for_stock`、`draft_stock_plan_from_strategy`
-- 评测指标:
+- 评测标准:
   - 推荐类:**top-1 命中率**(AI 推荐的策略是否在期望集合里)
   - 起草类:**关键字段命中**(support/resistance/target/stopLoss 是否落在期望区间)
 - 不要求 100% 命中:AI 推理有合理波动,阈值(如 ≥ 60%)写在 `expected.yaml` 顶部
-- 评测集**离线**跑,不进 CI 必跑项(依赖外部 API),用 `npm run eval:<capability>` 触发
+- 由 workspace Skill + Codex 在最小真实路径中审阅，不进入 CI，也不维护 `npm run eval:<capability>` 执行器
 
 P3a 评测集内容(起草):
 

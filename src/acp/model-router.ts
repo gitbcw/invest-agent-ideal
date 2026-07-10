@@ -25,14 +25,18 @@ const ROUTER_TIMEOUT_MS = Number(process.env.ACP_MODEL_ROUTER_TIMEOUT_MS) || 3_0
 
 export async function resolveChatModelTier(
   input: string | ChatModelRouteInput,
-  options: { judge?: ChatRouteJudge; routerEnabled?: boolean } = {},
+  options: { judge?: ChatRouteJudge; routerEnabled?: boolean; simpleEnabled?: boolean } = {},
 ): Promise<AcpModelTier> {
   const routeInput = typeof input === "string" ? { text: input } : input;
   const text = routeInput.text.trim();
-  if (!text) return "simple";
+  if (!text) return "complex";
+  if (options.simpleEnabled === false || (options.simpleEnabled === undefined && !isSimpleModelTierEnabled())) {
+    logger.info("ACP simple model tier disabled, using complex tier");
+    return "complex";
+  }
   if (options.routerEnabled === false || (options.routerEnabled === undefined && !isChatModelRouterEnabled())) {
-    logger.info("ACP model route disabled, using simple tier");
-    return "simple";
+    logger.info("ACP model route disabled, using complex tier");
+    return "complex";
   }
 
   try {
@@ -56,13 +60,19 @@ export async function resolveChatModelTier(
 
 export function resolveScheduledModelTier(mode: string): AcpModelTier {
   if (/^scheduled-(daily|weekly|monthly)-review$/.test(mode)) return "complex";
-  return "simple";
+  return isSimpleModelTierEnabled() ? "simple" : "complex";
 }
 
 export function isChatModelRouterEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env.ACP_MODEL_ROUTER_ENABLED;
   if (raw === undefined || raw.trim() === "") return true;
   return !["0", "false", "off", "no"].includes(raw.trim().toLowerCase());
+}
+
+export function isSimpleModelTierEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.ACP_SIMPLE_MODEL_ENABLED;
+  if (raw === undefined || raw.trim() === "") return false;
+  return ["1", "true", "on", "yes"].includes(raw.trim().toLowerCase());
 }
 
 export function parseChatRouteDecision(raw: string): ChatRouteDecision {

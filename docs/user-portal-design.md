@@ -200,7 +200,7 @@ local connector -> cloud relay WebSocket
   "type": "chat",
   "payload": {
     "conversationId": "web_...",
-    "text": "今天帮我看一下持仓风险"
+    "text": "帮我看一下当前持仓风险"
   }
 }
 ```

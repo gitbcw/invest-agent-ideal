@@ -1,0 +1,5 @@
+interface:
+  display_name: "Onboarding Flow Eval"
+  short_description: "Run and audit onboarding workflow"
+  default_prompt: "Use $onboarding-flow-eval to run the onboarding workflow, inspect logs and workspace state, and identify fixes."
+

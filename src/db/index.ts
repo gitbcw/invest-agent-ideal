@@ -585,6 +585,7 @@ export function initDb() {
   ensureColumn("stock_plans", "strategy_key", "TEXT");
   dropColumnIfExists("portfolio", "quantity");
   backfillHistoricalInstanceAssignments();
+  migrateConversationIdempotencyScope();
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_accounts_unique ON channel_accounts(channel, backend, external_account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_unique ON channel_identities(channel, external_user_id);
@@ -621,7 +622,7 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_conversation_sessions_channel_time ON conversation_sessions(channel, updated_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_time ON conversation_messages(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_scope_time ON conversation_messages(instance_id, user_id, created_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_idempotency ON conversation_messages(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_idempotency ON conversation_messages(user_id, instance_id, conversation_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_conversation_tasks_scope_status ON conversation_tasks(instance_id, user_id, conversation_id, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_indicator_definitions_key ON indicator_definitions(key);
     CREATE INDEX IF NOT EXISTS idx_indicator_results_key_stock_time ON indicator_results(indicator_key, stock_code, data_time);
@@ -654,7 +655,7 @@ function ensureDefaultUser() {
       `INSERT OR IGNORE INTO users (id, display_name, status, created_at, updated_at)
        VALUES (?, ?, 'active', ?, ?)`
     )
-    .run(DEFAULT_USER_ID, "主用户", now, now);
+    .run(DEFAULT_USER_ID, "默认测试用户", now, now);
 }
 
 function ensureDefaultAiInstance() {
@@ -676,9 +677,9 @@ function ensureDefaultAiInstance() {
       DEFAULT_INSTANCE_ID,
       DEFAULT_PROJECT_ID,
       DEFAULT_USER_ID,
-      "主用户投资助手",
+      "默认测试投资助手",
       "invest-agent-default",
-      JSON.stringify({ migratedFromUserId: DEFAULT_USER_ID }),
+      JSON.stringify({ autoCreated: true, role: "default_test_instance" }),
       now,
       now
     );
@@ -780,28 +781,47 @@ function migrateAlertSignalStatesForUsers() {
   const needsRebuild = !columns.some((c) => c.name === "id") || !columns.some((c) => c.name === "user_id");
   if (!needsRebuild) return;
 
-  sqlite.exec(`
-    ALTER TABLE alert_signal_states RENAME TO alert_signal_states_legacy_user_migration;
-    CREATE TABLE alert_signal_states (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL DEFAULT 'primary',
-      signal_key TEXT NOT NULL,
-      stock_code TEXT NOT NULL,
-      stock_name TEXT NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
-      last_price REAL,
-      activated_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE(user_id, instance_id, signal_key)
-    );
-    INSERT OR IGNORE INTO alert_signal_states (
-      user_id, signal_key, stock_code, stock_name, active, last_price, activated_at, updated_at
-    )
-    SELECT 'primary', signal_key, stock_code, stock_name, active, last_price, activated_at, updated_at
-    FROM alert_signal_states_legacy_user_migration;
-    DROP TABLE alert_signal_states_legacy_user_migration;
-  `);
-  markMigration("alert_signal_states_user_scope_v1");
+  const transaction = sqlite.transaction(() => {
+    sqlite.exec(`
+      ALTER TABLE alert_signal_states RENAME TO alert_signal_states_legacy_user_migration;
+      CREATE TABLE alert_signal_states (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL DEFAULT 'primary',
+        instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+        signal_key TEXT NOT NULL,
+        stock_code TEXT NOT NULL,
+        stock_name TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        last_price REAL,
+        activated_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, instance_id, signal_key)
+      );
+      INSERT OR IGNORE INTO alert_signal_states (
+        user_id, instance_id, signal_key, stock_code, stock_name, active, last_price, activated_at, updated_at
+      )
+      SELECT 'primary', 'invest-agent-primary', signal_key, stock_code, stock_name, active, last_price, activated_at, updated_at
+      FROM alert_signal_states_legacy_user_migration;
+      DROP TABLE alert_signal_states_legacy_user_migration;
+    `);
+    markMigration("alert_signal_states_user_scope_v1");
+  });
+  transaction();
+}
+
+function migrateConversationIdempotencyScope() {
+  const migrationKey = "conversation_idempotency_scope_v1";
+  if (hasMigration(migrationKey)) return;
+  const transaction = sqlite.transaction(() => {
+    sqlite.exec("DROP INDEX IF EXISTS idx_conversation_messages_idempotency");
+    sqlite.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_idempotency
+      ON conversation_messages(user_id, instance_id, conversation_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL
+    `);
+    markMigration(migrationKey);
+  });
+  transaction();
 }
 
 function migrateWatchlistForInstances() {

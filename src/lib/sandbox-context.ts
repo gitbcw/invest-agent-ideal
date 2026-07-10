@@ -1,4 +1,7 @@
+import "dotenv/config";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import path from "node:path";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, type UserContext } from "./user-context.js";
 import { DEFAULT_SANDBOX_PERMISSIONS } from "../platform/project-registry.js";
 
@@ -41,10 +44,34 @@ type SandboxTokenPayload = SandboxContext & {
 };
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
-const secret = process.env.INVEST_AGENT_SANDBOX_SECRET || randomBytes(32).toString("hex");
+const localSandboxSecret = loadLocalSandboxSecret();
+const secret = process.env.INVEST_AGENT_SANDBOX_SECRET || localSandboxSecret;
 
 if (!process.env.INVEST_AGENT_SANDBOX_SECRET) {
-  console.warn("[sandbox] INVEST_AGENT_SANDBOX_SECRET 未设置，当前进程使用临时密钥；服务重启会使旧 sandbox token 失效");
+  console.warn("[sandbox] INVEST_AGENT_SANDBOX_SECRET 未设置，当前进程使用本地持久 sandbox secret；生产环境请显式配置环境变量");
+}
+
+function loadLocalSandboxSecret() {
+  const filePath = path.resolve(process.env.INVEST_AGENT_SANDBOX_SECRET_FILE || "data/.sandbox-secret");
+  try {
+    if (existsSync(filePath)) {
+      const value = readFileSync(filePath, "utf-8").trim();
+      if (value) return value;
+    }
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    const value = randomBytes(32).toString("hex");
+    try {
+      writeFileSync(filePath, `${value}\n`, { mode: 0o600, flag: "wx" });
+    } catch {
+      const existing = readFileSync(filePath, "utf-8").trim();
+      if (existing) return existing;
+      writeFileSync(filePath, `${value}\n`, { mode: 0o600 });
+    }
+    chmodSync(filePath, 0o600);
+    return value;
+  } catch {
+    return randomBytes(32).toString("hex");
+  }
 }
 
 function base64url(input: Buffer | string) {
@@ -53,6 +80,15 @@ function base64url(input: Buffer | string) {
 
 function sign(data: string) {
   return createHmac("sha256", secret).update(data).digest("base64url");
+}
+
+function validSignature(data: string, signature: string) {
+  if (safeEqual(signature, createHmac("sha256", secret).update(data).digest("base64url"))) {
+    return true;
+  }
+  return process.env.NODE_ENV !== "production"
+    && localSandboxSecret !== secret
+    && safeEqual(signature, createHmac("sha256", localSandboxSecret).update(data).digest("base64url"));
 }
 
 function safeEqual(a: string, b: string) {
@@ -76,7 +112,7 @@ export function createSandboxToken(context: SandboxContext, ttlMs = DEFAULT_TTL_
 
 export function verifySandboxToken(token: string, now = new Date()): SandboxContext {
   const [body, signature] = token.split(".");
-  if (!body || !signature || !safeEqual(signature, sign(body))) {
+  if (!body || !signature || !validSignature(body, signature)) {
     throw new Error("SANDBOX_TOKEN_INVALID");
   }
 

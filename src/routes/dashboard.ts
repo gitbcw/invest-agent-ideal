@@ -14,7 +14,6 @@ import { reviewViewpointBackend } from "../lib/review-viewpoint-backend.js";
 import { logger } from "../lib/logger.js";
 import { buildDailyReviewContext, buildMonthlyReviewContext, buildWeeklyReviewContext, generateDailyReview, handleReviewTool, saveSkillDailyReview } from "../handlers/review.js";
 import { getIndicatorDefinition, listIndicatorDefinitions } from "../handlers/indicator-definitions.js";
-import { deleteMirroredAlertRule, disableMirroredAlertRule, syncLegacyAlertToAlertRule } from "../handlers/alert-rules.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
 import { getWorkspaceStore } from "../lib/workspace-store.js";
 import { DEFAULT_USER_ID, instanceIdFromRequest, normalizeUserId, userIdFromRequest } from "../lib/user-context.js";
@@ -558,16 +557,6 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     } else {
       await db.insert(alerts).values(values);
     }
-    await syncLegacyAlertToAlertRule({
-      userId,
-      instanceId,
-      stockCode,
-      stockName,
-      indicator,
-      threshold: values.threshold,
-      enabled: true,
-    });
-
     const displayName = indicatorNames[indicator] || indicator;
     return { ok: true, message: `${stockName ?? stockCode} ${displayName} 提醒已${existing.length > 0 ? "更新" : "设置"}` };
   }));
@@ -580,17 +569,6 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     const existing = await db.select().from(alerts).where(and(eq(alerts.userId, userId), eq(alerts.instanceId, instanceId), eq(alerts.id, id))).limit(1);
     if (existing.length === 0) return { ok: false, error: "提醒规则不存在" };
     await db.update(alerts).set({ enabled }).where(eq(alerts.id, id));
-    await disableMirroredAlertRule(userId, existing[0].stockCode, existing[0].indicator, instanceId);
-    if (enabled) {
-      await syncLegacyAlertToAlertRule({
-        userId,
-        instanceId,
-        stockCode: existing[0].stockCode,
-        indicator: existing[0].indicator,
-        threshold: existing[0].threshold,
-        enabled: true,
-      });
-    }
     return { ok: true, message: `提醒已${enabled ? "启用" : "关闭"}` };
   }));
 
@@ -603,7 +581,6 @@ export function registerDashboardRoutes(app: FastifyInstance) {
     if (existing.length === 0) return { ok: false, error: "提醒规则不存在" };
 
     await db.delete(alerts).where(and(eq(alerts.userId, userId), eq(alerts.instanceId, instanceId), eq(alerts.id, id)));
-    await deleteMirroredAlertRule(userId, existing[0].stockCode, existing[0].indicator, instanceId);
     return { ok: true, message: `已删除 ${existing[0].stockCode} 的${indicatorNames[existing[0].indicator] || existing[0].indicator}提醒` };
   }));
 

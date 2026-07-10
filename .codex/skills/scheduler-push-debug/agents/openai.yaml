@@ -1,0 +1,5 @@
+interface:
+  display_name: "Scheduler Push Debug"
+  short_description: "Diagnose scheduled tasks and push delivery"
+  default_prompt: "Use $scheduler-push-debug to find why a scheduled review, market watch, rule inspection, or push did not reach the user."
+

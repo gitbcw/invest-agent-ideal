@@ -18,6 +18,8 @@ export async function createSandboxConfirmation(ctx: SandboxContext, target: San
   const record = {
     id: randomUUID(),
     userId: ctx.userId,
+    projectId: ctx.projectId,
+    instanceId: ctx.instanceId,
     role: ctx.role,
     channel: ctx.channel,
     backend: ctx.backend,
@@ -50,11 +52,20 @@ export async function consumeSandboxConfirmation(ctx: SandboxContext, confirmati
   if (record.userId !== ctx.userId) {
     return { ok: false as const, reason: "confirmation user mismatch" };
   }
+  if (record.projectId !== ctx.projectId) {
+    return { ok: false as const, reason: "confirmation project mismatch" };
+  }
+  if (record.instanceId !== ctx.instanceId) {
+    return { ok: false as const, reason: "confirmation instance mismatch" };
+  }
   if ((record.conversationId ?? "") !== (ctx.conversationId ?? "")) {
     return { ok: false as const, reason: "confirmation conversation mismatch" };
   }
   if (record.operation !== target.operation || record.resourceType !== target.resourceType || (record.resourceId ?? "") !== (target.resourceId ?? "")) {
     return { ok: false as const, reason: "confirmation target mismatch" };
+  }
+  if (stableJson(parseRequestBody(record.requestBody)) !== stableJson(stripConfirmationFields(target.requestBody))) {
+    return { ok: false as const, reason: "confirmation payload mismatch" };
   }
   if (new Date(record.expiresAt).getTime() <= now.getTime()) {
     await markConfirmation(record.id, "expired", ctx.tokenId);
@@ -72,7 +83,12 @@ export async function listPendingSandboxConfirmations(ctx: SandboxContext) {
   const rows = await db
     .select()
     .from(pendingSandboxConfirmations)
-    .where(and(eq(pendingSandboxConfirmations.userId, ctx.userId), eq(pendingSandboxConfirmations.status, "pending")))
+    .where(and(
+      eq(pendingSandboxConfirmations.userId, ctx.userId),
+      eq(pendingSandboxConfirmations.projectId, ctx.projectId),
+      eq(pendingSandboxConfirmations.instanceId, ctx.instanceId),
+      eq(pendingSandboxConfirmations.status, "pending")
+    ))
     .orderBy(desc(pendingSandboxConfirmations.createdAt))
     .limit(20);
   const now = Date.now();
@@ -87,6 +103,29 @@ export async function listPendingSandboxConfirmations(ctx: SandboxContext) {
       expiresAt: row.expiresAt,
       createdAt: row.createdAt,
     }));
+}
+
+function stripConfirmationFields(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value ?? {};
+  const { confirmationId: _confirmationId, confirmedByUser: _confirmedByUser, ...rest } = value as Record<string, unknown>;
+  return rest;
+}
+
+function parseRequestBody(value: string): unknown {
+  try {
+    return stripConfirmationFields(JSON.parse(value));
+  } catch {
+    return value;
+  }
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
 }
 
 async function markConfirmation(id: string, status: "confirmed" | "expired", confirmedTokenId?: string) {

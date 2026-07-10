@@ -6,7 +6,6 @@ export type PendingConfirmationKind = ContextPacket["pendingConfirmations"][numb
 interface PendingConfirmationRecord {
   userId: string;
   instanceId: string;
-  conversationId?: string;
   kind: PendingConfirmationKind;
   summary: string;
   expiresAt?: string;
@@ -19,7 +18,6 @@ export function pendingStateKey(userContext: Pick<UserContext, "userId" | "insta
   return [
     userContext.userId,
     userContext.instanceId || DEFAULT_INSTANCE_ID,
-    userContext.conversationId || "weixin-mobile",
     kind || "*",
   ].join(":");
 }
@@ -36,7 +34,6 @@ export function registerPendingConfirmation(
   pendingConfirmations.set(pendingStateKey(userContext, input.kind), {
     userId: userContext.userId,
     instanceId: userContext.instanceId || DEFAULT_INSTANCE_ID,
-    conversationId: userContext.conversationId,
     kind: input.kind,
     summary: input.summary,
     expiresAt: input.ttlMs ? new Date(now + input.ttlMs).toISOString() : undefined,
@@ -63,7 +60,6 @@ export function listPendingConfirmations(
       continue;
     }
     if (record.userId !== userContext.userId || record.instanceId !== instanceId) continue;
-    if (userContext.conversationId && record.conversationId && record.conversationId !== userContext.conversationId) continue;
     out.push({
       kind: record.kind,
       summary: record.summary,

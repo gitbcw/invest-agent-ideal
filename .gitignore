@@ -4,7 +4,10 @@ data/
 logs/
 .env
 .DS_Store
-/.codex/
+/.codex/*
+!/.codex/skills/
+!/.codex/skills/**
+/.codex/skills/.system/
 .state/
 *.db
 *.log

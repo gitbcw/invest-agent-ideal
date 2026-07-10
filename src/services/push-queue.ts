@@ -5,6 +5,7 @@ import { pushJobs } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { hasActiveWeixinComplexTask } from "../channels/weixin-activity.js";
+import { sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 
 export type PushBackend = "hermes" | "codex";
 export type PushChannel = "weixin-mobile";
@@ -51,7 +52,9 @@ export async function enqueuePushJob(input: PushJobInput) {
     channel: input.channel || "weixin-mobile",
     backend: input.backend || "codex",
     source: input.source || "scheduler",
-    message: input.message,
+    message: input.channel === undefined || input.channel === "weixin-mobile"
+      ? sanitizeWeixinCustomerText(input.message)
+      : input.message,
     status: "pending",
     attempts: 0,
     maxAttempts: input.maxAttempts ?? 5,

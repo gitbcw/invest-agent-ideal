@@ -5,25 +5,28 @@ import { eq } from "drizzle-orm";
 import { registerSandboxRoutes } from "../dist/routes/sandbox.js";
 import { createSandboxToken } from "../dist/lib/sandbox-context.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../dist/lib/workspace.js";
-import { db } from "../dist/db/index.js";
-import { alertRules } from "../dist/db/schema.js";
+import { db, initDb } from "../dist/db/index.js";
+import { alertRules, conversationMessages, conversationSessions } from "../dist/db/schema.js";
 import { WorkspaceStore } from "../dist/lib/workspace-store.js";
+import { callServiceTool } from "../dist/mcp/service-tools-core.js";
 
 const USER_ID = "onboarding-confirm-step-smoke";
 const INSTANCE_ID = "invest-agent-onboarding-confirm-step-smoke";
+const CONVERSATION_ID = "onboarding-confirm-step-smoke-conversation";
 const EXPECTED_WINDOWS = ["09:30", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00"];
 
+initDb();
 await ensureWorkspace({ userId: USER_ID, tenantId: USER_ID, projectId: "invest-agent" });
 const store = new WorkspaceStore(USER_ID);
 await store.writeOnboardingState({
   version: 1,
   status: "in_progress",
-  current_step: "market_watch_schedule",
+  current_step: "review_schedule",
   steps: {
     welcome: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
     portfolio: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
     style: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
-    review_schedule: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+    review_schedule: { done: false, completed_at: null },
     market_watch_schedule: { done: false, completed_at: null },
     notification: { done: false, completed_at: null },
     watch_rules: { done: false, completed_at: null },
@@ -66,6 +69,8 @@ await store.writeWatch({
   custom_rules: [],
 });
 await db.delete(alertRules).where(eq(alertRules.userId, USER_ID));
+await db.delete(conversationMessages).where(eq(conversationMessages.userId, USER_ID));
+await db.delete(conversationSessions).where(eq(conversationSessions.userId, USER_ID));
 
 const app = Fastify({ logger: false });
 registerSandboxRoutes(app);
@@ -82,18 +87,238 @@ const token = createSandboxToken({
 });
 
 try {
+  const invalidPortfolioResponse = await app.inject({
+    method: "POST",
+    url: "/api/sandbox/onboarding/confirm-portfolio",
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      holdings: [{ name: "招商银行" }],
+      watchlist: [{ name: "科创50ETF", code: "588000" }],
+      summary: "缺少持仓代码的草案",
+    },
+  });
+
+  assert.equal(invalidPortfolioResponse.statusCode, 400, invalidPortfolioResponse.body);
+  const invalidPortfolioBody = invalidPortfolioResponse.json();
+  assert.equal(invalidPortfolioBody.ok, false);
+  assert.equal(invalidPortfolioBody.missingCodes[0].name, "招商银行");
+
+  const portfolioResponse = await app.inject({
+    method: "POST",
+    url: "/api/sandbox/onboarding/confirm-portfolio",
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      holdings: [{ name: "招商银行", code: "600036" }],
+      watchlist: [{ name: "科创50ETF", code: "588000" }],
+      summary: "用户确认持仓和观察仓草案",
+    },
+  });
+
+  assert.equal(portfolioResponse.statusCode, 200, portfolioResponse.body);
+  const portfolioBody = portfolioResponse.json();
+  assert.equal(portfolioBody.ok, true);
+  assert.equal(portfolioBody.holdings[0].code, "600036");
+  assert.equal(portfolioBody.watchlist[0].code, "588000");
+
+  await store.writeOnboardingState({
+    version: 1,
+    status: "in_progress",
+    current_step: "review_schedule",
+    steps: {
+      welcome: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      portfolio: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      style: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      review_schedule: { done: false, completed_at: null },
+      market_watch_schedule: { done: false, completed_at: null },
+      notification: { done: false, completed_at: null },
+      watch_rules: { done: false, completed_at: null },
+    },
+    completed_at: null,
+    updated_at: "2026-01-01T00:00:00.000Z",
+    notes: "",
+  });
+
+  const reviewResponse = await app.inject({
+    method: "POST",
+    url: "/api/sandbox/onboarding/confirm-step",
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      step: "review_schedule",
+      summary: "用户确认自定义复盘时间",
+      daily_review_time: "18:30",
+      weekly_review_time: "Saturday 10:00",
+      monthly_review_time: "day_1 10:30",
+    },
+  });
+
+  assert.equal(reviewResponse.statusCode, 200, reviewResponse.body);
+  const reviewBody = reviewResponse.json();
+  assert.equal(reviewBody.ok, true);
+  assert.equal(reviewBody.state.current_step, "market_watch_schedule");
+  assert.equal(reviewBody.state.steps.review_schedule.done, true);
+  const reviewSchedules = await store.readSchedules();
+  assert.equal(reviewSchedules?.daily_review?.default_time, "18:30");
+  assert.equal(reviewSchedules?.weekly_review?.default_time, "Saturday 10:00");
+  assert.equal(reviewSchedules?.monthly_review?.default_time, "day_1 10:30");
+
+  await store.writeOnboardingState({
+    version: 1,
+    status: "in_progress",
+    current_step: "style",
+    steps: {
+      welcome: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      portfolio: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      style: { done: false, completed_at: null },
+      review_schedule: { done: false, completed_at: null },
+      market_watch_schedule: { done: false, completed_at: null },
+      notification: { done: false, completed_at: null },
+      watch_rules: { done: false, completed_at: null },
+    },
+    completed_at: null,
+    updated_at: "2026-01-01T00:00:00.000Z",
+    notes: "",
+  });
+
+  const prematureCompleteResponse = await app.inject({
+    method: "POST",
+    url: "/api/sandbox/onboarding/confirm-step",
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      step: "style",
+      summary: "用户确认风格，但模型误传 complete=true",
+      complete: true,
+    },
+  });
+
+  assert.equal(prematureCompleteResponse.statusCode, 200, prematureCompleteResponse.body);
+  const prematureCompleteBody = prematureCompleteResponse.json();
+  assert.equal(prematureCompleteBody.state.status, "in_progress", "complete=true must not complete onboarding before watch_rules");
+  assert.equal(prematureCompleteBody.state.current_step, "review_schedule", "style confirmation should advance to review_schedule");
+
+  await store.writeOnboardingState({
+    version: 1,
+    status: "in_progress",
+    current_step: "style",
+    steps: {
+      welcome: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      portfolio: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      style: { done: false, completed_at: null },
+      review_schedule: { done: false, completed_at: null },
+      market_watch_schedule: { done: false, completed_at: null },
+      notification: { done: false, completed_at: null },
+      watch_rules: { done: false, completed_at: null },
+    },
+    completed_at: null,
+    updated_at: "2026-01-01T00:00:00.000Z",
+    notes: "",
+  });
+
+  const now = new Date().toISOString();
+  await db.insert(conversationSessions).values({
+    userId: USER_ID,
+    projectId: "invest-agent",
+    instanceId: INSTANCE_ID,
+    conversationId: CONVERSATION_ID,
+    channel: "weixin-mobile",
+    title: "onboarding confirm smoke",
+    status: "active",
+    lastMessageAt: now,
+    messageCount: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(conversationMessages).values({
+    userId: USER_ID,
+    projectId: "invest-agent",
+    instanceId: INSTANCE_ID,
+    conversationId: CONVERSATION_ID,
+    channel: "weixin-mobile",
+    role: "user",
+    content: "我先选趋势辅助型",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const guardedContext = {
+    userId: USER_ID,
+    instanceId: INSTANCE_ID,
+    workspacePath: resolveWorkspacePath(USER_ID),
+    conversationId: CONVERSATION_ID,
+  };
+  const guardedPayload = {
+    step: "style",
+    summary: "模型误把选择风格当成确认",
+  };
+  const guardedConfirmation = await callServiceTool(
+    "confirmations.request",
+    { operation: "onboarding.confirm_step", payload: guardedPayload },
+    guardedContext
+  );
+  await assert.rejects(
+    () => callServiceTool(
+      "onboarding.confirm_step",
+      {
+        confirmedByUser: true,
+        confirmationId: guardedConfirmation.confirmationId,
+        ...guardedPayload,
+      },
+      guardedContext
+    ),
+    /predates the draft/,
+    "MCP confirm_step must reject a selection message that predates the registered draft"
+  );
+  const guardedState = await store.readOnboardingState();
+  assert.equal(guardedState.steps.style.done, false, "rejected MCP confirmation must not write style");
+
+  await store.writeOnboardingState({
+    version: 1,
+    status: "in_progress",
+    current_step: "review_schedule",
+    steps: {
+      welcome: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      portfolio: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      style: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
+      review_schedule: { done: false, completed_at: null },
+      market_watch_schedule: { done: false, completed_at: null },
+      notification: { done: false, completed_at: null },
+      watch_rules: { done: false, completed_at: null },
+    },
+    completed_at: null,
+    updated_at: "2026-01-01T00:00:00.000Z",
+    notes: "",
+  });
+
+  const invalidScheduleResponse = await app.inject({
+    method: "POST",
+    url: "/api/sandbox/onboarding/confirm-step",
+    headers: { authorization: `Bearer ${token}` },
+    payload: {
+      step: "market_watch_schedule",
+      summary: "错误格式盯盘时间",
+      market_watch_windows: ["09:30_10:30"],
+      push_mode: "every_check_brief",
+    },
+  });
+
+  assert.equal(invalidScheduleResponse.statusCode, 400, invalidScheduleResponse.body);
+  const invalidState = await store.readOnboardingState();
+  const invalidSchedules = await store.readSchedules();
+  assert.equal(invalidState.steps.market_watch_schedule.done, false, "invalid schedule request must not advance onboarding");
+  assert.deepEqual(
+    invalidSchedules?.market_watch?.default_windows,
+    ["09:55", "11:20", "14:30"],
+    "invalid schedule request must not rewrite schedules.yaml"
+  );
+
   const scheduleResponse = await app.inject({
     method: "POST",
     url: "/api/sandbox/onboarding/confirm-step",
     headers: { authorization: `Bearer ${token}` },
     payload: {
       step: "market_watch_schedule",
-      summary: "确认自定义盘中盯盘时间",
-      marketWatchSchedule: {
-        default_windows: EXPECTED_WINDOWS,
-        custom_frequency: null,
-        only_push_on_exception: false,
-      },
+      summary: "用户确认高频盯盘并每次主动推送简报",
+      market_watch_windows: EXPECTED_WINDOWS,
+      push_mode: "every_check_brief",
     },
   });
 
@@ -110,9 +335,10 @@ try {
     headers: { authorization: `Bearer ${token}` },
     payload: {
       step: "notification",
-      summary: "确认积极盯盘通知偏好",
-      notificationPreference: {
+      summary: "确认通知策略，使用历史 notification 字段结构",
+      notification: {
         mode: "active_watch",
+        summary: "积极盯盘：按固定时间推送盘面简报，重大风险单独提醒。",
       },
     },
   });
@@ -173,6 +399,7 @@ try {
     status: state.status,
     didCreateWatchRules: body.didCreateWatchRules,
     alertRuleCount: rules.length,
+    portfolioCode: portfolioBody.holdings[0].code,
     scheduleWindows: schedules?.market_watch?.default_windows,
     notificationPreference: notification?.preference?.mode,
     pushMode: schedules?.market_watch?.push_mode,

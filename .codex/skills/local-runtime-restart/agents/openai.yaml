@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Runtime Restart"
+  short_description: "Restart and verify the local Invest Agent runtime"
+  default_prompt: "Use $local-runtime-restart to restart the local Invest Agent service on port 22655 and verify health."

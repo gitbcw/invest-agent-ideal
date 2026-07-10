@@ -12,7 +12,7 @@ preference_options:
     description: "盘中只提醒可能需要当天处理的事，其他放到晚间复盘。"
   active_watch:
     label: "积极盯盘"
-    description: "到用户设置的盯盘时间就推送盘中简报；重大风险仍会单独提醒。"
+    description: "到用户设置的盘中简报时间就推送摘要；重大风险或明确规则命中仍会单独提醒。"
   evening_summary:
     label: "晚间汇总"
     description: "盘中尽量不打扰，晚上统一复盘。"
@@ -34,16 +34,16 @@ priority_levels:
 working_hours:
   start: "09:00"
   end: "18:00"
-  policy: "工作时间只推 P0，P1/P2 延后到晚间简报。"
+  policy: "工作时间只推可能需要立即处理的重大事项，其他延后到晚间简报。"
 
 lunch_break:
   start: "11:30"
   end: "13:30"
-  policy: "允许推送少量 P1，但默认不超过 1 条。"
+  policy: "允许推送少量当天值得关注的摘要，但默认不超过 1 条。"
 
 evening:
   daily_brief_time: "19:00"
-  policy: "推送日复盘简报、P1 汇总和今日是否需要操作。"
+  policy: "推送日复盘简报、当天汇总和今日是否需要操作。"
 
 weekend:
   weekly_meeting_time: "Saturday 09:00"

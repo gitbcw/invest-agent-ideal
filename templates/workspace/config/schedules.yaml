@@ -41,6 +41,7 @@ market_watch:
     - "09:55"
     - "11:20"
     - "14:30"
-  # 固定时间只写 default_windows；分钟轮询才写纯数字 custom_frequency，例如 30。
+  # 盘中定时简报固定时间只写 default_windows；分钟轮询才写纯数字 custom_frequency，例如 30。
+  # 这不是明确规则巡检间隔；规则巡检使用服务层 alert_check_interval_minutes。
   custom_frequency: null
   only_push_on_exception: true

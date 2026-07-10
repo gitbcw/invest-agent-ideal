@@ -9,11 +9,13 @@ import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
 import { appendConversationMessage } from "../services/conversation-log.js";
 import { config } from "../lib/config.js";
 import { resolveWeixinAccount } from "./weixin-account-store.js";
+import { storeWeixinAttachment, type IncomingMediaAttachment, type StoredAttachment } from "../lib/attachment-store.js";
 
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
 const WEIXIN_MESSAGE_STATE_FINISH = 2;
-const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 1000;
+const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 2000;
+const WEIXIN_INBOUND_BATCH_WINDOW_MS = Number(process.env.WEIXIN_INBOUND_BATCH_WINDOW_MS) || 1200;
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 
 export interface WeixinProjectBinding {
@@ -23,6 +25,25 @@ export interface WeixinProjectBinding {
   ownerDisplayName?: string;
   sharedUsers?: boolean;
 }
+
+type WeixinChatRequest = {
+  conversationId: string;
+  text: string;
+  media?: IncomingMediaAttachment;
+  contextToken?: string;
+};
+
+type WeixinBatchItem = WeixinChatRequest & {
+  resolve: (response: { text?: string }) => void;
+  reject: (error: unknown) => void;
+  receivedAt: number;
+};
+
+type WeixinConversationBatch = {
+  items: WeixinBatchItem[];
+  timer?: NodeJS.Timeout;
+  processing: boolean;
+};
 
 function buildBaseInfo() {
   return { channel_version: process.env.WEIXIN_CHANNEL_VERSION || "web-1.0.0" };
@@ -124,6 +145,11 @@ export async function sendWeixinTextMessage(params: {
     const errmsg = String(responseBody?.errmsg ?? responseBody?.message ?? responseText.slice(0, 300) ?? "unknown");
     throw new Error(`微信主动推送失败: errcode=${errcode} ${errmsg.slice(0, 300)}`);
   }
+  const ret = responseBody && responseBody.ret !== undefined ? Number(responseBody.ret) : 0;
+  if (Number.isFinite(ret) && ret !== 0) {
+    const errmsg = String(responseBody?.errmsg ?? responseBody?.message ?? responseText.slice(0, 300) ?? "unknown");
+    throw new Error(`微信主动推送失败: ret=${ret} ${errmsg.slice(0, 300)}`);
+  }
   logger.info(
     `微信主动推送已提交 to=${params.to} contextToken=${params.contextToken ? "yes" : "no"} status=${response.status} body=${responseText.slice(0, 300)}`
   );
@@ -140,6 +166,7 @@ function parseWeixinResponseBody(text: string): Record<string, unknown> | null {
 
 export class InvestAgentMobileBridge {
   private readonly agent = createAgent();
+  private readonly inboundBatches = new Map<string, WeixinConversationBatch>();
 
   constructor(
     private readonly accountId: string,
@@ -147,47 +174,114 @@ export class InvestAgentMobileBridge {
     private readonly projectBinding?: WeixinProjectBinding
   ) {}
 
-  async chat(request: {
-    conversationId: string;
-    text: string;
-    media?: { type: string };
-    contextToken?: string;
-  }): Promise<{ text?: string }> {
+  async chat(request: WeixinChatRequest): Promise<{ text?: string }> {
+    return this.enqueueInboundMessage(request);
+  }
+
+  private async enqueueInboundMessage(request: WeixinChatRequest): Promise<{ text?: string }> {
     const conversationId = request.conversationId || `weixin-mobile-${this.accountId}`;
+    return new Promise((resolve, reject) => {
+      const batch = this.inboundBatches.get(conversationId) || {
+        items: [],
+        processing: false,
+      };
+      batch.items.push({
+        ...request,
+        conversationId,
+        resolve,
+        reject,
+        receivedAt: Date.now(),
+      });
+      this.inboundBatches.set(conversationId, batch);
+      this.scheduleInboundBatch(conversationId, batch);
+    });
+  }
+
+  private scheduleInboundBatch(conversationId: string, batch: WeixinConversationBatch) {
+    if (batch.processing || batch.timer) return;
+    batch.timer = setTimeout(() => {
+      batch.timer = undefined;
+      this.flushInboundBatch(conversationId).catch((error) => {
+        logger.error("微信消息合并处理失败:", error);
+      });
+    }, WEIXIN_INBOUND_BATCH_WINDOW_MS);
+  }
+
+  private async flushInboundBatch(conversationId: string) {
+    const batch = this.inboundBatches.get(conversationId);
+    if (!batch || batch.processing || batch.items.length === 0) return;
+    const items = batch.items.splice(0, batch.items.length);
+    batch.processing = true;
+
+    try {
+      const response = await this.processInboundBatch(conversationId, items);
+      items.forEach((item, index) => item.resolve(index === 0 ? response : {}));
+    } catch (error) {
+      items.forEach((item, index) => {
+        if (index === 0) item.resolve({ text: "这批微信消息处理失败了，请稍后重试。" });
+        else item.resolve({});
+      });
+      logger.error("微信消息批次处理失败:", error);
+    } finally {
+      batch.processing = false;
+      if (batch.items.length > 0) {
+        this.scheduleInboundBatch(conversationId, batch);
+      } else {
+        this.inboundBatches.delete(conversationId);
+      }
+    }
+  }
+
+  private async processInboundBatch(conversationId: string, items: WeixinBatchItem[]): Promise<{ text?: string }> {
+    const first = items[0];
+    const contextToken = [...items].reverse().find((item) => item.contextToken)?.contextToken;
     const userContext = await resolveOrCreateChannelUser({
       channel: "weixin-mobile",
       backend: config.acp.backend,
       externalUserId: conversationId,
       externalAccountId: this.accountId,
       conversationId,
-      contextToken: request.contextToken,
+      contextToken,
       projectBinding: this.projectBinding,
     });
 
-    if (request.media && !request.text) {
-      return {
-        text: "实验版暂只支持文本消息。图片、语音、文件会在后续多模态阶段支持。",
-      };
+    let attachments: StoredAttachment[] = [];
+    for (const item of items) {
+      if (!item.media) continue;
+      if (!userContext.workspacePath) {
+        return { text: "我收到了一份附件，但当前工作区还没准备好，暂时无法处理。请稍后再试。" };
+      }
+      try {
+        attachments.push(await storeWeixinAttachment({
+          workspacePath: userContext.workspacePath,
+          media: item.media,
+        }));
+      } catch (error) {
+        logger.warn(`微信附件保存失败: ${(error as Error).message}`);
+        return { text: attachmentErrorText(error) };
+      }
     }
 
+    const userText = formatBatchedUserText(items, attachments.length);
     const response = await this.agent.handleMessage({
       id: `wx-${Date.now()}`,
-      from: request.conversationId || "weixin-mobile",
+      from: first.conversationId || "weixin-mobile",
       timestamp: Date.now(),
-      content: { type: "text", text: request.text || "" },
+      content: { type: "text", text: userText },
       context: {
         channel: "weixin-mobile",
-        conversationId: request.conversationId,
+        conversationId,
         userId: userContext.userId,
         projectId: userContext.projectId,
         instanceId: userContext.instanceId,
         instanceExpansionPath: userContext.instanceExpansionPath,
         workspacePath: userContext.workspacePath,
+        attachments,
       },
     });
 
     const text = response.content.text ?? "处理完成，但没有生成文本回复。";
-    await rememberWeixinTurn(userContext, request.text || "", text);
+    await rememberWeixinTurn(userContext, userText, text);
     appendConversationMessage({
       scope: {
         userId: userContext.userId,
@@ -198,7 +292,7 @@ export class InvestAgentMobileBridge {
       conversationId,
       channel: "weixin-mobile",
       role: "user",
-      content: request.text || "",
+      content: formatConversationUserContent(userText, attachments),
     });
     appendConversationMessage({
       scope: {
@@ -215,7 +309,7 @@ export class InvestAgentMobileBridge {
     const chunks = splitWeixinText(text);
     if (chunks.length > 1) {
       setTimeout(() => {
-        this.pushToConversation(conversationId, chunks.slice(1), request.contextToken).catch((error) => {
+        this.pushToConversation(conversationId, chunks.slice(1), contextToken).catch((error) => {
           logger.warn(`微信分片补发失败: ${(error as Error).message}`);
         });
       }, 1200);
@@ -245,7 +339,52 @@ export class InvestAgentMobileBridge {
 
   clearSession(conversationId?: string): void {
     if (conversationId) {
+      const batch = this.inboundBatches.get(conversationId);
+      if (batch?.timer) clearTimeout(batch.timer);
+      this.inboundBatches.delete(conversationId);
       clearAcpSessions(conversationId);
     }
   }
+}
+
+function formatBatchedUserText(items: WeixinBatchItem[], attachmentCount: number) {
+  const parts = items
+    .map((item) => {
+      const text = item.text?.trim();
+      if (text) return text;
+      if (item.media?.type === "image") return "[用户发送了一张图片]";
+      return item.media ? `[用户发送了一个${item.media.type}附件]` : "";
+    })
+    .filter(Boolean);
+  if (parts.length === 0 && attachmentCount > 0) {
+    return "用户发送了一张图片，请识别其中可能的持仓或观察仓信息。";
+  }
+  if (parts.length <= 1) return parts[0] || "用户发送了一条空消息。";
+  return [
+    "用户在微信里连续发送了多条消息，请按顺序合并理解为同一次表达：",
+    ...parts.map((part, index) => `${index + 1}. ${part}`),
+  ].join("\n");
+}
+
+function attachmentErrorText(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith("UNSUPPORTED_ATTACHMENT_TYPE")) {
+    return "我收到附件了，但当前阶段微信端只支持图片截图识别。请先发送持仓/观察仓截图。";
+  }
+  if (message.startsWith("UNSUPPORTED_ATTACHMENT_MIME")) {
+    return "这张图片格式暂时无法识别。请重新发送截图，或换一种方式截图后再发。";
+  }
+  if (message.startsWith("ATTACHMENT_TOO_LARGE")) {
+    return "这张图片超过当前 10MB 限制。请压缩后再发，或分多张截图发送。";
+  }
+  return "我收到图片了，但保存附件时失败。请稍后重试。";
+}
+
+function formatConversationUserContent(text: string, attachments: StoredAttachment[]) {
+  if (attachments.length === 0) return text;
+  return [
+    text,
+    "",
+    ...attachments.map((item) => `[图片附件] ${item.fileName} (${item.mimeType}, ${Math.round(item.sizeBytes / 1024)}KB)`),
+  ].join("\n");
 }

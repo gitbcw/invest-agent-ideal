@@ -209,7 +209,7 @@ Current decision:
 3. Do not buy institutional terminals.
 4. Make Tushare Pro the only near-term paid-data candidate.
 5. Before paying even for Tushare, define a small acceptance test:
-   - which fields are missing today;
+   - which fields are missing for the current trading day;
    - which service endpoints it will improve;
    - how many provider mismatches it reduces;
    - whether review/inspection output becomes more useful.

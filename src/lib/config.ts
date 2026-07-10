@@ -13,6 +13,7 @@ export type RuntimeBackend = "hermes" | "codex";
 
 export const config = {
   port: Number(process.env.PORT) || 22655,
+  host: process.env.HOST || process.env.BIND_HOST || "127.0.0.1",
   nodeEnv: process.env.NODE_ENV || "development",
 
   llm: {
@@ -60,8 +61,8 @@ export const config = {
     acpArgs: process.env.CODEX_ACP_ARGS?.trim()
       ? process.env.CODEX_ACP_ARGS.trim().split(/\s+/)
       : [],
-    simpleModel: process.env.CODEX_SIMPLE_MODEL || "gpt-5.4-mini",
-    complexModel: process.env.CODEX_COMPLEX_MODEL || "gpt-5.5",
+    simpleModel: process.env.CODEX_SIMPLE_MODEL || "gpt-5.6-luna",
+    complexModel: process.env.CODEX_COMPLEX_MODEL || "gpt-5.6-terra",
     acpCwd: process.env.CODEX_ACP_CWD || process.cwd(),
     acpTimeoutMs: Number(process.env.CODEX_ACP_TIMEOUT_MS) || 1800000,
     sourceHome: path.resolve(process.env.CODEX_SOURCE_HOME || path.join(process.env.HOME || "", ".codex")),
@@ -89,6 +90,12 @@ export const config = {
   workspace: {
     root: path.resolve(process.env.WORKSPACE_ROOT || defaultWorkspaceRoot()),
     templatePath: path.resolve(process.env.WORKSPACE_TEMPLATE_PATH || "./templates/workspace"),
+  },
+
+  portal: {
+    publicUrl: process.env.PORTAL_PUBLIC_URL || "http://localhost:3100",
+    distributionUrl: process.env.PORTAL_DISTRIBUTION_URL || "http://127.0.0.1:3100/api/internal/distribution/provision",
+    distributionToken: process.env.PORTAL_DISTRIBUTION_TOKEN || process.env.PORTAL_CONNECTOR_TOKEN || "dev-connector-token",
   },
 
   /**

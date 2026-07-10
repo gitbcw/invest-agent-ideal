@@ -14,7 +14,6 @@ import { buildDailyReviewContext, buildMonthlyReviewContext, buildWeeklyReviewCo
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, listPendingSandboxConfirmations } from "../lib/sandbox-confirmation.js";
-import { deleteMirroredAlertRule, disableMirroredAlertRule, syncLegacyAlertToAlertRule } from "../handlers/alert-rules.js";
 import { enqueuePushJob, getPushJob, processDuePushJobs, type PushBackend } from "../services/push-queue.js";
 import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
 import { marketCalendar, marketCapitalFlow, marketHealth, marketIndices, marketKline, marketQuote, marketResolve, marketSectorTheme, marketSnapshot, marketStockInfo, type MarketKlinePeriod } from "../services/market-data.js";
@@ -362,7 +361,11 @@ function pickWatchPolicyOverrides(value: unknown): Record<string, unknown> {
   return rest;
 }
 
-function normalizeMarketWatchWindowToken(value: unknown): string | null {
+function firstDefined(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
+}
+
+function normalizeTimeToken(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
@@ -371,6 +374,94 @@ function normalizeMarketWatchWindowToken(value: unknown): string | null {
   const minute = Number(match[2]);
   if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeReviewScheduleTime(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  const standalone = normalizeTimeToken(trimmed);
+  if (standalone) return standalone;
+  if (/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+\d{1,2}:\d{2}$/i.test(trimmed)) return trimmed;
+  if (/^day_\d{1,2}\s+\d{1,2}:\d{2}$/i.test(trimmed)) return trimmed;
+  return trimmed || undefined;
+}
+
+function readReviewScheduleDefaults(value: unknown): Record<string, unknown> {
+  const body = asRecord(value);
+  const input = asRecord(body.reviewSchedule ?? body.review_schedule ?? value);
+  const dailyInput = asRecord(input.daily_review ?? input.dailyReview ?? body.daily_review ?? body.dailyReview);
+  const weeklyInput = asRecord(input.weekly_review ?? input.weeklyReview ?? body.weekly_review ?? body.weeklyReview);
+  const monthlyInput = asRecord(input.monthly_review ?? input.monthlyReview ?? body.monthly_review ?? body.monthlyReview);
+  const companyInput = asRecord(
+    input.company_financial_analysis ??
+    input.companyFinancialAnalysis ??
+    body.company_financial_analysis ??
+    body.companyFinancialAnalysis
+  );
+  const dailyDefaultTime = normalizeReviewScheduleTime(firstDefined(
+    dailyInput.default_time,
+    dailyInput.defaultTime,
+    input.daily_review_time,
+    input.dailyReviewTime,
+    body.daily_review_time,
+    body.dailyReviewTime,
+  ));
+  const weeklyDefaultTime = normalizeReviewScheduleTime(firstDefined(
+    weeklyInput.default_time,
+    weeklyInput.defaultTime,
+    input.weekly_review_time,
+    input.weeklyReviewTime,
+    body.weekly_review_time,
+    body.weeklyReviewTime,
+  ));
+  const monthlyDefaultTime = normalizeReviewScheduleTime(firstDefined(
+    monthlyInput.default_time,
+    monthlyInput.defaultTime,
+    input.monthly_review_time,
+    input.monthlyReviewTime,
+    body.monthly_review_time,
+    body.monthlyReviewTime,
+  ));
+  return {
+    daily_review: {
+      ...dailyInput,
+      ...(dailyDefaultTime ? { default_time: dailyDefaultTime } : {}),
+    },
+    weekly_review: {
+      ...weeklyInput,
+      ...(weeklyDefaultTime ? { default_time: weeklyDefaultTime } : {}),
+    },
+    monthly_review: {
+      ...monthlyInput,
+      ...(monthlyDefaultTime ? { default_time: monthlyDefaultTime } : {}),
+    },
+    company_financial_analysis: companyInput,
+  };
+}
+
+function hasReviewScheduleInput(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const input = value as Record<string, unknown>;
+  return [
+    input.reviewSchedule,
+    input.review_schedule,
+    input.daily_review,
+    input.dailyReview,
+    input.weekly_review,
+    input.weeklyReview,
+    input.monthly_review,
+    input.monthlyReview,
+    input.daily_review_time,
+    input.dailyReviewTime,
+    input.weekly_review_time,
+    input.weeklyReviewTime,
+    input.monthly_review_time,
+    input.monthlyReviewTime,
+  ].some((item) => item !== undefined);
+}
+
+function normalizeMarketWatchWindowToken(value: unknown): string | null {
+  return normalizeTimeToken(value);
 }
 
 function normalizeMarketWatchWindows(value: unknown): string[] {
@@ -386,17 +477,235 @@ function normalizeMarketWatchWindows(value: unknown): string[] {
   return windows;
 }
 
+function firstNonEmptyMarketWatchWindows(...values: unknown[]): string[] {
+  for (const value of values) {
+    const windows = normalizeMarketWatchWindows(value);
+    if (windows.length > 0) return windows;
+  }
+  return [];
+}
+
+function hasMarketWatchWindowInput(value: unknown): boolean {
+  if (Array.isArray(value)) return true;
+  if (!value || typeof value !== "object") return false;
+  const input = value as Record<string, unknown>;
+  const nested = asRecord(input.marketWatchSchedule ?? input.market_watch_schedule ?? {});
+  const marketWatch = asRecord(input.marketWatch ?? input.market_watch ?? nested.marketWatch ?? nested.market_watch);
+  const fixed = asRecord(nested.fixed_intraday_brief);
+  return [
+    input.market_watch_windows,
+    input.marketWatchWindows,
+    nested.default_windows,
+    nested.defaultWindows,
+    marketWatch.default_windows,
+    marketWatch.defaultWindows,
+    fixed.times,
+  ].some(Array.isArray);
+}
+
+function normalizeMarketWatchPushMode(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (!normalized) return undefined;
+  if (
+    normalized === "every_check_brief" ||
+    normalized === "scheduled_brief" ||
+    normalized === "scheduled_intraday_brief" ||
+    normalized === "active_watch"
+  ) {
+    return "scheduled_intraday_brief";
+  }
+  if (normalized === "exception_only" || normalized === "only_push_on_exception" || normalized === "low_disturbance") {
+    return "exception_only";
+  }
+  return normalized;
+}
+
 function readMarketWatchScheduleDefaults(value: unknown): Record<string, unknown> {
-  const input = asRecord(value);
+  const body = asRecord(value);
+  const input = asRecord(body.marketWatchSchedule ?? body.market_watch_schedule ?? value);
+  const marketWatch = asRecord(input.market_watch ?? input.marketWatch ?? body.market_watch ?? body.marketWatch);
   const fixed = asRecord(input.fixed_intraday_brief);
-  const { default_windows: _defaultWindows, fixed_intraday_brief: _fixedIntradayBrief, ...rest } = input;
-  const windows = normalizeMarketWatchWindows(input.default_windows).length > 0
-    ? normalizeMarketWatchWindows(input.default_windows)
-    : normalizeMarketWatchWindows(fixed.times);
-  return {
+  const windows = firstNonEmptyMarketWatchWindows(
+    marketWatch.default_windows,
+    marketWatch.defaultWindows,
+    input.default_windows,
+    input.defaultWindows,
+    body.market_watch_windows,
+    body.marketWatchWindows,
+    fixed.times,
+  );
+  const pushMode = normalizeMarketWatchPushMode(
+    marketWatch.push_mode ?? marketWatch.pushMode ?? input.push_mode ?? input.pushMode ?? body.push_mode ?? body.pushMode
+  );
+  const onlyPushOnException =
+    typeof marketWatch.only_push_on_exception === "boolean" ? marketWatch.only_push_on_exception :
+    typeof marketWatch.onlyPushOnException === "boolean" ? marketWatch.onlyPushOnException :
+    typeof input.only_push_on_exception === "boolean" ? input.only_push_on_exception :
+    typeof input.onlyPushOnException === "boolean" ? input.onlyPushOnException :
+    typeof body.only_push_on_exception === "boolean" ? body.only_push_on_exception :
+    typeof body.onlyPushOnException === "boolean" ? body.onlyPushOnException :
+    pushMode === "scheduled_intraday_brief" ? false :
+    pushMode === "exception_only" ? true :
+    undefined;
+  const customFrequency =
+    marketWatch.custom_frequency ?? marketWatch.customFrequency ?? input.custom_frequency ?? input.customFrequency ?? body.custom_frequency ?? body.customFrequency;
+  const {
+    step: _step,
+    summary: _summary,
+    notes: _notes,
+    complete: _complete,
+    default_windows: _defaultWindows,
+    defaultWindows: _defaultWindowsCamel,
+    market_watch_windows: _marketWatchWindows,
+    marketWatchWindows: _marketWatchWindowsCamel,
+    only_push_on_exception: _onlyPushOnException,
+    onlyPushOnException: _onlyPushOnExceptionCamel,
+    push_mode: _pushMode,
+    pushMode: _pushModeCamel,
+    custom_frequency: _customFrequency,
+    customFrequency: _customFrequencyCamel,
+    fixed_intraday_brief: _fixedIntradayBrief,
+    market_watch: _marketWatch,
+    marketWatch: _marketWatchCamel,
+    marketWatchSchedule: _marketWatchSchedule,
+    market_watch_schedule: _marketWatchScheduleSnake,
+    ...rest
+  } = input;
+  const result: Record<string, unknown> = {
     ...rest,
     ...(windows.length > 0 ? { default_windows: windows } : {}),
+    ...(customFrequency !== undefined ? { custom_frequency: customFrequency } : {}),
+    ...(onlyPushOnException !== undefined ? { only_push_on_exception: onlyPushOnException } : {}),
+    ...(pushMode ? { push_mode: pushMode } : {}),
   };
+  return result;
+}
+
+function arraysEqualString(a: unknown, b: string[]) {
+  return Array.isArray(a) && a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+function validateOnboardingStepRequest(step: OnboardingStepKey, body: Record<string, unknown>) {
+  if (step === "review_schedule") {
+    const defaults = readReviewScheduleDefaults(body);
+    const dailyTime = asRecord(defaults.daily_review).default_time;
+    const weeklyTime = asRecord(defaults.weekly_review).default_time;
+    const monthlyTime = asRecord(defaults.monthly_review).default_time;
+    if (hasReviewScheduleInput(body) && !dailyTime && !weeklyTime && !monthlyTime) {
+      return {
+        status: 400,
+        error: "review_schedule 包含复盘时间字段，但没有可识别的 default_time；请使用 reviewSchedule.daily_review.default_time 等结构化字段。",
+      };
+    }
+    return null;
+  }
+
+  if (step !== "market_watch_schedule") return null;
+  const defaults = readMarketWatchScheduleDefaults(body);
+  const expectedWindows = Array.isArray(defaults.default_windows)
+    ? defaults.default_windows.filter((item): item is string => typeof item === "string")
+    : [];
+  if (hasMarketWatchWindowInput(body) && expectedWindows.length === 0) {
+    return {
+      status: 400,
+      error: "market_watch_schedule 包含盯盘时间字段，但没有可识别的 HH:MM 时间；请使用 marketWatchSchedule.default_windows 或 market_watch_windows。",
+    };
+  }
+  return null;
+}
+
+async function validateOnboardingStepEffects(
+  store: WorkspaceStore,
+  step: OnboardingStepKey,
+  body: Record<string, unknown>,
+) {
+  if (step === "review_schedule") {
+    const schedules = asRecord(await store.readSchedules());
+    const defaults = readReviewScheduleDefaults(body);
+    const expectedDaily = asRecord(defaults.daily_review).default_time;
+    const expectedWeekly = asRecord(defaults.weekly_review).default_time;
+    const expectedMonthly = asRecord(defaults.monthly_review).default_time;
+    const actualDaily = asRecord(schedules.daily_review).default_time;
+    const actualWeekly = asRecord(schedules.weekly_review).default_time;
+    const actualMonthly = asRecord(schedules.monthly_review).default_time;
+
+    if (expectedDaily && actualDaily !== expectedDaily) {
+      return { status: 500, error: "review_schedule 已确认但 daily_review.default_time 未按请求落盘。", expected: expectedDaily, actual: actualDaily ?? null };
+    }
+    if (expectedWeekly && actualWeekly !== expectedWeekly) {
+      return { status: 500, error: "review_schedule 已确认但 weekly_review.default_time 未按请求落盘。", expected: expectedWeekly, actual: actualWeekly ?? null };
+    }
+    if (expectedMonthly && actualMonthly !== expectedMonthly) {
+      return { status: 500, error: "review_schedule 已确认但 monthly_review.default_time 未按请求落盘。", expected: expectedMonthly, actual: actualMonthly ?? null };
+    }
+    if (!asRecord(schedules.daily_review).default_time || !asRecord(schedules.weekly_review).default_time || !asRecord(schedules.monthly_review).default_time) {
+      return { status: 500, error: "review_schedule 已确认但日/周/月复盘时间不完整。" };
+    }
+    return null;
+  }
+
+  if (step === "notification") {
+    const schedules = asRecord(await store.readSchedules());
+    const notification = asRecord(await store.readNotification());
+    const expectedMode = readNotificationPreferenceModeFromBody(body, schedules);
+    const expectedMarketWatchPolicy = marketWatchPolicyForPreference(expectedMode);
+    const actualMode = asRecord(notification.preference).mode;
+    const actualMarketWatch = asRecord(schedules.market_watch);
+
+    if (actualMode !== expectedMode) {
+      return {
+        status: 500,
+        error: "notification 已确认但 notification.preference.mode 未按请求落盘。",
+        expected: expectedMode,
+        actual: actualMode ?? null,
+      };
+    }
+    if (actualMarketWatch.only_push_on_exception !== expectedMarketWatchPolicy.only_push_on_exception) {
+      return {
+        status: 500,
+        error: "notification 已确认但 schedules.market_watch.only_push_on_exception 未与通知偏好对齐。",
+        expected: expectedMarketWatchPolicy.only_push_on_exception,
+        actual: actualMarketWatch.only_push_on_exception ?? null,
+      };
+    }
+    if (actualMarketWatch.push_mode !== expectedMarketWatchPolicy.push_mode) {
+      return {
+        status: 500,
+        error: "notification 已确认但 schedules.market_watch.push_mode 未与通知偏好对齐。",
+        expected: expectedMarketWatchPolicy.push_mode,
+        actual: actualMarketWatch.push_mode ?? null,
+      };
+    }
+    return null;
+  }
+
+  if (step !== "market_watch_schedule") return null;
+
+  const schedules = asRecord(await store.readSchedules());
+  const actualWindows = asRecord(schedules.market_watch).default_windows;
+  const defaults = readMarketWatchScheduleDefaults(body);
+  const expectedWindows = Array.isArray(defaults.default_windows)
+    ? defaults.default_windows.filter((item): item is string => typeof item === "string")
+    : [];
+
+  if (expectedWindows.length > 0 && !arraysEqualString(actualWindows, expectedWindows)) {
+    return {
+      status: 500,
+      error: "market_watch_schedule 已确认但 schedules.market_watch.default_windows 未按请求落盘。",
+      expected: expectedWindows,
+      actual: actualWindows ?? null,
+    };
+  }
+
+  if (!Array.isArray(actualWindows) || actualWindows.length === 0) {
+    return {
+      status: 500,
+      error: "market_watch_schedule 已确认但 schedules.market_watch.default_windows 为空。",
+    };
+  }
+
+  return null;
 }
 
 type NotificationPreferenceMode = "low_disturbance" | "active_watch" | "evening_summary";
@@ -426,12 +735,76 @@ function readNotificationPreferenceMode(value: unknown): NotificationPreferenceM
   return normalizeNotificationPreferenceMode(input.mode ?? value);
 }
 
+function readNotificationPreferenceModeFromBody(body: Record<string, unknown>, schedules?: Record<string, unknown>): NotificationPreferenceMode {
+  const explicit = firstDefined(
+    body.notificationPreference,
+    body.notification_preference,
+    body.notification,
+    body.preference,
+    body.notification_mode,
+    body.notificationMode,
+    body.mode,
+  );
+  if (explicit !== undefined) return readNotificationPreferenceMode(explicit);
+  return inferNotificationPreferenceModeFromMarketWatch(schedules?.market_watch);
+}
+
+function inferNotificationPreferenceModeFromMarketWatch(marketWatch: unknown): NotificationPreferenceMode {
+  const input = asRecord(marketWatch);
+  const pushMode = normalizeMarketWatchPushMode(input.push_mode ?? input.pushMode);
+  if (input.only_push_on_exception === false || pushMode === "scheduled_intraday_brief") return "active_watch";
+  if (pushMode === "exception_only") return "low_disturbance";
+  return "low_disturbance";
+}
+
 function buildNotificationPreference(mode: NotificationPreferenceMode) {
   return {
     mode,
     label: NOTIFICATION_PREFERENCE_LABELS[mode],
     description: NOTIFICATION_PREFERENCE_DESCRIPTIONS[mode],
   };
+}
+
+function normalizeOnboardingAssetName(value: unknown): string {
+  return typeof value === "string" ? value.trim().slice(0, 80) : "";
+}
+
+function normalizeOnboardingAssetCode(value: unknown): string | null {
+  const code = typeof value === "string" ? value.trim() : "";
+  return code ? code.slice(0, 32) : null;
+}
+
+function normalizeOnboardingAssetList(value: unknown): Array<{ name: string; code: string | null; notes?: string }> {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: Array<{ name: string; code: string | null; notes?: string }> = [];
+  for (const raw of value) {
+    const item = typeof raw === "string" ? { name: raw } : asRecord(raw);
+    const name = normalizeOnboardingAssetName(
+      item.name ?? item.stockName ?? item.stock_name ?? item.label ?? item.title
+    );
+    const code = normalizeOnboardingAssetCode(
+      item.code ?? item.stockCode ?? item.stock_code ?? item.symbol
+    );
+    if (!name && !code) continue;
+    const key = `${code || ""}::${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const notes = typeof item.notes === "string" ? item.notes.trim().slice(0, 240) : undefined;
+    result.push({ name: name || code || "未命名标的", code, notes });
+  }
+  return result;
+}
+
+function findOnboardingAssetsMissingCode(kind: "holding" | "watchlist", items: Array<{ name: string; code: string | null }>) {
+  return items
+    .filter((item) => !item.code || !/^\d{6}$/.test(item.code))
+    .map((item) => ({
+      kind,
+      name: item.name,
+      code: item.code,
+      reason: item.code ? "证券代码必须是 6 位数字" : "缺少证券代码",
+    }));
 }
 
 function marketWatchPolicyForPreference(mode: NotificationPreferenceMode) {
@@ -455,9 +828,7 @@ async function applyOnboardingStepDefaults(
 ) {
   if (step === "review_schedule") {
     const schedules = await store.readSchedules() ?? {};
-    const reviewDefaults = body.reviewSchedule && typeof body.reviewSchedule === "object"
-      ? body.reviewSchedule as Record<string, unknown>
-      : {};
+    const reviewDefaults = readReviewScheduleDefaults(body);
     await store.writeSchedules({
       ...schedules,
       timezone: schedules.timezone ?? "Asia/Shanghai",
@@ -498,7 +869,7 @@ async function applyOnboardingStepDefaults(
 
   if (step === "market_watch_schedule") {
     const schedules = await store.readSchedules() ?? {};
-    const marketWatchDefaults = readMarketWatchScheduleDefaults(body.marketWatchSchedule);
+    const marketWatchDefaults = readMarketWatchScheduleDefaults(body);
     await store.writeSchedules({
       ...schedules,
       timezone: schedules.timezone ?? "Asia/Shanghai",
@@ -516,9 +887,9 @@ async function applyOnboardingStepDefaults(
 
   if (step === "notification") {
     const notification = await store.readNotification() ?? {};
-    const mode = readNotificationPreferenceMode(body.notificationPreference);
-    const marketWatchPolicy = marketWatchPolicyForPreference(mode);
     const schedules = await store.readSchedules() ?? {};
+    const mode = readNotificationPreferenceModeFromBody(body, schedules);
+    const marketWatchPolicy = marketWatchPolicyForPreference(mode);
     await store.writeNotification({
       ...notification,
       preference: buildNotificationPreference(mode),
@@ -705,12 +1076,154 @@ export function registerSandboxRoutes(app: FastifyInstance) {
 
   app.post<{
     Body: {
+      holdings?: Array<{ name?: string; code?: string; notes?: string }>;
+      watchlist?: Array<{ name?: string; code?: string; notes?: string }>;
+      summary?: string;
+      notes?: string;
+    };
+  }>("/api/sandbox/onboarding/confirm-portfolio", sandboxSafe(["invest.onboarding.write", "invest.portfolio.write"], async (ctx, request, reply) => {
+    const holdingInputs = normalizeOnboardingAssetList(request.body?.holdings);
+    const watchInputs = normalizeOnboardingAssetList(request.body?.watchlist);
+    if (!holdingInputs.length && !watchInputs.length) {
+      return reply.status(400).send({ ok: false, error: "至少需要一个持仓或观察仓标的" });
+    }
+    const missingCodes = [
+      ...findOnboardingAssetsMissingCode("holding", holdingInputs),
+      ...findOnboardingAssetsMissingCode("watchlist", watchInputs),
+    ];
+    if (missingCodes.length > 0) {
+      return reply.status(400).send({
+        ok: false,
+        error: "持仓和观察仓写入前必须补齐 6 位证券代码；请先调用 market.resolve 或让用户确认歧义标的后再重试",
+        missingCodes,
+      });
+    }
+
+    const now = new Date().toISOString();
+    const store = new WorkspaceStore(ctx.userId);
+    const portfolio = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
+    const holdings = Array.isArray(portfolio.holdings) ? [...portfolio.holdings] : [];
+    const watchItems = Array.isArray(portfolio.watchlist) ? [...portfolio.watchlist] : [];
+
+    for (const item of holdingInputs) {
+      const idx = holdings.findIndex((existing: any) =>
+        (item.code && existing.code === item.code) || (!item.code && existing.name === item.name)
+      );
+      const next = {
+        ...(idx >= 0 ? holdings[idx] : {}),
+        name: item.name,
+        code: item.code,
+        asset_type: (idx >= 0 ? (holdings[idx] as any).asset_type : null) ?? null,
+        market: (idx >= 0 ? (holdings[idx] as any).market : null) ?? null,
+        account: (idx >= 0 ? (holdings[idx] as any).account : null) ?? null,
+        currency: (idx >= 0 ? (holdings[idx] as any).currency : "CNY") ?? "CNY",
+        cost: (idx >= 0 ? (holdings[idx] as any).cost : null) ?? null,
+        shares: (idx >= 0 ? (holdings[idx] as any).shares : null) ?? null,
+        market_value: (idx >= 0 ? (holdings[idx] as any).market_value : null) ?? null,
+        weight: (idx >= 0 ? (holdings[idx] as any).weight : null) ?? null,
+        notes: item.notes || (idx >= 0 ? (holdings[idx] as any).notes : "") || "User confirmed holding name only; details can be completed later.",
+      };
+      if (idx >= 0) holdings[idx] = next as any;
+      else holdings.push(next as any);
+    }
+
+    for (const item of watchInputs) {
+      const idx = watchItems.findIndex((existing: any) =>
+        (item.code && existing.code === item.code) || (!item.code && existing.name === item.name)
+      );
+      const next = {
+        ...(idx >= 0 ? watchItems[idx] : {}),
+        name: item.name,
+        code: item.code,
+        asset_type: (idx >= 0 ? (watchItems[idx] as any).asset_type : null) ?? null,
+        market: (idx >= 0 ? (watchItems[idx] as any).market : null) ?? null,
+        trigger: (idx >= 0 ? (watchItems[idx] as any).trigger : "") ?? "",
+        evidence_needed: Array.isArray(idx >= 0 ? (watchItems[idx] as any).evidence_needed : null)
+          ? (watchItems[idx] as any).evidence_needed
+          : [],
+        notes: item.notes || (idx >= 0 ? (watchItems[idx] as any).notes : "") || "User confirmed watch name only; trigger can be completed later.",
+      };
+      if (idx >= 0) watchItems[idx] = next as any;
+      else watchItems.push(next as any);
+    }
+
+    await store.writePortfolio({
+      ...portfolio,
+      holdings: holdings as any,
+      watchlist: watchItems as any,
+      accounts: Array.isArray(portfolio.accounts) ? portfolio.accounts : [],
+      last_confirmed_at: now,
+      last_confirmed_by: "user",
+    });
+
+    const current = normalizeOnboardingState(await store.readOnboardingState());
+    const steps = { ...(current.steps ?? {}) };
+    steps.welcome = { done: true, completed_at: steps.welcome?.completed_at ?? now };
+    steps.portfolio = { done: true, completed_at: steps.portfolio?.completed_at ?? now };
+    const nextState: OnboardingStateYaml = {
+      ...current,
+      status: "in_progress",
+      current_step: "style",
+      steps,
+      updated_at: now,
+      notes: request.body?.notes ?? current.notes ?? "",
+    };
+    await store.writeOnboardingState(nextState);
+    await store.appendChangeLog({
+      ts: now,
+      source: "sandbox",
+      type: "onboarding_portfolio_confirmed",
+      summary: request.body?.summary || "用户确认 onboarding 持仓和观察仓",
+      details: {
+        holding_names: holdingInputs.map((item) => item.name),
+        watch_names: watchInputs.map((item) => item.name),
+        current_step: nextState.current_step,
+      },
+    });
+    await audit(ctx, {
+      operation: "onboarding.confirm_portfolio",
+      resourceType: "onboarding_state",
+      resourceId: "portfolio",
+      requestBody: request.body,
+      resultSummary: `confirmed portfolio holdings=${holdingInputs.length}; watchlist=${watchInputs.length}; current=style`,
+    });
+    return {
+      ok: true,
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      state: nextState,
+      holdings,
+      watchlist: watchItems,
+      message: "已确认持仓和观察仓，下一步进入风格包选择",
+    };
+  }));
+
+  app.post<{
+    Body: {
       step?: string;
       summary?: string;
       notes?: string;
       reviewSchedule?: Record<string, unknown>;
+      review_schedule?: Record<string, unknown>;
+      daily_review_time?: string;
+      dailyReviewTime?: string;
+      weekly_review_time?: string;
+      weeklyReviewTime?: string;
+      monthly_review_time?: string;
+      monthlyReviewTime?: string;
       marketWatchSchedule?: Record<string, unknown>;
+      market_watch_schedule?: Record<string, unknown>;
+      marketWatchWindows?: string[];
+      market_watch_windows?: string[];
+      pushMode?: string;
+      push_mode?: string;
       notificationPreference?: Record<string, unknown> | string;
+      notification_preference?: Record<string, unknown> | string;
+      notification?: Record<string, unknown> | string;
+      preference?: Record<string, unknown> | string;
+      notification_mode?: string;
+      notificationMode?: string;
+      mode?: string;
       watchPolicy?: Record<string, unknown>;
       complete?: boolean;
     };
@@ -722,13 +1235,37 @@ export function registerSandboxRoutes(app: FastifyInstance) {
 
     const now = new Date().toISOString();
     const store = new WorkspaceStore(ctx.userId);
+    const requestError = validateOnboardingStepRequest(step, request.body ?? {});
+    if (requestError) {
+      await audit(ctx, {
+        operation: "onboarding.confirm_step",
+        resourceType: "onboarding_state",
+        resourceId: step,
+        requestBody: request.body,
+        resultSummary: requestError.error,
+        status: "error",
+      });
+      return reply.status(requestError.status).send({ ok: false, ...requestError });
+    }
     await applyOnboardingStepDefaults(store, step, now, request.body ?? {});
+    const effectError = await validateOnboardingStepEffects(store, step, request.body ?? {});
+    if (effectError) {
+      await audit(ctx, {
+        operation: "onboarding.confirm_step",
+        resourceType: "onboarding_state",
+        resourceId: step,
+        requestBody: request.body,
+        resultSummary: effectError.error,
+        status: "error",
+      });
+      return reply.status(effectError.status).send({ ok: false, ...effectError });
+    }
 
     const current = normalizeOnboardingState(await store.readOnboardingState());
     const steps = { ...(current.steps ?? {}) };
     steps[step] = { done: true, completed_at: steps[step]?.completed_at ?? now };
     const allDone = ONBOARDING_STEPS.every((key) => key === step || steps[key]?.done === true);
-    const shouldComplete = request.body?.complete === true || allDone || step === "watch_rules";
+    const shouldComplete = allDone || step === "watch_rules";
     const nextState: OnboardingStateYaml = {
       ...current,
       status: shouldComplete ? "completed" : "in_progress",
@@ -1386,15 +1923,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     } else {
       await db.insert(alerts).values(values);
     }
-    await syncLegacyAlertToAlertRule({
-      userId: ctx.userId,
-      instanceId: ctx.instanceId,
-      stockCode,
-      stockName,
-      indicator,
-      threshold: values.threshold,
-      enabled: true,
-    });
     await audit(ctx, {
       operation: "alerts.set",
       resourceType: "alert_rule",
@@ -1417,17 +1945,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     if (!enabled && await requireConfirmation(ctx, request, reply, "alerts.toggle_off", "alert_rule", String(id))) return;
 
     await db.update(alerts).set({ enabled }).where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId), eq(alerts.id, id)));
-    await disableMirroredAlertRule(ctx.userId, existing[0].stockCode, existing[0].indicator, ctx.instanceId);
-    if (enabled) {
-      await syncLegacyAlertToAlertRule({
-        userId: ctx.userId,
-        instanceId: ctx.instanceId,
-        stockCode: existing[0].stockCode,
-        indicator: existing[0].indicator,
-        threshold: existing[0].threshold,
-        enabled: true,
-      });
-    }
     await audit(ctx, {
       operation: enabled ? "alerts.toggle_on" : "alerts.toggle_off",
       resourceType: "alert_rule",
@@ -1447,7 +1964,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     if (await requireConfirmation(ctx, request, reply, "alerts.remove", "alert_rule", String(id))) return;
 
     await db.delete(alerts).where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId), eq(alerts.id, id)));
-    await deleteMirroredAlertRule(ctx.userId, existing[0].stockCode, existing[0].indicator, ctx.instanceId);
     await audit(ctx, {
       operation: "alerts.remove",
       resourceType: "alert_rule",

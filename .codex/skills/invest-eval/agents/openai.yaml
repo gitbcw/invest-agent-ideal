@@ -1,0 +1,4 @@
+interface:
+  display_name: "Invest Eval"
+  short_description: "Run and summarize Invest Agent golden case evaluations."
+  default_prompt: "跑一下 P0 黄金 case，阅读输出并总结需要处理的问题。"

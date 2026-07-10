@@ -61,13 +61,14 @@
 5. 右侧有 Chatbot 对话区和底部输入框。
 6. 左下角用户头像菜单只包含修改密码和退出登录。
 7. 用户能新建对话、发送消息，并获得来自本地 workspace ACP 的回复。
-8. 回复第一版不要求真实后端流式，但完整回复返回后必须有打字机式或分段呈现效果。
-9. 用户完整对话记录必须可靠保存：本地 canonical conversation log 是权威源，云端保存完整镜像用于门户体验。
-10. connector 离线时，用户能看到明确离线提示；可查看缓存历史，但不能发送消息。
-11. 普通用户不能访问其他用户助手，也不能访问 Platform 管理能力。
-12. 微信直达 workspace ACP 主链路无回归。
-13. 新门户项目可以在 mock connector 下完成 UI、登录、历史、发送、失败和离线状态验收。
-14. 新门户项目可以切换到真实本地 connector 完成一次端到端消息验收。
+8. 用户能随消息上传支持范围内的图片或文档附件；附件进入本地 workspace 后由 ACP 读取，云端只保存安全 metadata。
+9. 回复第一版不要求真实后端流式，但完整回复返回后必须有打字机式或分段呈现效果。
+10. 用户完整对话记录必须可靠保存：本地 canonical conversation log 是权威源，云端保存完整镜像用于门户体验。
+11. connector 离线时，用户能看到明确离线提示；可查看缓存历史，但不能发送消息。
+12. 普通用户不能访问其他用户助手，也不能访问 Platform 管理能力。
+13. 微信直达 workspace ACP 主链路无回归。
+14. 新门户项目可以在 mock connector 下完成 UI、登录、历史、发送、失败和离线状态验收。
+15. 新门户项目可以切换到真实本地 connector 完成一次端到端消息验收。
 
 缺少以上任一项，都不能宣称第一阶段完成。
 
@@ -141,8 +142,13 @@
 
 - 用户可以新建对话。
 - 用户可以在底部输入框输入多行消息。
+- 用户可以选择或拖拽上传附件；发送前显示附件 chip/card，包含文件名、类型、大小和删除按钮。
+- 图片附件显示缩略图；文档附件显示类型图标。
+- 支持附件类型：图片 `jpg/jpeg/png/webp`；文档 `pdf/doc/docx/ppt/pptx/html/htm/md/txt`。
+- 单张图片最大 10 MB，单个文档最大 25 MB，单条消息最多 8 个附件，总大小最多 40 MB；超限或类型不支持时阻止发送并显示具体原因。
+- 历史消息展示附件 metadata 卡片；第一版如果云端不能下载原文件，应展示“本地附件，仅本机可读”的状态。
 - `Enter` 发送，`Shift+Enter` 换行。
-- 空输入时发送按钮禁用。
+- 空输入且无附件时发送按钮禁用；只有附件没有文字时允许发送。
 - 发送后立即显示用户消息。
 - 助手区域立即显示等待状态。
 - 完整回复返回后，用打字机式或分段方式展示助手消息。
@@ -235,7 +241,7 @@
 - `channel=web`
 - `type=chat`
 - `conversationId`
-- `text`
+- `text` 或 `attachments`
 
 返回最低字段：
 
@@ -243,6 +249,16 @@
 - `ok`
 - `messageId`
 - `text` 或 `error`
+
+### Attachments
+
+- `conversation.chat` 支持 `attachments` 字段。
+- connector 注册能力包含 `conversation.attachments`。
+- 本地运行时把附件保存到 workspace 的 `attachments/YYYY-MM-DD/` 目录。
+- `conversation_messages.metadata.attachments` 必须包含文件名、MIME、大小、相对路径和来源，不得包含绝对路径。
+- ACP 内部 prompt 可以包含本地 `localPath`，但最终用户回复和云端镜像不得暴露本地绝对路径。
+- 同一 `idempotencyKey` 重试不得重复写入用户消息、重复保存附件或重复创建助手消息。
+- 附件类型不支持、MIME/扩展名/magic bytes 不匹配、base64 非法、数量或大小超限时，connector 应返回可理解错误，且不得创建虚假的 assistant 回复。
 
 ### 第一版非真实流式
 

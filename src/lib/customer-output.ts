@@ -40,6 +40,10 @@ export function sanitizeCustomerText(text: string) {
     .trim();
 }
 
+export function sanitizeWeixinCustomerText(text: string) {
+  return replaceKnownSourceUrlsForWeixin(sanitizeCustomerText(text));
+}
+
 export function extractFinalCustomerReply(text: string) {
   const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
   if (!normalized) return normalized;
@@ -111,4 +115,35 @@ function normalizeForDedupe(value: string) {
     .replace(/\s+/g, "")
     .replace(/[，。；：,.!！?？]/g, "")
     .trim();
+}
+
+function replaceKnownSourceUrlsForWeixin(text: string) {
+  return String(text || "")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi, (match, label, url) => {
+      const source = sourceLabelForUrl(url);
+      return source ? `${label}（${source}）` : match;
+    })
+    .replace(/`?(https?:\/\/[^\s`，。；、）)\]]+)`?/gi, (match, url) => {
+      return sourceLabelForUrl(url) ?? match;
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
+}
+
+function sourceLabelForUrl(url: string): string | null {
+  const value = String(url || "").toLowerCase();
+  if (!value.startsWith("http://") && !value.startsWith("https://")) return null;
+  if (value.includes("qt.gtimg.cn/q=")) return "腾讯行情";
+  if (value.includes("web.ifzq.gtimg.cn/appstock/app/fqkline/get")) return "腾讯日K";
+  if (value.includes("ifzq.gtimg.cn/appstock/app/kline/mkline")) return "腾讯分钟K";
+  if (value.includes("smartbox.gtimg.cn")) return "腾讯证券搜索";
+  if (value.includes("hq.sinajs.cn/list")) return "新浪行情";
+  if (value.includes("money.finance.sina.com.cn") || value.includes("cn_marketdata.getklinedata")) return "新浪日K";
+  if (value.includes("emdatah5.eastmoney.com")) return "东方财富资金流";
+  if (value.includes("emweb.securities.eastmoney.com")) return "东方财富主题概念";
+  if (value.includes("np-listapi.eastmoney.com")) return "东方财富新闻";
+  if (value.includes("reportapi.eastmoney.com")) return "东方财富研报";
+  if (value.includes("cninfo.com.cn")) return "巨潮资讯公告";
+  return null;
 }

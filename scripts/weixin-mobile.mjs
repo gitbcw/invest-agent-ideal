@@ -12,7 +12,6 @@
  * - 直接调用本项目 dist/acp/agent.js 中的投资 Agent。
  */
 
-import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -59,66 +58,6 @@ function checkExistingLogin() {
   }
 }
 
-function toAcpMessage(request) {
-  return {
-    id: `wx-${request.messageId ?? Date.now()}`,
-    from: request.conversationId ?? request.from ?? "weixin",
-    timestamp: Date.now(),
-    content: {
-      type: "text",
-      text: request.text ?? "",
-    },
-    context: {
-      channel: "weixin-mobile",
-      conversationId: request.conversationId,
-      rawType: request.media?.type ?? "text",
-    },
-  };
-}
-
-function splitForWeixin(text) {
-  const clean = String(text || "")
-    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```/g, ""))
-    .trim();
-  if (clean.length <= 900) return [clean || "处理完成"];
-
-  const chunks = [];
-  for (let i = 0; i < clean.length; i += 900) {
-    chunks.push(clean.slice(i, i + 900));
-  }
-  return chunks;
-}
-
-class InvestAgentMobileBridge {
-  constructor(agent) {
-    this.agent = agent;
-  }
-
-  async chat(request) {
-    if (request.text?.trim() === "/echo") {
-      return { text: "echo ok" };
-    }
-
-    if (request.media && !request.text) {
-      return {
-        text: "实验版暂只支持文本消息。图片、语音、文件会在后续多模态阶段支持。",
-      };
-    }
-
-    const text = request.text?.trim();
-    if (!text) return { text: "请发送文字消息。" };
-
-    log(`收到微信消息: ${text.slice(0, 80)}`);
-    const response = await this.agent.handleMessage(toAcpMessage(request));
-    const reply = response.content?.text ?? "处理完成，但没有生成文本回复。";
-    const chunks = splitForWeixin(reply);
-
-    log(`回复微信: ${chunks[0]?.slice(0, 80) ?? ""}${chunks.length > 1 ? ` (+${chunks.length - 1})` : ""}`);
-
-    return { text: chunks.join("\n---\n") };
-  }
-}
-
 async function ensureBuilt() {
   const agentPath = path.resolve("dist/acp/agent.js");
   if (!fsSync.existsSync(agentPath)) {
@@ -143,12 +82,13 @@ async function main() {
   }
 
   const { initDb } = await import(pathToFileURL(path.resolve("dist/db/index.js")).href);
-  const { createAgent } = await import(pathToFileURL(await ensureBuilt()).href);
+  const { InvestAgentMobileBridge } = await import(pathToFileURL(path.resolve("dist/channels/weixin-message-bridge.js")).href);
   initDb();
 
-  const bridge = new InvestAgentMobileBridge(createAgent());
+  const accountId = existingAccount || "weixin-mobile";
+  const bridge = new InvestAgentMobileBridge(accountId, resolveStateDir());
   log("启动微信消息监听... 按 Ctrl+C 停止");
-  await start(bridge);
+  await start(bridge, { accountId });
 }
 
 main().catch((error) => {

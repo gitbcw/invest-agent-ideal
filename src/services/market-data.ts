@@ -52,6 +52,8 @@ const STALE_QUOTE_MAX_AGE_DAYS = 3;
 export interface MarketSourceMeta {
   provider: MarketDataProvider;
   endpoint: string;
+  /** Sanitized external provider URL/reference. Never contains sandbox tokens or local service paths. */
+  referenceUrl?: string;
   fetchedAt: string;
   marketTime?: string;
   confidence: MarketDataConfidence;
@@ -297,6 +299,7 @@ const MARKET_DATA_CAPABILITIES: MarketDataCapability[] = [
 ];
 
 function sourceMeta(provider: ProviderName, overrides: {
+  referenceUrl?: string;
   marketTime?: string;
   stale?: boolean;
   warnings?: string[];
@@ -305,6 +308,7 @@ function sourceMeta(provider: ProviderName, overrides: {
   return {
     provider: meta.runtimeProvider,
     endpoint: meta.endpoint,
+    referenceUrl: overrides.referenceUrl,
     fetchedAt: new Date().toISOString(),
     marketTime: overrides.marketTime,
     confidence: meta.confidence,
@@ -313,6 +317,63 @@ function sourceMeta(provider: ProviderName, overrides: {
     stale: overrides.stale ?? false,
     warnings: overrides.warnings ?? [],
   };
+}
+
+function marketCode(code: string): string {
+  const pure = normalizeCode(code);
+  if (!pure) return "";
+  if (pure.startsWith("6") || pure.startsWith("5")) return `sh${pure}`;
+  return `sz${pure}`;
+}
+
+function eastmoneySecid(code: string): string {
+  const pure = normalizeCode(code);
+  return pure.startsWith("6") ? `1.${pure}` : `0.${pure}`;
+}
+
+function providerReferenceUrl(
+  provider: ProviderName,
+  input: { code?: string; codes?: string[]; count?: number; startDate?: string; endDate?: string } = {},
+): string | undefined {
+  const codes = (input.codes && input.codes.length > 0 ? input.codes : input.code ? [input.code] : [])
+    .map(marketCode)
+    .filter(Boolean);
+  const firstCode = input.code ? marketCode(input.code) : codes[0];
+  const pureCode = input.code ? normalizeCode(input.code) : firstCode ? normalizeCode(firstCode) : "";
+  const count = Math.max(1, Math.floor(input.count || 120));
+  const start = input.startDate || "";
+  const end = input.endDate || "";
+
+  switch (provider) {
+    case "tencent_quote":
+    case "tencent_indices":
+      return `https://qt.gtimg.cn/q=${(codes.length ? codes : ["sh000001", "sz399001", "sz399006", "sh000300"]).join(",")}`;
+    case "tencent_kline_d":
+      return firstCode ? `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${firstCode},day,${start},${end},${count},qfq` : undefined;
+    case "tencent_kline_m5":
+      return firstCode ? `https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=${firstCode},m5,,${count}` : undefined;
+    case "tencent_search":
+      return "https://smartbox.gtimg.cn/s3/?v=2&q={keyword}&t=all";
+    case "sina_quote":
+    case "sina_indices":
+      return `https://hq.sinajs.cn/list=${(codes.length ? codes : ["sh000001", "sz399001", "sz399006", "sh000300"]).join(",")}`;
+    case "sina_kline_d":
+      return firstCode ? `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${firstCode}&scale=240&ma=no&datalen=${count}` : undefined;
+    case "eastmoney_flow":
+      return pureCode ? `https://emdatah5.eastmoney.com/dc/ZJLX/getZJLXData?secid=${eastmoneySecid(pureCode)}&fields=f57,f58,f135,f136,f140,f143,f146,f149,f86` : undefined;
+    case "eastmoney_sector_theme":
+      return pureCode ? `https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax?code=${pureCode.startsWith("6") || pureCode.startsWith("5") ? "SH" : "SZ"}${pureCode}` : undefined;
+    case "eastmoney_stock_news":
+      return pureCode ? `https://np-listapi.eastmoney.com/comm/wap/getListInfo?client=wap&type=1&mession=1&pageNo=1&pageSize=10&fields1=f1,f2,f3,f4&fields2=f51,f52,f53&mTypeAndCode=${pureCode.startsWith("6") ? "1" : "0"}.${pureCode}` : undefined;
+    case "eastmoney_stock_reports":
+      return pureCode ? `https://reportapi.eastmoney.com/report/list?industryCode=*&pageSize=10&industry=*&rating=*&ratingChange=*&pageNo=1&fields=&qType=0&orgCode=&code=${pureCode}` : undefined;
+    case "cninfo_announcements":
+      return pureCode ? `https://www.cninfo.com.cn/new/hisAnnouncement/query?stock=${pureCode}` : "https://www.cninfo.com.cn/new/hisAnnouncement/query";
+    case "service_calendar_cn_ashare":
+      return "service://calendar/cn-ashare";
+    default:
+      return undefined;
+  }
 }
 
 function quoteWarnings(quote: StockQuote) {
@@ -432,6 +493,7 @@ export async function marketQuote(
         ...quote,
         tradingStatus,
         source: sourceMeta(sourceProvider, {
+          referenceUrl: providerReferenceUrl(sourceProvider, { code: quote.code }),
           marketTime: quote.time,
           stale: itemWarnings.includes("missing_market_time"),
           warnings: itemWarnings,
@@ -494,6 +556,7 @@ export async function marketKline(
       count,
       items,
       source: sourceMeta(provider, {
+        referenceUrl: providerReferenceUrl(provider, { code, count }),
         marketTime: items[items.length - 1]?.time,
         stale: items.length === 0,
         warnings: items.length === 0 ? ["empty_minute_kline"] : [],
@@ -531,6 +594,12 @@ export async function marketKline(
     count,
     items,
     source: sourceMeta(sourceProvider, {
+      referenceUrl: providerReferenceUrl(sourceProvider, {
+        code,
+        count,
+        startDate: input.startDate,
+        endDate: input.endDate,
+      }),
       marketTime: items[items.length - 1]?.date,
       stale: items.length === 0,
       warnings,
@@ -572,7 +641,11 @@ export async function marketIndices(
   return {
     items: indices.map((index) => ({
       ...index,
-      source: sourceMeta(sourceProvider, { stale: false, warnings }),
+      source: sourceMeta(sourceProvider, {
+        referenceUrl: providerReferenceUrl(sourceProvider),
+        stale: false,
+        warnings,
+      }),
     })),
     warnings,
   };
@@ -620,6 +693,7 @@ export async function marketCapitalFlow(
   const items = [...map.values()].map((flow) => ({
     ...flow,
     source: sourceMeta(provider, {
+      referenceUrl: providerReferenceUrl(provider, { code: flow.stockCode }),
       marketTime: flow.updatedAt ? String(flow.updatedAt) : undefined,
       stale: !flow.updatedAt,
       warnings: ["capital_flow_is_observation_not_main_force_proof"],
@@ -651,6 +725,7 @@ export async function marketSectorTheme(
       items.push({
         ...result,
         source: sourceMeta("eastmoney_sector_theme", {
+          referenceUrl: providerReferenceUrl("eastmoney_sector_theme", { code }),
           marketTime: result.updatedAt,
           stale: false,
           warnings: ["sector_theme_is_classification_not_investment_conclusion"],
@@ -692,6 +767,7 @@ export async function marketStockInfo(
         reports,
         announcements,
         source: sourceMeta("cninfo_announcements", {
+          referenceUrl: providerReferenceUrl("cninfo_announcements", { code: stock.code }),
           warnings: [
             "announcements_are_primary_but_require_manual_review_for_materiality",
             "news_and_reports_are_secondary_evidence",

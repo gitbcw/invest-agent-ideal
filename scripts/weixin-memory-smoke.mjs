@@ -12,14 +12,16 @@
  */
 
 import {
+  rememberConversationTurn,
   rememberWeixinTurn,
+  loadRecentConversationMemory,
   loadRecentWeixinMemory,
   formatRecentMemoryForPrompt,
 } from "../dist/lib/weixin-conversation-memory.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../dist/lib/workspace.js";
 import { rmSync, existsSync } from "node:fs";
 
-const MODE = process.env.WORKSPACE_BACKEND === "workspace" ? "workspace" : "sqlite";
+const MODE = process.env.WORKSPACE_BACKEND === "sqlite" ? "sqlite" : "workspace";
 const TEST_USER = MODE === "workspace" ? "test-weixin-mem-ws" : "test-weixin-mem-sqlite";
 const INSTANCE = "test-instance";
 const CONVERSATION = "conv-test-1";
@@ -71,6 +73,19 @@ const other = await loadRecentWeixinMemory(otherCtx, 10);
 assert(other.length === 6, `${MODE}: 默认跨 conversation 读取 user/instance 最近上下文`);
 const otherScoped = await loadRecentWeixinMemory(otherCtx, 10, { scope: "conversation" });
 assert(otherScoped.length === 0, `${MODE}: 显式 conversation scope 时其他 conversation 读取为空`);
+
+console.log(`\n[mode=${MODE}] 跨渠道共享记忆`);
+const webCtx = { userId: TEST_USER, instanceId: INSTANCE, conversationId: "web-conv", channel: "web" };
+await rememberConversationTurn(webCtx, "网页端问东方财富", "网页端回答东方财富");
+const readFromWeixin = await loadRecentConversationMemory(userContext, 2);
+assert(readFromWeixin[0]?.content === "网页端问东方财富", `${MODE}: 微信上下文可读到 Web 最新 user 消息`);
+assert(readFromWeixin[1]?.content === "网页端回答东方财富", `${MODE}: 微信上下文可读到 Web 最新 assistant 消息`);
+
+const wxCtx = { ...userContext, conversationId: "wx-conv", channel: "weixin-mobile" };
+await rememberWeixinTurn(wxCtx, "微信端问宁德时代", "微信端回答宁德时代");
+const readFromWeb = await loadRecentConversationMemory(webCtx, 2);
+assert(readFromWeb[0]?.content === "微信端问宁德时代", `${MODE}: Web 上下文可读到微信最新 user 消息`);
+assert(readFromWeb[1]?.content === "微信端回答宁德时代", `${MODE}: Web 上下文可读到微信最新 assistant 消息`);
 
 console.log(`\n[mode=${MODE}] formatRecentMemoryForPrompt`);
 const formatted = formatRecentMemoryForPrompt(recent1);

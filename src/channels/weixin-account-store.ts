@@ -116,7 +116,7 @@ export function resolveWeixinAccount(accountId?: string, stateDir = config.weixi
     configured: Boolean(account?.token),
     token: account?.token,
     baseUrl: account?.baseUrl || DEFAULT_BASE_URL,
-    lastConversationId: account?.lastConversationId || account?.userId,
+    lastConversationId: account?.lastConversationId,
     lastConversationAt: account?.lastConversationAt,
     lastContextToken: account?.lastContextToken,
   };

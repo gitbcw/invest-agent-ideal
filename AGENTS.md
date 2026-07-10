@@ -1,114 +1,132 @@
-# Invest Agent Project Context
+# Invest Agent 项目上下文
 
-## Project Role
+## 项目角色
 
-Invest Agent is the main investment assistant project. It is a WeChat-first AI investment decision assistant for one primary user in the current Experimental MVP stage.
+Invest Agent 是当前主线投资助手项目。在实验性 MVP 阶段，它是一个以微信为第一入口、服务少数核心用户的 AI 投资决策助手。
 
-The current experimental architecture is intentionally simple: WeChat resolves the user/instance/workspace, then forwards the user's message directly to the active ACP backend, normally Codex, running inside that user's workspace. The product-level isolation unit is the workspace-backed investment assistant instance.
+本文件只记录 Agent 操作原则、红线和工作方式，不应扩展成完整架构手册或文档索引。命令、关键文件、API 和运行时细节看 `CLAUDE.md`；文档导航入口看 `docs/README.md`。
 
-The product has three long-term core capabilities:
+当前实验架构刻意保持简单：微信入口解析出用户、助手实例和 workspace 后，直接把用户消息转发给运行在该 workspace 内的当前 ACP 后端，通常是 Codex。产品级隔离单位是由 workspace 承载的投资助手实例。
 
-1. 巡检: monitor holdings, watchlist, alerts, signals, plans, and intraday events.
-2. 复盘: generate daily, weekly, and monthly reviews that turn market data and alerts into an auditable decision loop.
-3. 选股问答: answer industry/theme/company screening questions and convert good candidates into watchlist entries.
+产品长期保留三项核心能力：
 
-Current code already implements much of the runtime, database, dashboard, WeChat bridge, alert checking, and basic review/screening handlers. The next design direction is to move investment methodology and output discipline into workspace skills, so the system can improve through prompt/workflow assets without excessive code churn.
+1. 巡检：监控持仓、自选、明确规则、信号、预案和盘中事件。
+2. 复盘：生成日、周、月复盘，把行情数据和提醒事件纳入可审计的决策闭环。
+3. 选股问答：回答行业、题材、公司筛选问题，并把合适候选转成自选股观察项。
 
-## Operating Principle
+当前代码已经实现运行时、数据库、Dashboard、微信桥、规则巡检，以及基础复盘和选股处理器。后续设计方向是把投资方法和输出纪律逐步沉淀到 workspace skills，让系统主要通过提示词和工作流资产演进，减少不必要的代码变动。
 
-Prefer the "AGENTS.md + .codex/skills" workflow for investment reasoning:
+## 运行原则
 
-- Use code for deterministic execution: data collection, DB reads/writes, stock resolving, alert checks, scheduling, and dashboard APIs.
-- Use skills for investment judgment workflows: review structure, screening reasoning, evidence requirements, risk language, and user-specific decision discipline.
-- Keep the long-running service for GUI, WeChat connection, scheduler, alert push, and local HTTP APIs.
-- Let the active ACP backend invoke deterministic service capabilities through skills, usually by calling the local `invest-agent` HTTP API.
-- Rule inspection is service-owned and deterministic: sample the current/latest market fact at the scheduler tick, evaluate the persisted rule, record audit/event state, and push only according to priority/cooldown. Do not broaden it into "intraday touched high" or close-confirmation semantics unless explicitly redesigned.
-- Market facts follow the accepted data-source policy: local reliable data service first, external AI search second, explicit data gap last. Do not assume expensive paid data access in the MVP.
-- Keep investment conclusions auditable: facts, inference, action, and future validation signals should be separated.
-- Do not promise returns or imply automatic trading.
-- If data is unavailable, say exactly what is missing instead of filling gaps with invented detail.
+投资推理优先采用 `AGENTS.md + .codex/skills` 工作流：
 
-## Runtime Evolution Principle
+- 代码负责确定性执行：数据采集、数据库读写、股票解析、规则巡检、调度和 Dashboard API。
+- Skills 负责投资判断工作流：复盘结构、筛选推理、证据要求、风险语言和用户个人决策纪律。
+- 长驻服务继续负责 GUI、微信连接、调度器、提醒推送和本地 HTTP API。
+- 当前 ACP 后端通过 skills 调用确定性服务能力，通常调用本地 `invest-agent` HTTP API 或 MCP 服务工具。
+- 规则巡检归服务层所有，并保持确定性：在 scheduler tick 采样当前或最新行情事实，评估已持久化规则，记录审计和事件状态，并只按 priority/cooldown 推送。除非明确重新设计，不要把它扩展成“盘中曾触达高点”或收盘确认语义。
+- 行情事实遵循已接受的数据源策略：本地可靠数据服务优先，外部 AI 搜索其次，最后明确说明数据缺口。MVP 阶段不要假设有昂贵付费数据源。
+- 投资结论必须可审计：事实、推理、动作和后续验证信号要分开。
+- 不承诺收益，不暗示自动交易。
+- 如果数据不可用，要明确说明缺什么，不要用编造的细节填空。
 
-In the current phase, normal WeChat user messages should use the direct workspace ACP path in `src/acp/agent.ts` and `src/acp/stdio-agent.ts`. The service may pass only minimal channel context: that the message came from WeChat, which workspace it belongs to, and that the final text will be sent back to WeChat.
+## 运行时演进原则
 
-Do not reintroduce service-level triage, fast-lane classification, onboarding short-circuiting, review intent detection, or context-packet wrapping for normal WeChat messages. If behavior needs to change, update the workspace template, AGENTS.md, skills, or workspace config instead.
+当前阶段，普通微信用户消息应走 `src/acp/agent.ts` 和 `src/acp/stdio-agent.ts` 中的 workspace ACP 直通路径。服务层只传最小通道上下文：消息来自微信、属于哪个 workspace、最终文本会回到微信。
 
-The durable product assets are workspace templates, Skills, sandbox/tool protocols, deterministic service APIs, confirmation workflows, audit, scheduler behavior, and saved artifacts. Codex ACP is the preferred current backend; backend choice is runtime plumbing, not product semantics.
+不要为普通微信消息重新引入服务层分流、快车道分类、onboarding 短路、复盘意图检测或上下文包裹。如果行为需要改变，优先更新 workspace 模板、AGENTS.md、skills 或 workspace 配置。
+
+真正长期稳定的产品资产是 workspace 模板、Skills、sandbox/tool 协议、确定性服务 API、确认工作流、审计、调度器行为和已保存产物。Codex ACP 是当前优先后端；后端选择属于运行时管线，不属于产品语义。
 
 > **运行时语义纠正(2026-06-30)**:Codex ACP 是当前默认 invest-agent workspace 后端。Hermes 仅保留为兼容/实验 backend；历史 `codex_acp_traces` 表名仅作为兼容存储保留。
+> **模型路由收敛(2026-07-06)**:默认 ACP model tier 是 `complex`。`simple` tier 仍保留为未来稳定性调试后的 opt-in 能力,只有显式设置 `ACP_SIMPLE_MODEL_ENABLED=true` 时才允许路由到 simple。
 
-Use the workspace-scoped ACP backend as the complex-reasoning and edge-case absorber. As repeated patterns become clear, move them into workspace skills, service APIs, sandbox confirmations, golden tests, and scheduled ACP tasks.
+把 workspace-scoped ACP 后端作为复杂推理和边缘情况吸收层。重复模式稳定后，再沉淀到 workspace skills、服务 API、sandbox 确认流程、确定性契约和 scheduled ACP tasks。
 
-Profile should remain a runtime compatibility summary or routing/config residue. Do not add new methodology responsibilities to Profile; investment method should live in Strategy Skills: protected skeleton plus instance expansion.
+Profile 应只保留为运行时兼容摘要或路由/配置残留，不要再给 Profile 增加新的方法论职责。投资方法应放在 Strategy Skills 中：受保护骨架 + 实例扩展。
 
-## Engineering Convergence Principle
+## 工程收敛原则
 
-Use the five-step engineering method for the current convergence phase: question the need, delete obsolete responsibilities, simplify the necessary core, speed up feedback loops, then automate stable checks.
+当前收敛阶段采用五步工程方法：质疑需求、删除过时职责、简化必要核心、加快反馈循环，然后自动化稳定检查。
 
-Documentation convergence is part of engineering convergence. Keep only current, agent-useful docs in `docs/`; move historical plans, experiments, test records, migration notes, and superseded decisions to `docs/archive/`. Current source-of-truth docs should describe the direct WeChat → workspace ACP path, the service-owned scheduler/push/sandbox/API responsibilities, Profile as compatibility summary, and Strategy Skills as the methodology carrier.
+文档收敛也是工程收敛的一部分。`docs/` 只保留当前有效、对 Agent 有用的文档；历史计划、实验、测试记录、迁移说明和已被取代的决策移入 `docs/archive/`。当前可信文档应描述微信直达 workspace ACP 路径、服务层拥有的 scheduler/push/sandbox/API 职责、Profile 作为兼容摘要的边界，以及 Strategy Skills 作为方法论载体的定位。
 
-## Source Of Truth
+## 评测收敛原则
 
-Use these files first:
+在当前实验性 MVP 阶段，评测闭环应保持轻量，并由 Agent/Skill 驱动。
 
-- `CLAUDE.md`: current runtime architecture, commands, key files, and tool surface.
-- `docs/README.md`: small current document index and project-level consensus.
-- `docs/table-ownership.md`: SQLite table three-tier ownership (service / workspace / discard).
-- `docs/23-multi-user-sandbox-design.md`: sandbox token, permission, audit, and isolation model.
-- `docs/composite-indicator-system.md`: composite indicator system RFC (5 layers: L1 operators / L2 signals / L3a rule tree / L3b sandbox script) with main-force-control as first use case.
-- `docs/trading-strategy-design.md`: trading strategy entity v1 (2026-06-23): first-class strategy in workspace yaml, strategy→plan one-way generation with two-gate confirmation.
-- `docs/02-investment-methodology.md`: user's investment methodology.
-- `docs/04-core-workflows.md`: business workflows across screening, review, alerts, and feedback.
-- `docs/data-source-policy-decision.md`: accepted data-source policy and cost posture for reliable data.
-- `docs/watch-runtime-phased-implementation.md`: scheduler, market-watch, and deterministic rule-inspection boundary.
+- 把 workspace Skills、当前上下文和已解决问题的经验沉淀当作主要质量基线。
+- 让 Codex 按变更范围进行最小真实交互，检查实际输出、对话日志、sandbox 审计、ACP trace 和 workspace 产物。
+- 让 Codex 判断应该修代码、改进 Skill/prompt、补确定性契约，还是归档观察。
+- 默认评测闭环不保留外部 AI judge。语义评估者是带有项目上下文的当前 Codex；确定性代码只做硬约束检查。
+- 只有当同一操作重复到值得沉淀为 Skill 或小型确定性检查时，才自动化评测流程。
 
-## Current Review Direction
+当前可信来源是项目 Skills、`AGENTS.md` 和服务层权威审计日志。
 
-The existing TypeScript review handler works, but its review quality is too shallow compared with the review practice in `jr-backend`.
+## 文档入口
 
-The preferred direction is:
+先读以下文档，再按 `docs/README.md` 中的任务型地图继续：
 
-- Keep `src/handlers/review.ts` as the deterministic data collector and runtime integration point.
-- Move review method into workspace skills.
-- Save full review artifacts under `reviews/`.
-- Make daily reviews feed weekly reviews, and weekly reviews feed monthly reviews.
-- Include a viewpoint tracking table or equivalent audit trail so future reviews can judge whether earlier views were right, wrong, or unverified.
-- Tie all action suggestions to existing plans, alerts, holdings, watchlist status, and user methodology.
+- `AGENTS.md`：原则、红线、投资输出纪律和 Agent 工作方式。
+- `CLAUDE.md`：命令、关键文件、API、数据库说明和本地运行细节。
+- `docs/README.md`：当前文档导航和任务型阅读地图。
+- `docs/system-overview.md`：一页式运行时地图和职责边界。
 
-## Current Screening Direction
+`docs/archive/` 下的历史文档只作考古使用，除非当前可信文档明确指向它们。
 
-Screening should be workspace skill-driven.
+## 当前复盘方向
 
-The preferred direction is:
+现有 TypeScript 复盘 handler 可以工作，但与 `jr-backend` 的复盘实践相比，复盘质量仍偏浅。
 
-- The handler gathers the user's query and any available deterministic context.
-- The screening skill defines the research workflow, report structure, evidence rules, watchlist conversion rules, and anti-hallucination constraints.
-- Candidate stocks should include observation conditions, not only bullish reasons.
-- The output should make it easy for the user to say which candidates to add to the watchlist.
+优先方向：
 
-## Service And Skill Boundary
+- 保留 `src/handlers/review.ts` 作为确定性数据采集器和运行时集成点。
+- 把复盘方法迁移到 workspace skills。
+- 将完整复盘产物保存到 `reviews/`。
+- 让日复盘供给周复盘，周复盘供给月复盘。
+- 加入观点跟踪表或等价审计轨迹，使未来复盘能判断早期观点是正确、错误还是尚未验证。
+- 所有行动建议都要绑定到既有预案、提醒、持仓、自选状态和用户方法论。
 
-The service should keep running because it owns stateful and time-based responsibilities:
+## 当前选股方向
 
-- Dashboard GUI.
-- WeChat login and listener.
-- Active alert push.
-- Scheduler, scheduled market-watch briefs, and deterministic rule inspection.
-- SQLite persistence.
-- Market data fetching.
-- Local HTTP APIs.
+选股应由 workspace skill 驱动。
 
-Skills should own how the workspace ACP backend uses these capabilities:
+优先方向：
 
-- Which API to call for each user intent.
-- How to interpret API results.
-- How to produce cautious investment language.
-- How to decide whether a deterministic action needs confirmation.
+- Handler 收集用户问题和可用的确定性上下文。
+- Screening skill 定义研究流程、报告结构、证据规则、自选股转换规则和防幻觉约束。
+- 候选股票应包含观察条件，而不只是看多理由。
+- 输出应方便用户直接说明要把哪些候选加入自选。
 
-In short: the service is the machine room; skills are the operating manual the workspace ACP backend uses to run it.
+## 服务层与 Skill 边界
 
-## Strategy Plan Drafting (硬约束)
+服务层必须持续运行，因为它拥有状态性和时间性职责：
+
+- Dashboard 图形界面。
+- 微信登录和监听。
+- 主动提醒推送。
+- Scheduler、定时 market-watch 简报和确定性规则巡检。
+- SQLite 持久化。
+- 行情数据获取。
+- 本地 HTTP API。
+- 面向用户可见微信/网页历史和 portal relay 同步的权威对话日志。
+
+Skills 应负责 workspace ACP 后端如何使用这些能力：
+
+- 针对不同用户意图调用哪个 API。
+- 如何解释 API 返回结果。
+- 如何生成谨慎的投资表达。
+- 如何判断确定性动作是否需要用户确认。
+
+简而言之：服务层是机房，skills 是 workspace ACP 后端使用这间机房的操作手册。
+
+## 用户门户边界
+
+用户门户是独立云端入口，不是 Dashboard 或 Platform 的重写。本仓库只负责本地运行时侧：`/api/portal/*` 权威对话日志 API、`npm run portal:connector`、workspace ACP 执行、SQLite 权威数据、微信、scheduler 和确定性 API。
+
+`conversation_sessions` 和 `conversation_messages` 是服务层拥有的 SQLite 表，是用户可见对话历史的本地可信来源。云端门户可以为了用户体验保留完整镜像，但聊天必须通过 connector 路由，不能读取本地文件、workspace 状态，也不能暴露 Platform 管理命令。
+
+## 策略预案起草（硬约束）
 
 涉及"用 X 策略给 Y 股票出预案""按 X 策略起草计划""出预案"等请求时,**必须**走下方两道闸门流程:
 
@@ -118,14 +136,14 @@ In short: the service is the machine room; skills are the operating manual the w
 
 **禁止**:
 
-- ❌ 跳过第一道闸门,一次回复内直接起草预案(即使用户已指定策略名)
-- ❌ 在草案里包含仓位上限/持仓金额/持股数量/时间约束(系统不存这些字段)
-- ❌ 承诺收益、胜率或精确时间
+- 跳过第一道闸门,一次回复内直接起草预案(即使用户已指定策略名)。
+- 在草案里包含仓位上限、持仓金额、持股数量或时间约束(系统不存这些字段)。
+- 承诺收益、胜率或精确时间。
 
 如果用户指定的策略在 `trading_strategies.yaml` 里不存在,**不要**用"通用版本"代替起草。先告知用户该策略未找到,询问是否:
 (a) 让我按你的口述新建该策略,或
 (b) 改用其他已存在的策略。
 
-## Style
+## 输出风格
 
-Write investment outputs in Chinese unless the user asks otherwise. Be direct, operational, and cautious. The product should feel like a disciplined investment workbench, not a generic chatbot.
+除非用户另有要求，投资输出一律使用中文。表达要直接、可操作、谨慎。产品气质应像一张纪律清晰的投资工作台，而不是泛泛聊天机器人。

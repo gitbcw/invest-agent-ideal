@@ -8,7 +8,8 @@ import { WorkspaceStore } from "./workspace-store.js";
 
 const MEMORY_LIMIT = 12;
 
-const EVENT_TYPE = "wechat_conversation_turn";
+const EVENT_TYPE = "conversation_turn";
+const LEGACY_WEIXIN_EVENT_TYPE = "wechat_conversation_turn";
 
 export type ConversationMessage = {
   role: "user" | "assistant";
@@ -21,12 +22,13 @@ interface BehaviorEventRecord {
   payload: {
     instance_id?: string;
     conversation_id?: string | null;
+    channel?: UserContext["channel"] | null;
     user_text: string;
     assistant_text: string;
   };
 }
 
-export async function rememberWeixinTurn(userContext: UserContext, userText: string, assistantText: string) {
+export async function rememberConversationTurn(userContext: UserContext, userText: string, assistantText: string) {
   const now = new Date().toISOString();
   const instanceId = userContext.instanceId ?? DEFAULT_INSTANCE_ID;
   try {
@@ -38,6 +40,7 @@ export async function rememberWeixinTurn(userContext: UserContext, userText: str
         payload: {
           instance_id: instanceId,
           conversation_id: userContext.conversationId ?? null,
+          channel: userContext.channel ?? null,
           user_text: compactContent(userText),
           assistant_text: compactContent(assistantText),
         },
@@ -64,15 +67,19 @@ export async function rememberWeixinTurn(userContext: UserContext, userText: str
       ]);
     }
   } catch (error) {
-    logger.warn("微信短期对话记忆写入失败:", error);
+    logger.warn("短期对话记忆写入失败:", error);
   }
+}
+
+export async function rememberWeixinTurn(userContext: UserContext, userText: string, assistantText: string) {
+  return rememberConversationTurn({ ...userContext, channel: userContext.channel ?? "weixin-mobile" }, userText, assistantText);
 }
 
 export interface WeixinMemoryLoadOptions {
   scope?: "user_instance" | "conversation";
 }
 
-export async function loadRecentWeixinMemory(
+export async function loadRecentConversationMemory(
   userContext: UserContext,
   limit = MEMORY_LIMIT,
   options: WeixinMemoryLoadOptions = {}
@@ -83,6 +90,14 @@ export async function loadRecentWeixinMemory(
     return loadRecentFromWorkspace(userContext.userId, instanceId, conversationId, limit);
   }
   return loadRecentFromSQLite(userContext, instanceId, conversationId, limit);
+}
+
+export async function loadRecentWeixinMemory(
+  userContext: UserContext,
+  limit = MEMORY_LIMIT,
+  options: WeixinMemoryLoadOptions = {}
+): Promise<ConversationMessage[]> {
+  return loadRecentConversationMemory(userContext, limit, options);
 }
 
 async function loadRecentFromSQLite(userContext: UserContext, instanceId: string, conversationId: string | undefined, limit: number): Promise<ConversationMessage[]> {
@@ -113,8 +128,8 @@ async function loadRecentFromSQLite(userContext: UserContext, instanceId: string
  *
  * limit 语义与 SQLite 路径一致:消息条数(一轮对话 = user + assistant = 2 条)。
  *
- * behavior_events.jsonl 是混合事件流(action_confirmed / out_of_scope_query / wechat_conversation_turn),
- * 这里只筛 event_type=wechat_conversation_turn,按写入顺序展开为 user/assistant 消息对,再取最后 limit 条。
+ * behavior_events.jsonl 是混合事件流(action_confirmed / out_of_scope_query / conversation_turn),
+ * 这里只筛 conversation_turn,并兼容历史 wechat_conversation_turn,按写入顺序展开为 user/assistant 消息对,再取最后 limit 条。
  *
  * conversationId 作为可选过滤项:为 null/空时不过滤(读取所有 conversation 的最近对话)。
  */
@@ -122,7 +137,7 @@ async function loadRecentFromWorkspace(userId: string, instanceId: string, conve
   const store = new WorkspaceStore(userId);
   const events = await store.listBehaviorEvents<BehaviorEventRecord>();
   const filtered = events
-    .filter((event) => event?.event_type === EVENT_TYPE)
+    .filter((event) => event?.event_type === EVENT_TYPE || event?.event_type === LEGACY_WEIXIN_EVENT_TYPE)
     .filter((event) => event?.payload?.instance_id === instanceId)
     .filter((event) => !conversationId || event?.payload?.conversation_id === conversationId);
   const messages: ConversationMessage[] = [];

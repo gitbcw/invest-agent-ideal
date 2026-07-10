@@ -257,7 +257,7 @@ scripts/stage1-scheduled-tasks-smoke.mjs
 - 默认用户。
 - active users 的 active aiInstances。
 - 微信绑定 identity instances。
-- enabled alerts 对应 scope。
+- enabled stage2 watch_rules(`alert_rules`) 对应 scope;legacy `alerts` 不再纳入 scheduler scope。
 
 阶段一需要确认这符合当前"精品投资助手/少数客户"模式。风险是测试用户或历史实例被扫入。
 

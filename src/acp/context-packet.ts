@@ -1,12 +1,12 @@
 import { and, eq } from "drizzle-orm";
 import { getToolManifest, type ToolManifestItem } from "./tool-manifest.js";
 import { db } from "../db/index.js";
-import { alerts } from "../db/schema.js";
+import { alertRules } from "../db/schema.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, type UserContext } from "../lib/user-context.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
-import { loadRecentWeixinMemory, type ConversationMessage } from "../lib/weixin-conversation-memory.js";
+import { loadRecentConversationMemory, type ConversationMessage } from "../lib/weixin-conversation-memory.js";
 import { listPendingConfirmations } from "./pending-state.js";
 
 export interface ContextPacket {
@@ -55,7 +55,7 @@ export async function buildContextPacket(
   const instanceId = userContext.instanceId || DEFAULT_INSTANCE_ID;
   const channel = userContext.channel || "api";
   const [recentConversation, stateSummary, latestArtifacts] = await Promise.all([
-    loadRecentWeixinMemory(userContext, options.recentLimit ?? 12).catch(() => []),
+    loadRecentConversationMemory(userContext, options.recentLimit ?? 12, { scope: "conversation" }).catch(() => []),
     buildStateSummary(userId, instanceId),
     buildLatestArtifacts(userId, instanceId),
   ]);
@@ -91,17 +91,21 @@ function mergePendingConfirmations(
 }
 
 async function buildStateSummary(userId: string, instanceId: string): Promise<ContextPacket["stateSummary"]> {
-  const [portfolio, watchlist, plans, alertRows, latestReview] = await Promise.all([
+  const [portfolio, watchlist, plans, alertRuleRows, latestReview] = await Promise.all([
     portfolioBackend.listActive(userId, instanceId).catch(() => []),
     watchlistBackend.list(userId, instanceId).catch(() => []),
     planBackend.list(userId, instanceId).catch(() => []),
-    db.select().from(alerts).where(and(eq(alerts.userId, userId), eq(alerts.instanceId, instanceId))).catch(() => []),
+    db
+      .select()
+      .from(alertRules)
+      .where(and(eq(alertRules.userId, userId), eq(alertRules.instanceId, instanceId), eq(alertRules.relationToPlan, "stage2_watch_rule")))
+      .catch(() => []),
     dailyPlanBackend.getLatest(userId, instanceId).catch(() => null),
   ]);
   return {
     portfolioCount: portfolio.length,
     watchlistCount: watchlist.length,
-    alertCount: alertRows.length,
+    alertCount: alertRuleRows.length,
     planCount: plans.length,
     latestReviewDate: latestReview?.planDate,
   };

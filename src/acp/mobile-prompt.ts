@@ -7,6 +7,7 @@ export function compactDailyReviewContext(context: DailyReviewContext) {
     previousReview: context.previousReview,
     openViewpoints: context.openViewpoints,
     marketIndex: context.marketIndex,
+    sourceQuality: context.sourceQuality,
     holdings: context.holdings.map(compactStock),
     watchlist: context.watchlist.map(compactStock),
     infoFilter: context.infoFilter.slice(0, 2400),
@@ -54,28 +55,19 @@ export function buildMobilePrompt(params: {
   };
   sandboxTokenFile?: string | null;
   sandboxPermissions?: string[];
-  recentConversationContext?: string;
 }) {
   const compactReviewContext = params.reviewContext;
-  const tokenFile = params.sandboxTokenFile ?? ".sandbox-token";
   const internalRuntimeContext = [
     params.userContext?.projectId ? `projectId=${params.userContext.projectId}` : "",
     params.userContext?.instanceId ? `instanceId=${params.userContext.instanceId}` : "",
-    params.userContext?.workspacePath ? `workspacePath=${params.userContext.workspacePath}` : "",
-    `sandboxTokenFile=${tokenFile}`,
+    params.userContext?.channel ? `channel=${params.userContext.channel}` : "",
+    params.userContext?.conversationId ? `conversationId=${params.userContext.conversationId}` : "",
     params.sandboxPermissions?.length ? `sandboxPermissions=${params.sandboxPermissions.join(",")}` : "",
   ].filter(Boolean).join("\n");
   if (!compactReviewContext) {
     return [
       params.userText,
       internalRuntimeContext ? `【内部执行上下文】\n${internalRuntimeContext}` : "",
-      [
-        `调用服务层确定性接口时，sandbox token 已写入 workspace 内的 ${tokenFile} 文件。curl 必须用 -H "Authorization: Bearer $(cat ${tokenFile})" 让 shell 自动展开，禁止在命令里写出 token 字面值。不要向用户暴露 token 或文件路径。`,
-        `当用户询问持仓涨跌、现价、指数、观察池距离、预案触发、行情复盘或市场事实时，优先调用本地行情 API。持仓/自选/预案快照用：curl -s -X POST http://127.0.0.1:22655/api/sandbox/market/snapshot -H "Authorization: Bearer $(cat ${tokenFile})" -H "Content-Type: application/json" -d "{}"。补充接口包括 GET /api/sandbox/market/quote、GET /api/sandbox/market/kline、GET /api/sandbox/market/indices、GET /api/sandbox/market/capital-flow。`,
-        "行情 API 返回 source、fetchedAt、marketTime、confidence、warnings；回复用户时使用这些事实，但不要暴露接口路径、sandboxToken、curl 或内部执行过程。",
-        "若行情 API 缺失、过期或返回 warnings，必须说明数据缺口并降低结论强度，不要凭记忆或自行编造精确价格。",
-        params.sandboxPermissions?.length ? `当前允许权限：${params.sandboxPermissions.join(",")}` : "",
-      ].filter(Boolean).join("\n"),
     ].filter(Boolean).join("\n");
   }
 
@@ -84,9 +76,10 @@ export function buildMobilePrompt(params: {
     [
       "用户要求复盘。下面已经提供复盘所需的数据，请不要再调用 curl、服务 API 或任何工具。",
       "请按日复盘结构和质量规则生成复盘：事实、推断、操作、验证点分开；不要使用资金净流入作为判断依据。",
+      "数据来源与质量必须使用复盘上下文 JSON 的 sourceQuality；微信正文只写可读来源摘要和风险提示，不要展示原始 URL、provider endpoint/referenceUrl、本地 sandbox API、token、curl 或内部路径。",
       "如果上下文包含 previousReview 或 openViewpoints，请先回测上一份复盘的关键观点，再生成今天的新观点追踪表；不要把未验证观点当作已验证结论。",
       "主力控盘情况只作为最后一部分；如果没有确定性数据源，只简短说明未接入，不要在核心结论里反复强调缺口。",
-      "直接输出复盘正文，不要说明你将如何处理，不要提到技能、上下文、接口、工具或保存动作。",
+      "直接输出复盘正文，不要说明你将如何处理，不要提到技能、上下文、工具或保存动作；数据来源章节只写“腾讯行情、腾讯日K、东方财富新闻线索、巨潮资讯公告”等可读来源名。",
       "输出客户微信可读版本，内容可以完整，但避免工程词和内部路径。",
       params.sandboxPermissions?.length ? `当前允许权限：${params.sandboxPermissions.join(",")}` : "",
       "当用户明确要求新增或修改盯盘规则时，不要直接落库；先输出结构化草案，等待服务端确认后再执行。",

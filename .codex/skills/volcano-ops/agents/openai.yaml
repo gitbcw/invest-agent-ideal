@@ -1,0 +1,5 @@
+interface:
+  display_name: "Volcano Ops"
+  short_description: "Deploy and diagnose Volcano production runtime"
+  default_prompt: "Use $volcano-ops to inspect, deploy, verify, or rollback the Volcano Cloud runtime."
+
