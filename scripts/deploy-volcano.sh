@@ -47,7 +47,7 @@ for required_name in INVEST_AGENT_API_TOKEN PLATFORM_ANONYMIZATION_SECRET; do
     echo "[deploy] ERROR: ${required_name} missing or too short"
     exit 1
   fi
-fi
+done
 
 npm install
 npm run build
