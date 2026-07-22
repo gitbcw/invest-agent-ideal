@@ -39,7 +39,7 @@ ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197
 
 部署脚本和文档必须维持这些一致性，不靠人工临场记忆：
 
-- 代码同步脚本只同步代码，不覆盖服务器 `.env`、`data/`、`reviews/`、`.state/`、workspace 和 `.codex` 运行态。
+- 代码同步脚本会删除版本库中已经退役的旧代码，但不覆盖或删除服务器 `.env`、`data/`、`reviews/`、`.state/`、workspace 和 `.codex` 运行态；`--delete-excluded` 禁止使用。
 - 运行时数据迁移只通过 `scripts/package-volcano-runtime.sh` 和 `scripts/apply-volcano-runtime.sh`；迁移后脚本会把 workspace 内 `.codex/config.toml`、`mcp.json` 统一指向服务器 `/home/claude/.codex`。
 - **普通版本发布只能使用代码同步路径**（`scripts/deploy-volcano.sh`），且必须从已审核的生产分支、标签或干净发布目录执行。提示词、Skill、Workspace 模板、服务代码和编译产物的更新都不应触碰生产数据库、Workspace、复盘、`.env` 或微信状态。
 - 代码同步必须只排除项目根目录 `.codex` 运行态，不能误排除 `templates/workspace/.codex`。现有真实用户 Workspace 的核心 Skill 升级不由 rsync 或普通运行时覆盖；先使用 `npm run workspace:preflight` 只读检查，再按 `docs/workspace-compatibility.md` 逐用户备份和显式迁移。

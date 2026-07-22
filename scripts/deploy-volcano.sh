@@ -9,7 +9,9 @@ LOCAL_TUNNEL_PORT="${LOCAL_TUNNEL_PORT:-22648}"
 RUN_SMOKE="${RUN_SMOKE:-false}"
 
 echo "[deploy] sync to ${DEPLOY_USER}@${HOST}:${REMOTE_DIR}"
-rsync -avz \
+# Remove source files retired by the release after transfer while keeping all
+# excluded runtime paths protected from deletion.
+rsync -avz --delete-delay \
   --exclude='node_modules' \
   --exclude='dist' \
   --exclude='data' \

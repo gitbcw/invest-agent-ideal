@@ -104,6 +104,8 @@ test("workspace compatibility preflight blocks invalid required user configurati
 
 test("Volcano code deploy preserves root runtime state but includes nested workspace template skills", async () => {
   const deployScript = await readFile(path.resolve("scripts/deploy-volcano.sh"), "utf8");
+  assert.match(deployScript, /--delete-delay/);
+  assert.doesNotMatch(deployScript, /--delete-excluded/);
   assert.match(deployScript, /--exclude='\/\.codex'/);
   assert.doesNotMatch(deployScript, /--exclude='\.codex'/);
 });
