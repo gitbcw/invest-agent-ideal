@@ -108,6 +108,8 @@ test("Volcano code deploy preserves root runtime state but includes nested works
   assert.doesNotMatch(deployScript, /--delete-excluded/);
   assert.match(deployScript, /--exclude='\/\.codex'/);
   assert.doesNotMatch(deployScript, /--exclude='\.codex'/);
+  assert.match(deployScript, /INVEST_AGENT_API_TOKEN PLATFORM_ANONYMIZATION_SECRET/);
+  assert.match(deployScript, /for attempt in 1 2 3 4 5 6 7 8 9 10/);
 });
 
 test("ordinary access does not overwrite an existing workspace managed asset", async () => {

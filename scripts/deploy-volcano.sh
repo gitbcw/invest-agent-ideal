@@ -38,7 +38,15 @@ set -euo pipefail
 cd "${REMOTE_DIR/#\~/$HOME}"
 
 if [ ! -f .env ]; then
-  echo "[deploy] WARN: .env missing"
+  echo "[deploy] ERROR: .env missing"
+  exit 1
+fi
+
+for required_name in INVEST_AGENT_API_TOKEN PLATFORM_ANONYMIZATION_SECRET; do
+  if ! grep -Eq "^${required_name}=.{32,}$" .env; then
+    echo "[deploy] ERROR: ${required_name} missing or too short"
+    exit 1
+  fi
 fi
 
 npm install
@@ -60,7 +68,17 @@ pm2 list
 EOF
 
 echo "[deploy] verify"
-ssh "${DEPLOY_USER}@${HOST}" "curl -fsS http://127.0.0.1:${PORT}/health"
+ssh "${DEPLOY_USER}@${HOST}" "PORT='${PORT}' bash" <<'EOF'
+set -euo pipefail
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS "http://127.0.0.1:${PORT}/health"; then
+    exit 0
+  fi
+  sleep 2
+done
+pm2 logs invest-agent --err --lines 60 --nostream
+exit 1
+EOF
 echo
 echo "[deploy] done."
 echo "[deploy] admin tunnel: ssh -L ${LOCAL_TUNNEL_PORT}:127.0.0.1:${PORT} ${DEPLOY_USER}@${HOST}"

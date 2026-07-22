@@ -106,6 +106,16 @@ npm run smoke:workspace-compatibility -- <user> <instance>
 - 预检前后副本文件摘要一致；生产 runtime 保持 `online`，健康检查为 `ok`。
 - 本轮未部署代码、未执行 Workspace 迁移、未重启服务、未改变微信或 Portal 连接。
 
+### 2026-07-23 火山云生产发布与迁移
+
+- 使用干净发布 worktree 执行普通代码发布；服务器 `.env`、SQLite、reviews、`.state` 和真实 Workspace 均由同步排除规则保护。
+- 首次构建暴露服务器残留已退役源码的问题，构建在重启前失败，生产旧进程未被该次尝试中断。部署脚本随后增加受保护的 stale-code 删除契约，并明确禁止删除排除项。
+- 新版本生产认证门禁发现缺少 `INVEST_AGENT_API_TOKEN` 和 `PLATFORM_ANONYMIZATION_SECRET`。两个值均在服务器本地随机生成、写入权限为 `600` 的 `.env`，未输出或复制到本机；Platform Owner 首次登录凭据保存在服务器权限为 `600` 的独立文件中。
+- `111`、`dyk`、`mg` 已分别执行显式迁移并复检为 `ready`。迁移备份分别位于 `production-20260723-015253/111`、`production-20260723-015730-dyk/dyk`、`production-20260723-015757-mg/mg`。
+- `111` 已通过生产受限 ACP 单点验收；三个用户均通过对应 user/instance 的持仓与盘中快照服务回读。MCP 服务工具 smoke 通过，共 37 个工具。
+- 生产 runtime 与 Portal 健康正常；三个微信账号均为 `connected` 且 listener 正在运行。维护窗口内没有活动 push job，也没有发送测试消息。
+- 三个账号当前 `pushReady=false`；主动推送需等待各自下一次真实入站会话恢复，不在发布验收中主动打扰真实用户。
+
 ## 火山云发布顺序
 
 1. 从干净、已审核的发布分支或 tag 构建并完成本地测试。
