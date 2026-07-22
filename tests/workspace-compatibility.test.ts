@@ -143,3 +143,17 @@ test("ordinary access does not overwrite an existing workspace managed asset", a
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("workspace compatibility acceptance refuses to run outside an isolated eval environment", () => {
+  const run = spawnSync(
+    process.execPath,
+    ["scripts/workspace-compatibility-acceptance.mjs", "111", "invest-agent-111"],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, WORKSPACE_COMPATIBILITY_EVAL: "false" },
+      encoding: "utf8",
+    },
+  );
+  assert.notEqual(run.status, 0);
+  assert.match(run.stderr, /WORKSPACE_COMPATIBILITY_EVAL must equal true/);
+});

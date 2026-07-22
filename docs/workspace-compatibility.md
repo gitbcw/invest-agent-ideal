@@ -68,6 +68,35 @@ npm run workspace:migrate -- \
 
 迁移后重新运行预检，目标状态应为 `ready`。
 
+## 隔离单点验收
+
+`scripts/workspace-compatibility-acceptance.mjs` 只允许在路径包含 `compatibility-evals` 的隔离环境运行，并强制要求关闭微信、Portal connector 和 scheduler。它会核对 Workspace 持仓读取、指定用户/实例的盘中快照作用域，以及 ACP 是否通过受限 MCP 工具得到同一事实；最终只输出计数、窗口和耗时，不输出用户持仓内容。
+
+```bash
+WORKSPACE_COMPATIBILITY_EVAL=true \
+WEIXIN_AUTO_START=false \
+PORTAL_CONNECTOR_AUTO_START=false \
+SCHEDULER_ENABLED=false \
+WORKSPACE_BACKEND=workspace \
+WORKSPACE_ROOT=/absolute/path/compatibility-evals/<run>/migrated \
+WORKSPACE_TEMPLATE_PATH=/absolute/path/invest-agent/templates/workspace \
+DB_PATH=/absolute/path/compatibility-evals/<run>/runtime-data/<user>.db \
+RUNTIME_DATA_ROOT=/absolute/path/compatibility-evals/<run>/runtime-data/<user> \
+REVIEWS_ROOT=/absolute/path/compatibility-evals/<run>/reviews/<user> \
+INVEST_AGENT_WEIXIN_STATE_DIR=/absolute/path/compatibility-evals/<run>/state/<user> \
+npm run smoke:workspace-compatibility -- <user> <instance>
+```
+
+定时日复盘发布可在同一组隔离环境变量下运行 `smoke:scheduled-review-publication`。该探针只开放 `reviews.save`，不会创建 push job 或连接微信。
+
+### 2026-07-23 隔离验收记录
+
+- `111`、`dyk`、`mg` 的迁移副本均通过受限 MCP 持仓与盘中快照单点验收。
+- 三个副本均通过只开放 `reviews.save` 的定时日复盘发布探针，且均在首次尝试成功。
+- 每个隔离数据库的 `reviews.save` 成功审计均只属于对应 user/instance，`push_jobs` 均为 0。
+- 验收报告均落入对应隔离 reviews 目录；临时 `.codex/auth.json` 已清除。
+- 火山云生产仍未部署、未迁移、未写入。
+
 ## 火山云发布顺序
 
 1. 从干净、已审核的发布分支或 tag 构建并完成本地测试。

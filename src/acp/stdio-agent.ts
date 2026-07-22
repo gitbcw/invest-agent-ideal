@@ -93,6 +93,13 @@ interface AcpBackendOverride {
   model?: string;
 }
 
+type AcpMcpServer = {
+  name: string;
+  command: string;
+  args: string[];
+  env: Array<{ name: string; value: string }>;
+};
+
 export interface AcpBackendStatus {
   id: AcpBackendId;
   label: string;
@@ -153,6 +160,67 @@ export const ACP_BACKENDS: AcpBackendDef[] = [
 ];
 
 const SETTINGS_KEY = "acp_backend";
+
+/**
+ * Build the service-owned MCP process configuration for a workspace-scoped
+ * Codex session. Codex ACP treats this env list as explicit, so every
+ * location that determines service state must travel with the trusted scope.
+ */
+export function buildInvestAgentMcpServers(
+  backendId: AcpBackendId,
+  cwd: string,
+  userContext?: UserContext,
+  env: NodeJS.ProcessEnv = process.env,
+): AcpMcpServer[] {
+  if (backendId !== "codex") return [];
+
+  const projectRoot = path.resolve(env.INVEST_AGENT_PROJECT_ROOT || process.cwd());
+  const resolveFromProject = (value: string) => path.resolve(projectRoot, value);
+  const userId = userContext?.userId || env.INVEST_AGENT_MCP_USER_ID || "primary";
+  const instanceId =
+    userContext?.instanceId || env.INVEST_AGENT_MCP_INSTANCE_ID || defaultInstanceIdForUser(userId);
+  const workspacePath = path.resolve(userContext?.workspacePath || cwd);
+  const runtimeEnv: Array<{ name: string; value: string }> = [
+    { name: "INVEST_AGENT_MCP_USER_ID", value: userId },
+    { name: "INVEST_AGENT_MCP_INSTANCE_ID", value: instanceId },
+    { name: "INVEST_AGENT_MCP_WORKSPACE_PATH", value: workspacePath },
+    { name: "INVEST_AGENT_MCP_CONVERSATION_ID", value: userContext?.conversationId || "" },
+    ...(userContext?.mcpAllowedTools?.length
+      ? [{ name: "INVEST_AGENT_MCP_ALLOWED_TOOLS", value: userContext.mcpAllowedTools.join(",") }]
+      : []),
+    { name: "INVEST_AGENT_PROJECT_ROOT", value: projectRoot },
+    { name: "DB_PATH", value: resolveFromProject(env.DB_PATH || config.db.path) },
+    { name: "WORKSPACE_ROOT", value: resolveFromProject(env.WORKSPACE_ROOT || config.workspace.root) },
+    {
+      name: "WORKSPACE_TEMPLATE_PATH",
+      value: resolveFromProject(env.WORKSPACE_TEMPLATE_PATH || config.workspace.templatePath),
+    },
+    { name: "WORKSPACE_BACKEND", value: env.WORKSPACE_BACKEND || "workspace" },
+    { name: "RUNTIME_DATA_ROOT", value: resolveFromProject(env.RUNTIME_DATA_ROOT || config.runtimeData.root) },
+    { name: "REVIEWS_ROOT", value: resolveFromProject(env.REVIEWS_ROOT || path.join(projectRoot, "reviews")) },
+  ];
+
+  // Credentials are deliberately passed only to the child process. This
+  // configuration is never logged or included in customer-visible output.
+  if (env.INVEST_AGENT_SANDBOX_SECRET) {
+    runtimeEnv.push({ name: "INVEST_AGENT_SANDBOX_SECRET", value: env.INVEST_AGENT_SANDBOX_SECRET });
+  }
+  if (env.INVEST_AGENT_SANDBOX_SECRET_FILE) {
+    runtimeEnv.push({
+      name: "INVEST_AGENT_SANDBOX_SECRET_FILE",
+      value: resolveFromProject(env.INVEST_AGENT_SANDBOX_SECRET_FILE),
+    });
+  }
+
+  return [
+    {
+      name: "invest-agent-service-tools",
+      command: process.execPath,
+      args: [path.join(projectRoot, "dist/mcp/invest-agent-service-tools.js")],
+      env: runtimeEnv,
+    },
+  ];
+}
 
 // ─── 通用 stdio ACP agent ──────────────────────────────────────────
 
@@ -628,29 +696,7 @@ export class StdioAcpAgent {
   }
 
   private buildMcpServers(cwd: string, userContext?: UserContext) {
-    if (this.def.id !== "codex") return [];
-    const scriptPath = path.resolve(process.cwd(), "dist/mcp/invest-agent-service-tools.js");
-    const userId = userContext?.userId || process.env.INVEST_AGENT_MCP_USER_ID || "primary";
-    const instanceId =
-      userContext?.instanceId || process.env.INVEST_AGENT_MCP_INSTANCE_ID || defaultInstanceIdForUser(userId);
-    const workspacePath = userContext?.workspacePath || cwd;
-    return [
-      {
-        name: "invest-agent-service-tools",
-        command: process.execPath,
-        args: [scriptPath],
-        env: [
-          { name: "INVEST_AGENT_MCP_USER_ID", value: userId },
-          { name: "INVEST_AGENT_MCP_INSTANCE_ID", value: instanceId },
-          { name: "INVEST_AGENT_MCP_WORKSPACE_PATH", value: workspacePath },
-          { name: "INVEST_AGENT_MCP_CONVERSATION_ID", value: userContext?.conversationId || "" },
-          ...(userContext?.mcpAllowedTools?.length
-            ? [{ name: "INVEST_AGENT_MCP_ALLOWED_TOOLS", value: userContext.mcpAllowedTools.join(",") }]
-            : []),
-          { name: "INVEST_AGENT_PROJECT_ROOT", value: process.cwd() },
-        ],
-      },
-    ];
+    return buildInvestAgentMcpServers(this.def.id, cwd, userContext);
   }
 
   private timeoutAfter(ms: number): Promise<never> {

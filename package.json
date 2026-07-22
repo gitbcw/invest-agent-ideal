@@ -36,6 +36,7 @@
     "smoke:db-legacy-alerts-drop": "npm run build && node scripts/db-legacy-alerts-drop-smoke.mjs",
     "smoke:mcp-service-tools": "npm run build && node scripts/mcp-service-tools-smoke.mjs",
     "smoke:scheduled-review-publication": "npm run build && node scripts/scheduled-review-publication-probe.mjs",
+    "smoke:workspace-compatibility": "npm run build && node scripts/workspace-compatibility-acceptance.mjs",
     "smoke:route-uniqueness": "npm run build && node scripts/route-uniqueness-smoke.mjs",
     "smoke:platform-investment-state": "npm run build && node scripts/platform-investment-state-smoke.mjs",
     "smoke:platform-partner-auth": "npm run build && node scripts/platform-partner-auth-smoke.mjs",

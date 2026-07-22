@@ -3,6 +3,8 @@
 import { initDb, sqlite } from "../dist/db/index.js";
 import { disposeAllAcp } from "../dist/acp/stdio-agent.js";
 import { runScheduledReviewPublicationProbe } from "../dist/acp/scheduled-tasks.js";
+import { rm } from "node:fs/promises";
+import path from "node:path";
 
 const userId = process.argv[2]?.trim();
 const instanceId = process.argv[3]?.trim();
@@ -26,4 +28,18 @@ try {
 } finally {
   disposeAllAcp();
   sqlite.close();
+  await removeIsolatedEvalCredential(userId);
+}
+
+async function removeIsolatedEvalCredential(scopedUserId) {
+  if (process.env.WORKSPACE_COMPATIBILITY_EVAL !== "true") return;
+  const workspaceRoot = process.env.WORKSPACE_ROOT?.trim();
+  if (
+    !workspaceRoot
+    || !path.isAbsolute(workspaceRoot)
+    || !workspaceRoot.split(path.sep).includes("compatibility-evals")
+  ) {
+    throw new Error("WORKSPACE_ROOT must be an absolute compatibility-evals path");
+  }
+  await rm(path.join(workspaceRoot, scopedUserId, ".codex", "auth.json"), { force: true });
 }

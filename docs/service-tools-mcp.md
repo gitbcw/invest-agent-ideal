@@ -9,6 +9,8 @@ Implementation:
 - Tool core: `src/mcp/service-tools-core.ts`
 - Smoke: `npm run smoke:mcp-service-tools`
 
+Codex ACP receives an explicit MCP child-process environment. The wiring must carry the resolved database, Workspace root/template, backend mode, runtime-data root, reviews root, and sandbox-secret configuration together with the trusted user/instance/conversation scope. The child must not fall back to repository defaults, because local isolation and Volcano production use non-default state roots. Credentials stay in the child environment and must never be logged or returned in tool/customer output.
+
 ## Tool Policy
 
 - Do not add a generic HTTP proxy tool.

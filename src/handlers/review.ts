@@ -17,9 +17,9 @@ import { WorkspaceStore } from "../lib/workspace-store.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "path";
+import { join, resolve } from "path";
 
-const REVIEWS_DIR = join(process.cwd(), "reviews");
+const REVIEWS_DIR = resolve(process.env.REVIEWS_ROOT || join(process.cwd(), "reviews"));
 const TEMPLATE_KEY = "review_template";
 
 type ReviewKind = "daily" | "weekly" | "monthly";

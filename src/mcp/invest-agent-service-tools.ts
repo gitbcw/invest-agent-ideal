@@ -492,7 +492,6 @@ function registerJsonTool(
             text: JSON.stringify(result, null, 2),
           },
         ],
-        structuredContent: result as Record<string, unknown>,
       };
     }
   );

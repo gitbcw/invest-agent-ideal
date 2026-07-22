@@ -13,6 +13,7 @@ const reviewDate = "2026-07-16";
 process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(tempRoot, "test.db");
 process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
+process.env.REVIEWS_ROOT = path.join(tempRoot, "reviews");
 process.env.INVEST_AGENT_SANDBOX_SECRET_FILE = path.join(tempRoot, ".sandbox-secret");
 process.env.INVEST_AGENT_API_TOKEN = "mcp-smoke-service-token-at-least-32-characters";
 
@@ -121,6 +122,12 @@ try {
     assert.deepEqual(requiredTools.filter((name) => !toolNames.includes(name)), []);
     const portfolio = await client.callTool({ name: "portfolio.read", arguments: {} });
     assert.notEqual(portfolio.isError, true);
+    const portfolioText = portfolio.content?.find((item) => item.type === "text")?.text;
+    const portfolioResult = JSON.parse(portfolioText || "null");
+    assert.equal(portfolioResult?.ok, true);
+    assert.equal(portfolioResult?.userId, context.userId);
+    assert.equal(portfolioResult?.instanceId, context.instanceId);
+    assert.equal(typeof portfolioResult?.count, "number");
     // reviews.save reaches shared code that logs a successful publication.
     // Keeping this successful write on the stdio route proves those logs stay
     // on stderr and never corrupt stdout JSON-RPC framing.
