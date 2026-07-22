@@ -8,6 +8,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "invest-agent-mcp-smoke-"));
+const reviewUserId = "mcp-smoke-user";
+const reviewDate = "2026-07-16";
 process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(tempRoot, "test.db");
 process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
@@ -21,9 +23,11 @@ try {
   dbModule.initDb();
   const { callServiceTool, serviceToolContextFromEnv } = await import("../dist/mcp/service-tools-core.js");
   const { ensureWorkspace } = await import("../dist/lib/workspace.js");
+  const { dailyPlanBackend } = await import("../dist/lib/daily-plan-backend.js");
+  const { WorkspaceStore } = await import("../dist/lib/workspace-store.js");
   const context = serviceToolContextFromEnv({
     ...process.env,
-    INVEST_AGENT_MCP_USER_ID: "mcp-smoke-user",
+    INVEST_AGENT_MCP_USER_ID: reviewUserId,
     INVEST_AGENT_MCP_INSTANCE_ID: "invest-agent-mcp-smoke-user",
     INVEST_AGENT_MCP_CONVERSATION_ID: "mcp-smoke-conversation",
   });
@@ -33,6 +37,7 @@ try {
     ["portfolio.read", {}],
     ["watchlist.read", {}],
     ["plans.read", {}],
+    ["market.calendar", { date: "2026-07-15" }],
     ["conversation.history", {}],
     ["confirmations.pending", {}],
     ["watch_rules.catalog", {}],
@@ -42,6 +47,33 @@ try {
     const result = await callServiceTool(name, input, context);
     assert.equal(typeof result, "object", `${name} must return structured data`);
   }
+
+  await assert.rejects(
+    callServiceTool("reviews.save", { date: reviewDate, content: "manual without confirmation" }, context),
+    /confirmedByUser=true/
+  );
+  const scheduledContext = {
+    ...context,
+    conversationId: `scheduler:daily-review:${context.userId}:${context.instanceId}`,
+  };
+  const fullReport = "# 日复盘\n\n这是 Agent 自主生成的完整报告。";
+  const pushBrief = "今日复盘已完成：暂无需要立即确认的操作。";
+  const published = await callServiceTool("reviews.save", {
+    date: reviewDate,
+    content: fullReport,
+    pushBrief,
+    decisionRecords: [{ id: "mcp-smoke-decision", decision_type: "no_action", view: "继续观察" }],
+    sourceEvents: [{ id: "mcp-smoke-source", event: "missing", reason: "smoke fixture" }],
+  }, scheduledContext);
+  assert.equal(published.pushBrief, pushBrief);
+  assert.equal(published.decisionRecordCount, 1);
+  assert.equal(published.sourceEventCount, 1);
+  const savedReview = await dailyPlanBackend.get(context.userId, context.instanceId, reviewDate);
+  assert.equal(savedReview?.content, fullReport);
+  assert.equal(savedReview?.summary, pushBrief);
+  const store = new WorkspaceStore(context.userId);
+  assert.equal((await store.listDecisions()).some((item) => item.id === "mcp-smoke-decision"), true);
+  assert.equal((await store.listSourceEvents()).some((item) => item.id === "mcp-smoke-source"), true);
 
   const client = new Client({ name: "invest-agent-mcp-smoke", version: "1.0.0" });
   const transport = new StdioClientTransport({
@@ -65,8 +97,21 @@ try {
       "confirmations.pending",
       "confirmations.request",
       "conversation.history",
+      "market.calendar",
+      "market.capital_flow",
+      "market.indices",
+      "market.kline",
+      "market.resolve",
+      "market.sector_theme",
+      "market.stock_info",
       "onboarding.confirm_portfolio",
       "onboarding.confirm_step",
+      "onboarding.draft.get",
+      "onboarding.draft.upsert_step",
+      "onboarding.draft.request_confirmation",
+      "onboarding.draft.accept_step",
+      "onboarding.draft.enqueue_commit",
+      "onboarding.draft.commit_status",
       "plans.set",
       "reviews.save",
       "watch_rules.create",
@@ -81,5 +126,6 @@ try {
   }
 } finally {
   sqlite?.close();
+  await rm(path.join(process.cwd(), "reviews", reviewUserId), { recursive: true, force: true });
   await rm(tempRoot, { recursive: true, force: true });
 }

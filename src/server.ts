@@ -5,15 +5,14 @@ import type { AcpMessage, AcpResponse } from "./acp/protocol.js";
 import { config } from "./lib/config.js";
 import { logger } from "./lib/logger.js";
 import { listSchedulableScopes, registerPush, triggerScheduledMarketWatchNow, triggerScheduledReviewNow } from "./scheduler/index.js";
-import { listAcpBackends } from "./acp/stdio-agent.js";
-import { renderWeixinAdminPage } from "./admin/weixin-page.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
-import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { registerPortalRoutes } from "./routes/portal.js";
 import { registerSandboxRoutes } from "./routes/sandbox.js";
-import { autoStartPlatformWeixinListeners, projectWeixinManagerForInstance, registerPlatformRoutes } from "./routes/platform.js";
+import { registerWatchRuleRoutes } from "./routes/watch-rules.js";
+import { assertPlatformPartnerKeySafety, autoStartPlatformWeixinListeners, projectWeixinManagerForInstance, registerPlatformRoutes } from "./routes/platform.js";
 import { ensureBuiltInIndicatorDefinitions } from "./handlers/indicator-definitions.js";
 import { enqueuePushJob, getPushJob, getPushQueueSummary, processDuePushJobs, type PushBackend } from "./services/push-queue.js";
+import type { WeixinDeliveryResult } from "./services/weixin-delivery.js";
 import { ensureBuiltInAiProjects } from "./platform/project-registry.js";
 import { instanceIdFromRequest, userIdFromRequest } from "./lib/user-context.js";
 import { db } from "./db/index.js";
@@ -21,6 +20,7 @@ import { codexAcpTraces, pushJobs, scheduledTaskRuns } from "./db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
 import { assertServiceAuthConfiguration, hasServiceApiAuthorization, isPublicServicePath, isSandboxPath } from "./lib/service-auth.js";
 import { hasPlatformSession, isLoopbackAddress } from "./lib/platform-session.js";
+import { hasPersistentPlatformSession } from "./lib/platform-auth.js";
 import { consumeRequestRateLimit } from "./lib/request-rate-limit.js";
 
 const agent = createAgent();
@@ -29,17 +29,25 @@ const agent = createAgent();
 let pendingAlerts: string[] = [];
 let pushQueueInterval: ReturnType<typeof setInterval> | null = null;
 
-async function sendPushJob(job: { userId: string; backend: PushBackend; message: string; instanceId?: string }) {
+function isOfflineMode() {
+  return process.env.INVEST_AGENT_OFFLINE_MODE === "true";
+}
+
+async function sendPushJob(job: { userId: string; backend: PushBackend; message: string; instanceId?: string }): Promise<WeixinDeliveryResult> {
+  if (isOfflineMode()) {
+    return { ok: false, reason: "wechat_api_error", errorMessage: "offline mode blocks external delivery" };
+  }
   if (job.instanceId) {
     try {
       const projectManager = await projectWeixinManagerForInstance(job.instanceId);
-      const pushed = await projectManager.pushText(job.message, { userId: job.userId, instanceId: job.instanceId });
-      if (pushed) return true;
+      const projectResult = await projectManager.pushTextDetailed(job.message, { userId: job.userId, instanceId: job.instanceId });
+      if (projectResult.ok) return projectResult;
+      return projectResult;
     } catch (error) {
       logger.warn(`项目实例微信推送失败，尝试全局通道: ${(error as Error).message}`);
     }
   }
-  return weixinMobileManager.pushText(job.message, { userId: job.userId, instanceId: job.instanceId });
+  return weixinMobileManager.pushTextDetailed(job.message, { userId: job.userId, instanceId: job.instanceId });
 }
 
 function startPushQueueWorker() {
@@ -67,13 +75,24 @@ export async function createServer() {
   app.addHook("onClose", async () => {
     stopPushQueueWorker();
   });
+  (app as any).routeInventory = [];
+  app.addHook("onRoute", (route) => {
+    const methods = Array.isArray(route.method) ? route.method : [route.method];
+    for (const method of methods) {
+      (app as any).routeInventory.push({ method: String(method).toUpperCase(), url: route.url });
+    }
+  });
   app.addHook("onRequest", async (request, reply) => {
     const requestPath = request.url.split("?")[0];
-    const localPlatformPageRequest = requestPath === "/platform" && isLoopbackAddress(request.ip);
-    if (isPublicServicePath(request.url) || localPlatformPageRequest) return;
+    // The page shell is public so remote Partner users can reach the login form.
+    // Data APIs remain protected by persistent account sessions below.
+    const platformPageRequest = requestPath === "/platform";
+    const platformLoginRequest = requestPath === "/api/platform/auth/login";
+    if (isPublicServicePath(request.url) || platformLoginRequest || platformPageRequest) return;
     const sandboxRequest = isSandboxPath(request.url);
     const platformSessionRequest = requestPath.startsWith("/api/platform/") && isLoopbackAddress(request.ip) && hasPlatformSession(request.headers.cookie);
-    if (!sandboxRequest && !platformSessionRequest && !hasServiceApiAuthorization(request.headers)) {
+    const platformAuthRequest = requestPath.startsWith("/api/platform/") && await hasPersistentPlatformSession(request.headers.cookie);
+    if (!sandboxRequest && !platformSessionRequest && !platformAuthRequest && !hasServiceApiAuthorization(request.headers)) {
       return reply
         .header("www-authenticate", "Basic realm=\"Invest Agent Local API\"")
         .status(401)
@@ -88,13 +107,14 @@ export async function createServer() {
   });
   await ensureBuiltInAiProjects();
   await ensureBuiltInIndicatorDefinitions();
+  await assertPlatformPartnerKeySafety();
 
-  registerDashboardRoutes(app);
   registerPortalRoutes(app);
   registerSandboxRoutes(app);
   registerPlatformRoutes(app);
+  registerWatchRuleRoutes(app);
 
-  startPushQueueWorker();
+  if (!isOfflineMode()) startPushQueueWorker();
 
   // 注册推送回调：调度器产出的提醒进入可靠推送队列
   registerPush(async (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => {
@@ -119,46 +139,16 @@ export async function createServer() {
     };
   });
 
-  // 旧微信管理页重定向到统一 Dashboard
+  // 旧微信管理页重定向到 Platform 实例入口(Dashboard 退役前过渡兼容)
   app.get("/admin/weixin", async (_request, reply) => {
     reply.statusCode = 301;
-    return reply.redirect("/dashboard");
+    return reply.redirect("/platform#instances");
   });
 
-  app.get("/api/weixin/status", async () => weixinMobileManager.getState());
-
-  app.post("/api/weixin/connect/start", async () => weixinMobileManager.startLogin());
-
-  app.post("/api/weixin/listener/start", async () => {
-    await weixinMobileManager.ensureListenerStarted();
-    return weixinMobileManager.getState();
-  });
-
-  app.post("/api/weixin/connect/stop", async () => {
-    weixinMobileManager.stop();
-    return weixinMobileManager.getState();
-  });
-
-  app.post<{ Body: { message?: string } }>("/api/weixin/push/test", async (request, reply) => {
-    const text = request.body?.message?.trim() || `测试提醒：${new Date().toLocaleString("zh-CN")}`;
-    try {
-      const pushed = await weixinMobileManager.pushText(text);
-      if (!pushed) {
-        return reply.status(409).send({
-          ok: false,
-          message: "当前没有可用的微信会话，请先让客户微信给助手发送一条消息。",
-          state: weixinMobileManager.getState(),
-        });
-      }
-      return { ok: true, state: weixinMobileManager.getState() };
-    } catch (error) {
-      logger.warn(`测试微信推送失败: ${(error as Error).message}`);
-      return reply.status(500).send({
-        ok: false,
-        message: (error as Error).message,
-        state: weixinMobileManager.getState(),
-      });
-    }
+  // Dashboard 已退役,旧入口 301 到 Platform;兼容期结束后移除该路由
+  app.get("/dashboard", async (_request, reply) => {
+    reply.statusCode = 301;
+    return reply.redirect("/platform");
   });
 
   app.post("/api/alerts/mock-and-push", async () => {
@@ -207,13 +197,14 @@ export async function createServer() {
   });
 
   // 简单测试端点（不经过 ACP，直接对话）
-  app.post<{ Body: { message: string; userId?: string; workspacePath?: string; channel?: "weixin-mobile" | "dashboard" | "api" } }>(
+  app.post<{ Body: { message: string; userId?: string; workspacePath?: string; channel?: "weixin-mobile" | "api" } }>(
     "/api/chat",
     async (request, reply) => {
       const { message, userId, workspacePath, channel } = request.body;
       if (!message) {
         return reply.status(400).send({ error: "message is required" });
       }
+      const normalizedChannel: "weixin-mobile" | "api" = channel === "weixin-mobile" ? "weixin-mobile" : "api";
 
       let resolvedWorkspacePath = workspacePath;
       if (!resolvedWorkspacePath && userId) {
@@ -227,12 +218,12 @@ export async function createServer() {
         from: userId || "test",
         timestamp: Date.now(),
         content: { type: "text", text: message },
-        ...(userId || resolvedWorkspacePath || channel
+        ...(userId || resolvedWorkspacePath || normalizedChannel
           ? {
               context: {
                 userId: userId || "test",
                 ...(resolvedWorkspacePath ? { workspacePath: resolvedWorkspacePath } : {}),
-                ...(channel ? { channel } : {}),
+                ...(normalizedChannel ? { channel: normalizedChannel } : {}),
               },
             }
           : {}),
@@ -434,9 +425,7 @@ export async function startServer() {
     logger.info(`健康检查: http://localhost:${config.port}/health`);
     logger.info(`ACP 端点: http://localhost:${config.port}/acp/message`);
     logger.info(`提醒轮询: http://localhost:${config.port}/acp/alerts`);
-    logger.info(`微信连接后台: http://localhost:${config.port}/admin/weixin`);
-    logger.info(`数据看板: http://localhost:${config.port}/dashboard`);
-    logger.info(`平台实例管理: http://localhost:${config.port}/platform`);
+    logger.info(`平台管理: http://localhost:${config.port}/platform`);
 
     if (process.env.WEIXIN_AUTO_START !== "false" && weixinMobileManager.getState().stage === "connected") {
       weixinMobileManager.ensureListenerStarted().catch((error) => {

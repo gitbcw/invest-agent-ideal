@@ -39,6 +39,13 @@ export async function createSandboxConfirmation(ctx: SandboxContext, target: San
 }
 
 export async function consumeSandboxConfirmation(ctx: SandboxContext, confirmationId: string, target: SandboxConfirmationTarget) {
+  const validated = await validateSandboxConfirmation(ctx, confirmationId, target);
+  if (!validated.ok) return validated;
+  await markConfirmation(validated.record.id, "confirmed", ctx.tokenId);
+  return { ok: true as const, record: validated.record };
+}
+
+export async function validateSandboxConfirmation(ctx: SandboxContext, confirmationId: string, target: SandboxConfirmationTarget) {
   const [record] = await db
     .select()
     .from(pendingSandboxConfirmations)
@@ -74,8 +81,6 @@ export async function consumeSandboxConfirmation(ctx: SandboxContext, confirmati
   if (record.requestedTokenId && ctx.tokenId && record.requestedTokenId === ctx.tokenId) {
     return { ok: false as const, reason: "confirmation requires a later user turn" };
   }
-
-  await markConfirmation(record.id, "confirmed", ctx.tokenId);
   return { ok: true as const, record };
 }
 

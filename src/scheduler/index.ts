@@ -11,6 +11,7 @@ import { runScheduledMarketWatchTask } from "../acp/scheduled-tasks.js";
 import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/scheduled-task-runs.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { formatAlerts, runAlertCheck } from "./alert-check.js";
+import { processOnboardingDraftCommits } from "../services/onboarding-drafts.js";
 
 export type PushCallback = (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => Promise<void | boolean | string>;
 
@@ -24,6 +25,7 @@ const MARKET_WATCH_MAX_QUEUE_DELAY_MS = normalizePositiveInteger(
 
 let pushFn: PushCallback | null = null;
 let alertIntervalId: ReturnType<typeof setInterval> | null = null;
+let onboardingDraftCommitIntervalId: ReturnType<typeof setInterval> | null = null;
 const marketWatchFiredKeys = new Set<string>();
 const runningMarketWatchTasks = new Set<string>();
 const marketWatchQueue: MarketWatchQueueItem[] = [];
@@ -317,6 +319,10 @@ export async function startScheduler() {
 
   const intervalMin = await getAlertInterval();
   restartAlertInterval(intervalMin);
+  await runOnboardingDraftCommitWorker();
+  onboardingDraftCommitIntervalId = setInterval(() => {
+    runOnboardingDraftCommitWorker().catch((error) => logger.error("Onboarding 草稿提交 worker 失败:", error));
+  }, 5_000);
 
   // 收盘后日复盘
   startReviewScheduler(async (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => {
@@ -327,7 +333,7 @@ export async function startScheduler() {
   await startDataQualityScheduler();
 
   const pushTime = await getReviewPushTime();
-  logger.info(`定时任务已启动（每分钟扫描 workspace 配置；盘中定时简报并发 ${MARKET_WATCH_CONCURRENCY}；规则巡检默认间隔 ${intervalMin}min；复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}；数据质量 15:30）`);
+  logger.info(`定时任务已启动（每分钟扫描 workspace 配置；Onboarding 草稿提交 5s；盘中定时简报并发 ${MARKET_WATCH_CONCURRENCY}；规则巡检默认间隔 ${intervalMin}min；复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}；数据质量 15:30）`);
 }
 
 /** 停止所有定时任务 */
@@ -336,11 +342,22 @@ export function stopScheduler() {
     clearInterval(alertIntervalId);
     alertIntervalId = null;
   }
+  if (onboardingDraftCommitIntervalId !== null) {
+    clearInterval(onboardingDraftCommitIntervalId);
+    onboardingDraftCommitIntervalId = null;
+  }
   for (const item of marketWatchQueue) runningMarketWatchTasks.delete(item.runningKey);
   marketWatchQueue.length = 0;
   stopReviewScheduler();
   stopDataQualityScheduler();
   logger.info("定时任务已停止");
+}
+
+async function runOnboardingDraftCommitWorker() {
+  const result = await processOnboardingDraftCommits({ limit: 3 });
+  if (result.processed > 0) {
+    logger.info(`Onboarding 草稿提交 worker processed=${result.processed} completed=${result.completed} failed=${result.failed}`);
+  }
 }
 
 async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<MarketWatchHit | null> {

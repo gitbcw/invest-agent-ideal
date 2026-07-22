@@ -237,6 +237,8 @@ export interface OnboardingStateYaml {
   completed_at?: string | null;
   updated_at?: string | null;
   notes?: string;
+  /** Internal idempotency marker for an asynchronous onboarding draft commit. */
+  draft_commit_key?: string;
 }
 
 // ============ 内部工具 ============
@@ -532,7 +534,7 @@ export class WorkspaceStore {
 
   /**
    * 按 key 删除策略。返回 true=已删除,false=key 不存在。
-   * 不级联清理 stock_plans.strategy_key(孤儿引用由 Dashboard 标灰处理)。
+   * 不级联清理 stock_plans.strategy_key(孤儿引用由读取与审计层标记)。
    */
   async removeTradingStrategy(key: string): Promise<boolean> {
     this.ensureReady();
@@ -719,6 +721,16 @@ export class WorkspaceStore {
   async listBehaviorEvents<T = unknown>(): Promise<T[]> {
     this.ensureReady();
     return readJsonl<T>(path.join(this.root, "memory/behavior_events.jsonl"));
+  }
+
+  async appendSourceEvent(record: unknown): Promise<void> {
+    this.ensureReady();
+    await appendJsonl(path.join(this.root, "memory/source_events.jsonl"), record);
+  }
+
+  async listSourceEvents<T = unknown>(): Promise<T[]> {
+    this.ensureReady();
+    return readJsonl<T>(path.join(this.root, "memory/source_events.jsonl"));
   }
 
   async appendMethodChange(record: unknown): Promise<void> {

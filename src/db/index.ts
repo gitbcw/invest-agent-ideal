@@ -3,9 +3,11 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
-import { mkdirSync } from "fs";
-import { dirname } from "path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { dirname, join } from "node:path";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
+import { hashPlatformPassword } from "../lib/platform-password.js";
 
 // 确保数据库目录存在
 mkdirSync(dirname(config.db.path), { recursive: true });
@@ -116,15 +118,6 @@ export function initDb() {
       sell_price REAL,
       sell_date TEXT,
       status TEXT NOT NULL DEFAULT 'open'
-    );
-    CREATE TABLE IF NOT EXISTS alerts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL DEFAULT 'primary',
-      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
-      stock_code TEXT NOT NULL,
-      indicator TEXT NOT NULL,
-      threshold TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS stock_plans (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -445,6 +438,26 @@ export function initDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS onboarding_drafts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'collecting',
+      steps_json TEXT NOT NULL DEFAULT '{}',
+      commit_snapshot_json TEXT,
+      commit_key TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      queued_at TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      notified_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS conversation_tasks (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -483,6 +496,22 @@ export function initDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS weixin_delivery_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      external_account_id TEXT,
+      push_job_id TEXT,
+      source TEXT NOT NULL,
+      probe INTEGER NOT NULL DEFAULT 0,
+      result TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      error_message TEXT,
+      conversation_id TEXT,
+      last_inbound_at TEXT,
+      elapsed_since_last_inbound_ms INTEGER,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS scheduled_task_runs (
       task_key TEXT PRIMARY KEY,
       task_type TEXT NOT NULL,
@@ -498,9 +527,71 @@ export function initDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS platform_users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      must_change_password INTEGER NOT NULL DEFAULT 1,
+      failed_login_count INTEGER NOT NULL DEFAULT 0,
+      locked_until TEXT,
+      last_login_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS platform_roles (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      permissions_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS platform_user_roles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      platform_user_id TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS platform_sessions (
+      id TEXT PRIMARY KEY,
+      platform_user_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      revoked_at TEXT,
+      ip_address TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS platform_login_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      platform_user_id TEXT,
+      username TEXT NOT NULL,
+      result TEXT NOT NULL,
+      reason TEXT,
+      ip_address TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS platform_admin_audit_logs (
+      id TEXT PRIMARY KEY,
+      platform_user_id TEXT,
+      role TEXT,
+      action TEXT NOT NULL,
+      route TEXT NOT NULL,
+      permission TEXT,
+      target_customer_key TEXT,
+      request_id TEXT,
+      ip_address TEXT,
+      user_agent TEXT,
+      status TEXT NOT NULL,
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
   `);
   ensureDefaultUser();
   ensureDefaultAiInstance();
+  ensurePlatformAuthSeed();
   normalizeRuntimeBackendToCodex();
   migrateWatchlistForUsers();
   migrateStockPlansForUsers();
@@ -513,8 +604,6 @@ export function initDb() {
   ensureColumn("portfolio", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("portfolio", "status", "TEXT NOT NULL DEFAULT 'open'");
   ensureColumn("portfolio", "buy_price", "REAL");
-  ensureColumn("alerts", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
-  ensureColumn("alerts", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("alert_rules", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("alert_rules", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("alert_events", "feedback", "TEXT");
@@ -569,11 +658,14 @@ export function initDb() {
   ensureColumn("sandbox_audit_logs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("pending_sandbox_confirmations", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("pending_sandbox_confirmations", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("onboarding_drafts", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("conversation_tasks", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("conversation_tasks", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("channel_identities", "welcomed_at", "TEXT");
   ensureColumn("push_jobs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("push_jobs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("push_jobs", "idempotency_key", "TEXT");
+  ensureColumn("weixin_delivery_attempts", "external_account_id", "TEXT");
   ensureColumn("scheduled_task_runs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("scheduled_task_runs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("scheduled_task_runs", "push_job_id", "TEXT");
@@ -586,7 +678,16 @@ export function initDb() {
   dropColumnIfExists("portfolio", "quantity");
   backfillHistoricalInstanceAssignments();
   migrateConversationIdempotencyScope();
+  dropLegacyAlertsTable();
   sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_username ON platform_users(username);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_roles_name ON platform_roles(name);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_user_roles_user_role ON platform_user_roles(platform_user_id, role_id);
+    CREATE INDEX IF NOT EXISTS idx_platform_sessions_user_expiry ON platform_sessions(platform_user_id, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_platform_sessions_expiry ON platform_sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_platform_login_events_username_time ON platform_login_events(username, created_at);
+    CREATE INDEX IF NOT EXISTS idx_platform_admin_audit_time ON platform_admin_audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_platform_admin_audit_actor_time ON platform_admin_audit_logs(platform_user_id, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_accounts_unique ON channel_accounts(channel, backend, external_account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_unique ON channel_identities(channel, external_user_id);
     CREATE INDEX IF NOT EXISTS idx_ai_instances_project_owner ON ai_instances(project_id, owner_user_id, status);
@@ -638,10 +739,15 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_sandbox_audit_logs_operation ON sandbox_audit_logs(operation, created_at);
     CREATE INDEX IF NOT EXISTS idx_pending_sandbox_confirmations_user_status ON pending_sandbox_confirmations(user_id, status, expires_at);
     CREATE INDEX IF NOT EXISTS idx_pending_sandbox_confirmations_conversation ON pending_sandbox_confirmations(conversation_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_onboarding_drafts_scope_status ON onboarding_drafts(user_id, instance_id, status, updated_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_onboarding_drafts_commit_key ON onboarding_drafts(commit_key) WHERE commit_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_push_jobs_due ON push_jobs(status, next_retry_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_user_time ON push_jobs(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_instance_status ON push_jobs(instance_id, status, next_retry_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_backend_status ON push_jobs(backend, status, next_retry_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_push_jobs_idempotency_key ON push_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_weixin_delivery_attempts_scope_time ON weixin_delivery_attempts(instance_id, user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_weixin_delivery_attempts_reason_time ON weixin_delivery_attempts(reason, created_at);
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_scope_time ON scheduled_task_runs(instance_id, user_id, task_type, scheduled_for);
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status, scheduled_for);
   `);
@@ -683,6 +789,57 @@ function ensureDefaultAiInstance() {
       now,
       now
     );
+}
+
+function ensurePlatformAuthSeed() {
+  const now = new Date().toISOString();
+  if (!hasMigration("platform_auth_v1")) markMigration("platform_auth_v1");
+  const ownerPermissions = JSON.stringify(["*"]);
+  const partnerPermissions = JSON.stringify(["overview.read", "customers.read", "quality.read", "operations.read"]);
+  sqlite
+    .prepare(
+      "INSERT OR IGNORE INTO platform_roles (id, name, permissions_json, created_at, updated_at) " +
+      "VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)"
+    )
+    .run("owner", "Owner", ownerPermissions, now, now, "partner", "Partner", partnerPermissions, now, now);
+
+  const existingUser = sqlite.prepare("SELECT id FROM platform_users LIMIT 1").get() as { id?: string } | undefined;
+  if (existingUser?.id) return;
+
+  const username = (process.env.PLATFORM_BOOTSTRAP_USERNAME || "owner").trim();
+  let password = process.env.PLATFORM_BOOTSTRAP_PASSWORD?.trim();
+  const passwordFile = process.env.PLATFORM_BOOTSTRAP_PASSWORD_FILE || join(config.runtimeData.root, ".platform-bootstrap-password");
+
+  if (!password && existsSync(passwordFile)) {
+    password = readFileSync(passwordFile, "utf8").trim();
+  }
+  if (!password && config.nodeEnv !== "production") {
+    password = randomBytes(24).toString("base64url");
+    mkdirSync(dirname(passwordFile), { recursive: true });
+    writeFileSync(passwordFile, password + "\n", { mode: 0o600 });
+    logger.warn("Platform bootstrap 密码已生成并保存到 " + passwordFile + "，不会在日志中打印明文。");
+  }
+  if (!password) {
+    logger.warn("Platform 尚未创建 Owner 账号：请设置 PLATFORM_BOOTSTRAP_PASSWORD 后重启。");
+    return;
+  }
+
+  const userId = "platform-" + randomBytes(12).toString("hex");
+  sqlite
+    .prepare(
+      "INSERT INTO platform_users (" +
+      "id, username, display_name, password_hash, status, must_change_password, " +
+      "failed_login_count, created_at, updated_at" +
+      ") VALUES (?, ?, ?, ?, 'active', 1, 0, ?, ?)"
+    )
+    .run(userId, username, "Platform Owner", hashPlatformPassword(password), now, now);
+  sqlite
+    .prepare(
+      "INSERT INTO platform_user_roles (platform_user_id, role_id, created_at) " +
+      "VALUES (?, 'owner', ?)"
+    )
+    .run(userId, now);
+  logger.info("Platform Owner 账号已初始化 username=" + username);
 }
 
 function normalizeRuntimeBackendToCodex() {
@@ -953,7 +1110,6 @@ function backfillHistoricalInstanceAssignments() {
   const scopedTables = [
     "watchlist",
     "portfolio",
-    "alerts",
     "alert_rules",
     "stock_plans",
     "chat_history",
@@ -1033,6 +1189,43 @@ function markMigration(key: string) {
   sqlite
     .prepare("INSERT OR REPLACE INTO schema_migrations (key, applied_at) VALUES (?, ?)")
     .run(key, new Date().toISOString());
+}
+
+function dropLegacyAlertsTable() {
+  const migrationKey = "drop_legacy_alerts_table_v1";
+  if (hasMigration(migrationKey)) return;
+  if (!hasTable("alerts")) {
+    markMigration(migrationKey);
+    return;
+  }
+  const rowCount = (
+    sqlite.prepare("SELECT COUNT(*) AS n FROM alerts").get() as { n: number }
+  ).n;
+  if (rowCount > 0) {
+    const dumpedRows = archiveLegacyAlerts();
+    if (dumpedRows !== rowCount) {
+      logger.warn(
+        `legacy alerts 归档不完整:表行数 ${rowCount},导出行数 ${dumpedRows};本次保留表结构,请人工核对后重试。`
+      );
+      return;
+    }
+    logger.info(
+      `legacy alerts 已归档 ${dumpedRows} 行到 ${config.runtimeData.archiveDir},继续 DROP。`
+    );
+  }
+  sqlite.exec("DROP TABLE IF EXISTS alerts");
+  markMigration(migrationKey);
+  logger.info("legacy alerts 表已迁移删除");
+}
+
+function archiveLegacyAlerts(): number {
+  const archiveDir = config.runtimeData.archiveDir;
+  mkdirSync(archiveDir, { recursive: true });
+  const rows = sqlite.prepare("SELECT * FROM alerts").all() as Record<string, unknown>[];
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filePath = join(archiveDir, `alerts-${stamp}.json`);
+  writeFileSync(filePath, JSON.stringify(rows, null, 2), "utf-8");
+  return rows.length;
 }
 
 function ensureColumn(table: string, column: string, definition: string) {

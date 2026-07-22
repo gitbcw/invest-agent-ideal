@@ -13,14 +13,14 @@ import { and, desc, eq } from "drizzle-orm";
 import {
   listWeixinAccountIds,
   normalizeAccountId,
-  registerWeixinAccountId,
+  replaceWeixinAccount,
   resolveWeixinAccount,
   resolveWeixinStateDir,
-  saveWeixinAccount,
 } from "./weixin-account-store.js";
 import { InvestAgentMobileBridge } from "./weixin-message-bridge.js";
 import { fetchWeixinQRCode, isLoginFresh, pollWeixinQRStatus, type WeixinLoginSession } from "./weixin-login-flow.js";
 import type { IncomingMediaAttachment } from "../lib/attachment-store.js";
+import type { WeixinDeliveryResult } from "../services/weixin-delivery.js";
 
 type WeixinBackend = "hermes" | "codex";
 type LoginStage = "idle" | "waiting_scan" | "scanned" | "connected" | "error";
@@ -466,12 +466,16 @@ export class WeixinMobileManager {
   }
 
   async pushText(message: string, options: { userId?: string; instanceId?: string } = {}): Promise<boolean> {
+    return (await this.pushTextDetailed(message, options)).ok;
+  }
+
+  async pushTextDetailed(message: string, options: { userId?: string; instanceId?: string } = {}): Promise<WeixinDeliveryResult> {
     const accounts = listWeixinAccountIds(this.stateDir)
       .map((accountId) => resolveWeixinAccount(accountId, this.stateDir))
       .filter((account) => account.configured && account.accountId && account.token);
     if (accounts.length === 0) {
       logger.warn("微信主动推送跳过：当前没有已连接账号");
-      return false;
+      return { ok: false, reason: "no_connected_account" };
     }
 
     for (const account of accounts.slice().reverse()) {
@@ -513,7 +517,17 @@ export class WeixinMobileManager {
             lastError: message,
           });
         }
-        throw error;
+        const contextExpired = message.includes("ret=-2");
+        return {
+          ok: false,
+          reason: contextExpired
+            ? "context_expired"
+            : message.includes("errcode=-14") || message.toLowerCase().includes("session timeout")
+              ? "session_expired"
+              : "wechat_api_error",
+          errorMessage: message,
+          conversationId: target.conversationId,
+        };
       }
       this.withState({
         accountId: account.accountId,
@@ -522,12 +536,12 @@ export class WeixinMobileManager {
         pushReady: true,
         lastError: undefined,
       });
-      return true;
+      return { ok: true, reason: "sent", conversationId: target.conversationId };
     }
 
     const latest = accounts[accounts.length - 1];
     if (!latest) {
-      return false;
+      return { ok: false, reason: "no_connected_account" };
     }
     {
       logger.warn(`微信主动推送跳过：用户 ${options.userId || DEFAULT_USER_ID} 尚无最近会话，请先让该用户给助手发送一条消息`);
@@ -538,7 +552,7 @@ export class WeixinMobileManager {
         pushReady: false,
         lastError: "尚无最近会话，无法主动推送",
       });
-      return false;
+      return { ok: false, reason: "no_recent_conversation" };
     }
   }
 
@@ -603,7 +617,7 @@ export class WeixinMobileManager {
           }
 
           const accountId = normalizeAccountId(result.ilink_bot_id);
-          saveWeixinAccount(
+          const replacedAccountIds = replaceWeixinAccount(
             accountId,
             {
               token: result.bot_token,
@@ -612,7 +626,10 @@ export class WeixinMobileManager {
             },
             this.stateDir
           );
-          registerWeixinAccountId(accountId, this.stateDir);
+          for (const replacedAccountId of replacedAccountIds) {
+            this.stopAccountListener(replacedAccountId);
+            this.bridges.delete(replacedAccountId);
+          }
 
           this.loginSession = null;
           this.withState({

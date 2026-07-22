@@ -50,6 +50,13 @@ export const config = {
     path: process.env.DB_PATH || "./data/invest-agent.db",
   },
 
+  platform: {
+    anonymizationSecret: process.env.PLATFORM_ANONYMIZATION_SECRET ||
+      (process.env.NODE_ENV === "production" ? "" : "dev-platform-anonymization-secret"),
+    anonymizationPreviousSecret: process.env.PLATFORM_ANONYMIZATION_PREVIOUS_SECRET || "",
+    authEnabled: process.env.PLATFORM_AUTH_ENABLED !== "false",
+  },
+
   acp: {
     agentId: process.env.ACP_AGENT_ID || "invest-agent",
     agentName: process.env.ACP_AGENT_NAME || "投资选股助手",
@@ -61,8 +68,8 @@ export const config = {
     acpArgs: process.env.CODEX_ACP_ARGS?.trim()
       ? process.env.CODEX_ACP_ARGS.trim().split(/\s+/)
       : [],
-    simpleModel: process.env.CODEX_SIMPLE_MODEL || "gpt-5.6-luna",
-    complexModel: process.env.CODEX_COMPLEX_MODEL || "gpt-5.6-terra",
+    simpleModel: process.env.CODEX_SIMPLE_MODEL || "gpt-5.4-mini",
+    complexModel: process.env.CODEX_COMPLEX_MODEL || "gpt-5.5",
     acpCwd: process.env.CODEX_ACP_CWD || process.cwd(),
     acpTimeoutMs: Number(process.env.CODEX_ACP_TIMEOUT_MS) || 1800000,
     sourceHome: path.resolve(process.env.CODEX_SOURCE_HOME || path.join(process.env.HOME || "", ".codex")),
@@ -102,6 +109,7 @@ export const config = {
    * 服务层运行时数据(独立于 workspace,跟 sqlite db 同在 data/ 目录下)。
    * - sourceTelemetryDir: provider 调用遥测 jsonl 按日分区
    * - sourceQualityDir: provider 质量汇总/告警,用于平台观测与评测
+   * - archiveDir: 不可逆破坏前的导出/归档目录(如 legacy 表 DROP 前的数据备份)
    */
   runtimeData: {
     root: path.resolve(process.env.RUNTIME_DATA_ROOT || path.join(repoRoot, "data")),
@@ -112,6 +120,10 @@ export const config = {
     sourceQualityDir: path.resolve(
       process.env.RUNTIME_DATA_ROOT || path.join(repoRoot, "data"),
       "source-quality",
+    ),
+    archiveDir: path.resolve(
+      process.env.RUNTIME_DATA_ROOT || path.join(repoRoot, "data"),
+      "archive",
     ),
   },
 };

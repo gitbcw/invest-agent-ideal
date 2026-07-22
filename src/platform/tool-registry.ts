@@ -2,7 +2,7 @@ import type { SandboxContext, SandboxPermission } from "../lib/sandbox-context.j
 import { ALLOWED_SANDBOX_TOOLS } from "./project-registry.js";
 
 export type ToolId =
-  | "invest.dashboard.read"
+  | "invest.snapshot.read"
   | "invest.portfolio.read"
   | "invest.portfolio.write"
   | "invest.watchlist.read"
@@ -34,11 +34,11 @@ export interface ToolDefinition {
 
 const toolDefinitions: ToolDefinition[] = [
   {
-    id: "invest.dashboard.read",
-    displayName: "读取投资看板",
+    id: "invest.snapshot.read",
+    displayName: "读取投资摘要",
     description: "读取项目范围内的持仓、自选、预案、提醒、复盘和追踪摘要。",
     requiredPermissions: ["read:self"],
-    resourceType: "dashboard",
+    resourceType: "investment_snapshot",
     risk: "read",
   },
   {

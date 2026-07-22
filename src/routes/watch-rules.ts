@@ -46,7 +46,12 @@ export function registerWatchRuleRoutes(app: FastifyInstance) {
   app.post<{ Body: Record<string, unknown> }>("/api/watch-rules", safe(async (request, reply) => {
     const userId = userIdFromRequest(request);
     const instanceId = instanceIdFromRequest(request, userId);
-    const rule = await createWatchRule({ ...(request.body as any), userId, instanceId });
+    const rule = await createWatchRule({
+      ...(request.body as any),
+      userId,
+      instanceId,
+      source: { kind: "platform_api" },
+    });
     return reply.status(201).send({ ok: true, userId, instanceId, rule });
   }));
 
@@ -55,7 +60,10 @@ export function registerWatchRuleRoutes(app: FastifyInstance) {
     if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
     const userId = userIdFromRequest(request);
     const instanceId = instanceIdFromRequest(request, userId);
-    const rule = await updateWatchRule(id, request.body as any, userId, instanceId);
+    const rule = await updateWatchRule(id, {
+      ...(request.body as any),
+      source: { kind: "platform_api" },
+    }, userId, instanceId);
     return { ok: true, userId, instanceId, rule };
   }));
 

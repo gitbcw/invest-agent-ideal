@@ -1,18 +1,44 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { conversationMessages, pendingSandboxConfirmations } from "../db/schema.js";
+import { alertRules, conversationMessages, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
 import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
-import { consumeSandboxConfirmation, createSandboxConfirmation } from "../lib/sandbox-confirmation.js";
+import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId } from "../lib/user-context.js";
 import { WorkspaceStore, type OnboardingStateYaml } from "../lib/workspace-store.js";
 import { saveSkillDailyReview } from "../handlers/review.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
-import { marketHealth, marketQuote, marketSnapshot } from "../services/market-data.js";
+import {
+  marketCalendar,
+  marketCapitalFlow,
+  marketHealth,
+  marketIndices,
+  marketKline,
+  marketQuote,
+  marketResolve,
+  marketSectorTheme,
+  marketSnapshot,
+  marketStockInfo,
+  type MarketKlinePeriod,
+} from "../services/market-data.js";
 import { resolveStockRefs } from "../services/stock-resolver.js";
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
+import {
+  applyConfirmedOnboardingStep,
+  isOnboardingStep as isSharedOnboardingStep,
+  normalizeOnboardingState as normalizeSharedOnboardingState,
+  validateOnboardingStepPayload,
+} from "../services/onboarding.js";
+import {
+  acceptOnboardingDraftStep,
+  enqueueOnboardingDraftCommit,
+  getOnboardingDraft,
+  requestOnboardingDraftConfirmation,
+  upsertOnboardingDraftStep,
+  type DraftStepKey,
+} from "../services/onboarding-drafts.js";
 
 export interface ServiceToolContext {
   userId: string;
@@ -35,36 +61,171 @@ export async function callServiceTool(
   input: Record<string, unknown> | undefined,
   context: ServiceToolContext
 ): Promise<unknown> {
+  try {
+    return await dispatchServiceTool(name, input, context);
+  } catch (error) {
+    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save") {
+      await audit(context, {
+        operation: name,
+        resourceType: "service_tool",
+        resourceId: stringInput(input?.step ?? input?.stockCode ?? input?.code),
+        requestBody: input,
+        resultSummary: error instanceof Error ? error.message : String(error),
+        status: "error",
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function dispatchServiceTool(
+  name: string,
+  input: Record<string, unknown> | undefined,
+  context: ServiceToolContext
+): Promise<unknown> {
   switch (name) {
-    case "market.snapshot":
+    case "market.snapshot": {
+      const result = await marketSnapshot({
+        userId: context.userId,
+        instanceId: context.instanceId,
+        includeCapitalFlow: input?.includeCapitalFlow === true,
+      });
+      await audit(context, {
+        operation: "market.snapshot",
+        resourceType: "market_data",
+        requestBody: { includeCapitalFlow: input?.includeCapitalFlow === true },
+        resultSummary: `holdings=${result.holdings.length}; watchlist=${result.watchlist.length}; warnings=${result.warnings.length}`,
+      });
       return {
         ok: true,
         userId: context.userId,
         instanceId: context.instanceId,
-        result: await marketSnapshot({
-          userId: context.userId,
-          instanceId: context.instanceId,
-          includeCapitalFlow: input?.includeCapitalFlow === true,
-        }),
+        result,
       };
+    }
     case "market.quote": {
       const codes = normalizeCodes(input?.codes);
       if (codes.length === 0) throw new Error("codes is required");
+      const result = await marketQuote(codes, context.userId);
+      await audit(context, {
+        operation: "market.quote",
+        resourceType: "market_data",
+        requestBody: { codes },
+        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
+      });
       return {
         ok: true,
         userId: context.userId,
         instanceId: context.instanceId,
         updatedAt: new Date().toISOString(),
-        ...(await marketQuote(codes, context.userId)),
+        ...result,
       };
     }
-    case "market.health":
+    case "market.kline": {
+      const code = stringInput(input?.code);
+      if (!code) throw new Error("code is required");
+      const period: MarketKlinePeriod = input?.period === "m5" ? "m5" : "day";
+      const result = await marketKline({
+        code,
+        period,
+        count: clampInteger(input?.count, 1, 500, period === "m5" ? 120 : 120),
+        startDate: stringInput(input?.startDate),
+        endDate: stringInput(input?.endDate),
+      }, context.userId);
+      await audit(context, {
+        operation: "market.kline",
+        resourceType: "market_data",
+        resourceId: code,
+        requestBody: { code, period, count: input?.count, startDate: input?.startDate, endDate: input?.endDate },
+        resultSummary: `period=${result.period}; count=${result.items.length}; warnings=${result.source.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), result };
+    }
+    case "market.indices": {
+      const result = await marketIndices(context.userId);
+      await audit(context, {
+        operation: "market.indices",
+        resourceType: "market_data",
+        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
+    }
+    case "market.capital_flow": {
+      const codes = normalizeCodes(input?.codes);
+      if (codes.length === 0) throw new Error("codes is required");
+      const result = await marketCapitalFlow(codes, context.userId);
+      await audit(context, {
+        operation: "market.capital_flow",
+        resourceType: "market_data",
+        requestBody: { codes },
+        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
+    }
+    case "market.sector_theme": {
+      const codes = normalizeCodes(input?.codes);
+      if (codes.length === 0) throw new Error("codes is required");
+      const result = await marketSectorTheme(codes, context.userId);
+      await audit(context, {
+        operation: "market.sector_theme",
+        resourceType: "market_data",
+        requestBody: { codes },
+        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
+    }
+    case "market.calendar": {
+      const dateInput = stringInput(input?.date);
+      const date = dateInput ? new Date(`${dateInput}T00:00:00+08:00`) : new Date();
+      if (Number.isNaN(date.getTime())) throw new Error("date must use YYYY-MM-DD");
+      const result = await marketCalendar(date, context.userId);
+      await audit(context, {
+        operation: "market.calendar",
+        resourceType: "market_data",
+        requestBody: { date: dateInput },
+        resultSummary: `date=${result.dateKey}; tradingDay=${result.isTradingDay}; session=${result.session}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
+    }
+    case "market.health": {
+      const result = await marketHealth();
+      await audit(context, {
+        operation: "market.health",
+        resourceType: "market_data",
+        resultSummary: `capabilities=${result.capabilities.length}; endpoints=${result.endpoints.length}`,
+      });
       return {
         ok: true,
         userId: context.userId,
         instanceId: context.instanceId,
-        result: await marketHealth(),
+        result,
       };
+    }
+    case "market.stock_info": {
+      const stocks = normalizeStockInputs(input?.stocks);
+      if (stocks.length === 0) throw new Error("stocks is required");
+      const days = clampInteger(input?.days, 1, 90, 7);
+      const result = await marketStockInfo(stocks, { days }, context.userId);
+      await audit(context, {
+        operation: "market.stock_info",
+        resourceType: "market_data",
+        requestBody: { stocks, days },
+        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
+    }
+    case "market.resolve": {
+      const keyword = stringInput(input?.keyword);
+      if (!keyword) throw new Error("keyword is required");
+      const result = await marketResolve(keyword, context.userId);
+      await audit(context, {
+        operation: "market.resolve",
+        resourceType: "market_data",
+        requestBody: { keyword },
+        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
+    }
     case "portfolio.read": {
       const rows = await portfolioBackend.listActive(context.userId, context.instanceId);
       return {
@@ -133,6 +294,20 @@ export async function callServiceTool(
       return confirmOnboardingPortfolio(input, context);
     case "onboarding.confirm_step":
       return confirmOnboardingStep(input, context);
+    case "onboarding.complete_watch_setup":
+      return completeOnboardingWatchSetup(input, context);
+    case "onboarding.draft.get":
+      return readOnboardingDraft(context);
+    case "onboarding.draft.upsert_step":
+      return upsertOnboardingDraft(input, context);
+    case "onboarding.draft.request_confirmation":
+      return requestOnboardingDraftStepConfirmation(input, context);
+    case "onboarding.draft.accept_step":
+      return acceptOnboardingDraft(input, context);
+    case "onboarding.draft.enqueue_commit":
+      return enqueueOnboardingDraft(input, context);
+    case "onboarding.draft.commit_status":
+      return readOnboardingDraft(context);
     case "watchlist.add":
       return addWatchlist(input, context);
     case "plans.set":
@@ -156,13 +331,14 @@ export async function callServiceTool(
       return { ok: validation.ok, userId: context.userId, instanceId: context.instanceId, validation, errors: validation.errors };
     }
     case "watch_rules.create": {
-      await requireBoundConfirmation(input, context, "watch_rules.create");
+      const confirmation = await prepareBoundConfirmation(input, context, "watch_rules.create");
       const rule = await createWatchRule({
         ...(input as any),
         userId: context.userId,
         instanceId: context.instanceId,
         source: { kind: "mcp_tool", actor: "workspace_codex" },
       });
+      await confirmation.consume();
       await audit(context, {
         operation: "watch_rules.create",
         resourceType: "watch_rule",
@@ -255,7 +431,7 @@ async function readPendingConfirmations(input: Record<string, unknown> | undefin
 }
 
 async function confirmOnboardingPortfolio(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  await requireBoundConfirmation(input, context, "onboarding.confirm_portfolio");
+  const confirmation = await prepareBoundConfirmation(input, context, "onboarding.confirm_portfolio");
   const holdingInputs = normalizeOnboardingAssetList(input?.holdings);
   const watchInputs = normalizeOnboardingAssetList(input?.watchlist);
   if (!holdingInputs.length && !watchInputs.length) throw new Error("至少需要一个持仓或观察仓标的");
@@ -319,7 +495,7 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
     last_confirmed_at: now,
     last_confirmed_by: "user",
   });
-  const state = normalizeOnboardingState(await store.readOnboardingState());
+  const state = normalizeSharedOnboardingState(await store.readOnboardingState());
   const steps = { ...(state.steps ?? {}) };
   steps.welcome = { done: true, completed_at: steps.welcome?.completed_at ?? now };
   steps.portfolio = { done: true, completed_at: steps.portfolio?.completed_at ?? now };
@@ -343,6 +519,7 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
       current_step: nextState.current_step,
     },
   });
+  await confirmation.consume();
   await audit(context, {
     operation: "onboarding.confirm_portfolio",
     resourceType: "onboarding_state",
@@ -353,28 +530,122 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
   return { ok: true, userId: context.userId, instanceId: context.instanceId, state: nextState, holdings, watchlist: watchItems };
 }
 
+const DRAFT_OPERATIONS = new Set([
+  "onboarding.draft.get",
+  "onboarding.draft.upsert_step",
+  "onboarding.draft.request_confirmation",
+  "onboarding.draft.accept_step",
+  "onboarding.draft.enqueue_commit",
+  "onboarding.draft.commit_status",
+]);
+
+function requireDraftConversation(context: ServiceToolContext) {
+  if (!context.conversationId) throw new Error("conversationId is required for onboarding drafts");
+  return {
+    userId: context.userId,
+    instanceId: context.instanceId,
+    projectId: context.projectId || DEFAULT_PROJECT_ID,
+    conversationId: context.conversationId,
+  };
+}
+
+function draftStep(input: Record<string, unknown> | undefined): DraftStepKey {
+  const step = stringInput(input?.step);
+  if (step !== "portfolio" && step !== "style" && step !== "review_schedule" && step !== "market_watch_schedule" && step !== "notification" && step !== "watch_rules") {
+    throw new Error(`非法 onboarding 草稿步骤: ${String(step ?? "")}`);
+  }
+  return step;
+}
+
+async function readOnboardingDraft(context: ServiceToolContext) {
+  const draft = await getOnboardingDraft(context);
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, draft };
+}
+
+async function upsertOnboardingDraft(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const scope = requireDraftConversation(context);
+  const payload = asRecord(input?.payload);
+  const draft = await upsertOnboardingDraftStep(scope, {
+    draftId: stringInput(input?.draftId),
+    step: draftStep(input),
+    payload,
+  });
+  await audit(context, {
+    operation: "onboarding.draft.upsert_step",
+    resourceType: "onboarding_draft",
+    resourceId: draft.id,
+    requestBody: input,
+    resultSummary: `draft=${draft.id}; step=${String(input?.step)}; revision=${draft.revision}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, draft };
+}
+
+async function requestOnboardingDraftStepConfirmation(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const scope = requireDraftConversation(context);
+  const draftId = stringInput(input?.draftId);
+  if (!draftId) throw new Error("draftId is required");
+  const requested = await requestOnboardingDraftConfirmation(scope, {
+    draftId,
+    step: draftStep(input),
+    revision: Number(input?.revision),
+    sandbox: mcpSandboxContext(context, `mcp-onboarding-draft-request:${Date.now()}`),
+  });
+  await audit(context, {
+    operation: "onboarding.draft.request_confirmation",
+    resourceType: "onboarding_draft_step",
+    resourceId: `${requested.draftId}:${requested.step}:${requested.revision}`,
+    requestBody: input,
+    resultSummary: `draft confirmation requested step=${requested.step}; revision=${requested.revision}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, ...requested };
+}
+
+async function acceptOnboardingDraft(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  requireConfirmed(input);
+  const scope = requireDraftConversation(context);
+  const confirmationId = stringInput(input?.confirmationId);
+  const draftId = stringInput(input?.draftId);
+  if (!confirmationId) throw new Error("confirmationId is required after requesting confirmation");
+  if (!draftId) throw new Error("draftId is required");
+  const draft = await acceptOnboardingDraftStep(scope, {
+    draftId,
+    step: draftStep(input),
+    revision: Number(input?.revision),
+    confirmationId,
+    sandbox: mcpSandboxContext(context, `mcp-onboarding-draft-accept:${Date.now()}`),
+  });
+  await audit(context, {
+    operation: "onboarding.draft.accept_step",
+    resourceType: "onboarding_draft_step",
+    resourceId: `${draft.id}:${String(input?.step)}:${Number(input?.revision)}`,
+    requestBody: input,
+    resultSummary: `draft step accepted; status=${draft.status}; next=${draft.nextStep}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, draft, readyToCommit: draft.status === "ready_to_commit" };
+}
+
+async function enqueueOnboardingDraft(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const scope = requireDraftConversation(context);
+  const draftId = stringInput(input?.draftId);
+  if (!draftId) throw new Error("draftId is required");
+  const draft = await enqueueOnboardingDraftCommit(scope, draftId);
+  await audit(context, {
+    operation: "onboarding.draft.enqueue_commit",
+    resourceType: "onboarding_draft",
+    resourceId: draft.id,
+    requestBody: input,
+    resultSummary: `draft commit queued key=${draft.commitKey ?? "-"}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, draft, message: "信息已全部确认，正在统一完成初始配置。" };
+}
+
 async function confirmOnboardingStep(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const step = stringInput(input?.step);
-  if (!isOnboardingStep(step)) throw new Error(`非法 onboarding step: ${String(step ?? "")}`);
-  await requireBoundConfirmation(input, context, "onboarding.confirm_step");
+  if (!isSharedOnboardingStep(step)) throw new Error(`非法 onboarding step: ${String(step ?? "")}`);
+  const confirmation = await prepareBoundConfirmation(input, context, "onboarding.confirm_step");
   const now = new Date().toISOString();
   const store = new WorkspaceStore(context.userId);
-  await applyOnboardingStepDefaults(store, step, now, input ?? {});
-  const current = normalizeOnboardingState(await store.readOnboardingState());
-  const steps = { ...(current.steps ?? {}) };
-  steps[step] = { done: true, completed_at: steps[step]?.completed_at ?? now };
-  const allDone = ONBOARDING_STEPS.every((key) => key === step || steps[key]?.done === true);
-  const shouldComplete = allDone || step === "watch_rules";
-  const nextState: OnboardingStateYaml = {
-    ...current,
-    status: shouldComplete ? "completed" : "in_progress",
-    current_step: shouldComplete ? "completed" : nextOnboardingStep(step),
-    steps,
-    completed_at: shouldComplete ? (current.completed_at ?? now) : current.completed_at ?? null,
-    updated_at: now,
-    notes: stringInput(input?.notes) ?? current.notes ?? "",
-  };
-  await store.writeOnboardingState(nextState);
+  const nextState = await applyConfirmedOnboardingStep({ store, step, body: input ?? {}, now });
   await store.appendChangeLog({
     ts: now,
     source: "mcp",
@@ -382,6 +653,7 @@ async function confirmOnboardingStep(input: Record<string, unknown> | undefined,
     summary: stringInput(input?.summary) || `用户确认 onboarding 步骤: ${step}`,
     details: { step, status: nextState.status, current_step: nextState.current_step },
   });
+  await confirmation.consume();
   await audit(context, {
     operation: "onboarding.confirm_step",
     resourceType: "onboarding_state",
@@ -389,11 +661,119 @@ async function confirmOnboardingStep(input: Record<string, unknown> | undefined,
     requestBody: input,
     resultSummary: `confirmed ${step}; status=${nextState.status}`,
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, state: nextState, message: shouldComplete ? "新手引导已完成" : `已确认 ${step}` };
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, state: nextState, message: nextState.status === "completed" ? "新手引导已完成" : `已确认 ${step}` };
+}
+
+async function completeOnboardingWatchSetup(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const branch = stringInput(input?.branch);
+  if (branch !== "skip" && branch !== "configured") throw new Error("branch must be skip or configured");
+  if (!context.conversationId) throw new Error("conversationId is required to complete onboarding watch setup");
+
+  const store = new WorkspaceStore(context.userId);
+  const current = normalizeSharedOnboardingState(await store.readOnboardingState());
+  if (current.status === "completed") {
+    return { ok: true, userId: context.userId, instanceId: context.instanceId, state: current, branch, ruleIds: [] };
+  }
+  if (current.current_step !== "watch_rules") {
+    throw new Error(`watch setup can only complete from current_step=watch_rules; current=${current.current_step}`);
+  }
+
+  const pendingRuleDrafts = await db.select().from(pendingSandboxConfirmations).where(and(
+    eq(pendingSandboxConfirmations.userId, context.userId),
+    eq(pendingSandboxConfirmations.instanceId, context.instanceId),
+    eq(pendingSandboxConfirmations.conversationId, context.conversationId),
+    eq(pendingSandboxConfirmations.operation, "watch_rules.create"),
+    eq(pendingSandboxConfirmations.status, "pending")
+  ));
+  const activePending = pendingRuleDrafts.filter((row) => new Date(row.expiresAt).getTime() > Date.now());
+  if (activePending.length > 0) throw new Error("仍有待确认的明确规则草案，不能结束初始配置");
+  const expiredDraftIds = pendingRuleDrafts.filter((row) => new Date(row.expiresAt).getTime() <= Date.now()).map((row) => row.id);
+  if (expiredDraftIds.length > 0) {
+    await db.update(pendingSandboxConfirmations).set({
+      status: "expired",
+      updatedAt: new Date().toISOString(),
+    }).where(inArray(pendingSandboxConfirmations.id, expiredDraftIds));
+  }
+
+  let ruleIds: number[] = [];
+  if (branch === "skip") {
+    const [latestUserMessage] = await db.select({ content: conversationMessages.content })
+      .from(conversationMessages)
+      .where(and(
+        eq(conversationMessages.userId, context.userId),
+        eq(conversationMessages.instanceId, context.instanceId),
+        eq(conversationMessages.conversationId, context.conversationId),
+        eq(conversationMessages.role, "user")
+      ))
+      .orderBy(desc(conversationMessages.createdAt))
+      .limit(1);
+    if (!isExplicitWatchSetupSkipText(latestUserMessage?.content ?? "")) {
+      throw new Error("skip branch requires the latest user message to explicitly skip watch-rule setup");
+    }
+  } else {
+    ruleIds = normalizePositiveIds(input?.ruleIds);
+    if (ruleIds.length === 0) throw new Error("configured branch requires at least one ruleId");
+    const scopedRules = await db.select({ id: alertRules.id }).from(alertRules).where(and(
+      eq(alertRules.userId, context.userId),
+      eq(alertRules.instanceId, context.instanceId),
+      inArray(alertRules.id, ruleIds)
+    ));
+    const scopedIds = new Set(scopedRules.map((row) => row.id));
+    const missingRules = ruleIds.filter((id) => !scopedIds.has(id));
+    if (missingRules.length > 0) throw new Error(`configured watch rules are missing or out of scope: ${missingRules.join(",")}`);
+
+    const creationAudits = await db.select({ resourceId: sandboxAuditLogs.resourceId }).from(sandboxAuditLogs).where(and(
+      eq(sandboxAuditLogs.userId, context.userId),
+      eq(sandboxAuditLogs.instanceId, context.instanceId),
+      eq(sandboxAuditLogs.conversationId, context.conversationId),
+      eq(sandboxAuditLogs.operation, "watch_rules.create"),
+      eq(sandboxAuditLogs.status, "success"),
+      inArray(sandboxAuditLogs.resourceId, ruleIds.map(String))
+    ));
+    const auditedIds = new Set(creationAudits.map((row) => Number(row.resourceId)));
+    const unauditedRules = ruleIds.filter((id) => !auditedIds.has(id));
+    if (unauditedRules.length > 0) throw new Error(`configured watch rules lack confirmed creation audit: ${unauditedRules.join(",")}`);
+  }
+
+  const now = new Date().toISOString();
+  const nextState = await applyConfirmedOnboardingStep({
+    store,
+    step: "watch_rules",
+    body: {
+      summary: stringInput(input?.summary) || (branch === "skip" ? "用户暂不设置明确规则" : `已确认并创建 ${ruleIds.length} 条明确规则`),
+    },
+    now,
+  });
+  await db.update(pendingSandboxConfirmations).set({
+    status: "superseded",
+    updatedAt: now,
+  }).where(and(
+    eq(pendingSandboxConfirmations.userId, context.userId),
+    eq(pendingSandboxConfirmations.instanceId, context.instanceId),
+    eq(pendingSandboxConfirmations.conversationId, context.conversationId),
+    eq(pendingSandboxConfirmations.operation, "onboarding.confirm_step"),
+    eq(pendingSandboxConfirmations.resourceId, "watch_rules"),
+    eq(pendingSandboxConfirmations.status, "pending")
+  ));
+  await store.appendChangeLog({
+    ts: now,
+    source: "mcp",
+    type: "onboarding_watch_setup_completed",
+    summary: stringInput(input?.summary) || (branch === "skip" ? "用户暂不设置明确规则" : `已创建并核对 ${ruleIds.length} 条明确规则`),
+    details: { branch, rule_ids: ruleIds, status: nextState.status },
+  });
+  await audit(context, {
+    operation: "onboarding.complete_watch_setup",
+    resourceType: "onboarding_state",
+    resourceId: "watch_rules",
+    requestBody: { branch, ruleIds, summary: input?.summary },
+    resultSummary: `completed watch setup branch=${branch}; rules=${ruleIds.length}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, state: nextState, branch, ruleIds };
 }
 
 async function addWatchlist(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  await requireBoundConfirmation(input, context, "watchlist.add");
+  const confirmation = await prepareBoundConfirmation(input, context, "watchlist.add");
   const name = stringInput(input?.name ?? input?.stockName);
   const code = stringInput(input?.code ?? input?.stockCode);
   if (!name && !code) throw new Error("请输入股票名称或代码");
@@ -401,7 +781,10 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
   if (codes.length === 0) throw new Error(`未找到股票：${unresolved[0]?.name ?? code}`);
   const stockCode = codes[0];
   const existing = await watchlistBackend.find(context.userId, context.instanceId, stockCode);
-  if (existing) return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: context.userId };
+  if (existing) {
+    await confirmation.consume();
+    return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: context.userId };
+  }
   const quoteResult = await marketQuote([stockCode], context.userId);
   const stockName = quoteResult.items[0]?.name || name || stockCode;
   await watchlistBackend.add(context.userId, context.instanceId, {
@@ -410,6 +793,7 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
     reason: normalizeWatchlistReason(stringInput(input?.reason) || "AI 助手根据对话加入"),
     source: "ai_conversation",
   });
+  await confirmation.consume();
   await audit(context, {
     operation: "watchlist.add",
     resourceType: "watchlist",
@@ -421,7 +805,7 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
 }
 
 async function setPlan(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  await requireBoundConfirmation(input, context, "plans.set");
+  const confirmation = await prepareBoundConfirmation(input, context, "plans.set");
   const stockCode = stringInput(input?.stockCode ?? input?.code);
   if (!stockCode) throw new Error("缺少股票代码");
   const quoteResult = await marketQuote([stockCode], context.userId);
@@ -440,6 +824,7 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
     planType: stringInput(input?.planType) || existing?.planType || "manual",
     strategyKey: input?.strategyKey !== undefined ? stringInput(input.strategyKey) : existing?.strategyKey ?? null,
   });
+  await confirmation.consume();
   await audit(context, {
     operation: "plans.set",
     resourceType: "stock_plan",
@@ -451,7 +836,7 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
 }
 
 async function setPlanConditions(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  await requireBoundConfirmation(input, context, "plans.watch_conditions");
+  const confirmation = await prepareBoundConfirmation(input, context, "plans.watch_conditions");
   const stockCode = stringInput(input?.stockCode ?? input?.code);
   if (!stockCode) throw new Error("缺少股票代码");
   if (!Array.isArray(input?.conditions)) throw new Error("conditions 必须是数组");
@@ -462,6 +847,7 @@ async function setPlanConditions(input: Record<string, unknown> | undefined, con
     stockName: stringInput(input?.stockName ?? input?.name),
     conditions: input.conditions as PlanWatchConditionInput[],
   });
+  await confirmation.consume();
   await audit(context, {
     operation: "plans.watch_conditions",
     resourceType: "stock_plan",
@@ -473,7 +859,7 @@ async function setPlanConditions(input: Record<string, unknown> | undefined, con
 }
 
 async function proposeMethodChange(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  await requireBoundConfirmation(input, context, "method_changes.propose");
+  const confirmation = await prepareBoundConfirmation(input, context, "method_changes.propose");
   const proposedChange = stringInput(input?.proposedChange);
   const reason = stringInput(input?.reason);
   if (!proposedChange || !reason) throw new Error("缺少 proposedChange 或 reason");
@@ -486,6 +872,7 @@ async function proposeMethodChange(input: Record<string, unknown> | undefined, c
     reason,
     affectedResource: stringInput(input?.affectedResource) || "methodology_profile",
   });
+  await confirmation.consume();
   await audit(context, {
     operation: "method_changes.propose",
     resourceType: "method_change_candidate",
@@ -497,25 +884,72 @@ async function proposeMethodChange(input: Record<string, unknown> | undefined, c
 }
 
 async function saveReview(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  requireConfirmed(input);
+  const scheduledCompletion = context.conversationId?.startsWith("scheduler:daily-review:") === true;
+  if (!scheduledCompletion) requireConfirmed(input);
   const content = stringInput(input?.content);
   if (!content) throw new Error("缺少复盘内容");
+  const pushBrief = stringInput(input?.pushBrief) || stringInput(input?.summary);
+  if (scheduledCompletion && !pushBrief) throw new Error("scheduled daily review requires pushBrief");
+  const decisionRecords = normalizeRecordList(input?.decisionRecords, "decisionRecords");
+  const sourceEvents = normalizeRecordList(input?.sourceEvents, "sourceEvents");
   const saved = await saveSkillDailyReview({
     userId: context.userId,
     instanceId: context.instanceId,
     date: stringInput(input?.date),
     content,
-    summary: stringInput(input?.summary),
-    context: input?.context,
+    summary: pushBrief,
+    context: {
+      ...asRecord(input?.context),
+      publication: {
+        conversationId: context.conversationId ?? null,
+        scheduled: scheduledCompletion,
+      },
+    },
   });
+  const store = new WorkspaceStore(context.userId);
+  const publishedAt = new Date().toISOString();
+  for (const [index, record] of decisionRecords.entries()) {
+    await store.appendDecision({
+      ...record,
+      source_review_date: saved.date,
+      source_review_conversation_id: context.conversationId ?? null,
+      recorded_at: record.recorded_at ?? publishedAt,
+      record_index: index,
+    });
+  }
+  for (const [index, record] of sourceEvents.entries()) {
+    await store.appendSourceEvent({
+      ...record,
+      source_review_date: saved.date,
+      source_review_conversation_id: context.conversationId ?? null,
+      recorded_at: record.recorded_at ?? publishedAt,
+      record_index: index,
+    });
+  }
   await audit(context, {
     operation: "reviews.save",
     resourceType: "daily_review",
     resourceId: saved.date,
-    requestBody: { date: input?.date, summary: input?.summary, hasContent: true, hasContext: Boolean(input?.context) },
-    resultSummary: `saved daily review ${saved.date}`,
+    requestBody: {
+      date: input?.date,
+      hasContent: true,
+      hasPushBrief: Boolean(pushBrief),
+      hasContext: Boolean(input?.context),
+      decisionRecordCount: decisionRecords.length,
+      sourceEventCount: sourceEvents.length,
+      scheduledCompletion,
+    },
+    resultSummary: `saved daily review ${saved.date}; decisions=${decisionRecords.length}; sourceEvents=${sourceEvents.length}`,
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, ...saved };
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    ...saved,
+    pushBrief,
+    decisionRecordCount: decisionRecords.length,
+    sourceEventCount: sourceEvents.length,
+  };
 }
 
 function normalizeCodes(value: unknown): string[] {
@@ -526,6 +960,27 @@ function normalizeCodes(value: unknown): string[] {
     return value.split(",").map((item) => item.trim()).filter(Boolean);
   }
   return [];
+}
+
+function normalizePositiveIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+}
+
+function normalizeRecordList(value: unknown, field: string): Record<string, unknown>[] {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`${field}[${index}] must be an object`);
+    }
+    return item as Record<string, unknown>;
+  });
+}
+
+function isExplicitWatchSetupSkipText(value: string) {
+  const normalized = value.replace(/[\s，。！!？?]/g, "");
+  return /^(暂不设置(明确)?规则|先不设置(明确)?规则|不设置(明确)?规则|暂时不设置(明确)?规则|跳过(规则设置)?|先跳过|以后再设置|先不用)$/.test(normalized);
 }
 
 const CONFIRMED_WRITE_OPERATIONS = new Set([
@@ -543,6 +998,7 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
   const payload = asRecord(input?.payload);
   if (!operation || !CONFIRMED_WRITE_OPERATIONS.has(operation)) throw new Error("operation is not confirmable");
   if (!context.conversationId) throw new Error("conversationId is required for confirmation");
+  validateConfirmationDraft(operation, payload);
   const target = confirmationTarget(operation, payload, context);
   const pending = await createSandboxConfirmation(mcpSandboxContext(context, `mcp-request:${Date.now()}`), target);
   await audit(context, {
@@ -562,7 +1018,27 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
   };
 }
 
-async function requireBoundConfirmation(
+function validateConfirmationDraft(operation: string, payload: Record<string, unknown>) {
+  if (operation === "onboarding.confirm_step") {
+    const step = stringInput(payload.step);
+    if (!isSharedOnboardingStep(step)) throw new Error(`非法 onboarding step: ${String(step ?? "")}`);
+    validateOnboardingStepPayload(step, payload);
+  }
+  if (operation === "onboarding.confirm_portfolio") {
+    const holdings = normalizeOnboardingAssetList(payload.holdings);
+    const watchlist = normalizeOnboardingAssetList(payload.watchlist);
+    if (!holdings.length && !watchlist.length) throw new Error("至少需要一个持仓或观察仓标的");
+    const missingCodes = [
+      ...findOnboardingAssetsMissingCode("holding", holdings),
+      ...findOnboardingAssetsMissingCode("watchlist", watchlist),
+    ];
+    if (missingCodes.length > 0) {
+      throw new Error(`持仓和观察仓写入前必须补齐 6 位证券代码: ${JSON.stringify(missingCodes)}`);
+    }
+  }
+}
+
+async function prepareBoundConfirmation(
   input: Record<string, unknown> | undefined,
   context: ServiceToolContext,
   operation: string
@@ -573,12 +1049,21 @@ async function requireBoundConfirmation(
   if (!context.conversationId) throw new Error("conversationId is required for confirmed writes");
   await requireRecentUserConfirmation(context, operation, confirmationId);
   const payload = stripConfirmationFields(input);
-  const result = await consumeSandboxConfirmation(
-    mcpSandboxContext(context, `mcp-confirm:${Date.now()}`),
+  const sandboxContext = mcpSandboxContext(context, `mcp-confirm:${Date.now()}`);
+  const target = confirmationTarget(operation, payload, context);
+  const result = await validateSandboxConfirmation(
+    sandboxContext,
     confirmationId,
-    confirmationTarget(operation, payload, context)
+    target
   );
   if (!result.ok) throw new Error(`confirmation invalid: ${result.reason}`);
+  return {
+    confirmationId,
+    consume: async () => {
+      const consumed = await consumeSandboxConfirmation(sandboxContext, confirmationId, target);
+      if (!consumed.ok) throw new Error(`confirmation invalid: ${consumed.reason}`);
+    },
+  };
 }
 
 function confirmationTarget(operation: string, payload: Record<string, unknown>, context: ServiceToolContext) {
@@ -704,6 +1189,19 @@ function stringInput(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function normalizeStockInputs(value: unknown): Array<{ code: string; name?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const raw = item as Record<string, unknown>;
+      const code = stringInput(raw.code);
+      const name = stringInput(raw.name);
+      return code ? { code, ...(name ? { name } : {}) } : null;
+    })
+    .filter((item): item is { code: string; name?: string } => item !== null);
+}
+
 function clampInteger(value: unknown, min: number, max: number, fallback: number) {
   const numberValue = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(numberValue)) return fallback;
@@ -808,6 +1306,36 @@ async function applyOnboardingStepDefaults(
   now: string,
   body: Record<string, unknown>
 ) {
+  if (step === "style") {
+    const profile = asRecord(body.styleProfile ?? body.style_profile);
+    const style = stringInput(profile.style ?? body.style);
+    const notes = stringInput(profile.notes ?? body.notes);
+    const selectedStylePack = profile.selectedStylePack ?? profile.selected_style_pack;
+    const buyRules = profile.buyRules ?? profile.buy_rules;
+    const sellRules = profile.sellRules ?? profile.sell_rules;
+    const riskRules = profile.riskRules ?? profile.risk_rules;
+    if (!style && !notes) throw new Error("style confirmation requires styleProfile with a strategy summary");
+    const existing = (await store.readStrategy()) ?? {};
+    await store.writeStrategy({
+      ...existing,
+      profile: {
+        ...(existing.profile ?? {}),
+        style: style || existing.profile?.style || "自定义策略",
+        selected_style_pack: selectedStylePack === null ? null : stringInput(selectedStylePack) ?? existing.profile?.selected_style_pack ?? null,
+        custom_style_enabled: typeof (profile.customStyleEnabled ?? profile.custom_style_enabled) === "boolean"
+          ? Boolean(profile.customStyleEnabled ?? profile.custom_style_enabled)
+          : existing.profile?.custom_style_enabled ?? true,
+        risk_preference: stringInput(profile.riskPreference ?? profile.risk_preference) ?? existing.profile?.risk_preference ?? "",
+        investment_horizon: stringInput(profile.investmentHorizon ?? profile.investment_horizon) ?? existing.profile?.investment_horizon ?? "",
+      },
+      buy_rules: Array.isArray(buyRules) ? buyRules : existing.buy_rules ?? [],
+      sell_rules: Array.isArray(sellRules) ? sellRules : existing.sell_rules ?? [],
+      risk_rules: Array.isArray(riskRules) ? riskRules : existing.risk_rules ?? [],
+      notes: notes ?? existing.notes ?? "",
+      last_confirmed_at: now,
+    });
+  }
+
   if (step === "review_schedule") {
     const schedules = await store.readSchedules() ?? {};
     const reviewSchedule = asRecord(body.reviewSchedule ?? body.review_schedule);

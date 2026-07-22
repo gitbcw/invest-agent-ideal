@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   agentTraces,
@@ -8,7 +8,6 @@ import {
   alertEvents,
   alertRules,
   alertSignalStates,
-  alerts,
   channelIdentities,
   channelIdentityInstances,
   chatHistory,
@@ -21,6 +20,7 @@ import {
   investmentProfiles,
   methodChangeCandidates,
   methodologyProfiles,
+  onboardingDrafts,
   pendingSandboxConfirmations,
   portfolio,
   pushJobs,
@@ -31,6 +31,7 @@ import {
   tradeActions,
   users,
   watchlist,
+  weixinDeliveryAttempts,
 } from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
@@ -40,7 +41,7 @@ import { disposeAcpForWorkspace, ensureHermesRuntimeForWorkspace, ensureCodexRun
 export const INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID = "invest-agent-default";
 
 export const ALLOWED_SANDBOX_TOOLS = [
-  "invest.dashboard.read",
+  "invest.snapshot.read",
   "invest.portfolio.read",
   "invest.portfolio.write",
   "invest.watchlist.read",
@@ -312,7 +313,6 @@ export async function deleteInvestAgentInstance(instanceId: string) {
 
     tx.delete(portfolio).where(and(eq(portfolio.userId, userId), eq(portfolio.instanceId, instanceIdValue))).run();
     tx.delete(watchlist).where(and(eq(watchlist.userId, userId), eq(watchlist.instanceId, instanceIdValue))).run();
-    tx.delete(alerts).where(and(eq(alerts.userId, userId), eq(alerts.instanceId, instanceIdValue))).run();
     tx.delete(stockPlans).where(and(eq(stockPlans.userId, userId), eq(stockPlans.instanceId, instanceIdValue))).run();
     tx.delete(chatHistory).where(and(eq(chatHistory.userId, userId), eq(chatHistory.instanceId, instanceIdValue))).run();
     tx.delete(dailyPlans).where(and(eq(dailyPlans.userId, userId), eq(dailyPlans.instanceId, instanceIdValue))).run();
@@ -328,10 +328,21 @@ export async function deleteInvestAgentInstance(instanceId: string) {
     tx.delete(alertRules).where(and(eq(alertRules.userId, userId), eq(alertRules.instanceId, instanceIdValue))).run();
     tx.delete(sandboxAuditLogs).where(and(eq(sandboxAuditLogs.userId, userId), eq(sandboxAuditLogs.instanceId, instanceIdValue))).run();
     tx.delete(pendingSandboxConfirmations).where(and(eq(pendingSandboxConfirmations.userId, userId), eq(pendingSandboxConfirmations.instanceId, instanceIdValue))).run();
+    tx.delete(onboardingDrafts).where(and(eq(onboardingDrafts.userId, userId), eq(onboardingDrafts.instanceId, instanceIdValue))).run();
     tx.delete(conversationTasks).where(and(eq(conversationTasks.userId, userId), eq(conversationTasks.instanceId, instanceIdValue))).run();
     tx.delete(conversationMessages).where(and(eq(conversationMessages.userId, userId), eq(conversationMessages.instanceId, instanceIdValue))).run();
-    tx.delete(conversationSessions).where(and(eq(conversationSessions.userId, userId), eq(conversationSessions.instanceId, instanceIdValue))).run();
+    // A legacy external conversation ID may have been incorrectly shared by another scope.
+    // Keep its session row until every message referencing it has been removed.
+    tx.delete(conversationSessions).where(and(
+      eq(conversationSessions.userId, userId),
+      eq(conversationSessions.instanceId, instanceIdValue),
+      sql`NOT EXISTS (
+        SELECT 1 FROM ${conversationMessages}
+        WHERE ${conversationMessages.conversationId} = ${conversationSessions.conversationId}
+      )`,
+    )).run();
     tx.delete(pushJobs).where(and(eq(pushJobs.userId, userId), eq(pushJobs.instanceId, instanceIdValue))).run();
+    tx.delete(weixinDeliveryAttempts).where(and(eq(weixinDeliveryAttempts.userId, userId), eq(weixinDeliveryAttempts.instanceId, instanceIdValue))).run();
     tx.delete(scheduledTaskRuns).where(and(eq(scheduledTaskRuns.userId, userId), eq(scheduledTaskRuns.instanceId, instanceIdValue))).run();
     tx.delete(agentTraces).where(eq(agentTraces.userId, userId)).run();
 

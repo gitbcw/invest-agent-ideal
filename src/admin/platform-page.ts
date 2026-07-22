@@ -134,6 +134,12 @@ export function renderPlatformPage(options: { portalPublicUrl?: string } = {}): 
     .audit-details summary { cursor: pointer; color: #475569; font-size: 12px; font-weight: 650; }
     .audit-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
     .audit-error { background: #fff7ed; border-color: #fed7aa; color: #9a3412; }
+    .kv-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+    .kv-table th, .kv-table td { border-bottom: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; }
+    .kv-table th { color: #64748b; font-weight: 650; background: #fbfdff; }
+    .kv-table tr:last-child td { border-bottom: 0; }
+    #investmentStatePanel details { margin-top: 6px; }
+    #investmentStatePanel summary { cursor: pointer; color: #475569; font-size: 12px; font-weight: 650; }
     .cost-summary { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; }
     .cost-table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .cost-table th, .cost-table td { border-bottom: 1px solid #e2e8f0; padding: 9px 8px; text-align: right; white-space: nowrap; }
@@ -233,7 +239,6 @@ export function renderPlatformPage(options: { portalPublicUrl?: string } = {}): 
         <a id="nav-cost" href="#cost" onclick="setView('cost')">成本统计 <span>›</span></a>
         <a id="nav-audit" href="#audit" onclick="setView('audit')">日志审计 <span>›</span></a>
         <a id="nav-rule-alerts" href="#rule-alerts" onclick="setView('rule-alerts')">规则巡检 <span>›</span></a>
-        <a href="/dashboard">投资工作台 <span>↗</span></a>
         <a id="nav-source-quality" href="#source-quality" onclick="setView('source-quality')">数据源质量 <span>›</span></a>
       </nav>
     </aside>
@@ -1293,9 +1298,7 @@ function renderDetail(item) {
       '<dt>创建时间</dt><dd>' + esc(fmtTime(item.createdAt)) + '</dd>' +
     '</dl>' +
     '<div class="ops">' +
-      '<a class="btn btn-primary" href="/dashboard?userId=' + encodeURIComponent(item.owner?.id || '') + '&instanceId=' + encodeURIComponent(item.instanceId) + '">打开 Dashboard</a>' +
       '<button class="btn btn-primary" onclick="provisionSelectedPortalCredential()">生成并复制门户登录信息</button>' +
-      '<a class="btn" href="/dashboard">返回当前 Dashboard</a>' +
       (item.workspace?.exists ? '' : '<button class="btn" onclick="ensureSelectedWorkspace()">补建 Workspace</button>') +
       (isDefaultTestInstance ? '<button class="btn" onclick="showResetTestInstancePanel()">重置测试实例</button>' : '<button class="btn" onclick="archiveSelectedInstance()">删除用户助手</button>') +
     '</div>' +
@@ -1306,9 +1309,88 @@ function renderDetail(item) {
       metric(item.traceCount, '对话') +
       metric(item.channelBindingCount, '微信绑定') +
     '</div></div>' +
+    '<div class="section"><h3>投资状态摘要</h3>' +
+      '<div id="investmentStatePanel" class="item"><span class="muted">加载中…</span></div>' +
+    '</div>' +
     '<div class="section"><h3>微信扫码绑定</h3>' + renderWeixinPanel(item) + '</div>' +
     '<div class="section"><h3>微信绑定</h3>' + renderBindings(item.channelBindings || []) + '</div>';
   refreshWeixinStatus(item.instanceId);
+  refreshInvestmentState(item.instanceId);
+}
+
+function refreshInvestmentState(instanceId) {
+  const panel = document.getElementById('investmentStatePanel');
+  if (!panel) return;
+  platformJson('/api/platform/instances/' + encodeURIComponent(instanceId) + '/investment-state')
+    .then((data) => renderInvestmentState(panel, instanceId, data))
+    .catch((err) => {
+      panel.innerHTML = '<span class="muted">投资状态加载失败:' + esc(err.message || '未知错误') + '</span>';
+    });
+}
+
+function renderInvestmentState(panel, instanceId, data) {
+  if (instanceId !== selectedInstanceId) return;
+  if (!data || data.ok === false) {
+    panel.innerHTML = '<span class="muted">投资状态暂不可用</span>';
+    return;
+  }
+  const summary = data.summary || {};
+  if (data.workspaceReady === false) {
+    panel.innerHTML =
+      '<div class="muted" style="margin-bottom:6px">该实例尚未初始化 workspace。用户首次发起对话或调用 ensureWorkspace 后,投资状态摘要才会出现。</div>' +
+      '<div class="muted">更新于 ' + esc(data.updatedAt || '-') + '。</div>';
+    return;
+  }
+  const holdings = Array.isArray(data.holdings) ? data.holdings : [];
+  const watchlist = Array.isArray(data.watchlist) ? data.watchlist : [];
+  const plans = Array.isArray(data.plans) ? data.plans : [];
+  const reviews = Array.isArray(data.recentReviews) ? data.recentReviews : [];
+  const viewpoints = Array.isArray(data.viewpoints) ? data.viewpoints : [];
+  const holdingsRows = holdings.length
+    ? holdings.map((row) => '<tr><td class="mono">' + esc(row.code) + '</td><td>' + esc(row.name) + '</td><td class="muted">' + esc(row.buyDate || '-') + '</td><td class="muted">' + (row.costPrice == null ? '-' : Number(row.costPrice).toFixed(2)) + '</td></tr>').join('')
+    : '<tr><td colspan="4" class="muted">空</td></tr>';
+  const watchlistRows = watchlist.length
+    ? watchlist.map((row) => '<tr><td class="mono">' + esc(row.code) + '</td><td>' + esc(row.name) + '</td><td class="muted">' + esc(row.reason || '-') + '</td></tr>').join('')
+    : '<tr><td colspan="3" class="muted">空</td></tr>';
+  const planRows = plans.length
+    ? plans.map((row) => '<tr><td class="mono">' + esc(row.code) + '</td><td>' + esc(row.name) + '</td><td class="muted">' + (row.support == null ? '-' : Number(row.support).toFixed(2)) + '</td><td class="muted">' + (row.resistance == null ? '-' : Number(row.resistance).toFixed(2)) + '</td><td class="muted">' + (row.targetPrice == null ? '-' : Number(row.targetPrice).toFixed(2)) + '</td></tr>').join('')
+    : '<tr><td colspan="5" class="muted">空</td></tr>';
+  const reviewRows = reviews.length
+    ? reviews.map((row) => '<tr><td class="muted">' + esc(row.date || '-') + '</td><td>' + esc(row.summary || '(无摘要)') + '</td><td class="muted">' + esc(row.generatedAt || '-') + '</td></tr>').join('')
+    : '<tr><td colspan="3" class="muted">无最近复盘</td></tr>';
+  const viewpointRows = viewpoints.length
+    ? viewpoints.map((row) => '<tr><td class="muted">' + esc(row.sourceDate || '-') + '</td><td>' + esc(row.view || '-') + '</td><td class="muted">' + esc(row.status || '-') + '</td></tr>').join('')
+    : '<tr><td colspan="3" class="muted">无</td></tr>';
+  panel.innerHTML =
+    '<div class="metrics" style="margin-bottom:8px">' +
+      metric(summary.holdingCount, '持仓') +
+      metric(summary.watchlistCount, '自选') +
+      metric(summary.planCount, '预案') +
+      metric(summary.activeWatchRuleCount + '/' + summary.totalWatchRuleCount, '生效规则') +
+      metric(summary.latestReviewDate || '-', '最近复盘') +
+      metric(summary.openViewpointCount, '待复盘观点') +
+    '</div>' +
+    '<details><summary>持仓明细(最多 12 条)</summary><table class="kv-table">' +
+      '<thead><tr><th>代码</th><th>名称</th><th>买入日</th><th>成本价</th></tr></thead>' +
+      '<tbody>' + holdingsRows + '</tbody>' +
+    '</table></details>' +
+    '<details><summary>自选明细(最多 12 条)</summary><table class="kv-table">' +
+      '<thead><tr><th>代码</th><th>名称</th><th>备注</th></tr></thead>' +
+      '<tbody>' + watchlistRows + '</tbody>' +
+    '</table></details>' +
+    '<details><summary>预案明细(最多 12 条)</summary><table class="kv-table">' +
+      '<thead><tr><th>代码</th><th>名称</th><th>支撑</th><th>阻力</th><th>目标</th></tr></thead>' +
+      '<tbody>' + planRows + '</tbody>' +
+    '</table></details>' +
+    '<details><summary>最近复盘产物(最多 5 条)</summary><table class="kv-table">' +
+      '<thead><tr><th>日期</th><th>摘要</th><th>生成时间</th></tr></thead>' +
+      '<tbody>' + reviewRows + '</tbody>' +
+    '</table></details>' +
+    '<details><summary>最近复盘观点(最多 5 条)</summary><table class="kv-table">' +
+      '<thead><tr><th>来源日</th><th>观点</th><th>状态</th></tr></thead>' +
+      '<tbody>' + viewpointRows + '</tbody>' +
+    '</table></details>' +
+    '<div class="muted" style="margin-top:6px">更新于 ' + esc(data.updatedAt || '-') + '。数据修改请通过用户对话 + MCP 确认流程。</div>';
 }
 
 function renderResetTestInstancePanel() {
@@ -1558,10 +1640,23 @@ function renderWeixinState(instanceId, state) {
   if (!els.stage) return;
   els.stage.textContent = (state.stage || '-') + (state.listenerRunning ? ' · 监听中' : '');
   els.updated.textContent = state.updatedAt || '-';
+  const delivery = state.delivery || {};
+  const window = delivery.observedContextWindow;
+  const pending = Array.isArray(delivery.pendingDeliveries) ? delivery.pendingDeliveries : [];
+  const windowText = window?.firstContextRejectedAfterInboundMs != null
+    ? ('context 在 ' + formatDuration(window.firstContextRejectedAfterInboundMs) + ' 后首次被拒绝')
+    : window?.lastAcceptedAfterInboundMs != null
+      ? ('context 已验证至少 ' + formatDuration(window.lastAcceptedAfterInboundMs) + ' 可用')
+      : '';
   els.message.textContent = [
     state.message || '-',
     state.accountId ? '账号 ' + state.accountId : '',
     state.pushReady ? '可主动推送' : '等待该微信先发一条消息后可推送',
+    delivery.lastInboundAt ? '最近入站 ' + delivery.lastInboundAt : '尚无入站会话',
+    delivery.estimatedExpiryAt ? '预计窗口截止 ' + delivery.estimatedExpiryAt : '',
+    delivery.latestAttempt ? ('最近投递 ' + delivery.latestAttempt.result + '/' + delivery.latestAttempt.reason) : '',
+    pending.length ? ('待补送 ' + pending.length + ' 条') : '',
+    windowText,
   ].filter(Boolean).join(' · ');
   if (state.qrcodeUrl) {
     els.qrBox.style.display = 'grid';
@@ -1573,6 +1668,13 @@ function renderWeixinState(instanceId, state) {
     els.qrLink.textContent = '';
   }
   els.log.textContent = JSON.stringify(state, null, 2);
+}
+
+function formatDuration(ms) {
+  const minutes = Math.floor(Number(ms || 0) / 60000);
+  if (minutes < 60) return minutes + ' 分钟';
+  const hours = Math.floor(minutes / 60);
+  return hours + ' 小时' + (minutes % 60 ? (minutes % 60) + ' 分' : '');
 }
 
 async function refreshWeixinStatus(instanceId = selectedInstanceId) {

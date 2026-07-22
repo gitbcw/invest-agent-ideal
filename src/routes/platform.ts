@@ -1,24 +1,57 @@
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, not, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
+import { parse as parseYaml } from "yaml";
 import { renderPlatformPage } from "../admin/platform-page.js";
+import { renderPartnerPlatformPage } from "../admin/partner-platform-page.js";
 import { db, sqlite } from "../db/index.js";
-import { aiInstances, alertEvents, alertRules, channelIdentities, channelIdentityInstances, codexAcpTraces, pushJobs, scheduledTaskRuns, users } from "../db/schema.js";
+import {
+  aiInstances,
+  alertEvents,
+  alertRules,
+  channelIdentities,
+  channelIdentityInstances,
+  codexAcpTraces,
+  conversationMessages,
+  dailyPlans,
+  onboardingDrafts,
+  platformUsers,
+  pushJobs,
+  scheduledTaskRuns,
+  users,
+} from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { createInvestAgentInstance, deleteInvestAgentInstance, getProjectRuntimeContext, listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { WeixinMobileManager } from "../channels/weixin-mobile.js";
 import { config } from "../lib/config.js";
-import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
+import { ensureWorkspace, resolveWorkspacePath, workspaceExists } from "../lib/workspace.js";
 import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
+import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
+import { reviewViewpointBackend } from "../lib/review-viewpoint-backend.js";
+import { listWatchRules } from "../services/watch-rules.js";
 import { disposeAcpForWorkspace, ensureCodexRuntimeForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
 import { loadCodexWorkspaceUsageSummary, type CodexUsageGroupBy } from "../services/codex-usage.js";
 import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
 import { marketHealth } from "../services/market-data.js";
 import { getAlertInterval } from "../scheduler/index.js";
 import { createPlatformSession, hasPlatformSession, isLoopbackAddress, platformSessionCookie } from "../lib/platform-session.js";
+import { getWeixinDeliveryHealth, recordWeixinDeliveryAttempt } from "../services/weixin-delivery.js";
+import { consumeRequestRateLimit } from "../lib/request-rate-limit.js";
+import {
+  authenticatePlatformUser,
+  clearPlatformSessionCookie,
+  getPlatformAuthContext,
+  hasPlatformPermission,
+  platformSessionCookie as persistentPlatformSessionCookie,
+  recordPlatformAudit,
+  revokePlatformSession,
+  type PlatformAuthContext,
+  type PlatformPermission,
+} from "../lib/platform-auth.js";
+import { hashPlatformPassword, verifyPlatformPassword } from "../lib/platform-password.js";
 
 const projectWeixinManagers = new Map<string, WeixinMobileManager>();
 function readSourceQualityReports(limit = 14) {
@@ -124,6 +157,12 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
   const taskConditions = [];
   if (input.userId) taskConditions.push(eq(scheduledTaskRuns.userId, input.userId));
   if (input.instanceId) taskConditions.push(eq(scheduledTaskRuns.instanceId, input.instanceId));
+  // The rule-alert page owns the full sampling history. Keep general audit focused on
+  // actionable scheduler activity while preserving rule hits, errors, and suppression.
+  taskConditions.push(not(and(
+    eq(scheduledTaskRuns.taskType, "rule-alert-check"),
+    eq(scheduledTaskRuns.status, "skipped"),
+  )!));
 
   const traceRows = await db
     .select({
@@ -477,7 +516,6 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
   const userInstanceTables = [
     "portfolio",
     "watchlist",
-    "alerts",
     "stock_plans",
     "chat_history",
     "daily_plans",
@@ -493,6 +531,7 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
     "alert_rules",
     "sandbox_audit_logs",
     "pending_sandbox_confirmations",
+    "onboarding_drafts",
     "conversation_tasks",
     "push_jobs",
     "scheduled_task_runs",
@@ -688,6 +727,307 @@ async function summarizeInstance(project: AiProjectRuntimeContext) {
   };
 }
 
+type PartnerOnboardingStatus = "not_started" | "drafting" | "committing" | "completed" | "exception" | "unknown";
+type PartnerNotificationPreference = "low_disturbance" | "active_watch" | "evening_summary" | "unknown";
+
+function shanghaiDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((item) => [item.type, item.value]));
+  return String(values.year) + "-" + String(values.month) + "-" + String(values.day);
+}
+
+function shanghaiDateOffset(days: number) {
+  const [year, month, day] = shanghaiDateKey().split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.getUTCFullYear().toString().padStart(4, "0") +
+    "-" + (date.getUTCMonth() + 1).toString().padStart(2, "0") +
+    "-" + date.getUTCDate().toString().padStart(2, "0");
+}
+
+function shanghaiDayStartIso(dateKey: string) {
+  return new Date(dateKey + "T00:00:00+08:00").toISOString();
+}
+
+function traceIsSuccessful(row: { status: string; elapsedMs: number | null }) {
+  return row.status !== "error" &&
+    row.status !== "failed" &&
+    row.status !== "timeout" &&
+    row.status !== "pending" &&
+    row.status !== "claimed" &&
+    row.status !== "running" &&
+    row.status !== "skipped" &&
+    !(typeof row.elapsedMs === "number" && row.elapsedMs >= 30_000);
+}
+
+function repeatedConfirmationCount(rows: Array<{ userText?: string | null; createdAt: string }>) {
+  const confirmations = rows
+    .filter((row) => /^(确认|确认完成|确认默认时间)$/.test(String(row.userText || "").trim()))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  let count = 0;
+  for (let index = 1; index < confirmations.length; index += 1) {
+    const previous = Date.parse(confirmations[index - 1].createdAt);
+    const current = Date.parse(confirmations[index].createdAt);
+    if (Number.isFinite(previous) && Number.isFinite(current) && current - previous <= 24 * 60 * 60 * 1000) count += 1;
+  }
+  return count;
+}
+
+async function partnerSourceQualitySummary() {
+  const todayKey = shanghaiDateKey();
+  const alerts = readSourceQualityAlerts(10_000);
+  const todayAlerts = alerts.filter((item: any) => {
+    const value = item?.createdAt || item?.timestamp || item?.date;
+    return value && String(value).slice(0, 10) === todayKey;
+  }) as any[];
+  const health = await marketHealth().catch(() => ({ status: "unknown" }));
+  const endpoints = typeof health === "object" && health !== null && "endpoints" in health
+    ? ((health as any).endpoints || []) as Array<{ lastStatus?: string; totalFailures?: number }>
+    : [];
+  const status = endpoints.length === 0
+    ? "unknown"
+    : endpoints.some((item) => item.lastStatus === "fail" || item.lastStatus === "degraded" || Number(item.totalFailures || 0) > 0)
+      ? "degraded"
+      : endpoints.some((item) => item.lastStatus === "unknown")
+        ? "partial"
+      : "ok";
+  return {
+    countToday: todayAlerts.length,
+    status,
+    latestAt: todayAlerts[0]?.createdAt || todayAlerts[0]?.timestamp || shanghaiDayStartIso(todayKey),
+  };
+}
+
+function decodePartnerCursor(value: unknown) {
+  if (!value) return 0;
+  try {
+    const offset = Number(Buffer.from(String(value), "base64url").toString("utf8"));
+    return Number.isInteger(offset) && offset >= 0 ? offset : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function encodePartnerCursor(offset: number) {
+  return Buffer.from(String(offset), "utf8").toString("base64url");
+}
+
+function partnerCustomerKey(instanceId: string) {
+  const secret = config.platform.anonymizationSecret;
+  if (!secret) throw new Error("PLATFORM_ANONYMIZATION_SECRET_REQUIRED");
+  return "cus_" + createHmac("sha256", secret).update(instanceId).digest("hex").slice(0, 12);
+}
+
+function partnerCustomerKeyCandidates(instanceId: string) {
+  const secrets = [config.platform.anonymizationSecret, config.platform.anonymizationPreviousSecret].filter(Boolean);
+  if (secrets.length === 0) throw new Error("PLATFORM_ANONYMIZATION_SECRET_REQUIRED");
+  return secrets.map((secret) => "cus_" + createHmac("sha256", secret).update(instanceId).digest("hex").slice(0, 12));
+}
+
+export async function assertPlatformPartnerKeySafety() {
+  if (!config.platform.authEnabled) return;
+  const projects = await listProjectRuntimeContexts();
+  const seen = new Map<string, string>();
+  for (const project of projects) {
+    for (const customerKey of partnerCustomerKeyCandidates(project.instanceId)) {
+      const existing = seen.get(customerKey);
+      if (existing && existing !== project.instanceId) {
+        throw new Error("PARTNER_CUSTOMER_KEY_COLLISION:" + customerKey);
+      }
+      seen.set(customerKey, project.instanceId);
+    }
+  }
+}
+
+function partnerCustomerLabel(customerKey: string) {
+  return "客户 " + customerKey.slice(-6);
+}
+
+function partnerNotificationPreference(workspacePath: string): PartnerNotificationPreference {
+  const filePath = path.join(workspacePath, "config", "notification.yaml");
+  if (!existsSync(filePath)) return "unknown";
+  try {
+    const raw = parseYaml(readFileSync(filePath, "utf8")) as any;
+    const mode = raw?.preference?.mode;
+    if (mode === "active_watch") return "active_watch";
+    if (mode === "evening_summary") return "evening_summary";
+    if (mode === "low_disturbance") return "low_disturbance";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function partnerOnboardingStatus(input: {
+  draftStatus?: string;
+  files: Record<string, boolean>;
+}): PartnerOnboardingStatus {
+  if (input.draftStatus === "failed" || input.draftStatus === "exception") return "exception";
+  if (input.draftStatus === "queued" || input.draftStatus === "committing") return "committing";
+  if (input.draftStatus === "completed") return "completed";
+  if (input.draftStatus === "collecting" || input.draftStatus === "confirmed") return "drafting";
+  if (Object.values(input.files).every(Boolean)) return "completed";
+  if (Object.values(input.files).some(Boolean)) return "drafting";
+  return "not_started";
+}
+
+function partnerFailureCategory(status: string | null | undefined, message: string | null | undefined) {
+  if (status === "sent") return null;
+  const text = String(message || "").toLowerCase();
+  if (text.includes("context") || text.includes("session")) return "session_expired";
+  if (text.includes("wechat") || text.includes("微信")) return "wechat_delivery_error";
+  if (text.includes("timeout") || text.includes("超时")) return "timeout";
+  if (status === "awaiting_user") return "awaiting_user";
+  return status ? "delivery_failed" : null;
+}
+
+async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
+  const todayStart = shanghaiDayStartIso(shanghaiDateKey());
+  const sevenDaysAgo = shanghaiDayStartIso(shanghaiDateOffset(-7));
+  const thirtyDaysAgo = shanghaiDayStartIso(shanghaiDateOffset(-30));
+  const workspacePath = resolveWorkspacePath(project.ownerUserId);
+  const files = {
+    portfolio: existsSync(path.join(workspacePath, "config", "portfolio.yaml")),
+    strategy: existsSync(path.join(workspacePath, "config", "strategy.yaml")),
+    reviewSchedule: existsSync(path.join(workspacePath, "config", "schedules.yaml")),
+    notification: existsSync(path.join(workspacePath, "config", "notification.yaml")),
+  };
+
+  const [draftRows, traceRows, messageRows, pushRows, reviewRows, ruleRows, bindingRows, delivery, weixinState] = await Promise.all([
+    db.select({ status: onboardingDrafts.status, updatedAt: onboardingDrafts.updatedAt })
+      .from(onboardingDrafts)
+      .where(eq(onboardingDrafts.instanceId, project.instanceId))
+      .orderBy(desc(onboardingDrafts.updatedAt))
+      .limit(1),
+    db.select({ status: codexAcpTraces.status, elapsedMs: codexAcpTraces.elapsedMs, userText: codexAcpTraces.userText, createdAt: codexAcpTraces.createdAt })
+      .from(codexAcpTraces)
+      .where(and(eq(codexAcpTraces.instanceId, project.instanceId), gte(codexAcpTraces.createdAt, thirtyDaysAgo)))
+      .orderBy(desc(codexAcpTraces.createdAt))
+      .limit(300),
+    db.select({ createdAt: conversationMessages.createdAt })
+      .from(conversationMessages)
+      .where(and(eq(conversationMessages.instanceId, project.instanceId), gte(conversationMessages.createdAt, thirtyDaysAgo)))
+      .orderBy(desc(conversationMessages.createdAt))
+      .limit(300),
+    db.select({ status: pushJobs.status, sentAt: pushJobs.sentAt, createdAt: pushJobs.createdAt, lastError: pushJobs.lastError })
+      .from(pushJobs)
+      .where(and(eq(pushJobs.instanceId, project.instanceId), gte(pushJobs.createdAt, thirtyDaysAgo)))
+      .orderBy(desc(pushJobs.createdAt))
+      .limit(100),
+    db.select({ planDate: dailyPlans.planDate, generatedAt: dailyPlans.generatedAt })
+      .from(dailyPlans)
+      .where(eq(dailyPlans.instanceId, project.instanceId))
+      .orderBy(desc(dailyPlans.planDate))
+      .limit(30),
+    db.select({ count: count() })
+      .from(alertRules)
+      .where(and(eq(alertRules.instanceId, project.instanceId), eq(alertRules.enabled, true))),
+    db.select({ count: count() })
+      .from(channelIdentityInstances)
+      .where(eq(channelIdentityInstances.instanceId, project.instanceId)),
+    getWeixinDeliveryHealth(project.ownerUserId, project.instanceId).catch(() => null),
+    Promise.resolve(projectWeixinManager(project).getState()).catch(() => null),
+  ]);
+
+  const draftStatus = draftRows[0]?.status;
+  const onboardingStatus = partnerOnboardingStatus({ draftStatus, files });
+  const traceToday = traceRows.filter((row) => row.createdAt >= todayStart);
+  const trace7d = traceRows.filter((row) => row.createdAt >= sevenDaysAgo);
+  const message7d = messageRows.filter((row) => row.createdAt >= sevenDaysAgo);
+  const push7d = pushRows.filter((row) => row.createdAt >= sevenDaysAgo);
+  const latestTraceAt = traceRows[0]?.createdAt || null;
+  const latestMessageAt = messageRows[0]?.createdAt || null;
+  const lastActiveAt = [latestTraceAt, latestMessageAt, project.updatedAt].filter(Boolean).sort().reverse()[0] || null;
+  const latestPush = pushRows[0] || null;
+  const wechatBound = Number(bindingRows[0]?.count || 0) > 0;
+  const pushReachable = Boolean(wechatBound && delivery?.hasConversation && weixinState?.stage === "connected");
+  const missingSetupSteps = [
+    !files.portfolio ? "portfolio" : null,
+    !files.strategy ? "strategy" : null,
+    !files.reviewSchedule ? "review_schedule" : null,
+    !files.notification ? "notification_preference" : null,
+  ].filter(Boolean) as string[];
+  const failureCategory = partnerFailureCategory(latestPush?.status, latestPush?.lastError);
+  const health = onboardingStatus === "exception"
+    ? "blocked"
+    : project.status !== "active" || (wechatBound && !pushReachable)
+      ? "attention"
+      : "ok";
+
+  return {
+    customerKey: partnerCustomerKey(project.instanceId),
+    customerLabel: partnerCustomerLabel(partnerCustomerKey(project.instanceId)),
+    assistantStatus: project.status,
+    onboardingStatus,
+    missingSetupSteps,
+    wechatBound,
+    pushReachable,
+    lastInboundAt: delivery?.lastInboundAt || null,
+    lastOutboundAt: latestPush?.sentAt || latestPush?.createdAt || null,
+    lastActiveAt,
+    conversationCountToday: traceToday.length,
+    traceCount7d: trace7d.length,
+    conversationCount7d: Math.max(trace7d.length, message7d.length),
+    conversationCount30d: Math.max(traceRows.length, messageRows.length),
+    responseElapsedToday: traceToday.map((row) => row.elapsedMs).filter((value): value is number => typeof value === "number" && value >= 0),
+    successfulTraceCountToday: traceToday.filter(traceIsSuccessful).length,
+    traceCountToday: traceToday.length,
+    reviewCount30d: reviewRows.filter((row) => row.planDate >= shanghaiDateOffset(-30)).length,
+    lastReviewAt: reviewRows[0]?.generatedAt || reviewRows[0]?.planDate || null,
+    pushCount7d: push7d.length,
+    pushSentCountToday: pushRows.filter((row) => row.createdAt >= todayStart && row.status === "sent").length,
+    pushAttemptCountToday: pushRows.filter((row) => row.createdAt >= todayStart).length,
+    lastPushStatus: latestPush?.status || "none",
+    failureCategory,
+    notificationPreference: partnerNotificationPreference(workspacePath),
+    enabledRuleCount: Number(ruleRows[0]?.count || 0),
+    health,
+    portfolioConfigured: files.portfolio,
+    strategyConfigured: files.strategy,
+    reviewScheduleConfigured: files.reviewSchedule,
+    notificationConfigured: files.notification,
+    timeoutCount7d: trace7d.filter((row) => row.status === "timeout" || (typeof row.elapsedMs === "number" && row.elapsedMs >= 30_000)).length,
+    errorCount7d: trace7d.filter((row) => row.status === "error" || row.status === "failed").length,
+    repeatConfirmationCount7d: repeatedConfirmationCount(trace7d),
+    repeatConfirmationAffected: repeatedConfirmationCount(trace7d) > 0 ? 1 : 0,
+  };
+}
+
+function percentile(values: number[], ratio: number) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+  return sorted[index] ?? null;
+}
+
+function partnerRoutePermission(pathname: string, method: string): PlatformPermission | null {
+  if (pathname.startsWith("/api/platform/auth/")) return null;
+  if (pathname === "/api/platform/partner/overview") return "overview.read";
+  if (pathname === "/api/platform/partner/customers" || pathname.startsWith("/api/platform/partner/customers/")) return "customers.read";
+  if (pathname === "/api/platform/partner/quality") return "quality.read";
+  if (pathname === "/api/platform/partner/runtime-health") return "operations.read";
+  if (pathname === "/api/platform/audit/usage") return "cost.read";
+  if (pathname === "/api/platform/instances/" && method === "GET") return "customers.sensitive.read";
+  if (pathname.includes("/investment-state")) return "customers.sensitive.read";
+  if (pathname === "/api/platform/audit" || pathname === "/api/platform/rule-alerts") return "admin_audit.read";
+  if (pathname === "/api/platform/source-quality") return "admin_audit.read";
+  if (method === "GET" && pathname === "/api/platform/instances") return "customers.sensitive.read";
+  if (method === "POST" && pathname === "/api/platform/instances") return "instances.create";
+  if (pathname.includes("/portal/credential")) return "portal.credential.issue";
+  if (method === "DELETE" && pathname.startsWith("/api/platform/instances/")) return "instances.archive";
+  if (pathname.includes("/reset-test")) return "instances.reset_test";
+  if (pathname.includes("/weixin/connect/start") || pathname.includes("/weixin/listener/start")) return "weixin.connect";
+  if (pathname.includes("/weixin/connect/stop")) return "weixin.disconnect";
+  if (pathname.includes("/weixin/push/test")) return "weixin.test_push";
+  if (pathname.includes("/workspace/ensure")) return "customers.sensitive.read";
+  return "admin_audit.read";
+}
+
 export function registerPlatformRoutes(app: FastifyInstance) {
   const safe = (handler: (request: any, reply: any) => Promise<any>) =>
     async (request: any, reply: any) => {
@@ -702,17 +1042,401 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       }
     };
 
+  app.addHook("preHandler", async (request: any, reply: any) => {
+    const pathname = String(request.url || "").split("?")[0];
+    if (!pathname.startsWith("/api/platform/")) return;
+    if (!config.platform.authEnabled && (
+      pathname.startsWith("/api/platform/auth/") ||
+      pathname.startsWith("/api/platform/partner/")
+    )) {
+      return reply.status(404).send({ ok: false, error: "platform auth surface disabled" });
+    }
+    if (pathname === "/api/platform/auth/login") return;
+
+    const context = await getPlatformAuthContext(request);
+    if (pathname.startsWith("/api/platform/auth/")) {
+      if (!context) return reply.status(401).send({ ok: false, error: "platform authentication required" });
+      request.platformAuth = context;
+      return;
+    }
+    if (!context) return reply.status(401).send({ ok: false, error: "platform authentication required" });
+    if (context.authType === "account" && context.mustChangePassword) {
+      await recordPlatformAudit({
+        request,
+        context,
+        action: "password_change_required",
+        route: pathname,
+        status: "denied",
+        summary: { method: request.method },
+      }).catch((error) => logger.warn("Platform 改密门槛审计写入失败: " + (error as Error).message));
+      return reply.status(428).send({ ok: false, error: "password change required" });
+    }
+
+    const permission = partnerRoutePermission(pathname, String(request.method || "GET").toUpperCase());
+    if (permission && !hasPlatformPermission(context, permission)) {
+      try {
+        await recordPlatformAudit({
+          request,
+          context,
+          action: "permission_denied",
+          route: pathname,
+          permission,
+          status: "denied",
+          summary: { method: request.method },
+        });
+      } catch (error) {
+        logger.error("Platform 拒绝审计写入失败:", error);
+      }
+      return reply.status(403).send({ ok: false, error: "platform permission denied", permission });
+    }
+    const customerMatch = pathname.match(/\/customers\/(cus_[a-f0-9]{12})/);
+    try {
+      await recordPlatformAudit({
+        request,
+        context,
+        action: pathname.startsWith("/api/platform/partner/") ? "partner_read_aggregate" : "platform_route_access",
+        route: pathname,
+        permission: permission || undefined,
+        targetCustomerKey: customerMatch?.[1],
+        status: "allowed",
+        summary: { method: request.method },
+      });
+    } catch (error) {
+      logger.error("Platform 授权审计写入失败:", error);
+      return reply.status(503).send({ ok: false, error: "platform audit unavailable" });
+    }
+    request.platformAuth = context;
+  });
+
+  app.post<{ Body: { username?: string; password?: string } }>("/api/platform/auth/login", safe(async (request, reply) => {
+    const rate = consumeRequestRateLimit({
+      key: "platform-login:" + String(request.ip || "unknown"),
+      max: 10,
+      windowMs: 60_000,
+    });
+    if (!rate.allowed) {
+      return reply.header("retry-after", String(rate.retryAfterSeconds)).status(429).send({ ok: false, error: "login rate limit exceeded" });
+    }
+    const username = String(request.body?.username || "").trim();
+    const password = String(request.body?.password || "");
+    if (!username || !password || username.length > 128 || password.length > 256) {
+      return reply.status(400).send({ ok: false, error: "username and password are required" });
+    }
+    const result = await authenticatePlatformUser({ username, password, request });
+    if (!result.ok) {
+      const status = result.error === "ACCOUNT_LOCKED" ? 423 : 401;
+      return reply.status(status).send({ ok: false, error: "invalid platform credentials" });
+    }
+    reply.header("set-cookie", persistentPlatformSessionCookie(result.id));
+    return {
+      ok: true,
+      user: {
+        username: result.context.username,
+        displayName: result.context.displayName,
+        role: result.context.role,
+      },
+      mustChangePassword: result.mustChangePassword,
+    };
+  }));
+
+  app.get("/api/platform/auth/me", safe(async (request, reply) => {
+    const context = await getPlatformAuthContext(request);
+    if (!context || context.authType === "service_token" || context.authType === "legacy_local") {
+      return reply.status(401).send({ ok: false, error: "platform account session required" });
+    }
+    return {
+      ok: true,
+      user: {
+        username: context.username,
+        displayName: context.displayName,
+        role: context.role,
+        permissions: context.permissions.filter((item) => item !== "*"),
+      },
+    };
+  }));
+
+  app.post<{ Body: { currentPassword?: string; newPassword?: string } }>("/api/platform/auth/password", safe(async (request, reply) => {
+    const context = await getPlatformAuthContext(request);
+    if (!context || context.authType !== "account") {
+      return reply.status(401).send({ ok: false, error: "platform account session required" });
+    }
+    const currentPassword = String(request.body?.currentPassword || "");
+    const newPassword = String(request.body?.newPassword || "");
+    if (newPassword.length < 12 || newPassword.length > 256) {
+      return reply.status(400).send({ ok: false, error: "new password must be 12-256 characters" });
+    }
+    const rows = await db.select().from(platformUsers).where(eq(platformUsers.id, context.userId)).limit(1);
+    const user = rows[0];
+    if (!user || !verifyPlatformPassword(currentPassword, user.passwordHash)) {
+      await recordPlatformAudit({
+        request,
+        context,
+        action: "password_change",
+        route: "/api/platform/auth/password",
+        status: "failure",
+        summary: { reason: "invalid_current_password" },
+      });
+      return reply.status(401).send({ ok: false, error: "invalid current password" });
+    }
+    const now = new Date().toISOString();
+    await db.update(platformUsers)
+      .set({ passwordHash: hashPlatformPassword(newPassword), mustChangePassword: false, failedLoginCount: 0, lockedUntil: null, updatedAt: now })
+      .where(eq(platformUsers.id, user.id));
+    await recordPlatformAudit({
+      request,
+      context,
+      action: "password_change",
+      route: "/api/platform/auth/password",
+      status: "allowed",
+    });
+    return { ok: true };
+  }));
+
+  app.post("/api/platform/auth/logout", safe(async (request, reply) => {
+    const context = await getPlatformAuthContext(request);
+    const revoked = await revokePlatformSession(request);
+    if (context) {
+      await recordPlatformAudit({
+        request,
+        context,
+        action: "logout",
+        route: "/api/platform/auth/logout",
+        status: "allowed",
+      });
+    }
+    reply.header("set-cookie", clearPlatformSessionCookie());
+    return { ok: true, revoked };
+  }));
+
+  app.get("/api/platform/partner/overview", safe(async (_request) => {
+    const projects = await listProjectRuntimeContexts();
+    const snapshots = await Promise.all(projects.map(partnerCustomerSnapshot));
+    const todayDate = shanghaiDateKey();
+    const todayStart = shanghaiDayStartIso(todayDate);
+    const sevenDaysAgo = shanghaiDayStartIso(shanghaiDateOffset(-7));
+    const sourceQuality = await partnerSourceQualitySummary();
+    const customerKeys = new Set<string>();
+    for (const item of snapshots) {
+      if (customerKeys.has(item.customerKey)) throw new Error("PARTNER_CUSTOMER_KEY_COLLISION");
+      customerKeys.add(item.customerKey);
+    }
+    const active7d = snapshots.filter((item) => item.lastActiveAt && item.lastActiveAt >= sevenDaysAgo).length;
+    const onboardingCompleted = snapshots.filter((item) => item.onboardingStatus === "completed").length;
+    const onboardingInProgress = snapshots.filter((item) => item.onboardingStatus === "drafting" || item.onboardingStatus === "committing").length;
+    const onboardingException = snapshots.filter((item) => item.onboardingStatus === "exception").length;
+    const tracesToday = snapshots.reduce((sum, item) => sum + item.traceCountToday, 0);
+    const successfulToday = snapshots.reduce((sum, item) => sum + item.successfulTraceCountToday, 0);
+    const elapsedToday = snapshots.flatMap((item) => item.responseElapsedToday);
+    const pushAttemptsToday = snapshots.reduce((sum, item) => sum + item.pushAttemptCountToday, 0);
+    const pushSentToday = snapshots.reduce((sum, item) => sum + item.pushSentCountToday, 0);
+    const reviewsToday = snapshots.filter((item) => item.lastReviewAt && String(item.lastReviewAt).slice(0, 10) === todayDate).length;
+    const qualityExceptions = snapshots.reduce((sum, item) => sum + item.errorCount7d + item.timeoutCount7d + item.repeatConfirmationCount7d, 0);
+    const exceptions = [
+      { type: "onboarding_stuck", count: onboardingInProgress, affectedCustomers: onboardingInProgress },
+      { type: "onboarding_exception", count: onboardingException, affectedCustomers: onboardingException },
+      { type: "push_failed", count: snapshots.filter((item) => item.failureCategory !== null).length, affectedCustomers: snapshots.filter((item) => item.failureCategory !== null).length },
+      { type: "inactive_7d", count: snapshots.length - active7d, affectedCustomers: snapshots.length - active7d },
+    ].filter((item) => item.count > 0);
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      timeRange: {
+        start: todayStart.slice(0, 10),
+        end: todayDate,
+        timezone: "Asia/Shanghai",
+      },
+      metrics: {
+        customersTotal: snapshots.length,
+        customersActivated: snapshots.filter((item) => item.assistantStatus === "active").length,
+        activeCustomers7d: active7d,
+        activeCustomers30d: snapshots.filter((item) => item.conversationCount30d > 0).length,
+        onboardingCompleted,
+        onboardingInProgress,
+        onboardingException,
+        conversationCountToday: tracesToday,
+        conversationSuccessRateToday: tracesToday > 0 ? successfulToday / tracesToday : null,
+        responseP50MsToday: percentile(elapsedToday, 0.5),
+        responseP95MsToday: percentile(elapsedToday, 0.95),
+        reviewCoverageToday: snapshots.length > 0 ? reviewsToday / snapshots.length : null,
+        pushDeliveryRateToday: pushAttemptsToday > 0 ? pushSentToday / pushAttemptsToday : null,
+        qualityExceptionCountToday: qualityExceptions,
+        dataSourceExceptionCountToday: sourceQuality.countToday,
+      },
+      exceptions,
+      dataQuality: {
+        status: snapshots.length > 0 && sourceQuality.status === "ok" ? "ok" : "degraded",
+        missing: snapshots.length > 0 ? [] : ["no active customer snapshots"],
+        staleSources: sourceQuality.status === "ok" ? [] : ["market-data"],
+      },
+    };
+  }));
+
+  app.get("/api/platform/partner/customers", safe(async (request) => {
+    const query = request.query || {};
+    const limit = Math.max(1, Math.min(Number(query.limit || 50), 50));
+    const offset = decodePartnerCursor(query.cursor);
+    const projects = await listProjectRuntimeContexts();
+    const snapshots = await Promise.all(projects.map(partnerCustomerSnapshot));
+    const filtered = snapshots.filter((item) => {
+      if (query.status && item.assistantStatus !== query.status) return false;
+      if (query.onboarding && item.onboardingStatus !== query.onboarding) return false;
+      if (query.health && item.health !== query.health) return false;
+      return true;
+    });
+    const ordered = filtered.sort((a, b) => a.customerKey.localeCompare(b.customerKey));
+    const pageItems = ordered.slice(offset, offset + limit);
+    const nextCursor = offset + limit < ordered.length ? encodePartnerCursor(offset + limit) : null;
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      page: { limit, cursor: query.cursor || null, nextCursor },
+      filters: {
+        status: query.status || "",
+        onboarding: query.onboarding || "",
+        health: query.health || "",
+      },
+      customers: pageItems.map((item) => ({
+        customerKey: item.customerKey,
+        customerLabel: item.customerLabel,
+        assistantStatus: item.assistantStatus,
+        onboardingStatus: item.onboardingStatus,
+        missingSetupSteps: item.missingSetupSteps,
+        wechatBound: item.wechatBound,
+        pushReachable: item.pushReachable,
+        lastInboundAt: item.lastInboundAt,
+        lastOutboundAt: item.lastOutboundAt,
+        lastActiveAt: item.lastActiveAt,
+        conversationCount7d: item.conversationCount7d,
+        lastReviewAt: item.lastReviewAt,
+        lastPushStatus: item.lastPushStatus,
+        notificationPreference: item.notificationPreference,
+        enabledRuleCount: item.enabledRuleCount,
+        health: item.health,
+      })),
+    };
+  }));
+
+  app.get("/api/platform/partner/customers/:customerKey/operations", safe(async (request, reply) => {
+    const projects = await listProjectRuntimeContexts();
+    const project = projects.find((candidate) => partnerCustomerKeyCandidates(candidate.instanceId).includes(request.params.customerKey));
+    const item = project ? await partnerCustomerSnapshot(project) : null;
+    if (!item) return reply.status(404).send({ ok: false, error: "customer not found" });
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      customer: { customerKey: item.customerKey, customerLabel: item.customerLabel },
+      setup: {
+        onboardingStatus: item.onboardingStatus,
+        portfolioConfigured: item.portfolioConfigured,
+        strategyConfigured: item.strategyConfigured,
+        reviewScheduleConfigured: item.reviewScheduleConfigured,
+        notificationPreference: item.notificationPreference,
+        enabledRuleCount: item.enabledRuleCount,
+      },
+      usage: {
+        conversationCount7d: item.conversationCount7d,
+        reviewCount30d: item.reviewCount30d,
+        pushCount7d: item.pushCount7d,
+      },
+      delivery: {
+        wechatBound: item.wechatBound,
+        pushReachable: item.pushReachable,
+        lastPushStatus: item.lastPushStatus,
+        failureCategory: item.failureCategory,
+      },
+      quality: {
+        timeoutCount7d: item.timeoutCount7d,
+        errorCount7d: item.errorCount7d,
+        repeatConfirmationCount7d: item.repeatConfirmationCount7d,
+      },
+    };
+  }));
+
+  app.get("/api/platform/partner/quality", safe(async () => {
+    const snapshots = await Promise.all((await listProjectRuntimeContexts()).map(partnerCustomerSnapshot));
+    const sourceQuality = await partnerSourceQualitySummary();
+    const traceCount = snapshots.reduce((sum, item) => sum + item.traceCount7d, 0);
+    const errors = snapshots.reduce((sum, item) => sum + item.errorCount7d, 0);
+    const timeouts = snapshots.reduce((sum, item) => sum + item.timeoutCount7d, 0);
+    const successful = Math.max(0, traceCount - errors - timeouts);
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      items: [
+        { type: "conversation_success", status: "observed", count: successful, rate: traceCount > 0 ? successful / traceCount : null, latestAt: new Date().toISOString(), affectedCustomers: snapshots.filter((item) => item.traceCount7d > 0).length },
+        { type: "conversation_error", status: errors > 0 ? "attention" : "ok", count: errors, rate: traceCount > 0 ? errors / traceCount : null, latestAt: new Date().toISOString(), affectedCustomers: snapshots.filter((item) => item.errorCount7d > 0).length },
+        { type: "conversation_timeout", status: timeouts > 0 ? "attention" : "ok", count: timeouts, rate: traceCount > 0 ? timeouts / traceCount : null, latestAt: new Date().toISOString(), affectedCustomers: snapshots.filter((item) => item.timeoutCount7d > 0).length },
+        { type: "repeat_confirmation", status: "observed", count: snapshots.reduce((sum, item) => sum + item.repeatConfirmationCount7d, 0), rate: null, latestAt: new Date().toISOString(), affectedCustomers: snapshots.reduce((sum, item) => sum + item.repeatConfirmationAffected, 0) },
+      ],
+      dataQuality: {
+        status: snapshots.length > 0 && sourceQuality.status === "ok" ? "ok" : "partial",
+        missing: [
+          ...(snapshots.length > 0 ? [] : ["no customer snapshots"]),
+          ...(sourceQuality.status === "ok" ? [] : ["source-quality"]),
+          ...(snapshots.some((item) => item.traceCount7d === 0) ? ["trace coverage"] : []),
+        ],
+      },
+    };
+  }));
+
+  app.get("/api/platform/partner/runtime-health", safe(async () => {
+    const snapshots = await Promise.all((await listProjectRuntimeContexts()).map(partnerCustomerSnapshot));
+    const pushFailures = snapshots.filter((item) => item.failureCategory !== null).length;
+    const reachable = snapshots.filter((item) => item.pushReachable).length;
+    const sourceQuality = await partnerSourceQualitySummary();
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      items: [
+        { type: "wechat_reachability", status: reachable === snapshots.length ? "ok" : "attention", count: reachable, affectedCustomers: snapshots.length - reachable, latestAt: new Date().toISOString() },
+        { type: "push_delivery", status: pushFailures > 0 ? "attention" : "ok", count: pushFailures, affectedCustomers: pushFailures, latestAt: new Date().toISOString() },
+        { type: "market_data", status: sourceQuality.status, count: sourceQuality.countToday, affectedCustomers: 0, latestAt: sourceQuality.latestAt },
+      ],
+      dataQuality: {
+        status: sourceQuality.status,
+        missing: sourceQuality.status === "ok" ? [] : ["source-quality"],
+      },
+    };
+  }));
+
   app.get("/platform", async (request, reply) => {
-    if (!isLoopbackAddress(request.ip)) {
-      return reply.status(403).send({ ok: false, error: "Platform 仅允许本机访问" });
+    // Rollback disables the new account/Partner surface. Keep the old loopback
+    // compatibility page available, but never render a persisted account page
+    // while the feature is disabled.
+    if (!config.platform.authEnabled) {
+      if (isLoopbackAddress(request.ip)) {
+        if (!hasPlatformSession(request.headers.cookie)) {
+          const session = createPlatformSession();
+          reply.header("set-cookie", platformSessionCookie(session.id, session.maxAgeSeconds));
+        }
+        return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+          portalPublicUrl: config.portal.publicUrl,
+        }));
+      }
+      return reply.status(401).type("text/html; charset=utf-8").send(renderPartnerPlatformPage());
     }
-    if (!hasPlatformSession(request.headers.cookie)) {
-      const session = createPlatformSession();
-      reply.header("set-cookie", platformSessionCookie(session.id, session.maxAgeSeconds));
+    const context = await getPlatformAuthContext(request);
+    if (context?.authType === "account" && context.role === "partner") {
+      return reply.type("text/html; charset=utf-8").send(renderPartnerPlatformPage({ authenticated: true }));
     }
-    return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
-      portalPublicUrl: config.portal.publicUrl,
-    }));
+    if (context?.authType === "account" && context.role === "owner" && context.mustChangePassword) {
+      return reply.type("text/html; charset=utf-8").send(renderPartnerPlatformPage());
+    }
+    if (context?.authType === "account" && context.role === "owner") {
+      return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+        portalPublicUrl: config.portal.publicUrl,
+      }));
+    }
+    if (isLoopbackAddress(request.ip)) {
+      if (!hasPlatformSession(request.headers.cookie)) {
+        const session = createPlatformSession();
+        reply.header("set-cookie", platformSessionCookie(session.id, session.maxAgeSeconds));
+      }
+      return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+        portalPublicUrl: config.portal.publicUrl,
+      }));
+    }
+    return reply.status(401).type("text/html; charset=utf-8").send(renderPartnerPlatformPage());
   });
 
   app.get("/api/platform/instances", safe(async () => {
@@ -895,7 +1619,10 @@ export function registerPlatformRoutes(app: FastifyInstance) {
   app.get<{ Params: { instanceId: string } }>("/api/platform/instances/:instanceId/weixin/status", safe(async (request, reply) => {
     const project = await getProjectRuntimeContext(request.params.instanceId).catch(() => null);
     if (!project || project.status === "archived") return reply.status(404).send({ ok: false, error: "实例不存在或已归档", status: "removed" });
-    return projectWeixinManager(project).getState();
+    return {
+      ...projectWeixinManager(project).getState(),
+      delivery: await getWeixinDeliveryHealth(project.ownerUserId, project.instanceId),
+    };
   }));
 
   app.post<{ Params: { instanceId: string } }>("/api/platform/instances/:instanceId/weixin/connect/start", safe(async (request, reply) => {
@@ -925,15 +1652,23 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     if (!project || project.status === "archived") return reply.status(404).send({ ok: false, error: "实例不存在或已归档" });
     const manager = projectWeixinManager(project);
     const text = request.body?.message?.trim() || `测试提醒：${project.name} ${new Date().toLocaleString("zh-CN")}`;
-    const pushed = await manager.pushText(text, { userId: project.ownerUserId, instanceId: project.instanceId });
-    if (!pushed) {
+    const result = await manager.pushTextDetailed(text, { userId: project.ownerUserId, instanceId: project.instanceId });
+    await recordWeixinDeliveryAttempt({
+      userId: project.ownerUserId,
+      instanceId: project.instanceId,
+      source: "platform_manual_probe",
+      probe: true,
+      result,
+    });
+    if (!result.ok) {
       return reply.status(409).send({
         ok: false,
-        message: "当前没有可用的微信会话，请先让该实例绑定的微信给助手发送一条消息。",
+        message: "微信探测未提交成功，请查看会话活性和失败原因。",
+        delivery: await getWeixinDeliveryHealth(project.ownerUserId, project.instanceId),
         state: manager.getState(),
       });
     }
-    return { ok: true, state: manager.getState() };
+    return { ok: true, probe: true, delivery: await getWeixinDeliveryHealth(project.ownerUserId, project.instanceId), state: manager.getState() };
   }));
 
   app.post<{ Params: { instanceId: string } }>("/api/platform/instances/:instanceId/workspace/ensure", safe(async (request, reply) => {
@@ -951,6 +1686,104 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       workspace,
       hermesHome,
       instance: await summarizeInstance(project),
+    };
+  }));
+
+  app.get<{ Params: { instanceId: string } }>("/api/platform/instances/:instanceId/investment-state", safe(async (request, reply) => {
+    const project = await getProjectRuntimeContext(request.params.instanceId).catch(() => null);
+    if (!project || project.status === "archived") return reply.status(404).send({ ok: false, error: "实例不存在或已归档" });
+    const userId = project.ownerUserId;
+    const instanceId = project.instanceId;
+    if (!workspaceExists(userId)) {
+      return {
+        ok: true,
+        updatedAt: new Date().toISOString(),
+        workspaceReady: false,
+        instance: {
+          instanceId,
+          name: project.name,
+          ownerUserId: userId,
+        },
+        summary: {
+          holdingCount: 0,
+          watchlistCount: 0,
+          planCount: 0,
+          activeWatchRuleCount: 0,
+          totalWatchRuleCount: 0,
+          latestReviewDate: null,
+          openViewpointCount: 0,
+        },
+        holdings: [],
+        watchlist: [],
+        plans: [],
+        recentReviews: [],
+        viewpoints: [],
+      };
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const [holdings, watchlist, plans, watchRules, recentDailyPlans, recentViewpoints] = await Promise.all([
+      portfolioBackend.listActive(userId, instanceId).catch(() => []),
+      watchlistBackend.list(userId, instanceId).catch(() => []),
+      planBackend.list(userId, instanceId).catch(() => []),
+      listWatchRules(userId, instanceId).catch(() => []),
+      dailyPlanBackend.listInRange(userId, instanceId, startDate, today).catch(() => []),
+      reviewViewpointBackend.list(userId, instanceId, { limit: 5 }).catch(() => []),
+    ]);
+    const activeWatchRules = watchRules.filter((rule) => rule.enabled !== false);
+    const openViewpoints = recentViewpoints.filter((viewpoint) => viewpoint.status === "open");
+    const latestReview = recentDailyPlans.length > 0 ? recentDailyPlans[0] : null;
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      workspaceReady: true,
+      instance: {
+        instanceId,
+        name: project.name,
+        ownerUserId: userId,
+      },
+      summary: {
+        holdingCount: holdings.length,
+        watchlistCount: watchlist.length,
+        planCount: plans.length,
+        activeWatchRuleCount: activeWatchRules.length,
+        totalWatchRuleCount: watchRules.length,
+        latestReviewDate: latestReview?.planDate ?? null,
+        openViewpointCount: openViewpoints.length,
+      },
+      holdings: holdings.slice(0, 12).map((row) => ({
+        code: row.code,
+        name: row.name,
+        buyDate: row.buyDate,
+        costPrice: row.costPrice ?? null,
+      })),
+      watchlist: watchlist.slice(0, 12).map((row) => ({
+        code: row.code,
+        name: row.name,
+        reason: row.reason ?? null,
+        addedAt: row.addedAt ?? null,
+      })),
+      plans: plans.slice(0, 12).map((row) => ({
+        code: row.code,
+        name: row.name,
+        support: row.support ?? null,
+        resistance: row.resistance ?? null,
+        targetPrice: row.targetPrice ?? null,
+        stopLoss: row.stopLoss ?? null,
+        strategyKey: row.strategyKey ?? null,
+      })),
+      recentReviews: recentDailyPlans.slice(0, 5).map((row) => ({
+        date: row.planDate,
+        generatedAt: row.generatedAt,
+        summary: row.summary ?? null,
+      })),
+      viewpoints: recentViewpoints.slice(0, 5).map((row) => ({
+        id: row.id,
+        sourceDate: row.sourceDate,
+        view: row.view,
+        status: row.status,
+        expectedReviewDate: row.expectedReviewDate,
+      })),
     };
   }));
 }

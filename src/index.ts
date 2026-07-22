@@ -11,6 +11,14 @@ import { startPortalConnector } from "./portal/connector.js";
 async function main() {
   logger.info("正在启动投资选股智能体...");
 
+  const offlineMode = process.env.INVEST_AGENT_OFFLINE_MODE === "true";
+  if (offlineMode) {
+    process.env.WEIXIN_AUTO_START = "false";
+    process.env.PORTAL_CONNECTOR_AUTO_START = "false";
+    process.env.PLATFORM_WEIXIN_AUTO_START = "false";
+    logger.info("INVEST_AGENT_OFFLINE_MODE=true:已禁用微信恢复、Portal connector、Platform 微信 listener、scheduler 和 push queue worker,仅保留 HTTP 服务与本地路由。");
+  }
+
   // 初始化数据库
   initDb();
 
@@ -20,13 +28,17 @@ async function main() {
   // 启动 HTTP 服务
   const app = await startServer();
 
-  // 启动当前 ACP backend 子进程。会话上下文后续按微信 conversationId 复用。
-  await startDefaultAcp();
+  if (!offlineMode) {
+    // 启动当前 ACP backend 子进程。会话上下文后续按微信 conversationId 复用。
+    await startDefaultAcp();
 
-  // 启动定时任务
-  await startScheduler();
+    // 启动定时任务
+    await startScheduler();
+  } else {
+    logger.info("OFFLINE 模式:跳过 ACP 子进程和 scheduler 启动。");
+  }
 
-  const portalConnector = process.env.PORTAL_CONNECTOR_AUTO_START === "false"
+  const portalConnector = offlineMode || process.env.PORTAL_CONNECTOR_AUTO_START === "false"
     ? null
     : startPortalConnector();
 
@@ -37,7 +49,7 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info(`收到 ${signal}，正在停止投资选股智能体...`);
-    stopScheduler();
+    if (!offlineMode) stopScheduler();
     stopPlatformWeixinListeners();
     portalConnector?.stop();
     weixinMobileManager.stop();

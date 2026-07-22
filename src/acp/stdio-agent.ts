@@ -24,6 +24,7 @@ import { db } from "../db/index.js";
 import { settings } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
+import { isAcpDiagnosticText } from "../lib/customer-output.js";
 import type { AcpModelTier } from "./model-router.js";
 import { defaultInstanceIdForUser, type UserContext } from "../lib/user-context.js";
 
@@ -155,7 +156,7 @@ const SETTINGS_KEY = "acp_backend";
 
 // ─── 通用 stdio ACP agent ──────────────────────────────────────────
 
-class ResponseCollector {
+export class ResponseCollector {
   private readonly chunks: string[] = [];
   private readonly segments: string[] = [];
   private currentSegment: string[] = [];
@@ -214,12 +215,13 @@ class ResponseCollector {
   private flushSegment() {
     if (this.currentSegment.length === 0) return;
     const text = this.currentSegment.join("").trim();
-    if (text) this.segments.push(text);
+    if (text && !isAcpDiagnosticText(text)) this.segments.push(text);
     this.currentSegment = [];
   }
 
   private fullText() {
-    return this.chunks.join("").trim();
+    this.flushSegment();
+    return this.segments.join("\n").trim();
   }
 
   private lastSegmentText() {
@@ -372,6 +374,7 @@ export class StdioAcpAgent {
   private readonly sessions = new Map<string, string>();
   private readonly collectors = new Map<string, ResponseCollector>();
   private readonly activeConversations = new Set<string>();
+  private readonly inFlightPromptRejectors = new Map<string, (error: Error) => void>();
 
   constructor(private readonly def: AcpBackendDef, private readonly override: AcpBackendOverride = {}) {}
 
@@ -458,6 +461,9 @@ export class StdioAcpAgent {
     );
 
     let promptResult: unknown;
+    const processExit = new Promise<never>((_, reject) => {
+      this.inFlightPromptRejectors.set(sessionId, reject);
+    });
     try {
       promptResult = await Promise.race([
         conn.prompt({
@@ -466,6 +472,7 @@ export class StdioAcpAgent {
           prompt,
         }),
         this.timeoutAfter(params.timeoutMs ?? this.def.timeoutMs),
+        processExit,
       ]);
       logger.info(
         `${this.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(promptResult)} responseStats=${JSON.stringify(collector.stats())}`
@@ -480,11 +487,15 @@ export class StdioAcpAgent {
       }
       throw error;
     } finally {
+      this.inFlightPromptRejectors.delete(sessionId);
       this.collectors.delete(sessionId);
       this.activeConversations.delete(params.conversationId);
     }
 
-    const text = collector.toText() || "处理完成,但没有生成文本回复。";
+    const text = collector.toText();
+    if (!text) {
+      throw new Error(`${this.label} ACP 未生成可展示的用户回复`);
+    }
     return {
       text,
       usage: extractAcpUsage(promptResult, collector.usageFromUpdate(), params.text, text),
@@ -500,6 +511,7 @@ export class StdioAcpAgent {
   }
 
   dispose() {
+    this.rejectInFlightPrompts(new Error(`${this.label} ACP 已停止`));
     this.ready = false;
     this.starting = null;
     this.connection = null;
@@ -545,6 +557,10 @@ export class StdioAcpAgent {
 
     child.on("exit", (code, signal) => {
       logger.warn(`${label} ACP 子进程退出 code=${code ?? "-"} signal=${signal ?? "-"}`);
+      if (this.process !== child) return;
+      this.rejectInFlightPrompts(
+        new Error(`${label} ACP 子进程退出 code=${code ?? "-"} signal=${signal ?? "-"}`)
+      );
       this.ready = false;
       this.connection = null;
       this.process = null;
@@ -641,6 +657,11 @@ export class StdioAcpAgent {
         ms
       );
     });
+  }
+
+  private rejectInFlightPrompts(error: Error) {
+    for (const reject of this.inFlightPromptRejectors.values()) reject(error);
+    this.inFlightPromptRejectors.clear();
   }
 }
 

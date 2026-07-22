@@ -23,6 +23,16 @@ export function resolveWorkspacePath(userId: string): string {
   return path.join(config.workspace.root, safe);
 }
 
+/**
+ * 只读检查 workspace 是否已就绪(AGENTS.md 存在)。
+ * 不创建目录、不复制模板、不写任何文件。
+ * 用于 GET 类摘要端点,避免读路径触发 ensureWorkspace 副作用。
+ */
+export function workspaceExists(userId: string): boolean {
+  const targetPath = resolveWorkspacePath(userId);
+  return existsSync(path.join(targetPath, "AGENTS.md"));
+}
+
 function legacyWorkspacePath(userId: string): string {
   return path.join(process.cwd(), "workspaces", sanitizeUserId(userId));
 }
@@ -35,7 +45,7 @@ export async function ensureWorkspace(identity: WorkspaceIdentity): Promise<Ensu
   const targetPath = resolveWorkspacePath(identity.userId);
   await migrateLegacyWorkspaceIfNeeded(identity.userId, targetPath);
   if (existsSync(path.join(targetPath, "AGENTS.md"))) {
-    await ensureManagedRuntimeSkills(targetPath);
+    await ensureManagedRuntimeAssets(targetPath);
     await stampTenantIdentity(targetPath, identity).catch((error) => {
       logger.warn(`workspace.stampTenantIdentity failed (existing) path=${targetPath}: ${error}`);
     });
@@ -48,7 +58,7 @@ export async function ensureWorkspace(identity: WorkspaceIdentity): Promise<Ensu
 
   await mkdir(config.workspace.root, { recursive: true });
   await cp(workspaceTemplatePath(), targetPath, { recursive: true });
-  await ensureManagedRuntimeSkills(targetPath);
+  await ensureManagedRuntimeAssets(targetPath);
   await stampTenantIdentity(targetPath, identity).catch((error) => {
     logger.warn(`workspace.stampTenantIdentity failed (fresh) path=${targetPath}: ${error}`);
   });
@@ -56,13 +66,20 @@ export async function ensureWorkspace(identity: WorkspaceIdentity): Promise<Ensu
   return { path: targetPath, created: true };
 }
 
-async function ensureManagedRuntimeSkills(workspacePath: string) {
-  const relativePath = path.join(".codex", "skills", "conversation-recovery", "SKILL.md");
-  const sourcePath = path.join(workspaceTemplatePath(), relativePath);
-  const targetPath = path.join(workspacePath, relativePath);
-  if (!existsSync(sourcePath) || existsSync(targetPath)) return;
-  await mkdir(path.dirname(targetPath), { recursive: true });
-  await copyFile(sourcePath, targetPath);
+async function ensureManagedRuntimeAssets(workspacePath: string) {
+  const managedAssets = [
+    { relativePath: path.join(".codex", "skills", "conversation-recovery", "SKILL.md"), overwrite: false },
+    { relativePath: path.join(".codex", "skills", "service-capability-policy", "SKILL.md"), overwrite: true },
+    { relativePath: path.join(".codex", "skills", "capability-extension", "SKILL.md"), overwrite: true },
+    { relativePath: path.join("knowledge", "capability_extension_protocol.md"), overwrite: true },
+  ];
+  for (const asset of managedAssets) {
+    const sourcePath = path.join(workspaceTemplatePath(), asset.relativePath);
+    const targetPath = path.join(workspacePath, asset.relativePath);
+    if (!existsSync(sourcePath) || (!asset.overwrite && existsSync(targetPath))) continue;
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await copyFile(sourcePath, targetPath);
+  }
 }
 
 async function migrateLegacyWorkspaceIfNeeded(userId: string, targetPath: string) {

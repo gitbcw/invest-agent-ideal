@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 
-const PUBLIC_PATHS = new Set(["/health", "/.well-known/agent.json"]);
+const PUBLIC_PATHS = new Set([
+  "/health",
+  "/.well-known/agent.json",
+  "/dashboard",
+  "/admin/weixin",
+  "/api/platform/auth/login",
+]);
 const SANDBOX_PREFIX = "/api/sandbox/";
 
 function localDevelopmentToken() {
@@ -26,6 +32,9 @@ export const serviceApiToken = configuredToken || (
 export function assertServiceAuthConfiguration() {
   if (!serviceApiToken || (config.nodeEnv === "production" && (serviceApiToken.length < 32 || serviceApiToken.startsWith("replace_with_")))) {
     throw new Error("INVEST_AGENT_API_TOKEN_REQUIRED_IN_PRODUCTION");
+  }
+  if (config.nodeEnv === "production" && !config.platform.anonymizationSecret) {
+    throw new Error("PLATFORM_ANONYMIZATION_SECRET_REQUIRED_IN_PRODUCTION");
   }
 }
 

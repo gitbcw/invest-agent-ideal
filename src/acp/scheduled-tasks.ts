@@ -14,12 +14,11 @@ import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID } from "../lib/user-context.js"
 import { readSchedules } from "../lib/schedules-loader.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { formatUnknownError } from "../lib/errors.js";
+import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import {
   buildDailyReviewContext,
   buildMonthlyReviewContext,
-  buildReviewPushSummary,
   buildWeeklyReviewContext,
-  saveSkillDailyReview,
 } from "../handlers/review.js";
 
 const SCHEDULED_ACP_TIMEOUT_MS =
@@ -66,6 +65,7 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
   const userContext = await buildScheduledUserContext(scope, `${kind}-review`);
 
   if (kind === "daily") {
+    const publicationStartedAt = Date.now();
     const reviewContext = await buildDailyReviewContext({
       userId: userContext.userId,
       instanceId: userContext.instanceId,
@@ -74,11 +74,10 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
       userText: [
         "【后台任务：日复盘】",
         "你正在当前用户 Workspace 中执行自动日复盘。",
-        "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
-        "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 daily-review 相关 skills；结构和详略由 Workspace 规则决定。",
-        "只输出给用户看的微信复盘正文，不要输出执行过程、工具调用过程、token、本地 sandbox 接口或内部路径；数据来源章节只写可读来源摘要，禁止展示原始 URL、endpoint 或接口路径。",
-        "完整 URL、endpoint、confidence、warnings 只适合保存到完整 Markdown 复盘或 Platform Audit，不适合微信正文。",
-        "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
+        "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 daily-review skill；研究方法、工具选择、报告结构和详略由你决定。",
+        "先完成完整复盘，再调用 reviews.save 发布：content 放完整 Markdown，pushBrief 放独立的微信简报；重要观点和数据质量事件可分别放入 decisionRecords、sourceEvents。",
+        "只有 reviews.save 成功后才算完成。最终回复只输出已经保存的 pushBrief，不要再次输出完整报告，也不要提到工具、内部路径或执行过程。",
+        "事实需要有依据；关键数据缺失、过期或冲突时明确说明，不编造精确数据。不要承诺收益。",
       ].join("\n"),
       reviewContext,
       userContext,
@@ -94,21 +93,23 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
       sandboxPermissions: promptContext.sandboxContext.permissions,
     });
     const cleaned = sanitizeCustomerText(reply);
-    const summary = buildReviewPushSummary(cleaned, reviewContext.date);
-    await saveSkillDailyReview({
-      userId: userContext.userId,
-      instanceId: userContext.instanceId,
-      date: reviewContext.date,
-      content: cleaned,
-      summary,
-      context: {
-        generatedAt: reviewContext.generatedAt,
-        stocks: reviewContext.stocks.map((stock) => ({ code: stock.code, name: stock.name, pool: stock.pool })),
-        alertCount: reviewContext.alerts.length,
-        source: "scheduled-acp",
-      },
-    });
-    return sanitizeWeixinCustomerText(cleaned);
+    const published = await dailyPlanBackend.get(userContext.userId, userContext.instanceId!, reviewContext.date);
+    const publishedAt = published?.generatedAt ? Date.parse(published.generatedAt) : Number.NaN;
+    const publication = published?.data && typeof published.data === "object"
+      ? (published.data as any).context?.publication
+      : null;
+    if (
+      !published
+      || !Number.isFinite(publishedAt)
+      || publishedAt < publicationStartedAt - 1_000
+      || publication?.conversationId !== userContext.conversationId
+      || publication?.scheduled !== true
+    ) {
+      throw new Error(`scheduled daily review did not publish artifact for ${reviewContext.date}`);
+    }
+    const pushBrief = sanitizeWeixinCustomerText(cleaned || published.summary || "").trim();
+    if (!pushBrief) throw new Error(`scheduled daily review did not return push brief for ${reviewContext.date}`);
+    return pushBrief;
   }
 
   if (kind === "weekly") {

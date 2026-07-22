@@ -10,6 +10,7 @@ import { appendConversationMessage } from "../services/conversation-log.js";
 import { config } from "../lib/config.js";
 import { resolveWeixinAccount } from "./weixin-account-store.js";
 import { storeWeixinAttachment, type IncomingMediaAttachment, type StoredAttachment } from "../lib/attachment-store.js";
+import { listPendingWeixinDeliveries, markPendingWeixinDeliveriesRecovered } from "../services/weixin-delivery.js";
 
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
@@ -263,25 +264,6 @@ export class InvestAgentMobileBridge {
     }
 
     const userText = formatBatchedUserText(items, attachments.length);
-    const response = await this.agent.handleMessage({
-      id: `wx-${Date.now()}`,
-      from: first.conversationId || "weixin-mobile",
-      timestamp: Date.now(),
-      content: { type: "text", text: userText },
-      context: {
-        channel: "weixin-mobile",
-        conversationId,
-        userId: userContext.userId,
-        projectId: userContext.projectId,
-        instanceId: userContext.instanceId,
-        instanceExpansionPath: userContext.instanceExpansionPath,
-        workspacePath: userContext.workspacePath,
-        attachments,
-      },
-    });
-
-    const text = response.content.text ?? "处理完成，但没有生成文本回复。";
-    await rememberWeixinTurn(userContext, userText, text);
     appendConversationMessage({
       scope: {
         userId: userContext.userId,
@@ -294,6 +276,40 @@ export class InvestAgentMobileBridge {
       role: "user",
       content: formatConversationUserContent(userText, attachments),
     });
+    const pendingDeliveries = userContext.instanceId
+      ? await listPendingWeixinDeliveries(userContext.userId, userContext.instanceId)
+      : [];
+    const recoveryRequested = /^(补发|补送|查看未送达)$/u.test(userText.trim());
+    let text: string;
+    if (recoveryRequested && pendingDeliveries.length > 0) {
+      text = [
+        `补送以下 ${pendingDeliveries.length} 条此前未送达内容：`,
+        ...pendingDeliveries.map((item, index) => `【${index + 1}】\n${item.message}`),
+      ].join("\n\n");
+      await markPendingWeixinDeliveriesRecovered(pendingDeliveries.map((item) => item.id));
+    } else {
+      const response = await this.agent.handleMessage({
+        id: `wx-${Date.now()}`,
+        from: first.conversationId || "weixin-mobile",
+        timestamp: Date.now(),
+        content: { type: "text", text: userText },
+        context: {
+          channel: "weixin-mobile",
+          conversationId,
+          userId: userContext.userId,
+          projectId: userContext.projectId,
+          instanceId: userContext.instanceId,
+          instanceExpansionPath: userContext.instanceExpansionPath,
+          workspacePath: userContext.workspacePath,
+          attachments,
+        },
+      });
+      text = response.content.text ?? "处理完成，但没有生成文本回复。";
+      if (pendingDeliveries.length > 0) {
+        text += `\n\n另有 ${pendingDeliveries.length} 条此前未送达内容（${pendingDeliveries.map((item) => item.summary).join("、")}）。回复“补发”即可取回。`;
+      }
+    }
+    await rememberWeixinTurn(userContext, userText, text);
     appendConversationMessage({
       scope: {
         userId: userContext.userId,

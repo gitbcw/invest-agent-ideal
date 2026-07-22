@@ -135,7 +135,10 @@ export function createAgent(): AcpAgent {
         if (isBusy) {
           return textResponse("上一条消息还在处理中，我处理完会直接回复。你可以稍等一下再发下一条。");
         }
-        return textResponse("这次分析生成超时了，请稍后再试。我已记录本次异常，方便继续排查。");
+        if (errorMessage.includes("超时")) {
+          return textResponse("这次分析生成超时了，请稍后再试。我已记录本次异常，方便继续排查。");
+        }
+        return textResponse("这次回复生成失败了，请稍后重试。我已记录本次异常，方便继续排查。");
       }
     },
   };

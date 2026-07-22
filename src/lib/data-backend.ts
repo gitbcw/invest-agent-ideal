@@ -18,7 +18,7 @@
  *   消除 chat_history 表在主路径上的写入。
  *
  * 双轨期残留(系统层 / 工作包 5 范畴):
- *   - alerts / alert_rules / alert_events:仍在 SQLite;这是系统层信号配置,不属于 portfolio 数据
+ *   - alert_rules / alert_events:仍在 SQLite;这是系统层规则与事件状态,不属于 portfolio 数据
  *   - review_viewpoints / method_change_candidates:属工作包 5 自演进闭环范畴
  *   - daily_plans:✅ WP4.7 已切到 `daily-plan-backend.ts`,workspace 模式走 `plans/daily/<date>.yaml`
  */

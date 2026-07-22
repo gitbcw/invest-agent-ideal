@@ -138,6 +138,15 @@ try {
     notes: "",
   });
 
+  const skippedFinalStepResponse = await app.inject({
+    method: "POST",
+    url: "/api/sandbox/onboarding/confirm-step",
+    headers: { authorization: `Bearer ${token}` },
+    payload: { step: "watch_rules", summary: "错误地尝试跳过前置步骤" },
+  });
+  assert.equal(skippedFinalStepResponse.statusCode, 409, skippedFinalStepResponse.body);
+  assert.notEqual((await store.readOnboardingState()).status, "completed");
+
   const reviewResponse = await app.inject({
     method: "POST",
     url: "/api/sandbox/onboarding/confirm-step",
@@ -186,6 +195,11 @@ try {
     payload: {
       step: "style",
       summary: "用户确认风格，但模型误传 complete=true",
+      styleProfile: {
+        style: "趋势辅助型",
+        investmentHorizon: "中期趋势",
+        notes: "基本面为主，技术面辅助。",
+      },
       complete: true,
     },
   });
@@ -194,6 +208,9 @@ try {
   const prematureCompleteBody = prematureCompleteResponse.json();
   assert.equal(prematureCompleteBody.state.status, "in_progress", "complete=true must not complete onboarding before watch_rules");
   assert.equal(prematureCompleteBody.state.current_step, "review_schedule", "style confirmation should advance to review_schedule");
+  const savedStyle = await store.readStrategy();
+  assert.equal(savedStyle?.profile?.style, "趋势辅助型");
+  assert.ok(savedStyle?.last_confirmed_at, "style confirmation must persist strategy.yaml");
 
   await store.writeOnboardingState({
     version: 1,
@@ -248,6 +265,10 @@ try {
   const guardedPayload = {
     step: "style",
     summary: "模型误把选择风格当成确认",
+    styleProfile: {
+      style: "趋势辅助型",
+      notes: "基本面为主，技术面辅助。",
+    },
   };
   const guardedConfirmation = await callServiceTool(
     "confirmations.request",
@@ -270,15 +291,41 @@ try {
   const guardedState = await store.readOnboardingState();
   assert.equal(guardedState.steps.style.done, false, "rejected MCP confirmation must not write style");
 
+  const confirmedAt = new Date(Date.now() + 10).toISOString();
+  await db.insert(conversationMessages).values({
+    userId: USER_ID,
+    projectId: "invest-agent",
+    instanceId: INSTANCE_ID,
+    conversationId: CONVERSATION_ID,
+    channel: "weixin-mobile",
+    role: "user",
+    content: "确认",
+    createdAt: confirmedAt,
+    updatedAt: confirmedAt,
+  });
+  const confirmedStyle = await callServiceTool(
+    "onboarding.confirm_step",
+    {
+      confirmedByUser: true,
+      confirmationId: guardedConfirmation.confirmationId,
+      ...guardedPayload,
+    },
+    guardedContext
+  );
+  assert.equal(confirmedStyle.ok, true);
+  const mcpSavedStyle = await store.readStrategy();
+  assert.equal(mcpSavedStyle?.profile?.style, "趋势辅助型");
+  assert.ok(mcpSavedStyle?.last_confirmed_at, "MCP style confirmation must persist strategy.yaml");
+
   await store.writeOnboardingState({
     version: 1,
     status: "in_progress",
-    current_step: "review_schedule",
+    current_step: "market_watch_schedule",
     steps: {
       welcome: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
       portfolio: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
       style: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
-      review_schedule: { done: false, completed_at: null },
+      review_schedule: { done: true, completed_at: "2026-01-01T00:00:00.000Z" },
       market_watch_schedule: { done: false, completed_at: null },
       notification: { done: false, completed_at: null },
       watch_rules: { done: false, completed_at: null },

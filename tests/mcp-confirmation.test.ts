@@ -14,7 +14,8 @@ test("MCP durable writes consume an exact, later-turn confirmation once", async 
 
   try {
     const { db, initDb } = await import("../src/db/index.js");
-    const { conversationMessages, conversationSessions } = await import("../src/db/schema.js");
+    const { conversationMessages, conversationSessions, pendingSandboxConfirmations, sandboxAuditLogs } = await import("../src/db/schema.js");
+    const { and, eq } = await import("drizzle-orm");
     const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
     const { ensureWorkspace, resolveWorkspacePath } = await import("../src/lib/workspace.js");
     const { WorkspaceStore } = await import("../src/lib/workspace-store.js");
@@ -59,7 +60,33 @@ test("MCP durable writes consume an exact, later-turn confirmation once", async 
       notes: "",
     });
 
-    const payload = { step: "style", summary: "保存趋势辅助型风格" };
+    await assert.rejects(
+      () => callServiceTool("confirmations.request", {
+        operation: "onboarding.confirm_step",
+        payload: {
+          step: "style",
+          styleProfile: { basePositionPercent: 5 },
+        },
+      }, context),
+      /策略摘要/
+    );
+    const invalidDrafts = await db.select().from(pendingSandboxConfirmations).where(eq(pendingSandboxConfirmations.userId, userId));
+    assert.equal(invalidDrafts.length, 0, "invalid onboarding drafts must be rejected before creating a confirmation");
+
+    const payload = {
+      step: "style",
+      summary: "保存趋势辅助型风格",
+      styleProfile: {
+        name: "基本面主导的中期趋势策略",
+        strategySummary: "基本面为主，技术面辅助；保留5%底仓，每次加减仓5%，以收盘价确认。",
+        holdingHorizon: "中期趋势",
+        entryRules: [{ condition: "回踩5日线不破", action: "加仓5%" }],
+        exitRules: [{ condition: "跌破10日线", action: "减仓5%" }],
+        basePositionPercent: 5,
+        positionStepPercent: 5,
+        executionPrice: "收盘价确认",
+      },
+    };
     const requested = await callServiceTool("confirmations.request", {
       operation: "onboarding.confirm_step",
       payload,
@@ -111,6 +138,13 @@ test("MCP durable writes consume an exact, later-turn confirmation once", async 
     }, context) as { ok: boolean; state: { steps: Record<string, { done: boolean }> } };
     assert.equal(saved.ok, true);
     assert.equal(saved.state.steps.style.done, true);
+    const strategy = await store.readStrategy();
+    assert.equal(strategy?.profile?.style, "基本面主导的中期趋势策略");
+    assert.equal(strategy?.profile?.investment_horizon, "中期趋势");
+    assert.match(strategy?.notes ?? "", /保留5%底仓/);
+    assert.deepEqual(strategy?.buy_rules, payload.styleProfile.entryRules);
+    assert.deepEqual(strategy?.sell_rules, payload.styleProfile.exitRules);
+    assert.ok(strategy?.last_confirmed_at);
 
     await assert.rejects(
       () => callServiceTool("onboarding.confirm_step", {
@@ -120,6 +154,47 @@ test("MCP durable writes consume an exact, later-turn confirmation once", async 
       }, context),
       /pending confirmation is unavailable/
     );
+
+    const skippedPayload = {
+      step: "market_watch_schedule",
+      summary: "错误地跳过复盘时间",
+      marketWatchSchedule: {
+        default_windows: ["09:55", "11:20", "14:30"],
+        push_mode: "exception_only",
+      },
+    };
+    const skipped = await callServiceTool("confirmations.request", {
+      operation: "onboarding.confirm_step",
+      payload: skippedPayload,
+    }, context) as { confirmationId: string };
+    await db.insert(conversationMessages).values({
+      messageId: "mcp-confirmation-skipped-step-message",
+      conversationId,
+      userId,
+      projectId: "invest-agent",
+      instanceId,
+      assistantId: instanceId,
+      channel: "weixin-mobile",
+      role: "user",
+      content: "确认",
+      createdAt: new Date(Date.now() + 2_000).toISOString(),
+    });
+    await assert.rejects(
+      () => callServiceTool("onboarding.confirm_step", {
+        confirmedByUser: true,
+        confirmationId: skipped.confirmationId,
+        ...skippedPayload,
+      }, context),
+      /不能跳过 onboarding 前置步骤/
+    );
+    const [stillPending] = await db.select().from(pendingSandboxConfirmations).where(eq(pendingSandboxConfirmations.id, skipped.confirmationId));
+    assert.equal(stillPending?.status, "pending", "failed durable writes must not consume the confirmation");
+    const failureAudits = await db.select().from(sandboxAuditLogs).where(and(
+      eq(sandboxAuditLogs.userId, userId),
+      eq(sandboxAuditLogs.operation, "onboarding.confirm_step"),
+      eq(sandboxAuditLogs.status, "error")
+    ));
+    assert.ok(failureAudits.some((row) => row.resultSummary?.includes("不能跳过 onboarding 前置步骤")), "failed confirmed writes must be audited");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

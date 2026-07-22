@@ -172,8 +172,29 @@ try {
   const retryUpdated = await getPushJob(retryJob.id);
   assert.equal(retryUpdated?.status, "retry");
   assert.equal(retryUpdated?.attempts, 1);
-  assert.match(retryUpdated?.lastError ?? "", /push sender returned false/);
+  assert.equal(retryUpdated?.lastError, "wechat_api_error");
   console.log("  ✓ push job 失败时进入 retry 并记录原因");
+
+  log("push_jobs 微信上下文过期等待用户恢复");
+  const expiredJob = await enqueuePushJob({
+    userId: DEFAULT_USER_ID,
+    projectId: DEFAULT_PROJECT_ID,
+    instanceId: DEFAULT_INSTANCE_ID,
+    source: "scheduler",
+    message: "[stage1-smoke] context expiry recovery contract",
+    maxAttempts: 5,
+  });
+  createdJobIds.push(expiredJob.id);
+  const expiredResult = await processDuePushJobs(async () => ({
+    ok: false,
+    reason: "context_expired",
+    errorMessage: "微信主动推送失败: ret=-2",
+  }), { limit: 5 });
+  assert.equal(expiredResult.awaitingUser, 1);
+  const expiredUpdated = await getPushJob(expiredJob.id);
+  assert.equal(expiredUpdated?.status, "awaiting_user");
+  assert.equal(expiredUpdated?.attempts, 1);
+  console.log("  ✓ 微信上下文过期时停止重试并等待用户恢复会话");
 
   log("push_jobs 达到最大尝试后 dead");
   const deadJob = await enqueuePushJob({

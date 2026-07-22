@@ -47,6 +47,9 @@ try {
   assert.equal(sessionAllowed.statusCode, 200);
   const remotePlatform = await app.inject({ method: "GET", url: "/platform", remoteAddress: "203.0.113.10" });
   assert.equal(remotePlatform.statusCode, 401);
+  assert.equal(remotePlatform.body.includes("经营看板登录"), true);
+  assert.equal(remotePlatform.body.includes("用户助手"), false);
+  assert.equal(remotePlatform.body.includes("日志审计"), false);
   const remoteSession = await app.inject({ method: "GET", url: "/api/platform/instances", headers: { cookie: sessionCookie }, remoteAddress: "203.0.113.10" });
   assert.equal(remoteSession.statusCode, 401);
   const basic = await app.inject({
@@ -54,7 +57,8 @@ try {
     url: "/dashboard",
     headers: { authorization: `Basic ${Buffer.from(`invest-agent:${serviceApiToken}`).toString("base64")}` },
   });
-  assert.equal(basic.statusCode, 200);
+  assert.equal(basic.statusCode, 301);
+  assert.equal(basic.headers.location, "/platform");
 
   const health = await app.inject({ method: "GET", url: "/health" });
   assert.equal(health.statusCode, 200);

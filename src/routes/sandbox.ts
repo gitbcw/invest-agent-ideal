@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "../db/index.js";
-import { alertEvents, alertRules, alerts, codexAcpTraces, indicatorResults, investmentProfiles, methodologyProfiles } from "../db/schema.js";
+import { alertEvents, alertRules, codexAcpTraces, indicatorResults, investmentProfiles, methodologyProfiles } from "../db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
@@ -17,6 +17,12 @@ import { consumeSandboxConfirmation, createSandboxConfirmation, listPendingSandb
 import { enqueuePushJob, getPushJob, processDuePushJobs, type PushBackend } from "../services/push-queue.js";
 import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
 import { marketCalendar, marketCapitalFlow, marketHealth, marketIndices, marketKline, marketQuote, marketResolve, marketSectorTheme, marketSnapshot, marketStockInfo, type MarketKlinePeriod } from "../services/market-data.js";
+import {
+  applyConfirmedOnboardingStep,
+  isOnboardingStep as isSharedOnboardingStep,
+  normalizeOnboardingState as normalizeSharedOnboardingState,
+  OnboardingContractError,
+} from "../services/onboarding.js";
 
 function normalizeWatchlistReason(reason: string) {
   return reason.replace(/观察池/g, "自选池").trim();
@@ -185,16 +191,6 @@ async function loadMethodologyProfile(ctx: { userId: string; instanceId: string 
   return serializeMethodologyProfileFromMd(methods);
 }
 
-const indicatorNames: Record<string, string> = {
-  price: "涨跌幅",
-  turnover: "换手率",
-  volume_ratio: "量比",
-  macd: "MACD",
-  breakout: "放量突破",
-  break_support: "跌破支撑",
-  target_price: "目标价",
-  support_price: "支撑价",
-};
 
 function sandboxError(reply: any, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -587,6 +583,14 @@ function arraysEqualString(a: unknown, b: string[]) {
 }
 
 function validateOnboardingStepRequest(step: OnboardingStepKey, body: Record<string, unknown>) {
+  if (step === "style") {
+    const profile = asRecord(body.styleProfile ?? body.style_profile);
+    if (typeof (profile.style ?? body.style) !== "string" && typeof (profile.notes ?? body.notes) !== "string") {
+      return { status: 400, error: "style 确认必须携带 styleProfile 的策略摘要，不能只推进 onboarding 状态。" };
+    }
+    return null;
+  }
+
   if (step === "review_schedule") {
     const defaults = readReviewScheduleDefaults(body);
     const dailyTime = asRecord(defaults.daily_review).default_time;
@@ -620,6 +624,16 @@ async function validateOnboardingStepEffects(
   step: OnboardingStepKey,
   body: Record<string, unknown>,
 ) {
+  if (step === "style") {
+    const strategy = await store.readStrategy();
+    const profile = asRecord(body.styleProfile ?? body.style_profile);
+    const expectedStyle = typeof (profile.style ?? body.style) === "string" ? String(profile.style ?? body.style).trim() : "";
+    if (!strategy?.last_confirmed_at || (expectedStyle && strategy.profile?.style !== expectedStyle)) {
+      return { status: 500, error: "style 已确认但 strategy.yaml 未按请求落盘。" };
+    }
+    return null;
+  }
+
   if (step === "review_schedule") {
     const schedules = asRecord(await store.readSchedules());
     const defaults = readReviewScheduleDefaults(body);
@@ -826,6 +840,39 @@ async function applyOnboardingStepDefaults(
   now: string,
   body: Record<string, unknown>
 ) {
+  if (step === "style") {
+    const profile = asRecord(body.styleProfile ?? body.style_profile);
+    const style = typeof (profile.style ?? body.style) === "string" ? String(profile.style ?? body.style).trim() : "";
+    const notes = typeof (profile.notes ?? body.notes) === "string" ? String(profile.notes ?? body.notes).trim() : "";
+    const selectedStylePack = profile.selectedStylePack ?? profile.selected_style_pack;
+    const buyRules = profile.buyRules ?? profile.buy_rules;
+    const sellRules = profile.sellRules ?? profile.sell_rules;
+    const riskRules = profile.riskRules ?? profile.risk_rules;
+    const existing = await store.readStrategy() ?? {};
+    await store.writeStrategy({
+      ...existing,
+      profile: {
+        ...(existing.profile ?? {}),
+        style: style || existing.profile?.style || "自定义策略",
+        selected_style_pack: selectedStylePack === null ? null : typeof selectedStylePack === "string" ? selectedStylePack : existing.profile?.selected_style_pack ?? null,
+        custom_style_enabled: typeof (profile.customStyleEnabled ?? profile.custom_style_enabled) === "boolean"
+          ? Boolean(profile.customStyleEnabled ?? profile.custom_style_enabled)
+          : existing.profile?.custom_style_enabled ?? true,
+        risk_preference: typeof (profile.riskPreference ?? profile.risk_preference) === "string"
+          ? String(profile.riskPreference ?? profile.risk_preference)
+          : existing.profile?.risk_preference ?? "",
+        investment_horizon: typeof (profile.investmentHorizon ?? profile.investment_horizon) === "string"
+          ? String(profile.investmentHorizon ?? profile.investment_horizon)
+          : existing.profile?.investment_horizon ?? "",
+      },
+      buy_rules: Array.isArray(buyRules) ? buyRules : existing.buy_rules ?? [],
+      sell_rules: Array.isArray(sellRules) ? sellRules : existing.sell_rules ?? [],
+      risk_rules: Array.isArray(riskRules) ? riskRules : existing.risk_rules ?? [],
+      notes: notes || existing.notes || "",
+      last_confirmed_at: now,
+    });
+  }
+
   if (step === "review_schedule") {
     const schedules = await store.readSchedules() ?? {};
     const reviewDefaults = readReviewScheduleDefaults(body);
@@ -899,15 +946,15 @@ async function applyOnboardingStepDefaults(
         end: "18:00",
         ...(notification.working_hours && typeof notification.working_hours === "object" ? notification.working_hours as Record<string, unknown> : {}),
         policy: mode === "active_watch"
-          ? "按用户设置的盯盘时间推送盘中简报；重大风险可单独提醒。"
+          ? "按用户设置的盯盘时间推送盘中简报。"
           : mode === "evening_summary"
-            ? "盘中尽量不打扰，晚上统一复盘；重大风险按系统安全边界处理。"
-            : "盘中只提醒可能需要当天处理的事，其他放到晚间复盘。",
+            ? "盘中不主动推送，晚上统一查看复盘和关注事项。"
+            : "盘中不主动推送普通信息，减少不必要打扰。",
       },
       do_not_disturb: {
         ...(notification.do_not_disturb && typeof notification.do_not_disturb === "object" ? notification.do_not_disturb as Record<string, unknown> : {}),
         enabled: mode !== "active_watch",
-        allow_p0_override: true,
+        allow_p0_override: false,
       },
       last_confirmed_at: now,
     });
@@ -959,7 +1006,7 @@ async function applyOnboardingStepDefaults(
 }
 
 export function registerSandboxRoutes(app: FastifyInstance) {
-  app.get("/api/sandbox/me", sandboxSafe("invest.dashboard.read", async (ctx) => ({
+  app.get("/api/sandbox/me", sandboxSafe("invest.snapshot.read", async (ctx) => ({
     ok: true,
     context: {
       userId: ctx.userId,
@@ -977,14 +1024,13 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     },
   })));
 
-  app.get("/api/sandbox/dashboard", sandboxSafe("invest.dashboard.read", async (ctx) => {
+  app.get("/api/sandbox/snapshot", sandboxSafe("invest.snapshot.read", async (ctx) => {
     const today = new Date().toISOString().slice(0, 10);
-    const [portfolioRows, watchlistRows, planRows, legacyAlertRules, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, methodChangeRows, investmentProfile, methodologyProfile] =
+    const [portfolioRows, watchlistRows, planRows, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, methodChangeRows, investmentProfile, methodologyProfile] =
       await Promise.all([
         portfolioBackend.listActive(ctx.userId, ctx.instanceId),
         watchlistBackend.list(ctx.userId, ctx.instanceId),
         planBackend.list(ctx.userId, ctx.instanceId),
-        db.select().from(alerts).where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId))),
         db.select().from(alertRules).where(and(eq(alertRules.userId, ctx.userId), eq(alertRules.instanceId, ctx.instanceId))),
         db.select().from(indicatorResults).where(and(eq(indicatorResults.userId, ctx.userId), eq(indicatorResults.instanceId, ctx.instanceId))).orderBy(desc(indicatorResults.calculatedAt)).limit(50),
         db.select().from(alertEvents).where(and(eq(alertEvents.userId, ctx.userId), eq(alertEvents.instanceId, ctx.instanceId))).orderBy(desc(alertEvents.createdAt)).limit(50),
@@ -1033,7 +1079,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       holdings,
       watchlist: watchItems,
       plans,
-      alertRules: legacyAlertRules,
+      alertRules: [],
       upgradedAlertRules,
       recentIndicatorResults,
       recentEvents,
@@ -1041,7 +1087,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     };
   }));
 
-  app.get("/api/sandbox/confirmations/pending", sandboxSafe("invest.dashboard.read", async (ctx) => {
+  app.get("/api/sandbox/confirmations/pending", sandboxSafe("invest.snapshot.read", async (ctx) => {
     const confirmations = await listPendingSandboxConfirmations(ctx);
     return { ok: true, userId: ctx.userId, projectId: ctx.projectId, instanceId: ctx.instanceId, confirmations };
   }));
@@ -1065,7 +1111,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
 
   app.get("/api/sandbox/onboarding/state", sandboxSafe("invest.onboarding.read", async (ctx) => {
     const store = new WorkspaceStore(ctx.userId);
-    const state = normalizeOnboardingState(await store.readOnboardingState());
+    const state = normalizeSharedOnboardingState(await store.readOnboardingState());
     await audit(ctx, {
       operation: "onboarding.state.read",
       resourceType: "onboarding_state",
@@ -1156,7 +1202,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       last_confirmed_by: "user",
     });
 
-    const current = normalizeOnboardingState(await store.readOnboardingState());
+    const current = normalizeSharedOnboardingState(await store.readOnboardingState());
     const steps = { ...(current.steps ?? {}) };
     steps.welcome = { done: true, completed_at: steps.welcome?.completed_at ?? now };
     steps.portfolio = { done: true, completed_at: steps.portfolio?.completed_at ?? now };
@@ -1229,53 +1275,28 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     };
   }>("/api/sandbox/onboarding/confirm-step", sandboxSafe("invest.onboarding.write", async (ctx, request, reply) => {
     const step = request.body?.step;
-    if (!isOnboardingStep(step)) {
+    if (!isSharedOnboardingStep(step)) {
       return reply.status(400).send({ ok: false, error: `非法 onboarding step: ${String(step ?? "")}` });
     }
 
     const now = new Date().toISOString();
     const store = new WorkspaceStore(ctx.userId);
-    const requestError = validateOnboardingStepRequest(step, request.body ?? {});
-    if (requestError) {
+    let nextState: OnboardingStateYaml;
+    try {
+      nextState = await applyConfirmedOnboardingStep({ store, step, body: request.body ?? {}, now });
+    } catch (error) {
+      const contractError = error instanceof OnboardingContractError ? error : null;
+      const message = error instanceof Error ? error.message : String(error);
       await audit(ctx, {
         operation: "onboarding.confirm_step",
         resourceType: "onboarding_state",
         resourceId: step,
         requestBody: request.body,
-        resultSummary: requestError.error,
+        resultSummary: message,
         status: "error",
       });
-      return reply.status(requestError.status).send({ ok: false, ...requestError });
+      return reply.status(contractError?.status ?? 500).send({ ok: false, error: message });
     }
-    await applyOnboardingStepDefaults(store, step, now, request.body ?? {});
-    const effectError = await validateOnboardingStepEffects(store, step, request.body ?? {});
-    if (effectError) {
-      await audit(ctx, {
-        operation: "onboarding.confirm_step",
-        resourceType: "onboarding_state",
-        resourceId: step,
-        requestBody: request.body,
-        resultSummary: effectError.error,
-        status: "error",
-      });
-      return reply.status(effectError.status).send({ ok: false, ...effectError });
-    }
-
-    const current = normalizeOnboardingState(await store.readOnboardingState());
-    const steps = { ...(current.steps ?? {}) };
-    steps[step] = { done: true, completed_at: steps[step]?.completed_at ?? now };
-    const allDone = ONBOARDING_STEPS.every((key) => key === step || steps[key]?.done === true);
-    const shouldComplete = allDone || step === "watch_rules";
-    const nextState: OnboardingStateYaml = {
-      ...current,
-      status: shouldComplete ? "completed" : "in_progress",
-      current_step: shouldComplete ? "completed" : nextOnboardingStep(step),
-      steps,
-      completed_at: shouldComplete ? (current.completed_at ?? now) : current.completed_at ?? null,
-      updated_at: now,
-      notes: request.body?.notes ?? current.notes ?? "",
-    };
-    await store.writeOnboardingState(nextState);
     await store.appendChangeLog({
       ts: now,
       source: "sandbox",
@@ -1301,7 +1322,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       instanceId: ctx.instanceId,
       state: nextState,
       didCreateWatchRules: false,
-      message: shouldComplete ? "新手引导已完成" : `已确认 ${step}`,
+      message: nextState.status === "completed" ? "新手引导已完成" : `已确认 ${step}`,
     };
   }));
 
@@ -1897,81 +1918,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
         resultSummary: `backend=${ctx.backend ?? "hermes"}; count=${items.length}; pushed=${pushed}; pushJobId=${pushJobId ?? "-"}`,
     });
     return { ok: true, userId: ctx.userId, count: items.length, pushed, pushJobId, alerts: items, text };
-  }));
-
-  app.post<{ Body: { stockCode: string; stockName?: string; indicator: string; threshold?: number | string; userId?: string } }>("/api/sandbox/alerts/set", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
-    const { stockCode, stockName, indicator, threshold } = request.body ?? {};
-    if (!stockCode || !indicator) return reply.status(400).send({ ok: false, error: "缺少股票代码或指标" });
-
-    const existing = await db
-      .select()
-      .from(alerts)
-      .where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId), eq(alerts.stockCode, stockCode), eq(alerts.indicator, indicator)))
-      .limit(1);
-
-    const values = {
-      userId: ctx.userId,
-      instanceId: ctx.instanceId,
-      stockCode,
-      indicator,
-      threshold: JSON.stringify({ value: threshold ?? 3 }),
-      enabled: true,
-    };
-
-    if (existing.length > 0) {
-      await db.update(alerts).set(values).where(eq(alerts.id, existing[0].id));
-    } else {
-      await db.insert(alerts).values(values);
-    }
-    await audit(ctx, {
-      operation: "alerts.set",
-      resourceType: "alert_rule",
-      resourceId: `${stockCode}:${indicator}`,
-      requestBody: request.body,
-      resultSummary: `${existing.length > 0 ? "updated" : "created"} ${stockCode} ${indicator}`,
-    });
-
-    const displayName = indicatorNames[indicator] || indicator;
-    return { ok: true, userId: ctx.userId, message: `${stockName ?? stockCode} ${displayName} 提醒已${existing.length > 0 ? "更新" : "设置"}` };
-  }));
-
-  app.post<{ Body: { id: number; enabled: boolean; userId?: string; confirmationId?: string } }>("/api/sandbox/alerts/toggle", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
-    const { id, enabled } = request.body ?? {};
-    if (id == null || enabled == null || typeof id !== "number") return reply.status(400).send({ ok: false, error: "缺少参数" });
-
-    const existing = await db.select().from(alerts).where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId), eq(alerts.id, id))).limit(1);
-    if (existing.length === 0) return { ok: false, error: "提醒规则不存在", userId: ctx.userId };
-
-    if (!enabled && await requireConfirmation(ctx, request, reply, "alerts.toggle_off", "alert_rule", String(id))) return;
-
-    await db.update(alerts).set({ enabled }).where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId), eq(alerts.id, id)));
-    await audit(ctx, {
-      operation: enabled ? "alerts.toggle_on" : "alerts.toggle_off",
-      resourceType: "alert_rule",
-      resourceId: String(id),
-      requestBody: request.body,
-      resultSummary: `${enabled ? "enabled" : "disabled"} ${existing[0].stockCode} ${existing[0].indicator}`,
-    });
-    return { ok: true, userId: ctx.userId, message: `提醒已${enabled ? "启用" : "关闭"}` };
-  }));
-
-  app.post<{ Body: { id: number; userId?: string; confirmationId?: string } }>("/api/sandbox/alerts/remove", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
-    const { id } = request.body ?? {};
-    if (id == null || typeof id !== "number") return reply.status(400).send({ ok: false, error: "缺少参数" });
-
-    const existing = await db.select().from(alerts).where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId), eq(alerts.id, id))).limit(1);
-    if (existing.length === 0) return { ok: false, error: "提醒规则不存在", userId: ctx.userId };
-    if (await requireConfirmation(ctx, request, reply, "alerts.remove", "alert_rule", String(id))) return;
-
-    await db.delete(alerts).where(and(eq(alerts.userId, ctx.userId), eq(alerts.instanceId, ctx.instanceId), eq(alerts.id, id)));
-    await audit(ctx, {
-      operation: "alerts.remove",
-      resourceType: "alert_rule",
-      resourceId: String(id),
-      requestBody: request.body,
-      resultSummary: `removed ${existing[0].stockCode} ${existing[0].indicator}`,
-    });
-    return { ok: true, userId: ctx.userId, message: `已删除 ${existing[0].stockCode} 的${indicatorNames[existing[0].indicator] || existing[0].indicator}提醒` };
   }));
 
   app.get("/api/sandbox/watch-rules/catalog", sandboxSafe("invest.alert.read", async (ctx) => {

@@ -48,6 +48,14 @@ assert.match(output, /后台命令已隐藏/);
 assert.match(output, /内部文件/);
 assert.match(output, /下一步可以继续设置/);
 
+const metadataWarning = "Model metadata for `gpt-5.6-terra` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.";
+const outputWithoutDiagnostic = sanitizeCustomerText(`持仓已保存。\n${metadataWarning}\n下一步请选择投资风格。`);
+assert.equal(outputWithoutDiagnostic, "持仓已保存。\n下一步请选择投资风格。");
+assert.equal(
+  sanitizeCustomerText(`${metadataWarning}下一步请选择投资风格。`),
+  "下一步请选择投资风格。"
+);
+
 const redacted = redactSensitiveText(
   "Authorization: Bearer abcdefghijklmnopqrstuvwxyz.abcdefghijklmnopqrstuvwxyz.abcdefghijklmnopqrstuvwxyz"
 );

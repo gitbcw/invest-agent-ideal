@@ -6,6 +6,7 @@ import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { hasActiveWeixinComplexTask } from "../channels/weixin-activity.js";
 import { sanitizeWeixinCustomerText } from "../lib/customer-output.js";
+import { recordWeixinDeliveryAttempt, type WeixinDeliveryResult } from "./weixin-delivery.js";
 
 export type PushBackend = "hermes" | "codex";
 export type PushChannel = "weixin-mobile";
@@ -17,6 +18,7 @@ export interface PushJobInput {
   channel?: PushChannel;
   backend?: PushBackend;
   source?: string;
+  idempotencyKey?: string;
   message: string;
   maxAttempts?: number;
 }
@@ -29,7 +31,7 @@ export type PushSender = (job: {
   channel: PushChannel;
   backend: PushBackend;
   message: string;
-}) => Promise<boolean>;
+}) => Promise<boolean | WeixinDeliveryResult>;
 
 const RETRY_DELAYS_MS = [
   60 * 1000,
@@ -40,9 +42,14 @@ const RETRY_DELAYS_MS = [
 ];
 
 const USER_ACTIVE_DEFER_MS = 2 * 60 * 1000;
-const DEFERABLE_SOURCES = new Set(["scheduler"]);
+const PUSH_PROCESSING_LEASE_MS = 2 * 60 * 1000;
+const DEFERABLE_SOURCES = new Set(["scheduler", "onboarding_commit"]);
 
 export async function enqueuePushJob(input: PushJobInput) {
+  if (input.idempotencyKey) {
+    const [existing] = await db.select().from(pushJobs).where(eq(pushJobs.idempotencyKey, input.idempotencyKey)).limit(1);
+    if (existing) return existing;
+  }
   const now = new Date().toISOString();
   const record = {
     id: randomUUID(),
@@ -52,6 +59,7 @@ export async function enqueuePushJob(input: PushJobInput) {
     channel: input.channel || "weixin-mobile",
     backend: input.backend || "codex",
     source: input.source || "scheduler",
+    idempotencyKey: input.idempotencyKey,
     message: input.channel === undefined || input.channel === "weixin-mobile"
       ? sanitizeWeixinCustomerText(input.message)
       : input.message,
@@ -62,8 +70,15 @@ export async function enqueuePushJob(input: PushJobInput) {
     createdAt: now,
     updatedAt: now,
   };
-  await db.insert(pushJobs).values(record);
-  return record;
+  try {
+    await db.insert(pushJobs).values(record);
+    return record;
+  } catch (error) {
+    if (!input.idempotencyKey) throw error;
+    const [existing] = await db.select().from(pushJobs).where(eq(pushJobs.idempotencyKey, input.idempotencyKey)).limit(1);
+    if (existing) return existing;
+    throw error;
+  }
 }
 
 export async function getPushJob(id: string) {
@@ -84,15 +99,21 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
   const due = await db
     .select()
     .from(pushJobs)
-    .where(and(inArray(pushJobs.status, ["pending", "retry"]), lte(pushJobs.nextRetryAt, now.toISOString())))
+    .where(and(inArray(pushJobs.status, ["pending", "retry", "processing"]), lte(pushJobs.nextRetryAt, now.toISOString())))
     .orderBy(asc(pushJobs.nextRetryAt), asc(pushJobs.createdAt))
     .limit(options.limit ?? 20);
 
   let sent = 0;
   let retried = 0;
   let dead = 0;
+  let awaitingUser = 0;
 
   for (const job of due) {
+    // A job can be observed by the immediate enqueue drain and the interval worker at once.
+    // Only the worker that successfully acquires this lease may call the external channel.
+    const claimed = await claimDuePushJob(job.id, now);
+    if (!claimed) continue;
+
     if (
       DEFERABLE_SOURCES.has(job.source) &&
       hasActiveWeixinComplexTask({ userId: job.userId, instanceId: job.instanceId })
@@ -104,7 +125,7 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
     const attempts = job.attempts + 1;
     const attemptAt = new Date().toISOString();
     try {
-      const ok = await sender({
+      const senderResult = await sender({
         id: job.id,
         userId: job.userId,
         projectId: job.projectId,
@@ -113,7 +134,17 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
         backend: job.backend as PushBackend,
         message: job.message,
       });
-      if (ok) {
+      const result: WeixinDeliveryResult = typeof senderResult === "boolean"
+        ? { ok: senderResult, reason: senderResult ? "sent" : "wechat_api_error" }
+        : senderResult;
+      await recordWeixinDeliveryAttempt({
+        userId: job.userId,
+        instanceId: job.instanceId,
+        pushJobId: job.id,
+        source: job.source,
+        result,
+      });
+      if (result.ok) {
         await db
           .update(pushJobs)
           .set({
@@ -128,20 +159,51 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
         sent += 1;
         continue;
       }
-      const result = await markFailed(job.id, attempts, job.maxAttempts, "push sender returned false");
-      if (result === "dead") dead += 1;
+      if (result.reason === "context_expired" && DEFERABLE_SOURCES.has(job.source)) {
+        await markAwaitingUser(job.id, attempts, result.errorMessage || result.reason);
+        awaitingUser += 1;
+        continue;
+      }
+      const outcome = await markFailed(job.id, attempts, job.maxAttempts, result.errorMessage || result.reason);
+      if (outcome === "dead") dead += 1;
       else retried += 1;
     } catch (error) {
-      const result = await markFailed(job.id, attempts, job.maxAttempts, error instanceof Error ? error.message : String(error));
-      if (result === "dead") dead += 1;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await recordWeixinDeliveryAttempt({
+        userId: job.userId,
+        instanceId: job.instanceId,
+        pushJobId: job.id,
+        source: job.source,
+        result: { ok: false, reason: "wechat_api_error", errorMessage },
+      });
+      const outcome = await markFailed(job.id, attempts, job.maxAttempts, errorMessage);
+      if (outcome === "dead") dead += 1;
       else retried += 1;
     }
   }
 
   if (due.length > 0) {
-    logger.info(`推送队列处理完成 due=${due.length} sent=${sent} retry=${retried} dead=${dead}`);
+    logger.info(`推送队列处理完成 due=${due.length} sent=${sent} retry=${retried} awaitingUser=${awaitingUser} dead=${dead}`);
   }
-  return { due: due.length, sent, retried, dead };
+  return { due: due.length, sent, retried, awaitingUser, dead };
+}
+
+async function claimDuePushJob(id: string, now: Date): Promise<boolean> {
+  const claimedAt = now.toISOString();
+  const leaseExpiresAt = new Date(now.getTime() + PUSH_PROCESSING_LEASE_MS).toISOString();
+  const result = await db
+    .update(pushJobs)
+    .set({
+      status: "processing",
+      nextRetryAt: leaseExpiresAt,
+      updatedAt: claimedAt,
+    })
+    .where(and(
+      eq(pushJobs.id, id),
+      inArray(pushJobs.status, ["pending", "retry", "processing"]),
+      lte(pushJobs.nextRetryAt, claimedAt),
+    ));
+  return result.changes > 0;
 }
 
 async function deferJob(id: string, delayMs: number, reason: string) {
@@ -175,4 +237,18 @@ async function markFailed(id: string, attempts: number, maxAttempts: number, err
     })
     .where(eq(pushJobs.id, id));
   return dead ? "dead" : "retry";
+}
+
+async function markAwaitingUser(id: string, attempts: number, errorMessage: string) {
+  const now = new Date().toISOString();
+  await db
+    .update(pushJobs)
+    .set({
+      status: "awaiting_user",
+      attempts,
+      lastAttemptAt: now,
+      lastError: errorMessage.slice(0, 1200),
+      updatedAt: now,
+    })
+    .where(eq(pushJobs.id, id));
 }

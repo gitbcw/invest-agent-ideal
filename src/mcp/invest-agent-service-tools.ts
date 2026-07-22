@@ -6,6 +6,29 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 
+const onboardingStyleProfileSchema = z.object({
+  style: z.string().optional().describe("Canonical investment style label."),
+  name: z.string().optional().describe("Natural-language strategy name; accepted as the style label."),
+  notes: z.string().optional().describe("Canonical strategy summary and important details."),
+  summary: z.string().optional().describe("Natural-language strategy summary; accepted as notes."),
+  strategySummary: z.string().optional().describe("Detailed strategy summary; accepted as notes."),
+  selectedStylePack: z.string().nullable().optional(),
+  customStyleEnabled: z.boolean().optional(),
+  investmentHorizon: z.string().optional(),
+  holdingHorizon: z.string().optional().describe("Alias of investmentHorizon."),
+  riskPreference: z.string().optional(),
+  buyRules: z.array(z.unknown()).optional(),
+  entryRules: z.array(z.unknown()).optional().describe("Alias of buyRules."),
+  sellRules: z.array(z.unknown()).optional(),
+  exitRules: z.array(z.unknown()).optional().describe("Alias of sellRules."),
+  riskRules: z.array(z.unknown()).optional(),
+  corePrinciple: z.string().optional(),
+  riskNotes: z.string().optional(),
+  basePositionPercent: z.number().optional(),
+  positionStepPercent: z.number().optional(),
+  executionPrice: z.string().optional(),
+}).catchall(z.unknown()).describe("Style profile. Provide at least a style/name or notes/summary/strategySummary so the confirmed strategy can be persisted.");
+
 const projectRoot =
   process.env.INVEST_AGENT_PROJECT_ROOT ||
   resolve(__dirname, "../..");
@@ -39,9 +62,67 @@ async function main() {
 
   registerJsonTool(
     { server, callServiceTool, context },
+    "market.kline",
+    "Read daily or five-minute K-line bars through the service market-data facade, including source metadata and warnings.",
+    {
+      code: z.string().describe("Six-digit A-share stock code."),
+      period: z.enum(["day", "m5"]).optional(),
+      count: z.number().int().min(1).max(500).optional(),
+      startDate: z.string().optional(),
+      endDate: z.string().optional(),
+    }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "market.indices",
+    "Read core market index quotes with source metadata and warnings.",
+    {}
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "market.capital_flow",
+    "Read supplemental capital-flow observations for A-share stock codes. Do not treat these observations as proof of institutional intent.",
+    { codes: z.array(z.string()).min(1) }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "market.sector_theme",
+    "Read service-owned industry, concept, and theme tags for A-share stock codes.",
+    { codes: z.array(z.string()).min(1) }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "market.calendar",
+    "Read the A-share trading-day and market-session report for a Beijing date.",
+    { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
     "market.health",
     "Read market-data provider health and endpoint status from the service layer.",
     {}
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "market.stock_info",
+    "Read service-owned announcements, news, and research-report evidence for named A-share stocks. Treat news and reports as supplemental evidence.",
+    {
+      stocks: z.array(z.object({ code: z.string(), name: z.string().optional() })).min(1),
+      days: z.number().int().min(1).max(90).optional(),
+    }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "market.resolve",
+    "Resolve an A-share company name or alias to candidate stock codes. This is for identity resolution, not investment evidence.",
+    { keyword: z.string().min(1) }
   );
 
   registerJsonTool(
@@ -115,7 +196,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "onboarding.confirm_step",
-    "After explicit user confirmation in the latest user message, mark one onboarding step complete and optionally write schedule/notification defaults. Do not call for selection/draft messages such as choosing a style pack or listing market-watch times; first ask the user to reply with an explicit confirmation phrase.",
+    "After an explicit user confirmation in the latest user message, write the confirmed onboarding configuration and advance exactly one step. A plain Chinese confirmation such as 确认、可以、好 is valid after a displayed draft. Never call this for welcome; the first confirmed portfolio completes that transition.",
     {
       confirmedByUser: z.literal(true),
       confirmationId: z.string(),
@@ -125,8 +206,81 @@ async function main() {
       reviewSchedule: z.record(z.string(), z.unknown()).optional(),
       marketWatchSchedule: z.record(z.string(), z.unknown()).optional(),
       notificationPreference: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
+      styleProfile: onboardingStyleProfileSchema.optional(),
     },
     { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "onboarding.complete_watch_setup",
+    "Finish the final onboarding watch-setup step without asking for another confirmation. Use branch=skip only when the latest user message explicitly skips rules. Use branch=configured with ruleIds returned by confirmed watch_rules.create calls in this conversation after all requested rules were verified.",
+    {
+      branch: z.enum(["skip", "configured"]),
+      ruleIds: z.array(z.number().int().positive()).optional(),
+      summary: z.string().optional(),
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "onboarding.draft.get",
+    "Read the current onboarding draft and its next unconfirmed step. During onboarding, use this before reading workspace onboarding state so confirmed draft sections are not replayed.",
+    {}
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "onboarding.draft.upsert_step",
+    "Create or revise one onboarding draft section. This validates and stores only the draft; it does not modify workspace configuration.",
+    {
+      draftId: z.string().optional(),
+      step: z.enum(["portfolio", "style", "review_schedule", "market_watch_schedule", "notification", "watch_rules"]),
+      payload: z.record(z.string(), z.unknown()),
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "onboarding.draft.request_confirmation",
+    "Bind a displayed onboarding draft section and revision to one later ordinary user confirmation. Call before asking the user to confirm that exact draft.",
+    {
+      draftId: z.string(),
+      step: z.enum(["portfolio", "style", "review_schedule", "market_watch_schedule", "notification", "watch_rules"]),
+      revision: z.number().int().positive(),
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "onboarding.draft.accept_step",
+    "After explicit user confirmation, mark that exact onboarding draft revision as accepted. This only updates the service-owned draft and never writes workspace files.",
+    {
+      confirmedByUser: z.literal(true),
+      confirmationId: z.string(),
+      draftId: z.string(),
+      step: z.enum(["portfolio", "style", "review_schedule", "market_watch_schedule", "notification", "watch_rules"]),
+      revision: z.number().int().positive(),
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "onboarding.draft.enqueue_commit",
+    "After every onboarding draft section is accepted, freeze the draft and queue one background commit. Reply that configuration is being completed; do not request a content-free final confirmation.",
+    { draftId: z.string() },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "onboarding.draft.commit_status",
+    "Read whether a frozen onboarding draft is queued, applying, completed, or retrying after a failed commit.",
+    {}
   );
 
   registerJsonTool(
@@ -198,12 +352,15 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "reviews.save",
-    "After explicit user confirmation or scheduled review completion, save a daily review artifact and mirror it to workspace/daily plan state.",
+    "Publish an Agent-authored daily review. Preserve the full Markdown as the report, store an independent WeChat push brief, and optionally append Agent-authored decision/source records. Scheduled daily reviews do not need interactive confirmation; manual durable saves require confirmedByUser=true.",
     {
-      confirmedByUser: z.literal(true),
+      confirmedByUser: z.literal(true).optional(),
       date: z.string().optional(),
       content: z.string(),
+      pushBrief: z.string().optional(),
       summary: z.string().optional(),
+      decisionRecords: z.array(z.record(z.string(), z.unknown())).max(100).optional(),
+      sourceEvents: z.array(z.record(z.string(), z.unknown())).max(100).optional(),
       context: z.unknown().optional(),
     },
     { readOnlyHint: false, destructiveHint: false }

@@ -9,7 +9,7 @@ import { clearPendingConfirmation, registerPendingConfirmation } from "../dist/a
 import { dailyPlanBackend } from "../dist/lib/daily-plan-backend.js";
 import { rememberWeixinTurn } from "../dist/lib/weixin-conversation-memory.js";
 import { ensureWorkspace } from "../dist/lib/workspace.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const userId = "test-prompt-context-packet";
@@ -59,6 +59,12 @@ const built = await buildAcpPromptContext({
 
 assert(built.contextPacket.user.userId === userId, "返回 ContextPacket", built.contextPacket.user);
 assert(existsSync(path.join(workspace.path, ".codex", "skills", "conversation-recovery", "SKILL.md")), "现有 workspace 补齐 conversation-recovery skill");
+assert(existsSync(path.join(workspace.path, ".codex", "skills", "service-capability-policy", "SKILL.md")), "现有 workspace 补齐 MCP-only service policy skill");
+assert(existsSync(path.join(workspace.path, ".codex", "skills", "capability-extension", "SKILL.md")), "现有 workspace 补齐 capability-extension skill");
+assert(
+  readFileSync(path.join(workspace.path, "knowledge", "capability_extension_protocol.md"), "utf8").includes("system_capability_request"),
+  "现有 workspace 同步受管能力扩展边界"
+);
 assert(built.contextPacket.recentConversation.some((item) => item.content.includes("生成日复盘")), "ContextPacket 包含最近用户消息", built.contextPacket.recentConversation);
 assert(built.contextPacket.latestArtifacts.some((item) => item.summary.includes("今日复盘摘要")), "ContextPacket 包含最新复盘摘要", built.contextPacket.latestArtifacts);
 assert(built.contextPacket.pendingConfirmations.some((item) => item.summary.includes("赛轮轮胎跌到 11.22 提醒")), "ContextPacket 包含待确认事项", built.contextPacket.pendingConfirmations);

@@ -96,16 +96,6 @@ export const portfolio = sqliteTable("portfolio", {
   status: text("status").notNull().default("open"),
 });
 
-export const alerts = sqliteTable("alerts", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userId: text("user_id").notNull().default("primary"),
-  instanceId: text("instance_id").notNull().default("invest-agent-primary"),
-  stockCode: text("stock_code").notNull(),
-  indicator: text("indicator").notNull(), // trend / volume / mainforce
-  threshold: text("threshold").notNull(), // JSON
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-});
-
 export const stockPlans = sqliteTable("stock_plans", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull().default("primary"),
@@ -439,6 +429,32 @@ export const pendingSandboxConfirmations = sqliteTable("pending_sandbox_confirma
   updatedAt: text("updated_at").notNull(),
 });
 
+/**
+ * Service-owned onboarding draft state. This intentionally does not mirror
+ * workspace configuration: workspace files change only after a frozen draft
+ * has completed its single commit.
+ */
+export const onboardingDrafts = sqliteTable("onboarding_drafts", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  instanceId: text("instance_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  revision: integer("revision").notNull().default(0),
+  status: text("status").notNull().default("collecting"),
+  stepsJson: text("steps_json").notNull().default("{}"),
+  commitSnapshotJson: text("commit_snapshot_json"),
+  commitKey: text("commit_key"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  queuedAt: text("queued_at"),
+  startedAt: text("started_at"),
+  completedAt: text("completed_at"),
+  notifiedAt: text("notified_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const conversationTasks = sqliteTable("conversation_tasks", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
@@ -467,6 +483,7 @@ export const pushJobs = sqliteTable("push_jobs", {
   channel: text("channel").notNull().default("weixin-mobile"),
   backend: text("backend").notNull().default("hermes"),
   source: text("source").notNull().default("scheduler"),
+  idempotencyKey: text("idempotency_key"),
   message: text("message").notNull(),
   status: text("status").notNull().default("pending"),
   attempts: integer("attempts").notNull().default(0),
@@ -477,6 +494,23 @@ export const pushJobs = sqliteTable("push_jobs", {
   lastError: text("last_error"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
+});
+
+export const weixinDeliveryAttempts = sqliteTable("weixin_delivery_attempts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: text("user_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  externalAccountId: text("external_account_id"),
+  pushJobId: text("push_job_id"),
+  source: text("source").notNull(),
+  probe: integer("probe", { mode: "boolean" }).notNull().default(false),
+  result: text("result").notNull(),
+  reason: text("reason").notNull(),
+  errorMessage: text("error_message"),
+  conversationId: text("conversation_id"),
+  lastInboundAt: text("last_inbound_at"),
+  elapsedSinceLastInboundMs: integer("elapsed_since_last_inbound_ms"),
+  createdAt: text("created_at").notNull(),
 });
 
 export const scheduledTaskRuns = sqliteTable("scheduled_task_runs", {
@@ -493,4 +527,71 @@ export const scheduledTaskRuns = sqliteTable("scheduled_task_runs", {
   pushJobId: text("push_job_id"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
+});
+
+export const platformUsers = sqliteTable("platform_users", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull(),
+  displayName: text("display_name").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  status: text("status").notNull().default("active"),
+  mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(true),
+  failedLoginCount: integer("failed_login_count").notNull().default(0),
+  lockedUntil: text("locked_until"),
+  lastLoginAt: text("last_login_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const platformRoles = sqliteTable("platform_roles", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  permissionsJson: text("permissions_json").notNull().default("[]"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const platformUserRoles = sqliteTable("platform_user_roles", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  platformUserId: text("platform_user_id").notNull(),
+  roleId: text("role_id").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const platformSessions = sqliteTable("platform_sessions", {
+  id: text("id").primaryKey(),
+  platformUserId: text("platform_user_id").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+  revokedAt: text("revoked_at"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const platformLoginEvents = sqliteTable("platform_login_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  platformUserId: text("platform_user_id"),
+  username: text("username").notNull(),
+  result: text("result").notNull(),
+  reason: text("reason"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const platformAdminAuditLogs = sqliteTable("platform_admin_audit_logs", {
+  id: text("id").primaryKey(),
+  platformUserId: text("platform_user_id"),
+  role: text("role"),
+  action: text("action").notNull(),
+  route: text("route").notNull(),
+  permission: text("permission"),
+  targetCustomerKey: text("target_customer_key"),
+  requestId: text("request_id"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  status: text("status").notNull(),
+  summaryJson: text("summary_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
 });

@@ -720,26 +720,9 @@ function isWithinWindow(timeText: string | undefined, bj: Date, toleranceMinutes
 
 function shouldPushAlert(alert: AlertItem, policy: MarketWatchPolicy): boolean {
   if (!policy.onlyPushOnException) return true;
-  if (alert.priority === "P0") return true;
-  if (matchesAnyRule(alert, policy.nonExceptionRules)) return false;
-  if (alert.priority === "P1") return matchesAnyRule(alert, policy.exceptionRules);
+  // Low-disturbance and evening-summary preferences do not generate intraday
+  // pushes. Risk levels and legacy exception lists cannot override them.
   return false;
-}
-
-function matchesAnyRule(alert: AlertItem, rules: string[]): boolean {
-  if (rules.length === 0) return false;
-  const haystack = `${alert.stockName} ${alert.message} ${alert.relationToPlan}`.toLowerCase();
-  return rules.some((rule) => {
-    const tokens = extractRuleTokens(rule);
-    return tokens.some((token) => haystack.includes(token.toLowerCase()));
-  });
-}
-
-function extractRuleTokens(rule: string): string[] {
-  return rule
-    .match(/[A-Za-z0-9_.-]+|[\u4e00-\u9fa5]{2,}/g)
-    ?.map((token) => token.trim())
-    .filter((token) => token.length >= 2) ?? [];
 }
 
 // ============ 信号优先级解析(WP3a 2026-06-21) ============

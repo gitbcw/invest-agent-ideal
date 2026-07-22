@@ -20,6 +20,35 @@ const UNSAFE_OUTPUT_REPLACEMENTS: Array<[RegExp, string]> = [
   [/~\/\.openclaw[^\s，。；、）)]*/g, "内部状态"],
 ];
 
+const ACP_DIAGNOSTIC_LINE_PATTERNS = [
+  /^Model metadata for `[^`]+` not found\. Defaulting to fallback metadata; this can degrade performance and cause issues\.$/i,
+  /^Unknown model .+ is used\. This will use fallback model metadata\.$/i,
+  /^Model personality requested but model_messages is missing, falling back to base instructions\..*$/i,
+];
+
+const ACP_DIAGNOSTIC_INLINE_PATTERNS = [
+  /Model metadata for `[^`]+` not found\. Defaulting to fallback metadata; this can degrade performance and cause issues\.?/gi,
+];
+
+export function isAcpDiagnosticText(text: string) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.length > 0 && lines.every((line) => ACP_DIAGNOSTIC_LINE_PATTERNS.some((pattern) => pattern.test(line)));
+}
+
+function removeAcpDiagnosticLines(text: string) {
+  let cleaned = String(text || "")
+    .split(/\r?\n/)
+    .filter((line) => !ACP_DIAGNOSTIC_LINE_PATTERNS.some((pattern) => pattern.test(line.trim())))
+    .join("\n");
+  for (const pattern of ACP_DIAGNOSTIC_INLINE_PATTERNS) {
+    cleaned = cleaned.replace(pattern, "");
+  }
+  return cleaned;
+}
+
 export function redactSensitiveText(text: string) {
   let redacted = String(text || "");
   for (const [pattern, replacement] of UNSAFE_OUTPUT_REPLACEMENTS.slice(0, 6)) {
@@ -29,7 +58,7 @@ export function redactSensitiveText(text: string) {
 }
 
 export function sanitizeCustomerText(text: string) {
-  let cleaned = String(text || "");
+  let cleaned = removeAcpDiagnosticLines(text);
   for (const [pattern, replacement] of UNSAFE_OUTPUT_REPLACEMENTS) {
     cleaned = cleaned.replace(pattern, replacement);
   }
