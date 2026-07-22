@@ -121,6 +121,19 @@ try {
     assert.deepEqual(requiredTools.filter((name) => !toolNames.includes(name)), []);
     const portfolio = await client.callTool({ name: "portfolio.read", arguments: {} });
     assert.notEqual(portfolio.isError, true);
+    // reviews.save reaches shared code that logs a successful publication.
+    // Keeping this successful write on the stdio route proves those logs stay
+    // on stderr and never corrupt stdout JSON-RPC framing.
+    const savedViaStdio = await client.callTool({
+      name: "reviews.save",
+      arguments: {
+        date: "2026-07-17",
+        content: "# MCP stdio 日复盘\n\n验证成功保存时的日志不会污染协议输出。",
+        pushBrief: "MCP stdio 日复盘保存验证完成。",
+        confirmedByUser: true,
+      },
+    });
+    assert.notEqual(savedViaStdio.isError, true);
     console.log(`[mcp-service-tools-smoke] ok tools=${toolNames.length}`);
   } finally {
     await client.close();

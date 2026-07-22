@@ -42,6 +42,7 @@ export type CompactDailyReviewContext = ReturnType<typeof compactDailyReviewCont
 export function buildMobilePrompt(params: {
   userText: string;
   reviewContext?: CompactDailyReviewContext | null;
+  allowReviewPublication?: boolean;
   userContext?: {
     userId: string;
     projectId?: string;
@@ -74,7 +75,9 @@ export function buildMobilePrompt(params: {
   return [
     params.userText,
     [
-      "用户要求复盘。下面已经提供复盘所需的数据，请不要再调用 curl、服务 API 或任何工具。",
+      params.allowReviewPublication
+        ? "下面已经提供复盘所需的数据。不要再调用 curl、服务 API 或研究工具；定时日复盘的发布例外是必须调用 reviews.save。"
+        : "用户要求复盘。下面已经提供复盘所需的数据，请不要再调用 curl、服务 API 或任何工具。",
       "请按日复盘结构和质量规则生成复盘：事实、推断、操作、验证点分开；不要使用资金净流入作为判断依据。",
       "数据来源与质量必须使用复盘上下文 JSON 的 sourceQuality；微信正文只写可读来源摘要和风险提示，不要展示原始 URL、provider endpoint/referenceUrl、本地 sandbox API、token、curl 或内部路径。",
       "如果上下文包含 previousReview 或 openViewpoints，请先回测上一份复盘的关键观点，再生成今天的新观点追踪表；不要把未验证观点当作已验证结论。",

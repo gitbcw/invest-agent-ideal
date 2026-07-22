@@ -21,4 +21,6 @@
 - 数据质量：列出关键数据来源、时效、置信度和缺失项。
 - 若建议买入、卖出或再平衡，只能在用户确认规则触发时输出操作确认单，不直接要求用户交易。
 
-完整报告的结构和详略由你根据当天情况决定。完成后使用 `reviews.save` 发布：`content` 保存完整 Markdown，`pushBrief` 保存独立的微信简报；按 `config/data_contracts.yaml` 将真正需要后续验证的核心观点放入 `decisionRecords`，将数据源冲突或关键数据缺失放入 `sourceEvents`。定时任务无需交互式确认；用户主动要求生成复盘时，该请求本身授权保存本次报告，调用时标记 `confirmedByUser: true`，不要再要求用户二次确认。只有发布成功后才向用户回复，最终回复只发送 `pushBrief`，不展示内部工具或保存过程。
+完整报告的结构和详略由你根据当天情况决定。完成后使用 `reviews.save` 发布：`content` 保存完整 Markdown，`pushBrief` 保存独立的微信简报；按 `config/data_contracts.yaml` 将真正需要后续验证的核心观点放入 `decisionRecords`，将数据源冲突或关键数据缺失放入 `sourceEvents`。定时任务无需交互式确认；用户主动要求生成复盘时，该请求本身授权保存本次报告，调用时标记 `confirmedByUser: true`，不要再要求用户二次确认。
+
+对于定时日复盘，`reviews.save` 是唯一完成路径：未成功调用时，复盘草稿、摘要或最终自然语言回复都不算完成，不得向用户输出任何复盘内容。只有工具成功后才回复，最终回复必须逐字使用该次已保存的 `pushBrief`，不展示内部工具或保存过程。

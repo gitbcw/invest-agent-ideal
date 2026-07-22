@@ -23,6 +23,7 @@ export async function buildAcpPromptContext(input: {
   userText: string;
   userContext: UserContext;
   reviewContext?: DailyReviewContext | null;
+  allowReviewPublication?: boolean;
   contextPacket?: ContextPacket;
   includeContextPacket?: boolean;
 }): Promise<BuiltPromptContext> {
@@ -50,6 +51,7 @@ export async function buildAcpPromptContext(input: {
   const promptText = buildMobilePrompt({
     userText: input.userText,
     reviewContext: compactReviewContext,
+    allowReviewPublication: input.allowReviewPublication,
     userContext: input.userContext,
     sandboxTokenFile,
     sandboxPermissions: sandboxContext.permissions,

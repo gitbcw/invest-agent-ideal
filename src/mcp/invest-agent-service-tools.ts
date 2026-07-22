@@ -6,6 +6,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 
+// StdioServerTransport owns stdout for JSON-RPC. Shared service code uses
+// console.log through the application logger (for example after reviews.save),
+// so route ordinary diagnostics to stderr before loading that code.
+console.log = (...args: unknown[]) => console.error(...args);
+
 const onboardingStyleProfileSchema = z.object({
   style: z.string().optional().describe("Canonical investment style label."),
   name: z.string().optional().describe("Natural-language strategy name; accepted as the style label."),

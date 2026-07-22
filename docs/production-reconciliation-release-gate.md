@@ -1,6 +1,6 @@
 # 生产收敛发布闸门
 
-> 状态：等待下一交易日的本地 scheduler 真实验收。  
+> 状态：受控 scheduler 验收已执行；盘中简报通过，日复盘发布链路仍未通过，禁止合入 `main`。
 > 当前候选主线：`codex/production-reconciliation-integration-20260722`。  
 > 本记录在验收完成并合入 `main` 后移入 `docs/archive/`。
 
@@ -45,15 +45,19 @@
 
 首次录入持仓时曾出现一次 ACP 短暂停止，用户重试后流程成功。该现象尚未重复，作为稳定性观察保留，不阻塞当前发布闸门。
 
-## 下一交易日验收
+## 受控 scheduler 验收（2026-07-22）
 
-在本地运行时 `invest-agent-codex`、端口 `22655` 保持健康的前提下，对用户 `112 / invest-agent-112` 做最小真实验收。使用 `.codex/skills/scheduler-push-debug` 收集证据；不修改用户的持仓、策略、时间或规则。
+在本地运行时 `invest-agent-codex`、端口 `22655` 健康的前提下，已对用户 `112 / invest-agent-112` 执行受控触发。用户明确授权该测试账号接收真实 `market-watch` 与 `daily-review` 微信推送；未修改持仓、策略、时间或规则。
 
-| 时点 / 能力 | 必须检查 | 通过条件 |
+| 能力 | 结果 | 证据与结论 |
 | --- | --- | --- |
-| 盘中窗口（优先 09:55） | scheduler 运行记录、market-watch 快照、ACP trace、push job / 微信投递 | 任务有可解释的执行或跳过审计；若生成摘要则快照与推送 scope 一致。 |
-| 日复盘（19:00） | scheduled task、review 产物、ACP trace、push job / 微信投递 | 日复盘按该用户已保存的时间生成；若投递，记录与用户/实例 scope 一致。 |
-| 无异常或无推送情形 | `NO_PUSH` / skipped 原因、是否产生错误 push job | 有明确审计且不误推送；“没收到消息”不能单独判失败。 |
+| `market-watch` | 通过 | 成功写入 `market_watch_snapshots`（窗口 `23:05`），ACP trace 成功，scheduler push job 已 sent；用户已收到简报。行情时效告警被如实披露，未伪装为实时。 |
+| `daily-review` 首次 | 失败，已修复 MCP 协议缺陷 | Agent 调用 `reviews.save` 时共享 logger 写入 stdout，污染 stdio JSON-RPC，导致 transport closed。现已将 MCP 服务普通日志转到 stderr，并补充成功保存路径的 stdio 回归 smoke。 |
+| `daily-review` 后续三次 | 未通过，保持失败 | ACP 能成功生成客户摘要，但未调用 `reviews.save`；因此没有 `sandbox_audit_logs.reviews.save`、`daily_plans` 发布产物或 scheduler push job。服务层拒绝把这段未保存文本当作报告推送，task run 均明确记录 `scheduled daily review did not publish artifact`。 |
+
+已定位并修正一处相互冲突的提示词：复盘上下文原先写有“不要调用任何工具”，与定时日复盘必须使用 `reviews.save` 发布相冲突。现在仅对 scheduled daily-review 放行该发布工具，普通复盘仍保留无工具边界，并有单测覆盖。
+
+修正后，当前 ACP 仍未实际发起发布工具调用，因此这不是可以用提示词继续掩盖的“假成功”。下一步需单独解决“scheduled ACP 必须执行已开放 MCP 发布工具”的可靠执行契约；在此之前不可合入 `main`，也不可部署火山云。
 
 验收时不需要新增明确规则；当前用户选择跳过规则，预期仍为 0 条。若需要另行验收规则巡检，创建独立、可执行且经用户确认的规则，作为下一轮范围，不混入本次发布闸门。
 
@@ -62,15 +66,16 @@
 仅在以下条件同时满足时推进：
 
 1. 当前候选分支工作树除用户明确保留的 `tmp/` 临时产物外干净。
-2. 下一交易日 scheduler 验收无 P0/P1 问题；每项有 scheduler / trace / push 或明确 skip 证据。
+2. 受控 scheduler 验收无 P0/P1 问题；每项有 scheduler / trace / push 或明确 skip 证据，且日复盘必须存在 `reviews.save` 成功审计、发布产物与投递记录。
 3. `npm run typecheck`、`npm test`、`npm run smoke:mcp-service-tools`、`npm run smoke:onboarding-draft-commit` 仍通过。
 4. 先将验收结论写回本文件，再将候选分支 fast-forward 合入 `main`。
 
 合入后，才决定是否推送远端、创建 PR 或部署火山云；这三项不由本地验收自动授权。
 
-## 明日恢复指令
+## 恢复指令
 
 1. 读取本文件、`AGENTS.md`、`CLAUDE.md`，确认仍在 `codex/production-reconciliation-integration-20260722`。
 2. 检查 `http://127.0.0.1:22655/health` 与 PM2 `invest-agent-codex` 状态；必要时使用 `local-runtime-restart`。
-3. 使用 `scheduler-push-debug` 在 09:55 和 19:00 附近收集用户 `112` 的 scheduler、快照、trace、push 与投递证据。
-4. 更新本文件的验收结果，按“合入 main 的门槛”作出通过或修复决定；不要重新从火山云快照分支挑选或合并代码。
+3. 先解决 scheduled daily-review 对 `reviews.save` 的可靠工具执行契约；禁止将 Agent 最终文本自动提升为完整报告作为绕过。
+4. 修复后重新对该测试账号进行一次受控 `daily-review`，收集 scheduler、trace、`reviews.save` 审计、发布产物与 push 投递证据。
+5. 更新本文件的验收结论，按“合入 main 的门槛”作出通过或修复决定；不要重新从火山云快照分支挑选或合并代码。
