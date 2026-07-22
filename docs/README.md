@@ -67,6 +67,8 @@ After that, use the task-based map below instead of reading every file.
 
 For scheduled-task or push-delivery operations, use the project-only skill `.codex/skills/scheduler-push-debug`.
 
+当前生产收敛与下一交易日 scheduler 验收，请先读 [production-reconciliation-release-gate.md](./production-reconciliation-release-gate.md)；它通过后将归档。
+
 ### User Portal
 
 | Document | Use It For |
