@@ -63,10 +63,11 @@ Draft-first onboarding tools:
 - `onboarding.draft.upsert_step`
 - `onboarding.draft.request_confirmation`
 - `onboarding.draft.accept_step`
+- `onboarding.draft.skip_watch_rules`
 - `onboarding.draft.enqueue_commit`
 - `onboarding.draft.commit_status`
 
-New workspace onboarding flows use these tools instead of `onboarding.confirm_portfolio` / `onboarding.confirm_step`: intermediate confirmations only accept a service-owned draft revision. When every section is accepted, `enqueue_commit` freezes that revision and a service worker writes and verifies the Workspace configuration once before marking onboarding complete and notifying the user.
+New workspace onboarding flows use these tools instead of `onboarding.confirm_portfolio` / `onboarding.confirm_step`: intermediate confirmations only accept a service-owned draft revision. The sole exception is the optional final rule step: `skip_watch_rules` accepts only an explicit latest-user skip and makes no Workspace write. When every section is accepted, `enqueue_commit` freezes that revision. The service worker waits for the initiating assistant reply to be durably recorded, using its message ID rather than parsing customer wording, then writes and verifies the Workspace configuration once before marking onboarding complete and notifying the user.
 
 This tool closes the final watch-setup step without another user confirmation. The service accepts only an explicit skip in the latest user message, or scoped rule IDs with successful `watch_rules.create` audit evidence from the current conversation and no active pending rule drafts.
 

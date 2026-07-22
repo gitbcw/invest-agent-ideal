@@ -265,6 +265,16 @@ export function appendConversationMessage(input: {
       fallbackTitle: title,
       now: createdAt,
     });
+    if (input.role === "assistant") {
+      // Release a queued onboarding commit only after this response is durable.
+      // This is intentionally structural, never a parse of customer wording.
+      sqlite.prepare(`
+        UPDATE onboarding_drafts
+        SET handoff_message_id = ?, updated_at = ?
+        WHERE user_id = ? AND instance_id = ? AND conversation_id = ?
+          AND status = 'queued' AND handoff_message_id IS NULL AND queued_at <= ?
+      `).run(messageId, createdAt, scope.userId, scope.instanceId, input.conversationId, createdAt);
+    }
   });
   transaction();
   return getConversationMessage(messageId) ?? {

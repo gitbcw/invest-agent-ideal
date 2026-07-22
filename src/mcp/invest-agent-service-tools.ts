@@ -277,6 +277,14 @@ async function main() {
 
   registerJsonTool(
     { server, callServiceTool, context },
+    "onboarding.draft.skip_watch_rules",
+    "When the current final onboarding step is optional explicit rules and the latest user message clearly declines rules, mark that skip as accepted. Then enqueue the frozen commit immediately; never ask for a completion-only confirmation.",
+    { draftId: z.string() },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
     "onboarding.draft.enqueue_commit",
     "After every onboarding draft section is accepted, freeze the draft and queue one background commit. Reply that configuration is being completed; do not request a content-free final confirmation.",
     { draftId: z.string() },

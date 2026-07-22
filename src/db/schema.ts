@@ -448,6 +448,7 @@ export const onboardingDrafts = sqliteTable("onboarding_drafts", {
   attempts: integer("attempts").notNull().default(0),
   lastError: text("last_error"),
   queuedAt: text("queued_at"),
+  handoffMessageId: text("handoff_message_id"),
   startedAt: text("started_at"),
   completedAt: text("completed_at"),
   notifiedAt: text("notified_at"),

@@ -7,6 +7,7 @@ import { ensureWorkspace } from "../dist/lib/workspace.js";
 import { WorkspaceStore } from "../dist/lib/workspace-store.js";
 import { callServiceTool } from "../dist/mcp/service-tools-core.js";
 import { processOnboardingDraftCommits } from "../dist/services/onboarding-drafts.js";
+import { appendConversationMessage } from "../dist/services/conversation-log.js";
 
 const USER_ID = "onboarding-draft-commit-smoke";
 const INSTANCE_ID = "invest-agent-onboarding-draft-commit-smoke";
@@ -43,18 +44,12 @@ async function addConfirmation(text) {
 }
 
 async function addAssistantMessage(content) {
-  await db.insert(conversationMessages).values({
-    messageId: `draft-wait-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  appendConversationMessage({
+    scope: { userId: USER_ID, projectId: "invest-agent", instanceId: INSTANCE_ID, assistantId: INSTANCE_ID },
     conversationId: CONVERSATION_ID,
-    userId: USER_ID,
-    projectId: "invest-agent",
-    instanceId: INSTANCE_ID,
-    assistantId: INSTANCE_ID,
     channel: "weixin-mobile",
     role: "assistant",
     content,
-    status: "completed",
-    metadata: "{}",
     createdAt: new Date(Date.now() + 1_000).toISOString(),
   });
 }
@@ -122,7 +117,9 @@ try {
   draft = await draftAndAccept(draft.id, "review_schedule", { time: "19:30" });
   draft = await draftAndAccept(draft.id, "market_watch_schedule", { default_windows: ["09:50", "11:20", "14:30"] });
   draft = await draftAndAccept(draft.id, "notification", { notificationPreference: "low_disturbance" });
-  draft = await draftAndAccept(draft.id, "watch_rules", { skip: true });
+  await addConfirmation("暂不设置明确规则");
+  const skipped = await callServiceTool("onboarding.draft.skip_watch_rules", { draftId: draft.id }, context);
+  draft = skipped.draft;
   assert.equal(draft.status, "ready_to_commit", "all accepted sections make draft committable");
 
   const queued = await callServiceTool("onboarding.draft.enqueue_commit", { draftId: draft.id }, context);
@@ -132,10 +129,7 @@ try {
   await processOnboardingDraftCommits({ limit: 2 });
   assert.equal((await db.select().from(onboardingDrafts).where(eq(onboardingDrafts.id, draft.id)).limit(1))[0].status, "queued", "worker must wait for the user-visible handoff to be persisted");
   assert.equal(JSON.stringify(await store.readPortfolio()), beforePortfolio, "worker must not write workspace before the wait notice");
-  await addAssistantMessage("好的，我会继续处理。");
-  await processOnboardingDraftCommits({ limit: 2 });
-  assert.equal((await db.select().from(onboardingDrafts).where(eq(onboardingDrafts.id, draft.id)).limit(1))[0].status, "queued", "unrelated assistant output must not release the commit worker");
-  await addAssistantMessage("信息已全部确认。我现在会统一完成初始配置，这可能需要一点时间；完成后我会通知你。");
+  await addAssistantMessage("初始配置已全部确认，正在统一生效。完成后我会通知你。");
 
   const frozen = (await db.select().from(onboardingDrafts).where(eq(onboardingDrafts.id, draft.id)).limit(1))[0];
   const frozenSnapshot = frozen.commitSnapshotJson;

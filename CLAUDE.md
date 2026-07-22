@@ -157,7 +157,7 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 - workspace Agent 通过 MCP `reviews.save` 保存定时复盘产物；复盘方法与输出纪律优先沉淀到 workspace skills。Dashboard 时代的 `/api/reviews/*` HTTP 聚合已删除。
 
 **Onboarding 确定性能力：**
-- 新版 workspace Agent 使用 MCP `onboarding.draft.get/upsert_step/request_confirmation/accept_step/enqueue_commit`；每一步确认只定稿服务层草稿，最后由后台 worker 按冻结快照统一写入并校验 Workspace。不得从模板或 skill 发现并调用 HTTP、token 或本地文件兜底。
+- 新版 workspace Agent 使用 MCP `onboarding.draft.get/upsert_step/request_confirmation/accept_step/skip_watch_rules/enqueue_commit`；每一步确认只定稿服务层草稿。可选规则步骤由用户明确跳过时，用 `skip_watch_rules` 直接收口，不再要求“确认完成”。最终由后台 worker 在 initiating assistant reply 已持久化后按冻结快照统一写入并校验 Workspace；该闸门依赖消息 ID，不解析客户文案。不得从模板或 skill 发现并调用 HTTP、token 或本地文件兜底。
 - 旧 `onboarding.confirm_portfolio` / `onboarding.confirm_step` 和 HTTP adapter 仅保留给兼容调用；新版模板不得使用它们。
 - MCP 和 HTTP 适配器复用 `src/services/onboarding.ts` 的校验和最终配置投影；草稿状态、确认、异步提交和通知由 `src/services/onboarding-drafts.ts` 管理。
 - 以下 sandbox 路由仅保留给非 Agent 兼容调用和工程诊断：

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gt, inArray, isNull, lt, lte, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { conversationMessages, conversationSessions, onboardingDrafts, pendingSandboxConfirmations } from "../db/schema.js";
 import { appendConversationMessage } from "./conversation-log.js";
@@ -84,6 +84,7 @@ function draftView(row: typeof onboardingDrafts.$inferSelect) {
     commitKey: row.commitKey,
     lastError: row.lastError,
     queuedAt: row.queuedAt,
+    handoffMessageId: row.handoffMessageId,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
     updatedAt: row.updatedAt,
@@ -219,6 +220,52 @@ export async function acceptOnboardingDraftStep(scope: OnboardingDraftScope, inp
   return draftView(updated);
 }
 
+/**
+ * The explicit decision to skip optional rules ends the final onboarding step.
+ * It updates only the service-owned draft; workspace files still wait for the
+ * one frozen commit.
+ */
+export async function skipOnboardingDraftWatchRules(scope: OnboardingDraftScope, input: { draftId: string }) {
+  const row = await scopedDraft(scope, input.draftId);
+  const steps = parseSteps(row.stepsJson);
+  if (nextStep(steps) !== "watch_rules" || row.status !== "collecting") {
+    throw new Error("当前草稿不能跳过明确规则设置");
+  }
+  const [latest] = await db.select({ messageId: conversationMessages.messageId, content: conversationMessages.content }).from(conversationMessages).where(and(
+    eq(conversationMessages.userId, scope.userId),
+    eq(conversationMessages.instanceId, scope.instanceId),
+    eq(conversationMessages.conversationId, scope.conversationId),
+    eq(conversationMessages.role, "user"),
+  )).orderBy(desc(conversationMessages.createdAt)).limit(1);
+  if (!latest || !isExplicitWatchRulesSkip(latest.content)) {
+    throw new Error("只有用户最新消息明确跳过规则时才能结束规则设置");
+  }
+  const previous = steps.watch_rules;
+  const now = nowIso();
+  if (previous?.confirmationId) {
+    await db.update(pendingSandboxConfirmations).set({ status: "superseded", updatedAt: now }).where(eq(pendingSandboxConfirmations.id, previous.confirmationId));
+  }
+  const revision = row.revision + 1;
+  steps.watch_rules = {
+    revision,
+    status: "skipped",
+    payload: { skip: true },
+    confirmedAt: now,
+    confirmedMessageId: latest.messageId,
+    supersededRevisions: previous
+      ? [...(previous.supersededRevisions ?? []), { revision: previous.revision, status: previous.status, confirmationId: previous.confirmationId }]
+      : [],
+  };
+  await db.update(onboardingDrafts).set({
+    revision,
+    status: "ready_to_commit",
+    stepsJson: JSON.stringify(steps),
+    updatedAt: now,
+  }).where(eq(onboardingDrafts.id, row.id));
+  const updated = (await db.select().from(onboardingDrafts).where(eq(onboardingDrafts.id, row.id)).limit(1))[0]!;
+  return draftView(updated);
+}
+
 export async function enqueueOnboardingDraftCommit(scope: OnboardingDraftScope, draftId: string) {
   const row = await scopedDraft(scope, draftId);
   const steps = parseSteps(row.stepsJson);
@@ -233,6 +280,7 @@ export async function enqueueOnboardingDraftCommit(scope: OnboardingDraftScope, 
     commitSnapshotJson: JSON.stringify(snapshot),
     commitKey,
     queuedAt: now,
+    handoffMessageId: null,
     startedAt: null,
     lastError: null,
     updatedAt: now,
@@ -253,7 +301,7 @@ export async function processOnboardingDraftCommits(options: { limit?: number } 
   let completed = 0;
   let failed = 0;
   for (const candidate of candidates) {
-    if (!await hasPersistedWaitNotice(candidate)) continue;
+    if (!candidate.handoffMessageId) continue;
     const startedAt = nowIso();
     const claimEligibility = candidate.status === "queued"
       ? eq(onboardingDrafts.status, "queued")
@@ -372,18 +420,9 @@ async function notifyDraftResult(row: typeof onboardingDrafts.$inferSelect, succ
   }
 }
 
-async function hasPersistedWaitNotice(row: typeof onboardingDrafts.$inferSelect) {
-  if (!row.queuedAt) return false;
-  const [notice] = await db.select({ content: conversationMessages.content }).from(conversationMessages).where(and(
-    eq(conversationMessages.conversationId, row.conversationId),
-    eq(conversationMessages.userId, row.userId),
-    eq(conversationMessages.instanceId, row.instanceId),
-    eq(conversationMessages.role, "assistant"),
-    gt(conversationMessages.createdAt, row.queuedAt),
-  )).orderBy(desc(conversationMessages.createdAt)).limit(1);
-  // The workspace must not change until the user-visible asynchronous handoff
-  // has been recorded by the same conversation turn.
-  return Boolean(notice) && /(信息|初始配置)已全部确认[\s\S]{0,80}(正在|会)统一完成/.test(notice.content);
+function isExplicitWatchRulesSkip(value: string) {
+  const normalized = value.replace(/[\s，。！!？?]/g, "");
+  return /^(暂不设置(明确)?规则|先不设置(明确)?规则|不设置(明确)?规则|暂时不设置(明确)?规则|跳过(规则设置)?|先跳过|以后再设置|先不用)$/.test(normalized);
 }
 
 async function scopedDraft(scope: Pick<OnboardingDraftScope, "userId" | "instanceId">, id: string) {

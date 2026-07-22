@@ -452,6 +452,7 @@ export function initDb() {
       attempts INTEGER NOT NULL DEFAULT 0,
       last_error TEXT,
       queued_at TEXT,
+      handoff_message_id TEXT,
       started_at TEXT,
       completed_at TEXT,
       notified_at TEXT,
@@ -664,6 +665,7 @@ export function initDb() {
   ensureColumn("pending_sandbox_confirmations", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("pending_sandbox_confirmations", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("onboarding_drafts", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("onboarding_drafts", "handoff_message_id", "TEXT");
   ensureColumn("conversation_tasks", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("conversation_tasks", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("channel_identities", "welcomed_at", "TEXT");
@@ -684,6 +686,7 @@ export function initDb() {
   dropColumnIfExists("portfolio", "quantity");
   backfillHistoricalInstanceAssignments();
   migrateConversationIdempotencyScope();
+  backfillOnboardingDraftHandoffs();
   dropLegacyAlertsTable();
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_username ON platform_users(username);
@@ -747,6 +750,7 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_pending_sandbox_confirmations_conversation ON pending_sandbox_confirmations(conversation_id, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_onboarding_drafts_scope_status ON onboarding_drafts(user_id, instance_id, status, updated_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_onboarding_drafts_commit_key ON onboarding_drafts(commit_key) WHERE commit_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_onboarding_drafts_handoff ON onboarding_drafts(status, handoff_message_id, queued_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_due ON push_jobs(status, next_retry_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_user_time ON push_jobs(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_instance_status ON push_jobs(instance_id, status, next_retry_at);
@@ -986,6 +990,34 @@ function migrateConversationIdempotencyScope() {
     markMigration(migrationKey);
   });
   transaction();
+}
+
+/** Records the persisted ACP handoff for queued drafts created before the marker existed. */
+function backfillOnboardingDraftHandoffs() {
+  const migrationKey = "onboarding_draft_handoff_message_v1";
+  if (hasMigration(migrationKey)) return;
+  const rows = sqlite.prepare(`
+    SELECT id, user_id AS userId, instance_id AS instanceId, conversation_id AS conversationId, queued_at AS queuedAt
+    FROM onboarding_drafts
+    WHERE status = 'queued' AND handoff_message_id IS NULL AND queued_at IS NOT NULL
+  `).all() as Array<{ id: string; userId: string; instanceId: string; conversationId: string; queuedAt: string }>;
+  const findMessage = sqlite.prepare(`
+    SELECT message_id AS messageId FROM conversation_messages
+    WHERE user_id = ? AND instance_id = ? AND conversation_id = ? AND role = 'assistant' AND created_at > ?
+    ORDER BY created_at ASC LIMIT 1
+  `);
+  const mark = sqlite.prepare(`
+    UPDATE onboarding_drafts SET handoff_message_id = ?, updated_at = ?
+    WHERE id = ? AND status = 'queued' AND handoff_message_id IS NULL
+  `);
+  const now = new Date().toISOString();
+  sqlite.transaction(() => {
+    for (const row of rows) {
+      const message = findMessage.get(row.userId, row.instanceId, row.conversationId, row.queuedAt) as { messageId: string } | undefined;
+      if (message) mark.run(message.messageId, now, row.id);
+    }
+    markMigration(migrationKey);
+  })();
 }
 
 function migrateWatchlistForInstances() {

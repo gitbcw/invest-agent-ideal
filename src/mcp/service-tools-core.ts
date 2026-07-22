@@ -37,6 +37,7 @@ import {
   enqueueOnboardingDraftCommit,
   getOnboardingDraft,
   requestOnboardingDraftConfirmation,
+  skipOnboardingDraftWatchRules,
   upsertOnboardingDraftStep,
   type DraftStepKey,
 } from "../services/onboarding-drafts.js";
@@ -307,6 +308,8 @@ async function dispatchServiceTool(
       return requestOnboardingDraftStepConfirmation(input, context);
     case "onboarding.draft.accept_step":
       return acceptOnboardingDraft(input, context);
+    case "onboarding.draft.skip_watch_rules":
+      return skipOnboardingDraftRules(input, context);
     case "onboarding.draft.enqueue_commit":
       return enqueueOnboardingDraft(input, context);
     case "onboarding.draft.commit_status":
@@ -538,6 +541,7 @@ const DRAFT_OPERATIONS = new Set([
   "onboarding.draft.upsert_step",
   "onboarding.draft.request_confirmation",
   "onboarding.draft.accept_step",
+  "onboarding.draft.skip_watch_rules",
   "onboarding.draft.enqueue_commit",
   "onboarding.draft.commit_status",
 ]);
@@ -625,6 +629,21 @@ async function acceptOnboardingDraft(input: Record<string, unknown> | undefined,
     resultSummary: `draft step accepted; status=${draft.status}; next=${draft.nextStep}`,
   });
   return { ok: true, userId: context.userId, instanceId: context.instanceId, draft, readyToCommit: draft.status === "ready_to_commit" };
+}
+
+async function skipOnboardingDraftRules(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const scope = requireDraftConversation(context);
+  const draftId = stringInput(input?.draftId);
+  if (!draftId) throw new Error("draftId is required");
+  const draft = await skipOnboardingDraftWatchRules(scope, { draftId });
+  await audit(context, {
+    operation: "onboarding.draft.skip_watch_rules",
+    resourceType: "onboarding_draft_step",
+    resourceId: `${draft.id}:watch_rules:${draft.revision}`,
+    requestBody: input,
+    resultSummary: `draft watch rules skipped; status=${draft.status}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, draft, readyToCommit: true };
 }
 
 async function enqueueOnboardingDraft(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
