@@ -40,6 +40,36 @@ ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197
 
 浏览器随后访问 `http://127.0.0.1:22648/platform`。不要把 `22655` 直接开放公网。
 
+### macOS 持久 tunnel
+
+手动 `ssh -L` 会在网络切换、睡眠或空闲回收后退出。管理员 Mac 上应使用 `autossh` 加 launchd 保活，并且只绑定 `127.0.0.1`。当前本机使用的登录项是：
+
+```text
+~/Library/LaunchAgents/com.invest-agent.volcano-platform-tunnel.plist
+```
+
+它以 `ServerAliveInterval=15`、`ServerAliveCountMax=3` 和 `ExitOnForwardFailure=yes` 启动：
+
+```text
+autossh -M 0 -N \
+  -o BatchMode=yes \
+  -o ConnectTimeout=10 \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:22648:127.0.0.1:22655 \
+  claude@118.145.115.197
+```
+
+检查或手动重建本机连接：
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.invest-agent.volcano-platform-tunnel
+curl http://127.0.0.1:22648/health
+```
+
+登录项和日志属于管理员本机配置，不提交到仓库。不要用 `-g` 或 `0.0.0.0` 监听本地转发端口。
+
 ## 2. 版本基线
 
 - `main` 是唯一维护与生产发布基线。
