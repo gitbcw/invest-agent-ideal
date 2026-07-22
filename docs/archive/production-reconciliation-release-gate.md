@@ -1,8 +1,8 @@
-# 生产收敛发布闸门
+# 生产收敛发布闸门（已完成）
 
-> 状态：发布闸门通过；当前候选分支已具备 fast-forward 合入 `main` 的条件，尚未执行合并。
-> 当前候选主线：`codex/production-reconciliation-integration-20260722`。  
-> 本记录在验收完成并合入 `main` 后移入 `docs/archive/`。
+> 状态：已完成。候选分支于 2026-07-23 fast-forward 合入本地 `main`。
+> 合入结果：`main` 与 `codex/production-reconciliation-integration-20260722` 均指向 `0070f6c`。
+> 本记录已归档；远端推送、PR 和火山云部署尚未执行，需另行决定。
 
 ## 目的
 
@@ -14,8 +14,8 @@
 | --- | --- | --- |
 | `codex/volcano-snapshot-20260722` / `volcano-snapshot-20260722` | 2026-07-22 火山云代码冻结快照 | 只读证据与回退参照；不继续开发、不直接合并。 |
 | `codex/production-reconciliation-20260722` | 生产修复筛选候选 | 历史比较分支；与当前主线有大量已淘汰结构差异，不整体 merge。 |
-| `main` | 当前稳定主线 | 仍停在 `66be9d9`，在发布闸门通过前不前进。 |
-| `codex/production-reconciliation-integration-20260722` | 唯一候选主线 | 从 `main` 演进；`main` 是其直接祖先，验收通过后可 fast-forward 合入。 |
+| `main` | 当前稳定主线 | 已 fast-forward 至 `0070f6c`，包含本轮已验收的生产修复。 |
+| `codex/production-reconciliation-integration-20260722` | 已合入候选主线 | 与 `main` 均指向 `0070f6c`；保留为本轮收敛历史，不再作为待发布分支。 |
 
 禁止把冻结快照或旧候选分支整体 merge 到 `main`。若以后发现新的生产修复，只按最小、已审计的提交或等价补丁进入当前候选主线。
 
@@ -76,12 +76,10 @@
 
 合入后，才决定是否推送远端、创建 PR 或部署火山云；这三项不由本地验收自动授权。
 
-本轮最终结果：以上四项均已满足。自动化验证为 61 项测试通过，类型检查、构建、MCP stdio smoke、MCP allowlist contract 和 Onboarding 提交 smoke 均通过；工作树仅保留用户自己的未跟踪 `tmp/`。下一步可以由用户明确确认后 fast-forward 合入 `main`。
+本轮最终结果：以上四项均已满足。自动化验证为 61 项测试通过，类型检查、构建、MCP stdio smoke、MCP allowlist contract 和 Onboarding 提交 smoke 均通过；工作树仅保留用户自己的未跟踪 `tmp/`。用户确认后，已将候选分支 fast-forward 合入本地 `main`，合入结果为 `0070f6c`。
 
-## 后续指令
+## 收尾状态
 
-1. 读取本文件、`AGENTS.md`、`CLAUDE.md`，确认仍在 `codex/production-reconciliation-integration-20260722`。
-2. 检查 `http://127.0.0.1:22655/health` 与 PM2 `invest-agent-codex` 状态；必要时使用 `local-runtime-restart`。
-3. 不需要重复执行 scheduler 验收；单点发布和完整日复盘均已通过。
-4. 用户明确确认后，将当前候选分支 fast-forward 合入 `main`；不要重新从火山云快照分支挑选或整体合并代码。
-5. 合入后再单独决定是否推远端、创建 PR 或部署火山云。
+1. 本地 `main` 已完成收敛，无需重复执行本轮 scheduler 验收。
+2. 冻结快照、旧候选分支和标签继续保留为审计与回退参照，不整体合并、不删除。
+3. 远端推送、PR 和火山云部署均不属于本轮本地合入授权，后续需单独确认。
