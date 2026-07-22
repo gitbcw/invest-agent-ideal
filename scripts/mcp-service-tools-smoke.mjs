@@ -138,6 +138,29 @@ try {
   } finally {
     await client.close();
   }
+
+  const restrictedClient = new Client({ name: "invest-agent-mcp-restricted-smoke", version: "1.0.0" });
+  const restrictedTransport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["dist/mcp/invest-agent-service-tools.js"],
+    cwd: process.cwd(),
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      INVEST_AGENT_MCP_USER_ID: context.userId,
+      INVEST_AGENT_MCP_INSTANCE_ID: context.instanceId,
+      INVEST_AGENT_MCP_CONVERSATION_ID: `scheduler:daily-review:publication-probe:${context.userId}:${context.instanceId}`,
+      INVEST_AGENT_MCP_ALLOWED_TOOLS: "reviews.save",
+      INVEST_AGENT_PROJECT_ROOT: process.cwd(),
+    },
+  });
+  try {
+    await restrictedClient.connect(restrictedTransport);
+    const restrictedTools = await restrictedClient.listTools();
+    assert.deepEqual(restrictedTools.tools.map((tool) => tool.name), ["reviews.save"]);
+  } finally {
+    await restrictedClient.close();
+  }
 } finally {
   sqlite?.close();
   await rm(path.join(process.cwd(), "reviews", reviewUserId), { recursive: true, force: true });

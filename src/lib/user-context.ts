@@ -15,6 +15,8 @@ export interface UserContext {
   externalUserId?: string;
   channelAccountId?: string;
   workspacePath?: string;
+  /** Optional MCP tool allowlist for isolated service-owned task phases. */
+  mcpAllowedTools?: string[];
   welcomedAt?: string | null;
 }
 

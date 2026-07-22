@@ -30,8 +30,100 @@ export interface ScheduledScope {
   projectId?: string;
 }
 
+export interface ScheduledReviewPublicationProbeInput {
+  date: string;
+  content: string;
+  pushBrief: string;
+  maxAttempts?: number;
+}
+
 type ScheduledReviewKind = "daily" | "weekly" | "monthly";
 type MarketWatchPushMode = "exception_only" | "scheduled_intraday_brief";
+
+/**
+ * Single-purpose acceptance probe for the scheduled review publication step.
+ * It does not collect market data, enqueue a push, or run the full review.
+ */
+export async function runScheduledReviewPublicationProbe(
+  scope: ScheduledScope,
+  input: ScheduledReviewPublicationProbeInput,
+) {
+  const content = input.content.trim();
+  const pushBrief = input.pushBrief.trim();
+  if (!input.date.trim() || !content || !pushBrief) {
+    throw new Error("publication probe requires date, content, and pushBrief");
+  }
+  const maxAttempts = Math.max(1, Math.min(2, input.maxAttempts ?? 2));
+  const baseContext = await buildScheduledUserContext(scope, "daily-review");
+  let lastError = "publication was not observed";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const publicationStartedAt = Date.now();
+    const conversationId = [
+      "scheduler",
+      "daily-review",
+      "publication-probe",
+      baseContext.userId,
+      baseContext.instanceId,
+      randomUUID(),
+    ].join(":");
+    const userContext = {
+      ...baseContext,
+      conversationId,
+      mcpAllowedTools: ["reviews.save"],
+    };
+    const promptContext = await buildAcpPromptContext({
+      userText: [
+        "【定时日复盘发布单点验收】",
+        "这是发布步骤验收，不要分析行情、不要改写内容、不要调用其他工具。",
+        "立即调用 reviews.save，参数必须严格使用下面的 JSON。工具成功后只回复 PUBLISHED。",
+        JSON.stringify({ date: input.date, content, pushBrief }),
+      ].join("\n"),
+      userContext,
+      includeContextPacket: false,
+    });
+
+    try {
+      await runAcpTask({
+        userContext,
+        promptText: promptContext.promptText,
+        conversationId,
+        messageId: randomUUID(),
+        mode: "scheduled-daily-review-publication-probe",
+        sandboxTokenId: promptContext.sandboxContext.tokenId,
+        sandboxPermissions: promptContext.sandboxContext.permissions,
+      });
+      const published = await dailyPlanBackend.get(userContext.userId, userContext.instanceId!, input.date);
+      const publishedAt = published?.generatedAt ? Date.parse(published.generatedAt) : Number.NaN;
+      const publication = published?.data && typeof published.data === "object"
+        ? (published.data as any).context?.publication
+        : null;
+      if (
+        published
+        && Number.isFinite(publishedAt)
+        && publishedAt >= publicationStartedAt - 1_000
+        && publication?.conversationId === conversationId
+        && publication?.scheduled === true
+        && published.content === content
+        && published.summary === pushBrief
+      ) {
+        return {
+          ok: true,
+          userId: userContext.userId,
+          instanceId: userContext.instanceId,
+          date: input.date,
+          attempts: attempt,
+          conversationId,
+        };
+      }
+      lastError = "reviews.save did not create an exact scoped publication";
+    } catch (error) {
+      lastError = formatUnknownError(error);
+    }
+  }
+
+  throw new Error(`scheduled review publication probe failed after ${maxAttempts} attempts: ${lastError}`);
+}
 
 export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
   const userContext = await buildScheduledUserContext(scope, "market-watch");
@@ -175,7 +267,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
   return sanitizeCustomerText(reply);
 }
 
-async function runAcpTask(input: {
+interface ScheduledAcpTaskInput {
   userContext: UserContext;
   promptText: string;
   conversationId: string;
@@ -185,18 +277,27 @@ async function runAcpTask(input: {
   reviewContextSummary?: Record<string, unknown>;
   sandboxTokenId?: string;
   sandboxPermissions?: string[];
-}) {
+}
+
+export function buildScheduledAcpChatParams(input: ScheduledAcpTaskInput) {
+  return {
+    conversationId: input.conversationId,
+    text: input.promptText,
+    messageId: input.messageId,
+    timeoutMs: SCHEDULED_ACP_TIMEOUT_MS,
+    cwd: input.userContext.workspacePath,
+    // MCP server scope is derived when the ACP session is created. Without
+    // this context scheduled tasks silently fall back to the primary user.
+    userContext: input.userContext,
+  };
+}
+
+async function runAcpTask(input: ScheduledAcpTaskInput) {
   const startedAt = Date.now();
   try {
     const acpResult = await (await getCurrentAcpAgent(input.userContext.workspacePath, {
       modelTier: input.modelTier || resolveScheduledModelTier(input.mode),
-    })).chatWithUsage({
-      conversationId: input.conversationId,
-      text: input.promptText,
-      messageId: input.messageId,
-      timeoutMs: SCHEDULED_ACP_TIMEOUT_MS,
-      cwd: input.userContext.workspacePath,
-    });
+    })).chatWithUsage(buildScheduledAcpChatParams(input));
     const reply = acpResult.text;
     await recordAcpTrace({
       userId: input.userContext.userId,

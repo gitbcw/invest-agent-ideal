@@ -19,6 +19,7 @@ npm run smoke        # 构建 + 运行 smoke 测试
 npm run db:generate  # Drizzle 迁移文件生成
 npm run db:migrate   # 执行数据库迁移
 npm run smoke:mcp-service-tools  # 验证 Codex ACP 服务层 MCP 工具(读 + 第一批确认写)
+npm run smoke:scheduled-review-publication -- <userId> <instanceId> <YYYY-MM-DD>  # 不推微信的定时复盘发布单点验收
 npm run smoke:onboarding-draft-commit  # 验证 onboarding 草稿确认、冻结提交与重试
 npm run smoke:platform-partner-auth    # 验证 Platform 账号、角色和 Partner 脱敏边界
 npm run smoke:platform-partner-migration # 验证 Platform 账号数据迁移

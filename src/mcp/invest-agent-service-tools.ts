@@ -39,6 +39,13 @@ const projectRoot =
   resolve(__dirname, "../..");
 chdir(projectRoot);
 
+const allowedTools = new Set(
+  (process.env.INVEST_AGENT_MCP_ALLOWED_TOOLS || "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean)
+);
+
 async function main() {
   const { callServiceTool, serviceToolContextFromEnv } = await import("./service-tools-core.js");
   const context = serviceToolContextFromEnv();
@@ -464,6 +471,7 @@ function registerJsonTool(
   inputSchema: z.ZodRawShape,
   annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean } = {}
 ) {
+  if (allowedTools.size > 0 && !allowedTools.has(name)) return;
   runtime.server.registerTool(
     name,
     {

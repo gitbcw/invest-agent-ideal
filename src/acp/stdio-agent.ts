@@ -644,6 +644,9 @@ export class StdioAcpAgent {
           { name: "INVEST_AGENT_MCP_INSTANCE_ID", value: instanceId },
           { name: "INVEST_AGENT_MCP_WORKSPACE_PATH", value: workspacePath },
           { name: "INVEST_AGENT_MCP_CONVERSATION_ID", value: userContext?.conversationId || "" },
+          ...(userContext?.mcpAllowedTools?.length
+            ? [{ name: "INVEST_AGENT_MCP_ALLOWED_TOOLS", value: userContext.mcpAllowedTools.join(",") }]
+            : []),
           { name: "INVEST_AGENT_PROJECT_ROOT", value: process.cwd() },
         ],
       },
