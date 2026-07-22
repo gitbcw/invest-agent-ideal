@@ -97,6 +97,15 @@ npm run smoke:workspace-compatibility -- <user> <instance>
 - 验收报告均落入对应隔离 reviews 目录；临时 `.codex/auth.json` 已清除。
 - 火山云生产仍未部署、未迁移、未写入。
 
+### 2026-07-23 火山云生产只读预检
+
+- 预检前创建在线安全快照：`/home/claude/invest-agent-data/compatibility-backups/20260723-013655`。SQLite 副本 `quick_check=ok`，备份目录权限为 `700`；该快照不替代维护窗口内停写后的最终迁移备份。
+- 从该快照脱敏复制 `111`、`dyk`、`mg` 的预检必要资产到本地隔离目录，未复制认证文件、token、插件缓存或符号链接。
+- 三个真实 Workspace 均为 `migration_required`、`blockers=0`，且需要相同的 5 项受管资产变更：新增 `service-capability-policy` / `conversation-recovery`，替换 `investment-onboarding` / `market-watch` / `daily-portfolio-review`。
+- `111`、`mg` 的旧 `AGENTS.md` 缺少 `onboarding.draft.get` 标记；`dyk` 缺少 `invest-agent-service-tools`、`onboarding.draft.get`、`reviews.save` 标记。它们仅产生 warning，迁移不会覆盖用户 `AGENTS.md`。
+- 预检前后副本文件摘要一致；生产 runtime 保持 `online`，健康检查为 `ok`。
+- 本轮未部署代码、未执行 Workspace 迁移、未重启服务、未改变微信或 Portal 连接。
+
 ## 火山云发布顺序
 
 1. 从干净、已审核的发布分支或 tag 构建并完成本地测试。
