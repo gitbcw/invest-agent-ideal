@@ -18,7 +18,7 @@ rsync -avz \
   --exclude='.env' \
   --exclude='.git' \
   --exclude='.backup' \
-  --exclude='.codex' \
+  --exclude='/.codex' \
   --exclude='.claude' \
   --exclude='.hermes' \
   --exclude='.tmp' \

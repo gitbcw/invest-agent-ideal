@@ -1,50 +1,37 @@
 ---
 name: investment-onboarding
-description: Guide a new user through WeChat-based setup when portfolio memory is empty, including holdings, watchlist, methods, skill templates, schedules, and market-watch rules. Use when the user starts setup, sends holdings, sends a screenshot, or asks to adjust memory.
+description: Guide a new investment user through the service-owned onboarding draft when setup is incomplete, including holdings, watchlist, style, review schedule, market-watch windows, notification preference, and optional explicit rules.
 ---
 
 # Investment Onboarding
 
-## Purpose
+Use `service-capability-policy` for every read and write. The service-owned draft is the only onboarding progress source; do not edit Workspace YAML directly and do not call legacy HTTP or shell fallbacks.
 
-Reduce setup cost through WeChat while preventing memory pollution. Every long-term write must be summarized and confirmed before saving.
+## Start Or Resume
 
-## Workflow
+1. Call `onboarding.draft.get` first.
+2. If an active draft exists, continue from its `nextStep` without repeating accepted information.
+3. Only when no active draft exists, read `config/onboarding_state.yaml` to decide whether onboarding is complete.
+4. Keep each turn focused on one clear decision. Reuse information the user already supplied.
 
-1. If `config/portfolio.yaml` has no holdings and no watchlist, start first-use guidance.
-2. Ask the user to provide holdings and watchlist by text or screenshot.
-3. Parse the input into a structured draft, mark ambiguous or missing fields, and ask for confirmation.
-4. After confirmation, write holdings to `config/portfolio.yaml`, update `AGENTS.md` summary if needed, and append `memory/change_log.jsonl`.
-5. Keep cold start light: first confirm holdings/cash/watchlist, then style pack, then review schedule, market-watch schedule, and P0/P1/P2 notification policy.
-6. Offer default style packs from `config/style_packs.yaml`: 稳健价值型, 指数配置型, 趋势辅助型. The user may select a pack, customize it, or describe a fully custom style through WeChat.
-7. Based on holdings and selected/custom style, suggest fundamental, technical, macro, and risk methods. Let the user adjust by WeChat.
-8. Summarize method changes and ask for confirmation before writing `knowledge/methods/*.md`.
-9. Generate daily, weekly, monthly, company-analysis, QA, and market-watch ability templates for confirmation.
-10. Ask the user to confirm review schedules, market-watch fixed times or frequency, notification policy, and market-watch preferences.
+## Draft And Confirmation Contract
 
-For the `review_schedule`, `market_watch_schedule`, `notification`, and `watch_rules` onboarding steps, prefer the lightweight service endpoint `POST /api/sandbox/onboarding/confirm-step`. It updates onboarding progress and default workspace preferences without expanding the turn into many file edits.
+For each step:
 
-Market-watch schedule times have exactly one source of truth: `config/schedules.yaml` field `market_watch.default_windows`. Do not copy fixed intraday schedule times into `config/watch.yaml` or `config/notification.yaml`.
+1. Build the exact structured payload. Holdings and watchlist entries require an unambiguous six-digit security code; resolve ambiguity before drafting.
+2. Call `onboarding.draft.upsert_step`.
+3. Call `onboarding.draft.request_confirmation` for that exact draft revision.
+4. Show a concise user-facing draft and wait for a later explicit confirmation.
+5. On confirmation, call `onboarding.draft.accept_step`. Say that the section was added to the initial-setup draft, not that it is already saved or active.
+6. Continue naturally to the next step in the same reply.
 
-The `market_watch_schedule` step must be explicit in the user-visible reply: list the exact market-watch check times, for example `09:55 / 11:20 / 14:30`, and ask the user to confirm or customize them before moving to notification policy.
+The minimum sequence is holdings/watchlist/cash, investment style, review schedule, market-watch windows, notification preference, and optional explicit watch rules. Notification preference has only three user-facing choices: 低打扰, 积极盯盘, 晚间汇总.
 
-Confirming the `watch_rules` onboarding step means the user accepts the default watch policy and quiet notification boundaries. It must not automatically call watch-rule catalog/validate/create or batch-create concrete MA, price, or indicator rules. Create concrete watch rules only after a separate explicit user request such as “现在创建这些提醒规则” or “批量创建均线提醒”.
+If the user skips explicit rules, call `onboarding.draft.skip_watch_rules`. When all required sections are accepted, call `onboarding.draft.enqueue_commit`. Tell the user that setup is being completed and that the service will notify them when it becomes active. Do not request a redundant final confirmation and do not claim success before the background commit succeeds.
 
-## Confirmation Rules
+## Safety
 
-Require confirmation before writing:
-
-- Holdings, cash, or watchlist.
-- Strategy or position roles.
-- Selected style pack or custom style.
-- Analysis methods.
-- Skill templates and schedules.
-- Notification policy and operation confirmation rules.
-- Watch rules and alert thresholds.
-- Information sources and report paths.
-
-## Response Style
-
-- Keep WeChat messages short.
-- Use structured drafts and clear confirmation prompts.
-- Never silently write unconfirmed user text into memory.
+- Never expose tool names, internal step names, payload schemas, paths, or audit details in the final user reply.
+- Never bypass the service draft by editing portfolio, strategy, schedules, notification, watch, or onboarding-state files.
+- Never invent codes, holdings, methods, rules, or notification choices.
+- If a named capability is unavailable, state the user-visible limitation and stop the write path.

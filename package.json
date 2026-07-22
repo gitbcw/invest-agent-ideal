@@ -51,6 +51,8 @@
     "volcano:package-runtime": "bash scripts/package-volcano-runtime.sh",
     "volcano:apply-runtime": "bash scripts/apply-volcano-runtime.sh",
     "volcano:configure-portal": "bash scripts/configure-volcano-portal-env.sh",
+    "workspace:preflight": "npm run build && node scripts/workspace-compatibility.mjs preflight",
+    "workspace:migrate": "npm run build && node scripts/workspace-compatibility.mjs apply",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

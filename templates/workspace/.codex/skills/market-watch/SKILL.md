@@ -1,93 +1,32 @@
 ---
 name: market-watch
-description: Monitor intraday market conditions based on the latest daily review observations, user watch rules, holdings, and real-time anomalies. Push only when abnormal triggers fire. Use when the user asks for 智能盯盘, 盘中提醒, 异动提醒, or watch frequency setup.
+description: Generate an intraday market-watch brief or help create and inspect explicit deterministic watch rules using named service tools and the user's confirmed notification preference.
 ---
 
 # Market Watch
 
-## Purpose
+Use `service-capability-policy`. Do not call localhost HTTP, curl, sandbox tokens, database files, or hidden service routes.
 
-Monitor the market with low noise. The skill must use daily-review observation points, `config/watch.yaml`, and the service-owned watch-rule APIs; it should not push routine price noise.
+## Scheduled Brief
 
-## Inputs
+`market-watch` is a scheduled intraday brief, not deterministic rule evaluation. `rule-alert-check` is the separate service-owned rule evaluator.
 
-- `config/portfolio.yaml`
-- `config/strategy.yaml`
-- `config/watch.yaml`
-- `config/notification.yaml`
-- `config/sources.yaml`
-- `config/evidence_policy.yaml`
-- `config/risk_taxonomy.yaml`
-- `config/interaction_policy.yaml`
-- `knowledge/watch_protocol.md`
-- Latest report in `reports/daily/`
-- Latest decisions in `memory/decisions.jsonl`
+1. Call `market_watch.snapshot` for the current scheduled window. It is the authoritative window snapshot and change set.
+2. Use `market.snapshot` only when current holdings, watchlist, plans, or broader market context are additionally required.
+3. Respect `config/notification.yaml`: active watch may receive window briefs; low disturbance and evening summary do not receive routine intraday pushes.
+4. Separate facts, inference, explicit-rule status, risk level, notification decision, evidence time, and the next check.
+5. If data is missing, stale, conflicting, or unchanged, say so plainly and reduce conclusion strength. Never fabricate intraday facts.
 
-## Workflow
+Risk level is an analysis label, not permission to override the user's notification preference. Suppress routine noise, unverified rumors, and repeated information without a meaningful change.
 
-1. Load the latest daily review observations and user watch rules.
-2. When the user wants to create, inspect, update, or remove a deterministic intraday rule, use the service APIs instead of inventing or expanding local schema:
-   - `GET /api/sandbox/watch-rules/catalog`
-   - `GET /api/sandbox/watch-rules`
-   - `POST /api/sandbox/watch-rules/validate`
-   - `POST /api/sandbox/watch-rules`
-   - `PATCH /api/sandbox/watch-rules/:id`
-   - `DELETE /api/sandbox/watch-rules/:id`
-   - `POST /api/sandbox/watch-rules/:id/dry-run`
-3. First read the catalog, then map the user's request into a supported rule type. Current deterministic stage-2 rule types are:
-   - `price_cross`
-   - `ma_cross`
-   - `near_plan_level`
-4. Ask follow-up questions for missing params such as threshold, MA period, direction, target stock, tolerance, cooldown, and priority.
-5. For deterministic explicit rules, default to `P0` immediate push unless the user explicitly asks for `P1` or `P2`.
-6. Require user confirmation before creating or materially changing a persistent watch rule.
-7. After the user confirms, you must actually call `/api/sandbox/watch-rules` to create or update the rule before replying `已加上` or `已修改`.
-8. After writing, verify success by re-reading the rule list or calling dry-run; if the API call failed, report the failure plainly and do not pretend it succeeded.
-9. Fetch or verify current intraday data when running. Prefer the service-layer market API with the current sandbox token:
-   - Use `POST /api/sandbox/market/snapshot` for holdings, watchlist, plans, and indices.
-   - Use `GET /api/sandbox/market/quote` for symbols outside the snapshot.
-   - Use `GET /api/sandbox/market/kline?period=m5` only for supported 5-minute checks.
-10. Check exception rules:
-   - Core holdings near buy/sell zones.
-   - Watchlist items entering configured zones.
-   - Non-core holdings entering optimization or protection zones.
-   - Market style contradicting daily-review assumptions.
-   - Major news, financial report, policy, commodity, or FX change affecting holdings.
-   - User-defined price, volume, valuation, or technical thresholds.
-11. Check evidence sufficiency and suppress unverified rumors, ordinary moves, and repeated triggers without new facts.
-12. Classify each exception as P0, P1, or P2 using `config/risk_taxonomy.yaml`, `config/notification.yaml`, and `config/watch.yaml`.
-13. If no meaningful exception fires, do not push.
-14. Push P0 immediately. Summarize P1 in the evening brief. Record P2 only in reports/logs.
-15. If an exception fires, save details to `reports/alerts/YYYY-MM-DD.md`; write important views to `memory/decisions.jsonl` and data-quality events to `memory/source_events.jsonl`.
+## Explicit Rules
 
-## Deterministic Rule Notes
+For a user request to add or inspect a deterministic rule:
 
-- Do not treat `config/watch.yaml` as the primary machine-readable store for stage-2 deterministic rules.
-- `config/watch.yaml` remains the low-frequency policy surface for windows, noise suppression, and notification posture.
-- Deterministic stage-2 watch rules should live in the service layer and be managed through `/api/sandbox/watch-rules*`.
-- Do not claim a rule was created just because a draft, text note, or `config/watch.yaml` change exists; success means the service API returned success.
-- Do not write stage-2 deterministic rule instances into `config/watch.yaml`, `memory/change_log.jsonl`, or similar workspace files as a substitute for the service-layer write.
-- If the catalog does not support the user's requested rule type, explain the gap instead of making up a hidden schema.
+1. Read `watch_rules.catalog` and `watch_rules.list`.
+2. Use `watch_rules.validate` to create the exact draft.
+3. Register the write through `confirmations.request` and wait for a later explicit user confirmation.
+4. On confirmation, call `watch_rules.create` with the confirmation contract.
+5. Verify using `watch_rules.list` or `watch_rules.dry_run` before saying the rule exists.
 
-## Alert Format
-
-```markdown
-【盯盘提醒】
-优先级：P0/P1/P2
-触发事项：
-初步判断：
-证据与数据时间：
-建议动作：
-是否需要用户确认：
-验证/失效信号：
-详情记录：
-```
-
-## Style Rules
-
-- Push only on meaningful exceptions.
-- The purpose is to reduce watching effort, not provide continuous price companionship.
-- Do not recommend trades without connecting to the user's confirmed strategy.
-- Keep alerts short and operational.
-- For working professionals, avoid interrupting work unless the alert is P0.
-- If the service-layer market API is unavailable, do not fabricate intraday facts; report the data gap or return no push when evidence is insufficient.
+Current tools do not authorize modification or deletion. Do not edit `config/watch.yaml` or memory files to imitate a service rule. Keep the final WeChat reply concise and never expose internal tools or execution details.

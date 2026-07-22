@@ -56,6 +56,7 @@ After that, use the task-based map below instead of reading every file.
 | [market-data-service-design.md](./market-data-service-design.md) | Market data facade, MCP tool contract, and non-Agent HTTP adapter |
 | [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
 | [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
+| [workspace-compatibility.md](./workspace-compatibility.md) | Read-only preflight, managed-asset ownership, backup, migration and rollback contract for existing user Workspaces |
 
 ### Watch Runtime And Scheduler
 

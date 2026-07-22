@@ -42,6 +42,7 @@ ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197
 - 代码同步脚本只同步代码，不覆盖服务器 `.env`、`data/`、`reviews/`、`.state/`、workspace 和 `.codex` 运行态。
 - 运行时数据迁移只通过 `scripts/package-volcano-runtime.sh` 和 `scripts/apply-volcano-runtime.sh`；迁移后脚本会把 workspace 内 `.codex/config.toml`、`mcp.json` 统一指向服务器 `/home/claude/.codex`。
 - **普通版本发布只能使用代码同步路径**（`scripts/deploy-volcano.sh`），且必须从已审核的生产分支、标签或干净发布目录执行。提示词、Skill、Workspace 模板、服务代码和编译产物的更新都不应触碰生产数据库、Workspace、复盘、`.env` 或微信状态。
+- 代码同步必须只排除项目根目录 `.codex` 运行态，不能误排除 `templates/workspace/.codex`。现有真实用户 Workspace 的核心 Skill 升级不由 rsync 或普通运行时覆盖；先使用 `npm run workspace:preflight` 只读检查，再按 `docs/workspace-compatibility.md` 逐用户备份和显式迁移。
 - **禁止把运行时迁移当作普通部署**。只有用户明确要求迁移、恢复或替换数据库/Workspace 时，才允许使用 `package-volcano-runtime.sh` / `apply-volcano-runtime.sh`；该路径会替换生产资产，必须先停止写入、备份、校验 SHA，并记录回滚位置。
 - 如果需求同时能用代码发布或运行时迁移完成，默认选择代码发布，不得推断用户授权替换生产数据。
 - 火山云 portal env 默认指向火山云 portal/relay：`PORTAL_PUBLIC_URL=http://118.145.115.197:22649`、`PORTAL_RELAY_URL=ws://127.0.0.1:22650/`。连接阿里云 relay 必须显式覆盖变量。
