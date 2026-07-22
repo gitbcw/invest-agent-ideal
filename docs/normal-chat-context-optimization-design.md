@@ -22,7 +22,7 @@
 
 - 不改变 MCP 工具、sandbox 确认流程或数据库所有权。
 - 不改变 ACP 会话复用键、微信桥接和 portal connector 协议。
-- 不在此改动中删除 `.sandbox-token` 兜底机制；它在 MCP 不可用时仍可由 workspace 使用，后续再单独收敛能力票据传递。
+- workspace Agent 的服务能力面已收敛为 MCP-only；MCP 缺少能力时应报告缺口，不通过 token、HTTP 或本地文件兜底。
 - 不把“确认/继续”改回服务层分类器。
 
 ## 目标运行时

@@ -1,14 +1,11 @@
-# 投资风险分类。用于日复盘、周复盘、月复盘、财报分析和盯盘统一口径。
+# 投资风险分类。用于日复盘、周复盘、月复盘、财报分析和盯盘的分析排序，不决定通知推送方式。
 risk_levels:
   P0:
     meaning: "可能改变持仓逻辑、触发用户确认动作或造成重大本金风险"
-    interrupt_allowed: true
   P1:
     meaning: "当天需要关注，但不适合打断工作"
-    interrupt_allowed: false
   P2:
     meaning: "用于复盘沉淀，不主动推送"
-    interrupt_allowed: false
 
 risk_categories:
   portfolio:

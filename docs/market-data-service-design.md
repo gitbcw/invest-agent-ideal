@@ -1,20 +1,20 @@
 # Market Data Service Design
 
 > Created: 2026-07-01
-> Status: Stage 1 implementation target
+> Status: Current service contract; Stage 1 implemented
 
 ## Background
 
-Invest Agent already fetches A-share quotes, daily K-lines, minute K-lines, index quotes, stock search results, and Eastmoney capital flow data. The current implementation is useful but too function-oriented: callers import `src/services/stock.ts` and `src/services/eastmoney.ts` directly, while Codex workspace skills do not have a stable market-data API contract.
+Invest Agent fetches A-share quotes, daily K-lines, minute K-lines, index quotes, stock search results, and Eastmoney capital flow data through the service-owned facade in `src/services/market-data.ts`.
 
-The desired direction is service-owned deterministic market data. Codex and skills should call local service APIs for facts, then apply investment reasoning on top. They should not improvise live market scraping when a supported service endpoint exists.
+Workspace Agents access these facts only through named `invest-agent-service-tools` MCP tools, then apply investment reasoning on top. HTTP routes remain a non-Agent adapter for diagnostics and compatibility callers. Both adapters reuse the same facade.
 
 ## Goals
 
 - Provide a unified service-layer market data facade for quotes, K-lines, indices, capital flow, stock resolving, health, and portfolio/watchlist snapshots.
 - Preserve Tencent quote/K-line APIs as the primary free A-share source for Stage 1.
 - Preserve Eastmoney capital flow as an auxiliary, lower-confidence source.
-- Expose read-only sandbox APIs that Codex can call with the existing sandbox token.
+- Expose named read-only MCP tools to workspace Agents and retain authenticated HTTP adapters for non-Agent callers.
 - Attach source, fetch time, confidence, stale/data warnings, and provider health metadata to responses.
 - Keep existing review, scheduler, dashboard, and watch-rule behavior working during migration.
 
@@ -35,9 +35,9 @@ The desired direction is service-owned deterministic market data. Codex and skil
 | Tencent `smartbox.gtimg.cn` | Stock search/resolve fallback | medium | Name/code resolving only. |
 | Eastmoney capital flow | Auxiliary capital-flow observation | low/medium | Can support “资金异动” observation. Must not be described as proven main-force accumulation/control. |
 
-## API Shape
+## HTTP Adapter Shape
 
-Stage 1 exposes sandbox read APIs:
+The following authenticated routes remain available for diagnostics and compatibility callers. Workspace prompts and skills must not reference them:
 
 ```text
 GET  /api/sandbox/market/quote?codes=002460,601058
@@ -117,25 +117,27 @@ Stage 1 uses lightweight staleness rules:
 - If the service time is outside A-share trading hours, data may be delayed; responses should preserve `marketTime` and avoid inventing freshness.
 - Eastmoney capital flow should always carry a usage warning that it is an observation signal, not proof of main-force control.
 
-## Codex / Skill Usage
+## Workspace Agent Usage
 
-Workspace skills should prefer `invest-agent-service-tools` MCP tools for market facts when available:
+Workspace skills use `invest-agent-service-tools` MCP tools for market facts:
 
 ```text
 market.snapshot
 market.quote
+market.kline
+market.indices
+market.capital_flow
+market.sector_theme
+market.stock_info
+market.resolve
+market.calendar
 market.health
 portfolio.read
 watchlist.read
 plans.read
 ```
 
-If MCP tools are unavailable, fall back to the local sandbox APIs:
-
-```bash
-curl -s "http://127.0.0.1:$PORT/api/sandbox/market/quote?codes=002460" \
-  -H "Authorization: Bearer $sandboxToken"
-```
+If a required tool is unavailable or returns a data gap, the Agent reports the missing capability or evidence. It must not discover hidden HTTP routes, tokens, ports, or local files as a fallback.
 
 Skills must:
 
@@ -149,7 +151,7 @@ Skills must:
 1. Add `src/services/market-data.ts` as the unified facade.
 2. Add sandbox tool id `invest.market.read` using existing `read:self` permission.
 3. Add sandbox routes under `/api/sandbox/market/*`.
-4. Expose market quote/K-line/indices/capital-flow/snapshot through the service-tools MCP or sandbox fallback instructions.
+4. Expose market quote/K-line/indices/capital-flow/sector-theme/calendar/snapshot as named service-tools MCP capabilities.
 5. Build and manually smoke test quote, kline, indices, capital-flow, resolve, snapshot, and health.
 6. Later migration: update review, watch-rules, dashboard, and alert-check to call the facade directly.
 
@@ -161,24 +163,24 @@ Skills must:
 - K-line API supports `period=day` and `period=m5`.
 - Capital-flow API returns data when available and warnings when unavailable.
 - Snapshot API returns de-duplicated quote facts for holdings, watchlist, and plans.
-- Tool registry and ACP manifest expose market read capabilities to Codex.
+- MCP inventory exposes the documented market read capabilities to Codex.
 - Existing dashboard, review, scheduler, and watch-rule flows still compile.
 
 ## Risks
 
 - Public free endpoints can change without notice. Mitigation: source metadata, health endpoint, partial failure warnings.
 - Overconfidence from capital-flow data. Mitigation: low/medium confidence and explicit warning.
-- Skill misuse or hidden hallucination. Mitigation: local API contract plus skill instruction updates in a later pass.
+- Skill misuse or hidden hallucination. Mitigation: MCP-only workspace policy, named schemas, and explicit data-gap handling.
 - Cache semantics can become subtle. Mitigation: Stage 1 avoids persistent caching; add TTL cache only after API shape settles.
 
 ## Reviewer Prompt
 
-Review the implementation against this design. Focus on whether market APIs are read-only, source-aware, partial-failure tolerant, and usable by Codex through sandbox tokens. Do not require migration of all internal call sites in Stage 1.
+Review the implementation against this design. Focus on whether market capabilities are read-only, source-aware, partial-failure tolerant, exposed through the documented MCP inventory, and backed by the same facade as HTTP compatibility routes.
 
 ## Follow-Up TODO
 
 > Added: 2026-07-01
-> Purpose: next-session handoff after Stage 1 market data API and Codex sandbox access were verified.
+> Purpose: retained follow-up list after Stage 1 market data facade and MCP access were verified.
 
 ### Boundary Correction: Evaluation Assets Stay Service-Level
 
@@ -196,9 +198,9 @@ Current service-level paths:
 ### Current Verified State
 
 - Service-layer market data facade exists for quote, K-line, indices, capital flow, resolve, snapshot, and health.
-- Sandbox routes are available under `/api/sandbox/market/*` and require the sandbox token.
-- `invest-agent-service-tools` MCP exposes market read capability to Codex without depending on shell network access.
-- Codex ACP shell network may still be isolated; workspace skills should not treat failed localhost curl as proof that the market service is unavailable.
+- Sandbox routes remain available under `/api/sandbox/market/*` for authenticated non-Agent callers.
+- `invest-agent-service-tools` exposes named market read capabilities to Codex without shell networking.
+- Workspace skills do not use localhost or HTTP fallback; missing MCP capability is reported as a service gap.
 - Production smoke `npm run smoke:mcp-service-tools` verifies that Codex-visible MCP tools can call `market.snapshot` and return prices.
 - Scheduled market-watch and daily-review flows can use the market service and push WeChat output.
 
@@ -211,9 +213,9 @@ Current service-level paths:
 
 ### P0: Harden Skill Usage Discipline
 
-- Update review, market-watch, weekly-review, monthly-review, and QA skills to consistently say: use local market APIs first for prices, indices, K-lines, watchlist snapshots, and plan trigger facts.
+- Keep review, market-watch, weekly-review, monthly-review, QA, and observation-pool skills aligned on named MCP tools for prices, indices, K-lines, source evidence, watchlist snapshots, and plan trigger facts.
 - Keep prompts encouraging Markdown when useful, but do not force Markdown for every user answer.
-- Add explicit instruction that API paths, curl commands, sandbox tokens, and tool execution notes must not be exposed to the user.
+- Keep HTTP paths, credentials, and tool execution notes out of workspace prompts and user replies.
 - Acceptance: real audited interactions for holdings price questions, daily review, and market-watch do not invent prices or leak internal execution process.
 
 ### P1: Add Provider Health And Freshness Observability
@@ -262,7 +264,7 @@ Current service-level paths:
 
 - Update `docs/README.md` when the market data design graduates from implementation target to source-of-truth.
 - Move superseded market-data research notes to archive if they start steering implementation incorrectly.
-- Add a short operator runbook for manually verifying market API access from the primary workspace.
+- Keep operator verification in project skills or engineering docs; do not add HTTP access instructions to the primary workspace.
 
 ### Defer For Later
 

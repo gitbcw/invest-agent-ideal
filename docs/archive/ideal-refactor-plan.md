@@ -316,7 +316,7 @@ LLM_FALLBACK_PROVIDERS=doubao,stepfun(逗号分隔备用链)
 
 #### 0c:SQLite 表归属划分(已确认方向)
 
-按"是否用户私有产物"分三类。完整划分、判断标准、迁移顺序见 **[`docs/table-ownership.md`](./table-ownership.md)**(本工作包产出),下表为摘要。
+按"是否用户私有产物"分三类。完整划分、判断标准、迁移顺序见 **[`docs/table-ownership.md`](../table-ownership.md)**(本工作包产出),下表为摘要。
 
 **🟢 服务层保留(13 张,系统职责,与用户私有无关)**
 | 表 | 理由 |

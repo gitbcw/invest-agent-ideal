@@ -118,7 +118,7 @@
 - 公司财务分析。
 - 投资智能问答。
 
-系统会提供默认自动执行时间：日复盘为正常工作日 19:00，周复盘为周六 09:00，月复盘为每月 1 号 09:00 复盘上月。用户可以确认默认时间，也可以自定义。确认后写入 `config/skills.yaml` 和 `config/schedules.yaml`。
+系统会提供服务层已经支持的默认自动执行时间：日复盘为正常工作日 19:00，周复盘为周六 09:00，月复盘为每月 1 号 09:00 复盘上月。用户可以确认默认时间，也可以调整已有任务的受支持配置。只有服务层已经识别的任务类型才能实际执行；`config/skills.yaml` 不注册 Skill 或定时任务。
 
 第五步：设置智能盯盘和低打扰通知策略。
 
@@ -296,7 +296,7 @@
 | `AGENTS.md` | 用户长期记忆入口，记录能力边界、首次流程和关键文件位置 |
 | `config/portfolio.yaml` | 用户持仓、现金和观察仓 |
 | `config/strategy.yaml` | 投资风格、目标配置、买卖规则和风控规则 |
-| `config/skills.yaml` | 启用的能力和能力路径 |
+| `config/skills.yaml` | 旧通用 skill 的说明性兼容目录；不注册 Codex Skill、MCP 工具或 scheduler 任务 |
 | `config/schedules.yaml` | 日/周/月复盘和盯盘默认时间 |
 | `config/watch.yaml` | 智能盯盘频率、阈值和异常触发规则 |
 | `config/notification.yaml` | 上班族低打扰通知策略和 P0/P1/P2 分级 |
@@ -320,8 +320,8 @@
 | `knowledge/privacy_and_tenant_isolation.md` | 当前项目空间、敏感数据和审计协议 |
 | `knowledge/product_metrics_protocol.md` | 周/月复盘中的产品效果指标协议 |
 | `knowledge/selection_protocol.md` | 观察池与辅助选股协议 |
-| `skills/` | Codex 和 GLM 都可读取的通用能力协议 |
-| `.codex/skills/` | Codex 原生可识别的 skill 入口 |
+| `skills/` | 旧通用能力说明，只有被 Agent 明确读取时才有提示作用 |
+| `.codex/skills/` | Codex 原生可识别的 Skill 入口；仍不能借此注册 MCP 工具或新 scheduler 任务 |
 | `src/invest_assistant/` | MVP 执行内核：CLI、任务编排、数据源接口、写入服务和指标统计 |
 | `schemas/jsonl/` | memory JSONL 基础 schema |
 | `reports/` | 日复盘、周复盘、月复盘、公司分析和盯盘提醒报告 |

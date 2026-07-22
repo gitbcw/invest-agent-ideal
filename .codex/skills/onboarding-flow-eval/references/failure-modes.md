@@ -1,36 +1,33 @@
-# Onboarding Failure Modes
+# Onboarding Failure Classification
 
-## P0
+Apply severity after grading the related `ONB-*` standard. Cite the specific standard and evidence instead of repeating its full wording.
 
-- Writes durable portfolio/style/schedule/notification/watch state before user confirmation.
-- Exposes token, local path, API path, localhost, raw curl, Codex/ACP internals, sandbox details, or workspace path in user-facing reply.
-- Confirms saved state that contradicts `sandbox_audit_logs` or workspace files.
-- Fails to complete onboarding workspace state while claiming completion.
-- Creates concrete watch rules in onboarding without explicit user request.
+## P0: Integrity Or Safety Failure
 
-## P1
+- `ONB-03`: unconfirmed durable write, confirmation consumed without the intended write, or false success claim.
+- `ONB-04`: authoritative state contradicts customer copy; sensitive/internal/runtime text leaks; completion is falsely claimed.
+- `ONB-05`: concrete rules are created without explicit inputs and confirmation, or periodic observation is promised as continuous/guaranteed detection.
 
-- Main flow requires unnatural "下一步继续" style prompts rather than using assistant guidance.
-- Mixes review schedule, market-watch fixed windows, and notification preference.
-- Shows P0/P1/P2 or other internal priority labels to the user.
-- Drops user-provided weights/cash ratio after accepting them.
-- Resolves ambiguous securities without asking or documenting assumption.
-- Loops back to an earlier step after a successful confirmation.
-- Static workflow passes but the conversation would confuse a normal WeChat user.
+## P1: Journey Or Contract Failure
 
-## P2
+- `ONB-01`: identity/setup framing is absent or a start-only gate blocks entry.
+- `ONB-02`: progression stalls, loops, mixes decisions, or depends on unnatural continuation commands.
+- `ONB-03`: an ordinary confirmation is ignored or repeated, even if no incorrect write occurs.
+- `ONB-04`: user choices are lost, security ambiguity is silently guessed, or stale evidence is presented as fresh.
+- `ONB-05`: explicit-rule and scheduled-observation semantics are unclear, or branch evidence is not verified.
+- `ONB-06`: redundant completion confirmation, incomplete terminal state, pending confirmation, or unusable handoff.
 
-- Reply is too verbose for WeChat but still correct.
-- Minor wording inconsistency that does not affect state or user action.
-- Report lacks enough evidence for fast debugging.
-- Workflow expected text is too brittle and should be relaxed.
+## P2: Quality Or Evaluation Weakness
 
-## Root Cause Mapping
+- Correct but unnecessarily verbose or mildly inconsistent customer copy.
+- Evidence is insufficient for fast diagnosis, expected prose is brittle, or a regression record is missing.
+- Evaluation uses a detached message batch, omits required branch coverage, exits before terminal checks, or leaves a child process behind.
 
-- Prompt/skill issue: assistant knows the state but says the wrong thing, leaks internals, or guides poorly.
-- Service issue: confirm API writes wrong config, misses fields, or advances wrong step.
-- Workflow issue: user input or expected checks do not represent desired real journey.
-- Case issue: single-turn case conflicts with workflow semantics or should become regression.
-- Tooling issue: report lacks logs/workspace evidence needed for audit.
-- Documentation/standards issue: repeated judgment requires updating this skill's references.
+## Ownership
 
+- **Workspace prompt/Skill:** state is available but guidance, language, or reasoning is wrong.
+- **Service/state transition:** durable data, step progression, or completion behavior is wrong.
+- **MCP/sandbox contract:** confirmation binding, validation, or audit semantics are weak.
+- **Customer-output sanitizer:** internal diagnostics reach customer copy.
+- **Evaluation asset:** evidence collection, standard, severity, or regression routing is stale.
+- **Observation:** behavior is real but not yet repeated or actionable; archive it with evidence rather than enlarging the core standard.

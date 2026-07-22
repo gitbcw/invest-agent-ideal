@@ -6,7 +6,7 @@
 
 ## 项目概述
 
-微信入口的 AI 投资决策助手。实验分支当前采用极简主链路：微信消息解析出用户、用户助手和 workspace 后，直接转发给在该 workspace 中运行的当前 ACP 后端，默认 Codex。当前产品语义是一用户一助手一 workspace；代码和数据库中的 `instanceId` / `instance_id` 只作为内部兼容与隔离键，不代表用户门户里可选择多个实例。服务层不再做普通微信消息的分流、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Dashboard、行情数据、巡检、提醒、sandbox/API、落库和微信推送。
+微信入口的 AI 投资决策助手。实验分支当前采用极简主链路：微信消息解析出用户、用户助手和 workspace 后，直接转发给在该 workspace 中运行的当前 ACP 后端，默认 Codex。当前产品语义是一用户一助手一 workspace；代码和数据库中的 `instanceId` / `instance_id` 只作为内部兼容与隔离键，不代表用户门户里可选择多个实例。服务层不再做普通微信消息的分流、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Platform 本地管理入口、行情数据、巡检、提醒、sandbox/API、落库和微信推送。Dashboard 已退役(2026-07-16),`/dashboard` 仅作为到 `/platform` 的 301 重定向保留,兼容期结束后移除。
 
 ## 常用命令
 
@@ -19,12 +19,23 @@ npm run smoke        # 构建 + 运行 smoke 测试
 npm run db:generate  # Drizzle 迁移文件生成
 npm run db:migrate   # 执行数据库迁移
 npm run smoke:mcp-service-tools  # 验证 Codex ACP 服务层 MCP 工具(读 + 第一批确认写)
+npm run smoke:onboarding-draft-commit  # 验证 onboarding 草稿确认、冻结提交与重试
+npm run smoke:platform-partner-auth    # 验证 Platform 账号、角色和 Partner 脱敏边界
+npm run smoke:platform-partner-migration # 验证 Platform 账号数据迁移
 ```
 
-统一看板：`http://localhost:22655/dashboard`（含持仓/自选/预案/提醒/信号/巡检/微信连接）
+本地管理入口：`http://localhost:22655/platform`（含用户助手、规则巡检审计、日志审计、数据源质量、成本统计、实例级微信连接；实例详情含投资状态摘要）。Platform 是内部管理面：Owner 有授权管理能力，Partner 仅可查看脱敏经营与质量摘要。
 健康检查：`curl http://localhost:22655/health`
+Dashboard 已退役;`/dashboard` 仅作为到 `/platform` 的 301 重定向保留。
 
 本地只保留 `22655` 作为默认 invest-agent-ideal 服务端口。`22648` / `22652` 不应再作为本项目默认启动端口使用。
+
+火山云运维端口约定：
+
+- 火山云 `invest-agent` runtime 内部监听 `127.0.0.1:22655`，不作为普通用户门户。
+- 本机访问火山云 Platform 使用 SSH tunnel：`ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197`，然后打开 `http://127.0.0.1:22648/platform`。
+- 火山云用户门户公网入口是 `http://118.145.115.197:22649/login`，由独立项目 `invest-agent-portal` 提供。
+- 本机 `22649` 不用于 Platform tunnel，避免和火山云公网门户端口混淆。
 
 ## 项目专属 Skills
 
@@ -32,10 +43,13 @@ npm run smoke:mcp-service-tools  # 验证 Codex ACP 服务层 MCP 工具(读 + �
 
 - `.codex/skills/volcano-ops`：火山云部署、回滚、生产健康与迁移。
 - `.codex/skills/scheduler-push-debug`：定时复盘、盯盘、规则巡检、推送队列和微信 delivery 排障。
-- `.codex/skills/service-api-change`：sandbox、portal、MCP、Dashboard/Platform 和服务 API 变更。
+- `.codex/skills/service-api-change`：sandbox、portal、MCP、Platform 和服务 API 变更。
 - `.codex/skills/db-migration`：SQLite schema、迁移、回填和表归属。
 - `.codex/skills/invest-eval`：基于真实交互和服务审计的评估与问题归因。
 - `.codex/skills/onboarding-flow-eval`：Onboarding 连续主流程运行、日志审计、workspace 落库检查和问题归因。
+- `.codex/skills/screening-flow-eval`：选股、候选风险扫描、观察池写入和候选转自选的真实流程评估。
+- `.codex/skills/eval-instance-cleanup`：评测结束后检查或永久清理保留的评测用户与 workspace。
+- `.codex/skills/local-runtime-restart`：重启并验证本地 `22655` 端口的 PM2 托管运行时。
 
 ## 环境配置
 
@@ -57,7 +71,7 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
   → AcpAgent.handleMessage()
   → workspace-scoped ACP session(cwd = 用户 workspace)
   → Codex 使用 workspace 的 AGENTS.md + .codex/skills 进行推理和工具调用
-  → Codex 优先调用 invest-agent-service-tools MCP；HTTP sandbox API 只作兜底
+  → Codex 只通过 invest-agent-service-tools MCP 调用确定性服务能力
   → 响应返回微信
 ```
 
@@ -82,6 +96,7 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 |------|------|
 | `src/acp/agent.ts` | ACP 入口；微信消息只添加最小通道上下文，并代理到 workspace-scoped ACP 后端 |
 | `src/acp/stdio-agent.ts` | stdio ACP 托管器；微信直通路径使用按 workspace cwd 隔离的 ACP 会话 |
+| `src/routes/watch-rules.ts` | 阶段二明确规则 HTTP adapter(原 dashboard.ts 内重复定义已迁出) |
 | `src/mcp/invest-agent-service-tools.ts` | Codex ACP 会话挂载的 stdio MCP server；不依赖 shell 网络 |
 | `src/mcp/service-tools-core.ts` | MCP 工具实现核心，复用服务层后端和 facade 并记录审计 |
 | `src/services/deepseek.ts` | DeepSeek API 封装，支持 light（flash）和 deep（pro+thinking）两种模式 |
@@ -96,25 +111,25 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 | `src/services/sandbox-runtime.ts` | L3b helpers 桥（白名单 L1 算子导出给沙箱，无 Node API 依赖） |
 | `src/handlers/signal-config.ts` | 信号配置工具：14 个系统信号（含资金流信号、盘中放量滞涨/滞跌）开关和参数管理 |
 | `src/handlers/review.ts` | 复盘工具（`handleReviewTool`）：日/周复盘生成，含资金流数据和预案调整建议 |
-| `src/db/schema.ts` | 全部 Drizzle 表定义：settings、watchlist、portfolio、旧 alerts、alertRules、stockPlans、chatHistory、dailyPlans、alertEvents、tradeActions、agentTraces |
+| `src/db/schema.ts` | 全部 Drizzle 表定义：settings、watchlist、portfolio、alertRules、stockPlans、chatHistory、dailyPlans、alertEvents、tradeActions、agentTraces(legacy `alerts` 表 2026-07-16 已 drop) |
 | `src/scheduler/alert-check.ts` | 规则巡检执行器：只执行 stage2 watch_rules / `alert_rules.relation_to_plan=stage2_watch_rule`，按采样当刻行情/K 线/预案事实写入 alert events / signal states / indicator results |
 | `src/scheduler/index.ts` | 定时任务调度：market-watch 定时简报、rule-alert-check 独立规则巡检、复盘、数据质量汇总 |
-| `src/routes/dashboard.ts` | Dashboard API（聚合数据 + CRUD 端点）和页面路由 |
 | `src/routes/portal.ts` | 用户门户本地调试 API：权威对话日志健康检查、会话列表、会话详情、网页消息入口 |
 | `src/portal/connector.ts` | 云端用户门户 Relay 的本地 connector：注册、心跳、会话列表、会话详情和聊天转发 |
 | `src/services/conversation-log.ts` | 权威对话日志：`conversation_sessions` / `conversation_messages` 读写，以及网页消息进入 workspace ACP |
-| `src/admin/dashboard-page.ts` | 统一看板前端（侧边栏导航，含持仓/自选/预案/提醒/信号/巡检/微信连接，自包含 HTML + Tailwind CDN） |
+| `src/admin/platform-page.ts` | 本地 Platform 前端(用户助手、规则巡检、日志审计、数据源质量、实例级微信连接、投资状态摘要) |
 
 ## 服务保留的确定性能力
 
-这些能力应保留在本项目中，供 Dashboard、巡检和当前 workspace ACP 工具调用使用。
+这些能力应保留在本项目中，供 Platform、巡检和当前 workspace ACP 工具调用使用。
 
 **Codex 服务层 MCP 工具：**
 - `invest-agent-service-tools` 在 `session/new` 时由 `src/acp/stdio-agent.ts` 挂到 Codex ACP 会话。
-- 读取工具：`market.snapshot`、`market.quote`、`market.health`、`portfolio.read`、`watchlist.read`、`plans.read`、`watch_rules.catalog/list/validate/dry_run`。
+- 读取工具：`market.snapshot`、`market.quote`、`market.kline`、`market.indices`、`market.capital_flow`、`market.sector_theme`、`market.stock_info`、`market.resolve`、`market.calendar`、`market.health`、`portfolio.read`、`watchlist.read`、`plans.read`、`watch_rules.catalog/list/validate/dry_run`。
 - 确认工具：`confirmations.pending`、`confirmations.request`；前者读取当前会话待确认项，后者在询问用户前登记精确写入草案。
 - 确认写入工具：`onboarding.confirm_portfolio`、`onboarding.confirm_step`、`watchlist.add`、`plans.set`、`plans.watch_conditions`、`method_changes.propose`、`watch_rules.create`。用户下一轮明确确认后，调用时必须同时带服务端签发的 `confirmationId` 和 `confirmedByUser: true`；确认绑定 scope、operation、payload，且只能消费一次。
-- `reviews.save` 允许 scheduled review 完成时保存产物，是当前唯一不要求交互式 confirmation record 的写入例外。删除、关闭、主动推送、强制调度暂不开放为 MCP 写工具。
+- `onboarding.complete_watch_setup` 是流程收口工具：用户明确跳过首次规则，或本会话内所有指定规则已分别确认创建并有成功审计后，直接完成 onboarding，不再要求“确认完成”。
+- `reviews.save` 允许 scheduled daily-review 由 Agent 主动发布完整 Markdown `content`、独立微信 `pushBrief` 和可选 `decisionRecords` / `sourceEvents`，是当前唯一不要求交互式 confirmation record 的写入例外。服务层只负责忠实保存、索引和审计，不再把 Agent 最终微信回复自动当作完整报告。删除、关闭、主动推送、强制调度暂不开放为 MCP 写工具。
 - 生产/部署 smoke：`npm run smoke:mcp-service-tools`，会验证 stdio MCP 协议、工具列表、行情快照和 watch-rule 校验。
 
 **持仓与自选：**
@@ -123,10 +138,14 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 
 **监控与提醒：**
 - `query_monitor_overview`：聚合监控全貌
-- `query_alert_rules` / `set_alert_rule` / `remove_alert_rule`：旧提醒规则管理，保留作旧 UI/API 兼容，不再参与运行时规则巡检
 - `GET /api/watch-rules/catalog` / `POST /api/watch-rules` / `PATCH /api/watch-rules/:id` / `DELETE /api/watch-rules/:id`：阶段二明确规则盯盘 API（服务层主通路），当前 catalog 包含 `price_cross`、`ma_cross`、`macd_cross`、`kdj_cross`、`rsi_threshold`、`boll_break`、`wr_threshold`、`volume_ratio`、`near_plan_level`
 - `GET /api/platform/rule-alerts`：Platform 的独立规则巡检审计视图数据源
 - `set_alert_interval`：规则巡检采样间隔调整（分钟，持久化，默认 5 分钟）
+
+**微信投递可观测性：**
+- `weixin_delivery_attempts`：记录 scheduler 推送和 Platform 手动探测的结果、失败分类、最近入站时间与间隔；用于实测微信会话/context 的有效窗口。
+- `GET /api/platform/instances/:instanceId/weixin/status`：除连接状态外返回 `delivery`，含最近入站和近期投递样本。
+- `POST /api/platform/instances/:instanceId/weixin/push/test`：管理员显式手动探测；不会自动保活或静默向用户发送消息。
 
 规则巡检当前语义：scheduler 在交易日按 `alert_check_interval_minutes` 形成采样点，执行 `rule-alert-check`；每次只用采样当刻可取得的最新价格/K 线/预案事实判断 stage2 watch_rules，不读取 legacy `alerts`，不回溯“盘中曾经触达”、不做收盘确认变体。market-watch 是定时简报/摘要任务，和 rule-alert-check 是两条独立调度线；若同一 scheduler tick 同时命中 market-watch 和规则巡检，规则仍记录事件，但单独规则推送会被压制，避免同分钟重复微信打扰。
 
@@ -135,17 +154,20 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 
 **预案与复盘数据：**
 - `query_stock_plan` / `set_stock_plan` / `remove_stock_plan`：交易预案管理(含可选 `strategyKey` 溯源字段)
-- `/api/reviews/daily` / `/api/reviews/query`：复盘数据收集、生成入口和 artifact 查询。复盘方法与输出纪律应优先沉淀到 workspace 内 skills。
+- workspace Agent 通过 MCP `reviews.save` 保存定时复盘产物；复盘方法与输出纪律优先沉淀到 workspace skills。Dashboard 时代的 `/api/reviews/*` HTTP 聚合已删除。
 
-**Onboarding sandbox 快通道：**
+**Onboarding 确定性能力：**
+- 新版 workspace Agent 使用 MCP `onboarding.draft.get/upsert_step/request_confirmation/accept_step/enqueue_commit`；每一步确认只定稿服务层草稿，最后由后台 worker 按冻结快照统一写入并校验 Workspace。不得从模板或 skill 发现并调用 HTTP、token 或本地文件兜底。
+- 旧 `onboarding.confirm_portfolio` / `onboarding.confirm_step` 和 HTTP adapter 仅保留给兼容调用；新版模板不得使用它们。
+- MCP 和 HTTP 适配器复用 `src/services/onboarding.ts` 的校验和最终配置投影；草稿状态、确认、异步提交和通知由 `src/services/onboarding-drafts.ts` 管理。
+- 以下 sandbox 路由仅保留给非 Agent 兼容调用和工程诊断：
 - `GET /api/sandbox/onboarding/state`：读取当前 workspace onboarding 进度。
 - `POST /api/sandbox/onboarding/confirm-portfolio`：用户确认持仓/观察仓草案后，一次性写入 `config/portfolio.yaml`，并把 `config/onboarding_state.yaml` 推进到 `current_step=style`。
 - `POST /api/sandbox/onboarding/confirm-step`：确认 `style`、`review_schedule`、`market_watch_schedule`、`notification`、`watch_rules` 等步骤，写入对应 workspace 配置并记录 `sandbox_audit_logs`。
-- workspace Agent 必须用 Bearer sandbox token 调这些接口，不要手工编辑 YAML 代替服务层快通道。
 
 **交易策略实体（第一版）：**
 - `workspace/config/trading_strategies.yaml` 存放用户多份策略（每份含 key/name/applicability/body/enabled）；与 `strategy.yaml`（整体投资风格）平级，不合并。workspace 模板不内置示例，由用户或 workspace ACP backend 自建。
-- `/api/strategies` / `/api/sandbox/strategies/*`：策略 CRUD endpoint。
+- workspace Agent 通过 MCP 确认工作流管理策略与预案；旧 `/api/strategies*` Dashboard CRUD 已删除。`/api/sandbox/strategies/*` 仅是非 Agent 兼容适配器，不应写入 workspace prompt 或 skill。
 - `stock_plans.strategy_key` 是策略 → 预案的溯源软引用（可空，策略删除不级联清理）。
 - 策略推荐和预案起草按 `AGENTS.md` 的“策略预案起草”流程执行，两道闸门（策略匹配 + 预案起草），不做 AI 自主落库。
 - 复盘流程**不感知策略实体**
@@ -154,36 +176,31 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 - 选股推理由 workspace skills 承载，服务层不内置固定 skill。
 - 服务只保留未来需要高频复用的确定性数据 API，例如行情、资金流、持仓/自选上下文和股票解析。
 
-## Dashboard CRUD API
+## Platform / 领域 HTTP adapter
 
-Dashboard 可直接操作数据，不经过 workspace ACP 后端：
+Dashboard 退役后,投资数据修改只能通过用户对话 + MCP 确认流程;Platform 仅提供只读摘要和运维入口。HTTP adapter 列表:
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/portfolio/add` | POST | 添加持仓（支持名称/代码） |
-| `/api/portfolio/remove` | POST | 移除持仓 |
-| `/api/watchlist/add` | POST | 添加自选 |
-| `/api/watchlist/remove` | POST | 移除自选 |
-| `/api/plans/set` | POST | 创建/编辑预案（支持 `strategyKey` 溯源） |
-| `/api/plans/remove` | POST | 删除预案 |
-| `/api/strategies` | GET | 列出交易策略 |
-| `/api/strategies/set` | POST | 创建/更新策略 |
-| `/api/strategies/remove` | POST | 删除策略 |
-| `/api/alerts/set` | POST | 旧提醒规则兼容入口，不再生成运行时 watch-rule |
-| `/api/alerts/toggle` | POST | 旧提醒规则启停兼容入口 |
-| `/api/alerts/remove` | POST | 旧提醒规则删除兼容入口 |
 | `/api/watch-rules/catalog` | GET | 查询阶段二明确规则目录 |
 | `/api/watch-rules` | GET/POST | 查询或创建阶段二明确规则 |
 | `/api/watch-rules/:id` | PATCH/DELETE | 更新或删除阶段二明确规则 |
 | `/api/watch-rules/:id/dry-run` | POST | 对单条阶段二明确规则做 dry-run |
+| `/api/watch-rules/default-scope` | GET | 查询当前请求默认 userId/instanceId scope |
+| `/api/platform/instances/:instanceId/investment-state` | GET | 紧凑只读投资摘要(持仓/自选/预案/规则/最近复盘) |
 | `/api/platform/rule-alerts` | GET | Platform 规则巡检运行记录、规则、事件审计 |
 | `/api/platform/source-quality` | GET | Platform 数据源质量和服务层数据源告警 |
-| `/api/signals/update` | POST | 切换信号开关/参数 |
-| `/api/interval/set` | POST | 设置巡检间隔 |
+| `/api/sandbox/snapshot` | GET | Bearer sandbox token 保护的实例投资摘要；权限名 `invest.snapshot.read`，仅供兼容调用和工程诊断 |
+
+旧 Dashboard CRUD(`/api/portfolio*`、`/api/watchlist*`、`/api/plans*`、`/api/strategies*`、`/api/alerts/set|toggle|remove`、`/api/signals/update`、`/api/interval/set`、`/api/acp-backends*`、`/api/reviews/*` 旧聚合、`/api/indicators*`、`/api/users*`、`/api/dashboard`)已于 2026-07-16 随 Dashboard 一并删除。投资数据写入请使用 MCP 确认工作流,不再提供绕过对话的 HTTP CRUD。
+
+全局 `/api/weixin/status|connect/start|listener/start|connect/stop|push/test` 已删除。管理端微信操作只使用实例级 `/api/platform/instances/:instanceId/weixin/*`；`/admin/weixin` 暂时仅 301 到 `/platform#instances`。
+
+本地隔离验收可设置 `INVEST_AGENT_OFFLINE_MODE=true`。该模式禁用微信恢复、Portal connector、Platform 微信 listener、ACP、scheduler 和 push queue worker，只保留 HTTP 服务与本地路由，已有到期 push job 也不会被处理。
 
 ## 用户门户本地边界
 
-用户门户是独立云端入口，本仓库只提供本地运行时、权威对话日志和 connector。不要把 `/platform` 或 `/dashboard` 改造成公网用户门户。
+用户门户是独立云端入口，本仓库只提供本地运行时、权威对话日志和 connector。不要把 `/platform` 改造成公网用户门户。
 
 | 端点/命令 | 说明 |
 |------|------|

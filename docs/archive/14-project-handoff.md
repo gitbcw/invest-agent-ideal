@@ -3,7 +3,7 @@
 更新时间：2026-05-28
 归档说明：2026-06-02 起本文仅保留为旧自研 Runtime 阶段交接记录，不再作为当前接手入口。当前接手入口见 `AGENTS.md`、`CLAUDE.md`、`docs/README.md`、`docs/16-skill-workflow-migration.md`、`docs/17-codex-acp-runtime-migration.md`、`docs/18-service-skill-boundary.md`。
 
-本文是旧 Runtime 阶段的交接入口，现已归档，仅用于历史追溯。当前接手入口请读 [../README.md](../README.md) 和 [../15-next-phase-roadmap.md](../15-next-phase-roadmap.md)。
+本文是旧 Runtime 阶段的交接入口，现已归档，仅用于历史追溯。当前接手入口请读 [../README.md](../README.md)，同期后续路线见 [15-next-phase-roadmap.md](./15-next-phase-roadmap.md)。
 
 ## 1. 当前项目一句话
 

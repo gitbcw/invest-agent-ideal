@@ -1,12 +1,13 @@
+# 说明性兼容目录：供旧通用 skill 文档互相引用。
+# 本文件不会注册 Codex Skill、MCP 工具、服务能力或 scheduler 任务。
+# Codex 原生 Skill 只从 `.codex/skills/<name>/SKILL.md` 发现。
 skills:
   wechat_onboarding:
     enabled: true
     path: "skills/wechat-onboarding"
     description: "首次使用和配置变更引导。"
     must_follow:
-      - "config/tenant.yaml"
-      - "config/data_contracts.yaml"
-      - "config/interaction_policy.yaml"
+      - "onboarding.draft.get before config/onboarding_state.yaml"
   daily_review:
     enabled: true
     path: "skills/daily-review"

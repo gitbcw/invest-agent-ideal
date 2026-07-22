@@ -41,6 +41,9 @@ ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197
 
 - 代码同步脚本只同步代码，不覆盖服务器 `.env`、`data/`、`reviews/`、`.state/`、workspace 和 `.codex` 运行态。
 - 运行时数据迁移只通过 `scripts/package-volcano-runtime.sh` 和 `scripts/apply-volcano-runtime.sh`；迁移后脚本会把 workspace 内 `.codex/config.toml`、`mcp.json` 统一指向服务器 `/home/claude/.codex`。
+- **普通版本发布只能使用代码同步路径**（`scripts/deploy-volcano.sh`），且必须从已审核的生产分支、标签或干净发布目录执行。提示词、Skill、Workspace 模板、服务代码和编译产物的更新都不应触碰生产数据库、Workspace、复盘、`.env` 或微信状态。
+- **禁止把运行时迁移当作普通部署**。只有用户明确要求迁移、恢复或替换数据库/Workspace 时，才允许使用 `package-volcano-runtime.sh` / `apply-volcano-runtime.sh`；该路径会替换生产资产，必须先停止写入、备份、校验 SHA，并记录回滚位置。
+- 如果需求同时能用代码发布或运行时迁移完成，默认选择代码发布，不得推断用户授权替换生产数据。
 - 火山云 portal env 默认指向火山云 portal/relay：`PORTAL_PUBLIC_URL=http://118.145.115.197:22649`、`PORTAL_RELAY_URL=ws://127.0.0.1:22650/`。连接阿里云 relay 必须显式覆盖变量。
 - Codex ACP shell 沙箱可能无网络，不能假设 workspace 内 `curl 127.0.0.1:22655` 一定可用。长期正解是给 Codex ACP 会话挂载 `invest-agent-service-tools` stdio MCP，只暴露具名服务层工具，让 Codex 自己决定何时读取或在用户确认后写入持仓、自选、预案、复盘、方法候选和规则巡检配置。
 - 不再把 `marketSnapshot` 等行情事实预注入 prompt。行情、持仓、预案和规则事实必须由 Codex 通过 MCP 工具按需读取；HTTP sandbox API 只作为 MCP 不可用时的兜底。
@@ -237,13 +240,16 @@ PORTAL_DISTRIBUTION_TOKEN=<same as volcano portal PORTAL_DISTRIBUTION_TOKEN>
 PORTAL_CONNECTOR_ID_PREFIX=volcano-prod
 PORTAL_CONNECTOR_RUNTIME_LABEL=火山云生产
 PORTAL_CONNECTOR_AUTO_START=true
-PORTAL_CONNECTOR_INCLUDE_ASSISTANTS=invest-agent-111,invest-agent-dyk
+# 留空，以便 connector manager 自动为所有 active 实例注册连接器。
+PORTAL_CONNECTOR_INCLUDE_ASSISTANTS=
+# 排除历史默认测试实例；新增正式用户不需要修改此项。
+PORTAL_CONNECTOR_EXCLUDE_ASSISTANTS=invest-agent-primary
 ```
 
 约束：
 
-- 同一个 `assistantId` 同一时间只允许一个 active connector。生产助手应只由火山云生产 connector 注册。
-- 本机开发若连接阿里云 relay，应显式排除火山云接管的正式助手，或使用测试助手；不要抢 `invest-agent-111` / `invest-agent-dyk`。
+- 同一个 `assistantId` 同一时间只允许一个 active connector。生产 active 实例应只由火山云生产 connector 注册。
+- 本机开发若连接阿里云 relay，应显式排除所有火山云已接管的正式助手，或使用测试助手，避免抢占连接器。
 - connector token 与 distribution token 不要写入仓库，只放服务器 `.env` / `.env.production`。
 
 ## 7. 首次绑定微信

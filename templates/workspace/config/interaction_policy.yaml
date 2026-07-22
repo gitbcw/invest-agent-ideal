@@ -9,15 +9,11 @@ message_modes:
   draft_confirmation:
     purpose: "长期记忆、策略、规则或操作建议确认"
 
-interrupt_policy:
-  working_hours_only_push:
-    - "P0"
-  p1_delivery: "evening_brief"
-  p2_delivery: "report_only"
-  max_intraday_pushes:
-    P0: 3
-    P1: 0
-    P2: 0
+notification_preference_policy:
+  low_disturbance: "盘中不主动推送普通信息。"
+  active_watch: "每个盘中简报窗口推送摘要。"
+  evening_summary: "盘中不主动推送，晚上统一查看。"
+  risk_level_does_not_override_preference: true
   quiet_value_signal:
     enabled: true
     daily_no_action_summary: "仅在晚间简报说明今日无关键触发"

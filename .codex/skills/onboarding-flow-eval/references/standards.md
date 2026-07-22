@@ -1,53 +1,39 @@
-# Onboarding Flow Standards
+# Onboarding Quality Standards
 
-## User Journey Standard
+Grade each standard `pass`, `partial`, or `fail`. These standards define user outcomes and failure boundaries; test procedure belongs in `audit-checklist.md`.
 
-The ideal onboarding journey is one continuous conversation:
+## ONB-01 Identity And Setup Framing
 
-1. Greeting explains the investment assistant role and asks for holdings/watchlist.
-2. User provides holdings/watchlist in natural language or screenshot-derived text.
-3. Assistant resolves securities, drafts holdings/watchlist, and waits for confirmation.
-4. User confirms.
-5. Assistant saves confirmed portfolio and moves to investment style.
-6. User chooses a default style pack or describes a custom method.
-7. Assistant drafts style/method and waits for confirmation.
-8. User confirms.
-9. Assistant confirms daily/weekly/monthly review schedule.
-10. Assistant confirms market-watch fixed windows.
-11. Assistant confirms notification preference.
-12. Assistant confirms default watch boundary and completes onboarding.
+**User outcome:** On the first incomplete onboarding turn, the user knows this is their investment assistant, understands that a short initial setup is in progress, knows what information is needed now, and knows a draft will be confirmed before saving. Holdings, cash position, and watchlist may be supplied as text or screenshots without a separate “开始” gate.
 
-Users usually respond to the previous assistant prompt directly. They do not need to say "下一步继续" during the main flow. Those phrases belong to state-recovery cases, not the main workflow.
+**Fail when:** Identity or setup context is missing; the opening jumps abruptly into a “most important step”; it asks for unnecessary private data; or it requires a content-free start confirmation.
 
-## Required Product Qualities
+## ONB-02 Progressive Guided Flow
 
-- Natural progression: every assistant reply should make the next user action obvious.
-- Confirmation discipline: durable writes require a draft and user confirmation.
-- Code resolution: securities need 6-digit A-share codes or explicit ambiguity handling before portfolio/watchlist confirmation.
-- User-provided weights: weights and cash ratio are valid context when the user provides them; do not ask for total assets.
-- No internal leakage: user-facing replies must not expose local paths, APIs, curl, localhost, sandbox token, Codex, ACP, workspace, YAML, or fast-lane implementation terms.
-- Step separation: review schedule, market-watch schedule, notification preference, and watch boundary are separate concepts.
-- Low-disturbance default: notification choices should be user-facing modes, not P0/P1/P2.
-- Watch boundary: onboarding watch_rules confirmation does not mean batch-creating price/MA/indicator rules.
-- Completion: final state is `status=completed` and `current_step=completed`.
+**User outcome:** The conversation feels like one continuous guide. Each successful step acknowledges what completed, briefly explains why the next step matters, and asks one concrete next question. Missing information produces a focused clarification, and detours resume from current state without replaying confirmed work.
 
-## Expected Workspace Outcome
+**Fail when:** The user must guess how to continue, say “下一步继续”, encounters a dead end, is sent back to an earlier completed step, or receives multiple poorly separated decisions at once.
 
-After the default workflow:
+## ONB-03 Draft, Confirmation, And Save Semantics
 
-- `config/onboarding_state.yaml`: all onboarding steps done and completed.
-- `config/portfolio.yaml`: confirmed holdings/watchlist from the workflow.
-- `config/strategy.yaml` or style config: selected/default/custom style represented.
-- `config/schedules.yaml`: review schedule plus market-watch windows.
-- `config/notification.yaml`: selected notification mode.
-- `config/watch.yaml`: default watch boundary without accidental batch rule creation.
+**User outcome:** Each section is drafted before it is accepted. One ordinary confirmation after the displayed draft is sufficient and bound to that exact revision; accepting it only updates the service-owned onboarding draft. After every required section is accepted, one frozen snapshot is applied and verified as the durable Workspace configuration. Failed final commits remain visible in audit evidence and do not masquerade as success.
 
-## What Counts As A Problem
+**Fail when:** A workspace file changes before final commit; a normal confirmation is ignored or requested again; the assistant claims a draft is already effective; a frozen snapshot differs from accepted revisions; or a final commit fails while the assistant claims success.
 
-- User can progress only by guessing system internals.
-- Assistant asks for unnecessary private data.
-- Assistant says something is saved before confirmation.
-- Assistant says something was not saved when audit/workspace show it was.
-- Assistant skips a step, loops to an earlier step, or mixes two steps.
-- Static workflow passes but conversation is awkward, misleading, or not user-ready.
+## ONB-04 State And Workspace Consistency
 
+**User outcome:** Conversation claims, onboarding state, workspace files, audit records, and pending confirmations agree. Securities are resolved to usable codes or ambiguity is surfaced; user-provided weights and cash ratio are retained; internal paths, APIs, tokens, runtime diagnostics, and implementation vocabulary never reach customer copy.
+
+**Fail when:** Any authoritative sources contradict the reply, a completed step is missing required data, ambiguity is silently guessed, accepted user data disappears, stale market facts are presented as fresh, or internal text leaks to the user.
+
+## ONB-05 Rule And Observation Boundary
+
+**User outcome:** The user understands that explicit rules inspect executable conditions, while scheduled market-watch/review provides periodic broader observation. Rules are created only from explicit catalog-supported inputs after their own draft and confirmation. Skipping rules creates none and does not imply continuous or guaranteed monitoring.
+
+**Fail when:** Generic risk preference, cost price, or “帮我盯风险” becomes a concrete rule; periodic observation is described as real-time/continuous/guaranteed; rule and notification concepts are mixed; or branch outcomes disagree with scoped rules and audits.
+
+## ONB-06 Direct Completion And Useful Handoff
+
+**User outcome:** An explicit skip or accepted executable rule draft completes the last decision directly. No content-free “确认完成” is required. The user first receives a short message that configuration is being completed, then a completion notification after the frozen snapshot is verified. Final state is complete and no pending confirmation remains.
+
+**Fail when:** Another completion-only confirmation is requested; the assistant claims completion while state is incomplete; pending confirmations remain; or the journey ends without a usable transition into the product.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Eval Instance Cleanup"
+  short_description: "Safely inspect and remove retained eval instances"
+  default_prompt: "Use $eval-instance-cleanup to inspect or remove retained Invest Agent evaluation instances by run ID."

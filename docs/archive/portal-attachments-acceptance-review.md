@@ -2,7 +2,7 @@
 
 Status: Pass with caveats
 
-As of 2026-07-06, the local runtime and adjacent cloud portal portions of `docs/portal-attachments-implementation-brief.md` are now substantially implemented. The local runtime accepts portal attachments, validates and stores them under the workspace, records public metadata without absolute paths, passes stored attachments to ACP, and coalesces in-flight idempotent retries. The cloud portal now accepts attachment payloads, forwards them through `conversation.chat`, exposes attachment protocol types/capability, supports file selection/drag-drop/chips in the composer, and renders historical attachment metadata in message bubbles. Build/typecheck and the attachment smoke checks pass. Remaining caveats are narrower test coverage for full in-flight retry and negative route-level attachment cases.
+As of 2026-07-06, the local runtime and adjacent cloud portal portions of `docs/archive/portal-attachments-implementation-brief.md` are now substantially implemented. The local runtime accepts portal attachments, validates and stores them under the workspace, records public metadata without absolute paths, passes stored attachments to ACP, and coalesces in-flight idempotent retries. The cloud portal now accepts attachment payloads, forwards them through `conversation.chat`, exposes attachment protocol types/capability, supports file selection/drag-drop/chips in the composer, and renders historical attachment metadata in message bubbles. Build/typecheck and the attachment smoke checks pass. Remaining caveats are narrower test coverage for full in-flight retry and negative route-level attachment cases.
 
 ## Acceptance Checklist
 

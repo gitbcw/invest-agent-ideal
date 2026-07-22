@@ -1,0 +1,4 @@
+interface:
+  display_name: "Screening Flow Eval"
+  short_description: "Audit screening to observation-pool workflows"
+  default_prompt: "Use $screening-flow-eval to evaluate a screening-to-observation-pool interaction and report evidence-backed findings."

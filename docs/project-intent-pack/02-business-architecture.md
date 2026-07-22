@@ -24,8 +24,8 @@ business_architecture:
       business_role: "复杂判断与工作流执行"
       required: true
       replaceable_implementation: true
-    - name: "deterministic service APIs"
-      business_role: "行情、落库、巡检、提醒、沙箱与查询"
+    - name: "deterministic service capabilities"
+      business_role: "行情、落库、巡检、提醒、权限与查询；对 Agent 以具名工具暴露"
       required: true
       replaceable_implementation: true
     - name: "workspace skills"

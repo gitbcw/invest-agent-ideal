@@ -1,49 +1,35 @@
-# 面向固定上班在职员工的低打扰通知策略。
+# 用户通知偏好。用户只在低打扰、积极盯盘、晚间汇总中选择一项。
 user_mode: working_professional
 
 preference:
   mode: "low_disturbance"
   label: "低打扰"
-  description: "盘中只提醒可能需要当天处理的事，其他放到晚间复盘。"
+  description: "盘中不主动推送普通信息，减少不必要打扰。"
 
 preference_options:
   low_disturbance:
     label: "低打扰"
-    description: "盘中只提醒可能需要当天处理的事，其他放到晚间复盘。"
+    description: "盘中不主动推送普通信息，减少不必要打扰。"
   active_watch:
     label: "积极盯盘"
-    description: "到用户设置的盘中简报时间就推送摘要；重大风险或明确规则命中仍会单独提醒。"
+    description: "在每个盘中简报时间推送持仓与市场摘要。"
   evening_summary:
     label: "晚间汇总"
-    description: "盘中尽量不打扰，晚上统一复盘。"
-
-priority_levels:
-  P0:
-    name: "立即关注"
-    meaning: "可能影响持仓逻辑、触发关键买卖区间或出现重大风险。"
-    push_policy: "立即微信推送"
-  P1:
-    name: "当天关注"
-    meaning: "需要用户当天晚间查看，但不需要盘中打断工作。"
-    push_policy: "晚间简报汇总"
-  P2:
-    name: "仅记录"
-    meaning: "用于复盘沉淀，不主动打扰用户。"
-    push_policy: "只写入报告和日志"
+    description: "盘中不主动推送，晚上统一查看复盘和关注事项。"
 
 working_hours:
   start: "09:00"
   end: "18:00"
-  policy: "工作时间只推可能需要立即处理的重大事项，其他延后到晚间简报。"
+  policy: "实际推送由用户选择的通知偏好决定。"
 
 lunch_break:
   start: "11:30"
   end: "13:30"
-  policy: "允许推送少量当天值得关注的摘要，但默认不超过 1 条。"
+  policy: "不改变用户选择的通知偏好。"
 
 evening:
   daily_brief_time: "19:00"
-  policy: "推送日复盘简报、当天汇总和今日是否需要操作。"
+  policy: "推送日复盘简报和今日是否需要操作。"
 
 weekend:
   weekly_meeting_time: "Saturday 09:00"
@@ -51,7 +37,7 @@ weekend:
 
 do_not_disturb:
   enabled: true
-  allow_p0_override: true
+  allow_p0_override: false
 
 custom_rules: []
 last_confirmed_at: null

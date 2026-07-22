@@ -19,7 +19,7 @@ Also use this skill when a real incident should become a Skill/prompt improvemen
 ## Default Workflow
 
 1. State the product behavior or risk being evaluated.
-2. Choose the smallest real interaction that exercises it. Use a fresh, explicitly named user/workspace when state is involved; do not reuse `primary`, a shared workspace, or a fixed default port. Treat the fresh identity as temporary: after evidence has been inspected, delete its complete instance through `deleteInvestAgentInstance(instanceId)`.
+2. Choose the smallest real interaction that exercises it. Use a fresh, explicitly named user/workspace when state is involved; do not reuse `primary`, a shared workspace, or a fixed default port. Treat the fresh identity as a retained evaluation fixture by default so its evidence remains available for human review.
 3. Retain the actual inputs, outputs, identity IDs, and conversation ID in the Codex conversation.
 4. Inspect `conversation_messages`, `sandbox_audit_logs`, `codex_acp_traces`, and relevant workspace artifacts.
 5. Judge behavior against `AGENTS.md`, the relevant workspace Skills, and the user's stated intent.
@@ -31,11 +31,11 @@ For onboarding continuous-flow evaluation, use the dedicated `onboarding-flow-ev
 
 For onboarding continuous-flow evaluation, use `onboarding-flow-eval`. For every other evaluation, perform the smallest relevant real interaction and inspect its audit evidence. Do not batch unrelated prompts or manufacture a static score.
 
-## Temporary Evaluation Cleanup
+## Evaluation Fixture Lifecycle
 
-When an evaluation creates a user or workspace, cleanup is mandatory after the evidence has been read and summarized, including when the interaction or audit fails. Use a `try`/`finally` around the run and call `deleteInvestAgentInstance(instanceId)` in `finally`. This service-owned deletion disposes the workspace ACP runtime and removes the instance, user-scoped records, and workspace directory. Do not delete individual tables or workspace files by hand.
+When an evaluation creates a user or workspace, record `runId`, `userId`, `instanceId`, `conversationId`, workspace path, and `retention=retain|cleanup` before executing. Default to `retain`; the user may inspect the complete Platform logs, ACP traces, audits, and workspace artifacts after the run.
 
-Retain the generated IDs and the inspected evidence in the Codex conversation before cleanup. If cleanup itself fails, report the IDs and failure explicitly; do not present the evaluation as fully closed.
+Only delete when the user explicitly asks to clean the exact run or asks for immediate cleanup before it starts. Use `eval-instance-cleanup`, which calls `deleteInvestAgentInstance(instanceId)` and verifies that the instance, user-scoped records, and workspace are gone. Do not delete individual tables or workspace files by hand. If cleanup fails, report the IDs and failure explicitly.
 
 ## Reporting Style
 

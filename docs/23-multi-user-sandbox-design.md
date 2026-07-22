@@ -2,7 +2,7 @@
 
 ## 背景与意图
 
-当前系统已经从单用户投资助手演进出可复用的平台沙箱能力。当前主路径应理解为 workspace-scoped ACP backend + sandbox token，2026-06-30 后默认 backend 是 Codex ACP，Hermes 仅作为兼容/实验 backend。业务数据正在从单用户模型迁移到多用户/多 AI Project 模型，系统已经具备 `users`、`channel_identities`、多张业务表的 `user_id` 字段，以及微信会话到业务用户的自动映射。
+当前系统已经从单用户投资助手演进出可复用的平台沙箱能力。当前 Agent 主路径是 workspace-scoped ACP backend + service-owned MCP；sandbox token 与 HTTP 路由保留给非 Agent 适配器、兼容调用和工程诊断。2026-06-30 后默认 backend 是 Codex ACP，Hermes 仅作为兼容/实验 backend。业务数据正在从单用户模型迁移到多用户/多 AI Project 模型，系统已经具备 `users`、`channel_identities`、多张业务表的 `user_id` 字段，以及微信会话到业务用户的自动映射。
 
 但这还不是完整沙箱。真正的沙箱目标不是让 AI “记得传正确 userId”，而是让服务端强制保证：AI 即使幻觉、误调用、伪造参数，也只能影响当前微信用户自己的数据，不能读写其他用户，也不能修改全局运行配置。
 
@@ -12,16 +12,16 @@
 
 - 微信消息进入时会通过 `channel_identities` 映射到内部 `userId`。
 - `watchlist`、`portfolio`、`stock_plans`、`daily_plans`、`alert_events`、`alert_signal_states`、`indicator_results`、`codex_acp_traces` 等核心业务表已具备 `user_id`，调度与推送链路的实际运行 scope 已进一步收敛到 `user_id + instance_id`。
-- Dashboard 聚合查询、持仓、自选、预案、复盘、巡检等路径已经部分按 `userId` 过滤。
-- workspace ACP backend、微信通道和 Dashboard/Workbench 之间已经形成了通道概念。
+- Platform 投资状态摘要、持仓、自选、预案、复盘、巡检等路径已经按 `userId` + `instanceId` 过滤(Dashboard 页面与专属 API 已于 2026-07-16 退役)。
+- workspace ACP backend、微信通道和 Platform 之间已经形成了通道概念。
 
 ### 尚未具备的沙箱能力
 
 - API 仍然信任请求体、query 或 header 中的裸 `userId`。
 - 微信/AI 链路依赖 prompt 约束：“调用 API 必须传 userId=xxx”。这是软约束，不是安全边界。
-- 部分 API 仍然是全局能力，或者用户隔离未完成：提醒规则 CRUD、信号配置、巡检间隔、用户列表、微信连接管理、测试推送等。
+- Platform/admin 与普通 sandbox token 的认证边界仍需继续收紧；全局微信管理 API 和旧 Dashboard CRUD 已删除，实例级微信管理只存在于 Platform 管理面。
 - `pendingAlerts` 是全局数组，不按用户隔离，旧 `/acp/alerts` 轮询路径可能串消息。
-- Dashboard 当前是管理面，可以切换用户；微信用户不应该拥有这种能力。
+- Platform 当前是管理面，可以切换用户；微信用户不应该拥有这种能力(Dashboard 已退役,功能合并到 Platform)。
 - 缺少统一审计表记录 AI 发起的确定性写操作。
 
 ## 威胁模型
@@ -32,13 +32,13 @@
 2. AI 调用管理接口，改了全局信号、巡检间隔、微信连接状态。
 3. AI 根据用户自然语言误删、误改当前用户数据。
 4. 多个微信用户共享同一服务时，提醒推送或复盘结果串到别人的会话。
-5. 未来 Dashboard 开给多人后，普通用户通过浏览器参数切换到其他用户。
+5. 未来 Platform 开给多人后，普通用户通过浏览器参数切换到其他用户。
 
 ## 设计原则
 
 1. 身份由服务端决定，不由 AI 决定。
 2. API 从可信上下文解析 `userId`，不信任裸 `userId` 参数。
-3. 微信用户、Dashboard 管理员、内部 scheduler、测试端点使用不同权限域。
+3. 微信用户、Platform 管理员、内部 scheduler、测试端点使用不同权限域。
 4. 用户态 API 默认只能访问当前用户资源。
 5. 全局配置和连接管理只能由 admin 权限调用。
 6. 写操作必须审计；危险操作需要确认或降级为建议。
@@ -52,7 +52,7 @@
 
 ```ts
 type SandboxRole = "admin" | "user" | "system" | "test";
-type SandboxChannel = "dashboard" | "weixin-mobile" | "scheduler" | "api";
+type SandboxChannel = "weixin-mobile" | "scheduler" | "api";
 
 type SandboxPermission =
   | "read:self"
@@ -109,12 +109,12 @@ Authorization: Bearer <sandboxToken>
 
 #### 用户态 API
 
-当前用户态 API 使用 `/api/sandbox/*`,专供微信/AI/workspace Agent 调用。
+当前用户态 HTTP API 使用 `/api/sandbox/*`，保留给受控兼容调用和工程诊断；workspace Agent 不直接发现或调用这些路由，而是使用具名 MCP 工具。
 
 常用能力：
 
 - `GET /api/sandbox/me`
-- `GET /api/sandbox/dashboard`
+- `GET /api/sandbox/snapshot`（权限 `invest.snapshot.read`）
 - `GET /api/sandbox/onboarding/state`
 - `POST /api/sandbox/onboarding/confirm-portfolio`
 - `POST /api/sandbox/onboarding/confirm-step`
@@ -132,30 +132,27 @@ Authorization: Bearer <sandboxToken>
 
 #### 管理态 API
 
-现有 Dashboard API 暂时保留，但应归类为 admin 面：
+历史 Dashboard API 已于 2026-07-16 整体退役。当前 Platform 仅保留只读摘要与运维入口;保留的 admin 面端点如下:
 
-- `/api/users*`
-- `/api/signals/update`
-- `/api/interval/set`
-- `/api/weixin/*`
-- `/api/indicators*`
+- `/api/platform/*`(Platform 管理面)
+- `/api/watch-rules*`(领域 HTTP adapter,写操作带 `source.kind=platform_api` 审计)
+- `/api/platform/instances/:instanceId/weixin/*`(唯一的管理端微信连接与手动探测入口)
+- `/api/sandbox/onboarding/*`、`/api/sandbox/strategies/*` 等非 Agent 兼容适配器
 - 测试推送、mock 推送、backend debug test
 
-这些后续需要 admin token 或至少只绑定 localhost 管理面。普通微信 sandbox token 不允许调用。
+普通微信 sandbox token 不允许调用管理面端点。
 
 #### 系统态 API/函数
 
-scheduler 不走 HTTP token，可直接创建 `SandboxContext{role:"system"}` 或直接调用 handler，但必须显式传 `userId + instanceId`。scheduler 的 scope 枚举来自 `users`、`ai_instances`、`channel_identity_instances` 和启用中的 stage2 watch_rules(`alert_rules`)；legacy `alerts` 不再纳入调度 scope，也不参与规则巡检。
+scheduler 不走 HTTP token，可直接创建 `SandboxContext{role:"system"}` 或直接调用 handler，但必须显式传 `userId + instanceId`。scheduler 的 scope 枚举来自 `users`、`ai_instances`、`channel_identity_instances` 和启用中的 stage2 watch_rules(`alert_rules`);legacy `alerts` 表已于 2026-07-16 DROP(详见 `docs/table-ownership.md` 与 `drop_legacy_alerts_table_v1` 迁移记录)。
 
-### 4. AI 调用方式调整
+### 4. Agent 调用方式
 
-当前 prompt 说“调用 API 时必须传 userId”。应改为：
-
-- 服务端在构造移动端 prompt 时提供 `sandboxToken`，而不是要求 AI 传 `userId`。
-- skill 文档中的 curl 示例改为使用 `Authorization: Bearer $INVEST_AGENT_SANDBOX_TOKEN`。
-- 微信客户回复仍不得暴露 token、API、端口、内部组件。
-
-Prompt 里不再鼓励 AI 自己拼 `userId`。
+- workspace Agent 只使用 `invest-agent-service-tools` 的具名 MCP 工具。
+- workspace prompt 和 skill 不包含 HTTP 路由、curl、端口、token 或本地文件兜底说明。
+- MCP 工具从可信会话上下文取得用户和实例 scope，Agent 不传裸 `userId`。
+- 能力缺失时明确报告缺口，不发现隐藏接口或绕过服务层。
+- 微信客户回复仍不得暴露工具名或内部组件。
 
 ### 5. 写操作审计
 
@@ -189,42 +186,28 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 
 ## 当前必须优先修补的漏洞
 
-### A. 提醒规则 CRUD 未完整 user-scoped
+### A. 已退役的旧 HTTP 漏洞面
 
-当前 `/api/alerts/set`、`toggle`、`remove` 未通过 `userIdFromRequest` 限定查询和更新，存在跨用户污染风险。
-
-必须改为：
-
-- `set` 按 `userId + stockCode + indicator` 查找/写入。
-- `toggle/remove` 必须先按 `id + userId` 查找，不能只按 `id`。
-- mirrored `alert_rules` 同步函数必须接受 `userId`。
-
-### B. `/api/reviews/query` 仍走旧 review tool
-
-应支持 `userId`，并按 `reviews/<userId>/<date>.md` 或 `daily_plans.user_id` 查询。
+旧 `/api/alerts/set|toggle|remove`、legacy `alerts` 表和 `/api/reviews/query` 已随 Dashboard 清理删除，不再作为待修的多用户入口。当前规则写入使用 `watch_rules.*` MCP 确认流程或受管理端保护的 `/api/watch-rules*` adapter；复盘产物由 MCP `reviews.save` 保存。
 
 ### C. `pendingAlerts` 全局队列
 
 如果仍保留 `/acp/alerts`，应改为按 user/channel 维度，或标记为 legacy 主线专用，不给任何多用户后端路径使用。
 
-### D. AI 服务工具 skill 仍默认 22648 且不使用 token
+### D. Agent 能力面已收敛为 MCP-only
 
-应更新 `.codex/skills/invest-agent-service-tools/SKILL.md`：
-
-- 微信/ACP 场景使用 sandbox token。
-- 不传 `userId`。
-- 后端服务优先读环境或上下文，不写死单一路径或端口。
+workspace prompt 和 skills 不再包含 HTTP、端口、token 或 curl。`invest-agent-service-tools` 从可信 session context 取得 scope；缺失能力必须显式报告，不能绕过服务层。
 
 ## 执行计划
 
 ### 当前进度
 
-- Phase 0 已完成第一轮硬隔离补洞：提醒规则 CRUD 和 mirrored `alert_rules` 已按 `userId` 隔离，复盘查询已支持用户目录。
+- Phase 0 的旧 alerts/reviews HTTP 漏洞面已通过端点退役和 legacy 表删除彻底关闭。
 - Phase 1 已完成 token 基础工具：`SandboxContext`、HMAC sandbox token 生成/验证、过期/篡改 smoke 测试已落地。本地开发使用 `data/.sandbox-secret` 兜底持久化,生产应设置 `INVEST_AGENT_SANDBOX_SECRET`。
-- Phase 2 已完成首批用户态 HTTP API：`/api/sandbox/me`、dashboard、onboarding、策略、自选、预案、复盘、巡检接口已接入 Bearer token，并验证请求体伪造 `userId` 不生效。
-- 微信/backend prompt 和 service skill 已开始切换到 Bearer token 方式，不再要求 AI 传裸 `userId`。
+- Phase 2 已完成首批用户态 HTTP API：`/api/sandbox/me`、`/api/sandbox/snapshot`、onboarding、策略、自选、预案、复盘、巡检接口已接入 Bearer token，并验证请求体伪造 `userId` 不生效。
+- workspace prompt 和 skills 已收敛为 MCP-only，不再暴露 Bearer token、HTTP 路由或裸 `userId`。
 - Phase 4 已完成会话级 pending confirmation 第一版：sandbox 写操作已记录到 `sandbox_audit_logs`，删除自选/删除预案需要 `pending_sandbox_confirmations.confirmationId`，未确认/错误确认操作会记录 denied 审计。
-- 尚未完成：alert rule mutation sandbox endpoint、Dashboard/admin token 分离、批量/关闭类操作统一接入 confirmation。
+- 尚未完成:Platform/admin token 分离、批量/关闭类操作统一接入 confirmation(Dashboard 已退役,管理面入口是 Platform)。
 
 ### Phase 0：硬隔离补洞
 
@@ -232,11 +215,10 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 
 任务：
 
-1. 修复 `/api/alerts/set|toggle|remove` 的 user scope。
-2. 修复 alert rule mirror 函数签名，所有 mirrored alert rule 写入必须带 `userId`。
-3. 修复 `/api/reviews/query` 用户隔离。
-4. 标记或限制 `/api/users`、`/api/signals/update`、`/api/interval/set` 为 admin-only 计划项；短期至少不要在微信 skill 中暴露。
-5. 增加针对 A/B 用户的回归测试脚本或 smoke：同一股票同一指标在不同用户下互不影响。
+1. 退役 `/api/alerts/set|toggle|remove` 和 legacy `alerts` 表。（已完成）
+2. 退役旧 `/api/reviews/query` 与其他 Dashboard 聚合端点。（已完成）
+3. 保证当前 `alert_rules`、复盘产物和所有 MCP 写入按 `userId + instanceId` 隔离。
+4. 将 Platform 管理面与普通 sandbox token 的认证边界继续收紧。
 
 验收：
 
@@ -255,7 +237,7 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 2. 实现 `createSandboxToken(context)`、`verifySandboxToken(token)`。
 3. 新增 `sandboxContextFromRequest(request, mode)`：
    - user mode 必须有 Bearer token。
-   - admin mode 暂时可允许 localhost + Dashboard header，后续再加强。
+   - admin mode 暂时可允许 localhost + Platform session cookie,后续再加强。
    - system mode 由内部调用构造。
 4. token 过期时间建议 30-120 分钟；微信每轮消息可生成一个新 token。
 5. token 不写入客户回复，不进入 sanitized reply；trace 可只记录 tokenId，不记录完整 token。
@@ -277,7 +259,7 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 2. 实现首批 `/api/sandbox/*` 用户态接口。
 3. 这些接口全部从 `SandboxContext.userId` 取用户。
 4. 写操作记录 `sandbox_audit_logs`。
-5. Dashboard 原有 API 暂时保留为 admin 面，不给 AI skill 使用。
+5. Dashboard 原有 API 已于 2026-07-16 退役;当前管理面入口是 Platform,且不给 AI skill 使用。
 
 验收：
 
@@ -285,22 +267,22 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 - A token 操作不会影响 B 数据。
 - 所有 sandbox 写操作有审计记录。
 
-### Phase 3：微信/AI 链路切换到 token
+### Phase 3：微信/AI 链路切换到 MCP
 
-目标：AI 不再靠 prompt 自觉传 userId。
+目标：Agent 不再靠 prompt 自觉传 userId，也不直接持有 HTTP token。
 
 任务：
 
-1. 在 `buildMobilePrompt` 中加入 sandbox token 的内部执行说明。
-2. 修改 `.codex/skills/invest-agent-service-tools/SKILL.md`，所有微信/ACP 示例使用 Bearer token。
-3. 从 prompt 中删除“调用 API 必须传 userId=xxx”的表述，改为“使用提供的 sandbox token；不要传 userId”。
-4. workspace ACP 链路生成对应 token。
-5. trace 记录 sandbox token id、userId、permissions。
+1. 在 ACP session 中挂载 `invest-agent-service-tools`。
+2. workspace prompts 和 skills 只引用具名 MCP 工具。
+3. MCP 从可信 session context 获取 `userId + instanceId + conversationId`。
+4. HTTP token 留在非 Agent 适配器内部，不进入 workspace context。
+5. trace 和 audit 记录 scope 与 operation，不记录凭据。
 
 验收：
 
-- AI 工具调用样例不再包含 `userId`。
-- 即使 AI 在 body 中幻觉 `userId=primary`，sandbox API 仍使用 token 用户。
+- Agent 工具调用样例不包含 `userId`、HTTP 路由或 token。
+- 即使 Agent 在 payload 中幻觉 scope，服务工具仍使用可信 MCP context。
 - 复盘、自选、预案、巡检在微信链路正常工作。
 
 ### Phase 4：权限分级与危险操作确认
@@ -322,19 +304,19 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 
 ### Phase 5：管理面安全边界
 
-目标：Dashboard 管理能力和普通微信用户能力彻底分离。
+目标：Platform 管理能力和普通微信用户能力彻底分离。
 
 任务：
 
-1. Dashboard API 标记 admin-only。
+1. Platform API 标记 admin-only。
 2. 增加 admin session 或本机管理 token。
 3. 用户列表、信号配置、巡检间隔、微信连接管理都要求 admin context。
-4. Dashboard 切用户只在 admin context 可用。
+4. Platform 切用户只在 admin context 可用。
 
 验收：
 
 - 普通 sandbox token 访问 admin API 返回 403。
-- Dashboard 管理面仍可切用户调试。
+- Platform 管理面仍可切实例调试。
 - 微信用户无法创建测试用户或改全局信号。
 
 ## 建议优先级
@@ -348,8 +330,8 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 - 风险：token 泄漏到客户回复。
   - 缓解：customer sanitizer 增加 token 模式清洗；trace 只存 token id。
 
-- 风险：旧 Dashboard API 与新 sandbox API 并存导致混用。
-  - 缓解：skill 文档只暴露 sandbox API；旧 API 标注 admin-only。
+- 风险：HTTP 与 MCP 适配器并存导致业务逻辑漂移。
+  - 缓解：workspace skill 只暴露 MCP；两个适配器共用服务层函数，HTTP 标注为非 Agent 入口。
 
 - 风险：scheduler 和微信推送仍有全局遗留队列。
   - 缓解：scheduler 内部直接按 `userId + instanceId` 调 handler；废弃或 user-scope `/acp/alerts`。
@@ -360,20 +342,20 @@ Prompt 里不再鼓励 AI 自己拼 `userId`。
 ## 非目标
 
 - 不在第一阶段做完整公网登录认证。
-- 不在第一阶段开放普通用户 Dashboard 登录。
+- 不在第一阶段开放普通用户 Platform 登录。
 - 不在第一阶段重构全部旧 API。
 - 不让 AI 直接访问 SQLite 或绕过服务。
 
 ## 开放问题
 
-1. Dashboard 后续是纯管理员工具，还是普通用户也会登录？这会影响 admin token 设计。
+1. Platform 后续是纯管理员工具，还是普通用户也会登录？这会影响 admin token 设计。
 2. 多用户是否需要各自独立的信号配置和巡检间隔？短期建议全局 admin-only。
 3. sandbox token 有效期采用每轮消息生成，还是一次微信会话保持？建议先每轮生成，简单安全。
 4. 删除类操作是否全部需要二次确认？建议先是。
 
 ## Executor Prompt
 
-请按 `docs/23-multi-user-sandbox-design.md` 执行实现。先做 Phase 0 和 Phase 1，不要扩大到完整 Dashboard 登录系统。所有用户态读写必须由服务端上下文决定 userId，不得信任请求体、query 或 header 中的裸 userId。实现后运行 `npm run build`，并用两个测试用户验证同一股票/提醒/复盘不会串数据。
+请按 `docs/23-multi-user-sandbox-design.md` 执行实现。先做 Phase 0 和 Phase 1，不要扩大到完整 Platform 登录系统。所有用户态读写必须由服务端上下文决定 userId，不得信任请求体、query 或 header 中的裸 userId。实现后运行 `npm run build`，并用两个测试用户验证同一股票/提醒/复盘不会串数据。
 
 ## Reviewer Prompt
 

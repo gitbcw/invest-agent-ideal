@@ -365,8 +365,8 @@ attachments?: IncomingPortalAttachment[];
 
 ## Executor Prompt
 
-请基于 `docs/portal-attachments-implementation-brief.md` 在本项目实现网页端图片与文档附件支持。优先修改本地运行时：`src/lib/attachment-store.ts`、`src/services/conversation-log.ts`、`src/routes/portal.ts`、`src/portal/connector.ts`、`src/acp/agent.ts` 和相关协议/验收文档。保持微信图片附件能力不回归，不要改造 `/platform` 为用户门户。实现后运行 `npm run build`，补充并运行 portal attachment smoke。
+请基于 `docs/archive/portal-attachments-implementation-brief.md` 在本项目实现网页端图片与文档附件支持。优先修改本地运行时：`src/lib/attachment-store.ts`、`src/services/conversation-log.ts`、`src/routes/portal.ts`、`src/portal/connector.ts`、`src/acp/agent.ts` 和相关协议/验收文档。保持微信图片附件能力不回归，不要改造 `/platform` 为用户门户。实现后运行 `npm run build`，补充并运行 portal attachment smoke。
 
 ## Reviewer Prompt
 
-请按 `docs/portal-attachments-implementation-brief.md` 审查实现结果。重点检查类型/大小/安全校验、conversation log metadata、ACP prompt 注入、connector 协议、绝对路径不外泄、微信附件不回归，以及 smoke 是否覆盖图片、文档、超限、非法类型和幂等重试。
+请按 `docs/archive/portal-attachments-implementation-brief.md` 审查实现结果。重点检查类型/大小/安全校验、conversation log metadata、ACP prompt 注入、connector 协议、绝对路径不外泄、微信附件不回归，以及 smoke 是否覆盖图片、文档、超限、非法类型和幂等重试。

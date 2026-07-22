@@ -1,6 +1,6 @@
 # Agent Runtime 交接说明
 
-> **注意**：本文档写于 Runtime v1 阶段，保留作为历史参考。当前入口见 [../README.md](../README.md) 和 [../15-next-phase-roadmap.md](../15-next-phase-roadmap.md)。
+> **注意**：本文档写于 Runtime v1 阶段，保留作为历史参考。当前入口见 [../README.md](../README.md)，同期后续路线见 [15-next-phase-roadmap.md](./15-next-phase-roadmap.md)。
 
 更新时间：2026-05-28（添加过时说明）
 

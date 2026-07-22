@@ -11,7 +11,7 @@
 
 ## 三类归属
 
-### 🟢 服务层保留(20 张)
+### 🟢 服务层保留(19 张)
 
 这些表承载平台基础设施,不与具体用户的投资判断耦合,继续留在 SQLite。
 
@@ -29,11 +29,12 @@
 | `conversation_messages` | canonical conversation log 消息明细 | 用户门户 `conversation.list/get/chat` 和微信对话审计共用;需要分页、幂等和跨 channel 查询索引 |
 | `sandbox_audit_logs` | 沙箱令牌调用审计 | 合规/安全审计 |
 | `pending_sandbox_confirmations` | 待确认的沙箱操作 | 跨进程状态(微信消息 ↔ 沙箱执行) |
+| `onboarding_drafts` | Onboarding 草稿、确认版本与异步提交快照 | 草稿期不能写 Workspace；需要跨会话确认绑定、后台提交领取、失败恢复和通知去重 |
 | `conversation_tasks` | 旧会话任务草案表 | 保留作考古；conversation-task 草案系统已于 2026-06-23 删除 |
-| `push_jobs` | 微信推送队列(重试、调度) | 系统调度器职责 |
+| `push_jobs` | 微信推送队列、过期会话下的待补送内容 | 系统调度器职责；`awaiting_user` 等状态等待用户重新发起微信会话 |
+| `weixin_delivery_attempts` | 微信投递尝试、会话活性和手动探测证据 | 需要跨进程保留“距最近入站多久仍可投递”的可审计样本 |
 | `scheduled_task_runs` | 定时任务运行记录 | scheduler claim / 去重 / 状态审计,用于复盘与巡检任务运行观测 |
 | `indicator_definitions` | 指标定义库(系统级) | 平台元数据,owner=system |
-| `alerts` | 旧式提醒规则(legacy) | 已被 stage2 `watch_rules` / `alert_rules` 主通路取代;2026-07-09 起不再参与规则巡检、不再启动时镜像到 `alert_rules`,仅保留 SQLite 作旧 UI/API 兼容和历史回退 |
 | `alert_rules` | stage2 watch-rule 规则实例(用户配置 + 调度器高频读) | 运行时规则巡检只执行 `relation_to_plan=stage2_watch_rule` 的规则实例;需要 SQL 索引;watch.yaml 的 `exception_rules` 是协议层文本,不作为机器规则源 |
 | `alert_events` | 已触发提醒事件 | 系统调度器写入(`alert-check.ts`),数据量大(每交易日数百条),cooldown 去重查询需要 SQL 索引;用户 feedback 字段补丁通过 UPDATE 完成,迁移到 jsonl 需 read-modify-write 大文件(WP4.10 决策保留) |
 | `alert_signal_states` | 跨进程去重缓存 | 调度器 + server 都访问,跨进程协同(类似 `push_jobs` 性质),必须在 SQLite(WP4.10 决策保留) |
@@ -75,7 +76,7 @@
 4. **以上都不是 + 含用户投资判断?** → 工作空间。
 
 边界 case:
-- `alerts` / `alert_rules` / `alert_events` / `alert_signal_states`(WP4.10 决策:全部保留 SQLite):`alerts` 已降级为 legacy 兼容表,不参与巡检;`alert_rules` 中 stage2 watch_rules 是当前规则巡检机器源。调度器高频读 / 大流量写入 / 跨进程协同 / cooldown 去重查询需要 SQL 索引,迁移收益不抵风险。历史讨论详见 `docs/archive/ideal-refactor-plan.md` WP4.10。
+- `alert_rules` / `alert_events` / `alert_signal_states`(WP4.10 决策:全部保留 SQLite):`alert_rules` 中 stage2 watch_rules 是当前规则巡检机器源。调度器高频读 / 大流量写入 / 跨进程协同 / cooldown 去重查询需要 SQL 索引,迁移收益不抵风险。历史讨论详见 `docs/archive/ideal-refactor-plan.md` WP4.10。原 `alerts` 表已于 2026-07-16 DROP,详见 `drop_legacy_alerts_table_v1` 迁移记录。
 - `indicator_results`:既包含用户视角的指标计算结果,也复用 `indicator_definitions` 平台元数据。归到迁移,但平台元数据(定义)留在服务层。
 - `daily_plans`:落 `plans/daily/<date>.yaml`(每 date 一份 yaml,upsert by plan_date)。语义是状态(非事件流),用 yaml 不用 jsonl。
 
@@ -100,7 +101,7 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 - ✅ `watchlist` 读写 → `config/portfolio.yaml`(watchlist) — `watchlistBackend`
 - ✅ `stock_plans` 读写 → `config/portfolio.yaml`(stock_plans) — `planBackend`
 - ✅ `trade_actions` 写 → `memory/behavior_events.jsonl`(event_type=action_confirmed)
-- ✅ Dashboard CRUD API(/api/portfolio, /api/watchlist, /api/plans)已切到 backend
+- ✅ Dashboard CRUD API(/api/portfolio, /api/watchlist, /api/plans)已切到 backend;Dashboard 页面已于 2026-07-16 退役,CRUD 端点迁移至 Platform / 领域 HTTP 适配器
 - ✅ 调度器 alert-check 已收敛到 stage2 watch_rules;scheduled market-watch 已切到 backend/workspace 配置读；自动 pre-market 推送已删除
 - ✅ monitor / alert / review handler 已切到 backend 读
 - ✅ `daily_plans` 读写 → `plans/daily/<date>.yaml` — `dailyPlanBackend`(2026-06-21 WP4.7)
@@ -108,7 +109,7 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 - ✅ `review_viewpoints` 读写 → `memory/review_viewpoints.jsonl`(read-modify-write,按 sourceDate 整组替换) — `reviewViewpointBackend`(2026-06-21 WP4.8)
 
 未完成(残留双轨):
-- `alerts` 表仍作为 legacy UI/API 兼容表存在,但不再镜像到 `alert_rules`,也不参与运行时巡检。当前运行时主通路是 stage2 watch_rules。
+- ~~`alerts` 表仍作为 legacy UI/API 兼容表存在~~ (已于 2026-07-16 DROP,见 `drop_legacy_alerts_table_v1` 迁移;原 legacy UI/API 适配器随 Dashboard 退役一并删除)
 
 已完成(2026-06-21):
 - ✅ `chat_history` 写入路径切到 `memory/behavior_events.jsonl`(event_type=wechat_conversation_turn);SQLite 表保留只读回退,由 `WORKSPACE_BACKEND` 切换
@@ -119,10 +120,10 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 已完成(2026-06-21):
 - ✅ `investment_profiles` / `methodology_profiles` 读写 → `config/strategy.yaml` + `knowledge/methods/*.md`(当时由 `profile-context.ts` / `conversation-tasks.ts:applyInvestmentProfileTask` / `sandbox.ts:/api/sandbox/profiles*` 切到 WorkspaceStore,通过 `WORKSPACE_BACKEND` 切换)
   - 字段舍弃:`customStyle`、`notificationPolicy`、`decisionPolicy`、`sourcePolicy`(运行时无消费,语义已被 yaml 其他字段覆盖)
-  - 2026-06-22 后续清理(方向 B 重构):`src/lib/profile-context.ts` 已删除,prompt 注入路径不再走"代码预拉数据塞 prompt",而是 ACP agent 直接通过 `/api/sandbox/profiles` / `/api/sandbox/reviews/*` 等 API 自取。`sandbox.ts` 不受影响,继续直连 WorkspaceStore。
+  - 2026-06-22 后续清理(方向 B 重构):`src/lib/profile-context.ts` 已删除,prompt 注入路径不再走"代码预拉数据塞 prompt"。2026-07-15 后 workspace Agent 只通过具名 MCP 工具读取或写入服务事实；HTTP sandbox 路由保留为非 Agent 兼容适配器。
   - 2026-06-23 范围收缩 WP A3:`src/lib/conversation-tasks.ts` 整文件删除,所有 Draft 中间层下线,`conversation_tasks` 表保留作考古。
 
-切换方式:环境变量 `WORKSPACE_BACKEND=workspace` 开启 workspace 模式,默认仍走 SQLite。
+切换方式:当前默认使用 workspace backend；只有显式设置 `WORKSPACE_BACKEND=sqlite` 时才切到 SQLite 兼容后端。
 
 ### 第三波(工作包 5,高风险)⏳ 未启动
 
@@ -165,6 +166,6 @@ SQLite 数据库继续保留在 `./data/invest-agent.db`,需要查时直接 `sql
 
 ## 与 sandbox 的边界
 
-工作空间内的 yaml/jsonl 写入,**不走沙箱审计**(用户自己写自己的工作空间)。只有当 ACP agent 通过沙箱 API 调用本服务、再由本服务回写工作空间时,才记录 `sandbox_audit_logs`(在服务层)。
+工作空间内由用户或 skill 直接维护的 yaml/jsonl 不走服务审计。workspace Agent 通过具名 MCP 写工具调用服务、再由服务回写 workspace 或 SQLite 时，必须记录 `sandbox_audit_logs`；HTTP 兼容适配器执行同类写入时遵守同一审计边界。
 
 这个边界来自 `docs/23-multi-user-sandbox-design.md` 的"工作空间是用户私有领域,沙箱只审计跨域调用"。

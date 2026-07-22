@@ -15,6 +15,16 @@ Use this skill from the repo root for production or staging work on the Volcano 
 - Prefer read-only inspection before deployment or rollback.
 - Keep local/dev and production ports separate. Local Platform is usually `localhost:22655`; production may use SSH tunnel or cloud-side process ports.
 
+## Mandatory Deployment Mode Rule
+
+**普通版本发布默认只能走代码发布路径。** For code, prompt, Skill, template, or compiled-runtime changes, use `scripts/deploy-volcano.sh` from a clean, reviewed production release tree or tag. This path must preserve the remote `.env`, database, `workspaces/`, `reviews/`, `.state/`, and other runtime assets.
+
+Do **not** call `scripts/package-volcano-runtime.sh` or `scripts/apply-volcano-runtime.sh` for an ordinary version release. Those scripts are a separate, high-risk runtime-data migration path and may replace the production database and Workspace files.
+
+Use the runtime-data migration path only when the user explicitly requests one of: migrating user data, restoring a runtime snapshot, replacing the production database, replacing production Workspaces, or disaster recovery. Before doing so, state that data will be replaced, obtain explicit confirmation, verify the package SHA and target directory, and preserve a rollback backup.
+
+If the requested change could be handled either as a code release or a runtime migration, choose the code-only path and do not infer permission to replace user data.
+
 ## Read First
 
 - `references/server-deployment.md` for current deployment shape, env, PM2/process ops, checks, and known limits.
@@ -25,7 +35,7 @@ Only read detailed sections needed for the task. Do not load archive docs unless
 
 ## Common Commands
 
-Local packaging and runtime scripts:
+Local build and optional runtime-data scripts:
 
 ```bash
 npm run build
@@ -33,7 +43,7 @@ npm run volcano:package-runtime
 npm run volcano:configure-portal
 ```
 
-`volcano:apply-runtime` replaces the runtime database and workspaces. Run it only after computing the package SHA256 and explicitly setting `CONFIRM_RUNTIME_APPLY=replace-runtime-and-data`, `EXPECTED_REMOTE_APP_DIR`, and `EXPECTED_PACKAGE_SHA256`; the script rejects missing or mismatched values before touching the target.
+`volcano:package-runtime` and `volcano:apply-runtime` are **not** part of normal code deployment. `volcano:apply-runtime` replaces the runtime database and Workspaces; run it only under the explicit migration rule above, after computing the package SHA256 and explicitly setting `CONFIRM_RUNTIME_APPLY=replace-runtime-and-data`, `EXPECTED_REMOTE_APP_DIR`, and `EXPECTED_PACKAGE_SHA256`.
 
 Production smoke and health commands to consider after deploy:
 
@@ -52,7 +62,9 @@ Use the exact port and process manager from the production environment; do not a
 1. Identify target environment, current branch/commit, production process name, app port, workspace root, DB path, and portal connector status.
 2. Inspect local diff and scripts relevant to the deployment. Do not package unrelated work accidentally.
 3. Run local `npm run build` and any smoke tests tied to changed areas.
-4. Package/apply using the project scripts or the current production runbook.
+4. Select the deployment mode before touching the target:
+   - Normal code release: use `scripts/deploy-volcano.sh` from the reviewed production release tree/tag; do not package or apply runtime data.
+   - Explicit data migration/recovery: stop writes, use the package/apply scripts, verify backup and SHA, and record the replacement scope.
 5. Restart or reload the production process according to the documented process manager.
 6. Verify `/health`, Platform tunnel access if applicable, WeChat status, portal connector if enabled, and recent logs.
 7. Report what changed, what was verified, residual risk, and rollback path.

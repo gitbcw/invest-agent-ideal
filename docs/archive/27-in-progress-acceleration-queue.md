@@ -13,7 +13,7 @@
 | 1 | 周复盘接入结构化观点统计 | D4-5 / D4-10 | 阶段完成 | 周复盘和 `/api/reviews/weekly-context` 已能展示 `review_viewpoints` 的 validated / invalidated / pending / open 汇总和明细 |
 | 2 | 平台后台补 AI Project 配置可视化 | D6 后续 | 阶段完成 | `/platform` 已能查看项目 manifest、skill bundle、prompt profile、tools、permissions、resource types 的配置摘要 |
 | 3 | Hermes 旁路自恢复运维闭环 | D4-13 | 阶段完成 | 已新增 `npm run smoke:hermes-service`，覆盖 launchd 配置、日志路径、健康检查和 Hermes profile |
-| 4 | 真实使用验收清单 | D4-5 / D4-6 / D4-13 | 阶段完成 | 已新增 [28-hermes-bypass-acceptance-checklist.md](./28-hermes-bypass-acceptance-checklist.md)，覆盖日复盘、周复盘、选股问答、沙箱权限、推送队列、客户输出边界 |
+| 4 | 真实使用验收清单 | D4-5 / D4-6 / D4-13 | 阶段完成 | 已新增 [28-hermes-project-weixin-acceptance-checklist.md](./28-hermes-project-weixin-acceptance-checklist.md)，覆盖日复盘、周复盘、选股问答、沙箱权限、推送队列、客户输出边界 |
 | 5 | 周/月复盘上下文接口设计 | D4-10 | 阶段完成 | 已新增 `/api/reviews/weekly-context`、`/api/reviews/monthly-context` 及 sandbox 版本，提供提醒统计、日复盘覆盖和结构化观点统计 |
 | 6 | 盘前推送优化 | D4-3 | 阶段完成 | 盘前推送已引用最近日复盘要点和今日观察重点，手动接口已验证 |
 

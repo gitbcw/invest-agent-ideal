@@ -2,7 +2,7 @@
 
 日期: 2026-06-26
 
-> 更新说明(2026-06-28):本文保留为讨论记录,其中"结构化规则放入 workspace 配置"的思路已不是当前首选。当前更推荐的阶段二方向见 `docs/watch-runtime-phased-implementation.md`:服务层拥有规则目录与规则实例 API,Workspace skill 通过 API 发现和管理规则。
+> 更新说明(2026-07-15):本文保留为讨论记录,其中"结构化规则放入 workspace 配置"的思路已不是当前首选。当前方向见 `docs/watch-runtime-phased-implementation.md`:服务层拥有规则目录与规则实例,Workspace Agent 只通过 `watch_rules.*` 具名 MCP 工具发现和创建规则。
 > 运行时名称说明(2026-07-02):本文中的 Hermes 是历史讨论语境。当前默认 backend 是 Codex ACP,应按 workspace-scoped ACP backend 理解。
 > 收敛说明(2026-07-09):当前运行时已不再执行 legacy `alerts` 规则,也不再启动时镜像到 `alert_rules`。明确规则巡检只执行 stage2 watch_rules(`alert_rules.relation_to_plan=stage2_watch_rule`)；本文后续关于 SQLite `alerts` / `alert_rules` 并存的讨论仅作历史背景。
 

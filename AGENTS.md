@@ -14,16 +14,16 @@ Invest Agent 是当前主线投资助手项目。在实验性 MVP 阶段，它�
 2. 复盘：生成日、周、月复盘，把行情数据和提醒事件纳入可审计的决策闭环。
 3. 选股问答：回答行业、题材、公司筛选问题，并把合适候选转成自选股观察项。
 
-当前代码已经实现运行时、数据库、Dashboard、微信桥、规则巡检，以及基础复盘和选股处理器。后续设计方向是把投资方法和输出纪律逐步沉淀到 workspace skills，让系统主要通过提示词和工作流资产演进，减少不必要的代码变动。
+当前代码已经实现运行时、数据库、Platform、微信桥、规则巡检，以及基础复盘和选股处理器。后续设计方向是把投资方法和输出纪律逐步沉淀到 workspace skills，让系统主要通过提示词和工作流资产演进，减少不必要的代码变动。
 
 ## 运行原则
 
 投资推理优先采用 `AGENTS.md + .codex/skills` 工作流：
 
-- 代码负责确定性执行：数据采集、数据库读写、股票解析、规则巡检、调度和 Dashboard API。
+- 代码负责确定性执行：数据采集、数据库读写、股票解析、规则巡检、调度和 Platform API。
 - Skills 负责投资判断工作流：复盘结构、筛选推理、证据要求、风险语言和用户个人决策纪律。
 - 长驻服务继续负责 GUI、微信连接、调度器、提醒推送和本地 HTTP API。
-- 当前 ACP 后端通过 skills 调用确定性服务能力，通常调用本地 `invest-agent` HTTP API 或 MCP 服务工具。
+- 当前 ACP 后端通过 skills 调用具名 MCP 服务工具，不直接发现或调用本地 HTTP API。HTTP 只作为 Platform、Portal、运维和兼容调用者的适配器；两类适配器必须复用同一套确定性服务逻辑。
 - 规则巡检归服务层所有，并保持确定性：在 scheduler tick 采样当前或最新行情事实，评估已持久化规则，记录审计和事件状态，并只按 priority/cooldown 推送。除非明确重新设计，不要把它扩展成“盘中曾触达高点”或收盘确认语义。
 - 行情事实遵循已接受的数据源策略：本地可靠数据服务优先，外部 AI 搜索其次，最后明确说明数据缺口。MVP 阶段不要假设有昂贵付费数据源。
 - 投资结论必须可审计：事实、推理、动作和后续验证信号要分开。
@@ -102,7 +102,7 @@ Profile 应只保留为运行时兼容摘要或路由/配置残留，不要再�
 
 服务层必须持续运行，因为它拥有状态性和时间性职责：
 
-- Dashboard 图形界面。
+- Platform 图形界面。
 - 微信登录和监听。
 - 主动提醒推送。
 - Scheduler、定时 market-watch 简报和确定性规则巡检。
@@ -122,7 +122,7 @@ Skills 应负责 workspace ACP 后端如何使用这些能力：
 
 ## 用户门户边界
 
-用户门户是独立云端入口，不是 Dashboard 或 Platform 的重写。本仓库只负责本地运行时侧：`/api/portal/*` 权威对话日志 API、`npm run portal:connector`、workspace ACP 执行、SQLite 权威数据、微信、scheduler 和确定性 API。
+用户门户是独立云端入口，不是 Platform 的重写。本仓库只负责本地运行时侧：`/api/portal/*` 权威对话日志 API、`npm run portal:connector`、workspace ACP 执行、SQLite 权威数据、微信、scheduler 和确定性 API。
 
 `conversation_sessions` 和 `conversation_messages` 是服务层拥有的 SQLite 表，是用户可见对话历史的本地可信来源。云端门户可以为了用户体验保留完整镜像，但聊天必须通过 connector 路由，不能读取本地文件、workspace 状态，也不能暴露 Platform 管理命令。
 

@@ -112,9 +112,9 @@
 - 规则能力目录由服务层维护。
 - 规则实例由服务层 API 创建、修改、停用、删除。
 - Workspace 不作为高频变更的规则 schema 主承载面。
-- Workspace skill 负责"理解用户想盯什么",再调用服务层 API 完成落库和启停。
+- Workspace skill 负责"理解用户想盯什么",再调用 `watch_rules.*` 具名 MCP 工具完成当前已开放的读取、校验和创建。
 
-也就是说,阶段二不是继续扩展 `watch.yaml` 去承载越来越多机器规则,而是让 Workspace 通过稳定 API 使用服务层规则运行时。
+也就是说,阶段二不是继续扩展 `watch.yaml` 去承载越来越多机器规则,而是让 Workspace 通过稳定的具名工具使用服务层规则运行时。
 
 典型规则包括:
 
@@ -170,11 +170,11 @@
 
 2026-07-02 当前实现已超过最小首发集:技术指标规则已扩展到 MACD/KDJ/RSI/BOLL/WR/量比。`breakout_with_volume`、`break_support` 仍更适合作为组合规则或系统信号复用场景,不应在没有明确状态机和数据窗口时用自然语言即兴执行。
 
-2026-07-09 运行时收敛:
+2026-07-09 运行时收敛(2026-07-16 更新):
 
 - `rule-alert-check` 只执行 stage2 watch_rules,即 `alert_rules.relation_to_plan=stage2_watch_rule` 的明确规则实例。
-- legacy `alerts` 表不再参与规则巡检,不再作为 scheduler scope 来源,也不再在服务启动时自动镜像到 `alert_rules`。
-- `/api/alerts/*` 仍作为 legacy UI/API 兼容面保留,但不会生成运行时 watch-rule;新规则必须走 `/api/watch-rules*` 或 MCP `watch_rules.*`。
+- legacy `alerts` 表已于 2026-07-16 DROP(迁移 `drop_legacy_alerts_table_v1`);旧 `/api/alerts/set|toggle|remove` 与 Dashboard 入口同步移除。新规则必须走 `/api/watch-rules*` 或 MCP `watch_rules.*`。
+- `POST /api/alerts/check` / `POST /api/alerts/check-and-push` 仍保留:这两个端点是规则巡检的手动触发入口,与 legacy `alerts` 表无关。
 - `market-watch` 固定盘中简报和 `rule-alert-check` 是两条独立调度线。若同一 scheduler tick 两者同时命中,规则巡检仍记录事件,但压制单独规则推送,避免同分钟微信重复打扰。
 
 ### 4.3 规则目录与实例分层
@@ -366,7 +366,7 @@ Agent 可以负责:
 - 同一规则在 cooldown 内不会重复打扰。
 - 未触发时不调用 Agent。
 - 触发记录包含事实、规则、数据时间、priority、dedupe key。
-- Dashboard 或日志能看出"为什么触发"或"为什么未触发"。
+- Platform 规则巡检审计页或日志能看出"为什么触发"或"为什么未触发"。
 - 针对主用户 `primary / invest-agent-primary` 的规则创建、dry-run、触发、推送链路可完成真实验收。
 
 ### 4.11 建议实施顺序
@@ -374,8 +374,8 @@ Agent 可以负责:
 1. 先定义规则目录注册结构和最小 3 个 primitive。
 2. 再补规则实例 CRUD / validate / dry-run API。
 3. 让 scheduler 新增"读取规则实例并执行"主路径。
-4. 再让 Workspace skill 改为"先读目录,再调 API"。
-5. 最后补 dashboard 的只读展示,再决定是否做编辑界面。
+4. 再让 Workspace skill 改为"先读目录,再调用具名 MCP 工具"。
+5. 最后在 Platform 补紧凑只读摘要；不增加绕过用户对话 + MCP 确认的投资数据编辑界面。（已完成）
 
 ### 4.12 当前落地进展
 
@@ -415,7 +415,7 @@ Agent 可以负责:
 
 当前仍未完成的部分:
 
-- Dashboard 还没有完整的 watch-rule 编辑界面；当前 Platform 只提供规则巡检审计和只读观察。
+- watch-rule 编辑仍以 `/api/watch-rules*` HTTP adapter 与 MCP 工具为主;Platform 当前只提供规则巡检审计和只读观察,没有内嵌的可视化编辑界面。
 - 真实盘中触发验收仍需按具体用户/规则单独观察,尤其要区分"采样点未命中"与"规则未运行"。
 
 ## 5. 阶段三:新闻/事件类主观盯盘
@@ -497,7 +497,7 @@ Agent 可以负责:
 2. 梳理阶段一失败模式:未触发、重复触发、Agent 超时、推送失败、artifact 未保存。
 3. 再定义阶段二服务层规则目录、规则实例 API 和 Primitive 输出格式。
 4. 先落一个最小规则集合:价格阈值 + 均线突破/跌破 + 预案位接近 + cooldown。
-5. 将 Workspace skill 改为通过 API 发现并管理规则实例。
+5. 将 Workspace skill 改为通过 `watch_rules.catalog/list/validate/create/dry_run` 发现并使用规则实例。
 6. 稳定后再设计阶段三的信息源、正则粗筛和 Agent 主观判断协议。
 
 ## 8. 关键原则
@@ -505,7 +505,7 @@ Agent 可以负责:
 - 高频判断优先服务层执行。
 - 低频总结、解释、主观判断优先 Agent 执行。
 - 规则能力目录属于服务层,高频规则实例运行时也属于服务层。
-- Workspace skill 通过稳定 API 使用规则系统,而不是频繁扩展 workspace schema。
+- Workspace skill 通过稳定的具名 MCP 工具使用规则系统,而不是频繁扩展 workspace schema。
 - 每次推送都要能回溯触发原因。
 - 未触发时不制造陪伴型噪音。
 - 数据缺失时明确记录缺失,不能让 Agent 补想象。
@@ -540,7 +540,7 @@ Agent 可以负责:
 - 规则 dry-run 已改用服务层 market-data facade,返回行情来源、时间、置信度和 warnings。
 - 主用户 `primary / invest-agent-primary` 已通过微信创建 `赣锋锂业 >= 66` 规则,落库为 `alert_rules.relation_to_plan = stage2_watch_rule`。
 - u3 旧式 `config/watch.yaml` 价格提醒已迁移为服务层 watch-rule 实例,workspace 文件只保留迁移说明。
-- 所有现有 workspace 与 `templates/workspace` 的 market-watch 规则资产已同步:明确价格/均线/预案位规则必须走 `/api/sandbox/watch-rules*`,不能用写 `config/watch.yaml` 冒充创建成功。
+- `templates/workspace` 已收敛为 MCP-only；既有 workspace 由受保护的 `service-capability-policy` skill 同步边界。明确价格/均线/预案位规则必须通过 `watch_rules.create` 创建并回读，不能用写 `config/watch.yaml` 冒充创建成功。
 - Platform 已新增独立 `规则巡检` 菜单,用于查看 interval、规则、recent `rule-alert-check` runs 和 alert events。
 
 当前只需要继续观察和验收:
@@ -556,7 +556,7 @@ Agent 可以负责:
 - **更多组合规则**:例如放量突破、突破后回踩、组合回撤、行业集中度等。新增前应先进入规则目录 catalog,再支持 validate/create/dry-run,并明确状态机、确认口径和数据窗口。
 - **更复杂的组合规则**:例如"突破 20 日线且回踩 5 日线不破"这类多条件规则,需要明确状态机、确认口径和数据窗口,不能用自然语言直接即兴执行。
 - **事件/文本粗筛**:公告、新闻、财报、政策等可先用服务层低成本规则或正则粗筛,命中后再交给 Agent 判断重要性。当前先不处理政策/新闻主观判断。
-- **规则 UI / Dashboard**:后续可增加专用 watch-rules 列表、启停、dry-run 和触发历史视图。
+- **规则 UI / Platform**:后续可在 Platform 内增加专用 watch-rules 列表、启停、dry-run 和触发历史视图(当前只有规则巡检审计只读视图)。
 - **规则迁移清理**:逐步把各 workspace 中可执行的 `custom_rules` 迁移为服务层 watch-rule 实例,`config/watch.yaml` 只保留窗口、低打扰策略和说明性规则。
 
 ## 10. 执行代理提示

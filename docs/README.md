@@ -10,7 +10,7 @@ If you only have 10 minutes, read these three:
 | --- | --- | --- |
 | 1 | [../AGENTS.md](../AGENTS.md) | Operating principles, product red lines, investment-output discipline, and strategy-plan confirmation gates |
 | 2 | [../CLAUDE.md](../CLAUDE.md) | Commands, runtime details, key files, APIs, database notes, and local service operations |
-| 3 | [system-overview.md](./system-overview.md) | One-page architecture map: WeChat/web -> workspace ACP -> service APIs -> SQLite/workspace |
+| 3 | [system-overview.md](./system-overview.md) | One-page architecture map: WeChat/web -> workspace ACP -> MCP service tools -> deterministic core |
 
 After that, use the task-based map below instead of reading every file.
 
@@ -19,13 +19,15 @@ After that, use the task-based map below instead of reading every file.
 - Invest Agent is a WeChat-first investment assistant where one user maps to one assistant and one workspace. `instanceId` remains an internal compatibility/isolation key.
 - Normal WeChat messages go directly through the workspace-scoped ACP backend, normally Codex, with only minimal channel context.
 - Do not restore service-level triage, fast-lane classification, onboarding short-circuiting, review intent detection, or context-packet wrapping for normal WeChat messages.
-- The service owns deterministic execution: SQLite, market data, Dashboard/Platform APIs, WeChat bridge, scheduler, alert push, sandbox, audit, confirmations, portal connector, and canonical conversation log.
+- The service owns deterministic execution: SQLite, market data, Platform APIs, WeChat bridge, scheduler, alert push, sandbox, audit, confirmations, portal connector, and canonical conversation log.
 - Skills and workspace AGENTS.md own investment judgment workflows: review structure, screening reasoning, evidence rules, cautious language, and confirmation discipline.
 - Codex ACP is the default runtime backend. Hermes remains compatibility/experimental only.
 - ACP model tier defaults to `complex`. `simple` tier is opt-in via `ACP_SIMPLE_MODEL_ENABLED=true` after stability debugging.
-- Codex ACP sessions get the service-owned `invest-agent-service-tools` stdio MCP server. It is the preferred path for deterministic reads and confirmed writes when Codex shell networking cannot reach localhost.
+- Codex ACP sessions get the service-owned `invest-agent-service-tools` stdio MCP server. It is the only deterministic service capability surface exposed to workspace Agents; HTTP remains for non-Agent adapters.
+- Onboarding uses service-owned drafts: each confirmed step remains a draft until the final frozen snapshot is asynchronously validated and applied to the workspace.
 - Workspace artifacts carry user-specific investment state; table-level exceptions are defined in [table-ownership.md](./table-ownership.md).
-- User portal is a separate cloud entrance, not a Dashboard/Platform rewrite. The local connector and `conversation_sessions` / `conversation_messages` remain the source of truth.
+- Platform is an internal administration surface. Owners may perform authorized administration; Partners receive read-only, anonymized operating and quality views without customer investment content or raw conversations.
+- User portal is a separate cloud entrance, not a Platform rewrite. The local connector and `conversation_sessions` / `conversation_messages` remain the source of truth.
 - Local reliable data service comes first, AI external search second, explicit data gap last. Do not invent missing market facts.
 - Historical docs in [archive/](./archive/) are archaeology unless linked from this README or another current source-of-truth doc.
 
@@ -51,7 +53,9 @@ After that, use the task-based map below instead of reading every file.
 | [table-ownership.md](./table-ownership.md) | SQLite table ownership: service / workspace / discard |
 | [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md) | Sandbox token, permission, audit, and isolation model |
 | [composite-indicator-system.md](./composite-indicator-system.md) | L1 operators / L2 signals / L3a rule tree / L3b sandbox script architecture |
-| [market-data-service-design.md](./market-data-service-design.md) | Market data facade and Codex/sandbox access design |
+| [market-data-service-design.md](./market-data-service-design.md) | Market data facade, MCP tool contract, and non-Agent HTTP adapter |
+| [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
+| [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
 
 ### Watch Runtime And Scheduler
 
@@ -70,7 +74,13 @@ For scheduled-task or push-delivery operations, use the project-only skill `.cod
 | [user-portal-design.md](./user-portal-design.md) | Cloud user portal and relay design; local invest-agent remains runtime |
 | [user-portal-goal-and-acceptance.md](./user-portal-goal-and-acceptance.md) | First delivery goal, acceptance criteria, and loop validation contract |
 | [user-portal-protocol.md](./user-portal-protocol.md) | Relay protocol and local connector contract, including mock scenarios |
-| [portal-attachments-implementation-brief.md](./portal-attachments-implementation-brief.md) | Implementation brief for web/portal image and document attachment support |
+
+### Platform Administration
+
+| Document | Use It For |
+| --- | --- |
+| [platform-partner-admin-design.md](./platform-partner-admin-design.md) | Internal Platform roles, Partner data boundary, authentication posture, and rollout constraints |
+| [platform-partner-admin-phase1-implementation.md](./platform-partner-admin-phase1-implementation.md) | Phase 1 implementation scope and verification surface |
 
 ### Data Sources
 
@@ -85,10 +95,13 @@ Repeatable operational actions are kept as project-only skills under `.codex/ski
 
 - `.codex/skills/volcano-ops`: Volcano Cloud deploy, rollback, production health, and runtime migration operations.
 - `.codex/skills/scheduler-push-debug`: scheduled reviews, market-watch, rule inspection, push queue, and WeChat delivery diagnosis.
-- `.codex/skills/service-api-change`: sandbox, portal, MCP, Dashboard/Platform, and deterministic service API changes.
+- `.codex/skills/service-api-change`: sandbox, portal, MCP, Platform, and deterministic service API changes.
 - `.codex/skills/db-migration`: SQLite schema, table ownership, migration, backfill, and production DB rollout safety.
 - `.codex/skills/invest-eval`: audit-driven evaluation, evidence review, and issue classification.
 - `.codex/skills/onboarding-flow-eval`: onboarding continuous workflow run, log audit, workspace state audit, and issue classification.
+- `.codex/skills/screening-flow-eval`: screening, candidate risk scan, observation-pool write, and watchlist-conversion evaluation.
+- `.codex/skills/eval-instance-cleanup`: retained evaluation user/workspace inspection and permanent cleanup after a completed run.
+- `.codex/skills/local-runtime-restart`: restart and verify the PM2-managed local runtime on port `22655`.
 
 Long runbooks that were formerly under `docs/` have been moved into the corresponding skill `references/` directory so the execution path and detailed operating notes stay together.
 

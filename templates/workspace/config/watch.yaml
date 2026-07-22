@@ -1,8 +1,8 @@
-# 盘中定时简报与提醒边界。
+# 盘中定时简报配置。
 # 本文件不是明确规则巡检的落库位置；可执行价格/均线/指标规则必须写入服务层 alert_rules。
 mode: default
 only_push_on_exception: true
-priority_policy: "用户可见口径：立即提醒、当天汇总、仅记录。内部优先级映射详见 config/notification.yaml。"
+priority_policy: "用户通知偏好只在低打扰、积极盯盘、晚间汇总中选择；风险等级不决定推送方式。"
 purpose_boundary: "盘中简报用于按固定时间汇总市场与持仓状态；明确规则巡检用于执行 alert_rules；二者都不用于制造连续行情陪伴。"
 
 exception_rules:
@@ -23,19 +23,6 @@ deduplication:
   idempotency_key: "tenant_id + target_code + alert_type + trigger + trading_day"
   suppress_same_alert_minutes: 120
   max_intraday_pushes_per_target: 1
-
-priority_mapping:
-  P0:
-    - "核心持仓触发关键买卖区间且可能需要用户当日确认。"
-    - "重大财报、公告、政策或风险事件可能改变持仓逻辑。"
-    - "组合风险超过用户确认的仓位、现金或回撤阈值。"
-  P1:
-    - "持仓接近关键区间但尚未触发操作。"
-    - "风险雷达出现中等风险，需要晚间查看。"
-    - "观察仓距离配置区明显缩短。"
-  P2:
-    - "普通行情波动。"
-    - "仅用于后续复盘验证的市场信息。"
 
 custom_rules: []
 required_output_fields:

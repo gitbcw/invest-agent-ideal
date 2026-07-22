@@ -140,9 +140,9 @@
 
 以下文档已从“当前入口”移动到 `docs/archive/`，只保留历史参考：
 
-- [archive/19-skill-loop-hardening-plan.md](./archive/19-skill-loop-hardening-plan.md)：Skill 闭环加固计划，核心结果已进入 D4-8/D4-9/D4-10。
-- [archive/22-multi-user-data-isolation-plan.md](./archive/22-multi-user-data-isolation-plan.md)：多用户数据隔离前置计划，核心结论已并入 sandbox 和平台架构。
-- [archive/27-in-progress-acceleration-queue.md](./archive/27-in-progress-acceleration-queue.md)：集中推进队列已阶段完成，结果已并入本文和 28 号验收清单。
+- [19-skill-loop-hardening-plan.md](./19-skill-loop-hardening-plan.md)：Skill 闭环加固计划，核心结果已进入 D4-8/D4-9/D4-10。
+- [22-multi-user-data-isolation-plan.md](./22-multi-user-data-isolation-plan.md)：多用户数据隔离前置计划，核心结论已并入 sandbox 和平台架构。
+- [27-in-progress-acceleration-queue.md](./27-in-progress-acceleration-queue.md)：集中推进队列已阶段完成，结果已并入本文和 28 号验收清单。
 
 ---
 

@@ -13,7 +13,7 @@ WeChat message
   -> WeChat bridge resolves user / assistant / workspace
   -> workspace-scoped ACP backend, normally Codex
   -> Codex reads workspace AGENTS.md + .codex/skills
-  -> Codex calls controlled service tools or local invest-agent APIs when deterministic data or mutation is needed
+  -> Codex calls named invest-agent-service-tools MCP tools when deterministic data or mutation is needed
   -> response returns to WeChat
 ```
 
@@ -21,7 +21,7 @@ The service remains running because it owns durable state, scheduling, local API
 
 ### Local HTTP Access
 
-The runtime binds to `127.0.0.1` by default. Other than the minimal `/health` and discovery endpoints, local HTTP APIs require `Authorization: Bearer <INVEST_AGENT_API_TOKEN>` (or `x-invest-agent-token`). The local Dashboard/Platform pages may use HTTP Basic with username `invest-agent` and the same token as password. Production must set this token explicitly. Sandbox APIs retain their separate short-lived sandbox-token authentication. The cloud portal must use the authenticated connector protocol rather than reach these local routes from a browser.
+The runtime binds to `127.0.0.1` by default. Other than the minimal `/health` and discovery endpoints, local HTTP APIs require `Authorization: Bearer <INVEST_AGENT_API_TOKEN>` (or `x-invest-agent-token`). Platform supports account/password login with an `HttpOnly` session cookie; the service token remains an owner-level operational credential, and HTTP Basic with username `invest-agent` remains a local compatibility path. Production must set the service token explicitly. Sandbox APIs retain their separate short-lived sandbox-token authentication. The cloud portal must use the authenticated connector protocol rather than reach these local routes from a browser.
 
 The default ACP model tier is `complex`. The `simple` tier remains in code for future optimization, but it is disabled unless `ACP_SIMPLE_MODEL_ENABLED=true` is set after stability debugging.
 
@@ -44,7 +44,7 @@ Reasoning
   workspace .codex/skills
 
 Deterministic service APIs
-  Dashboard APIs
+  Platform APIs
   sandbox APIs
   watch-rule APIs
   review APIs
@@ -60,14 +60,15 @@ State
 
 The service is the machine room. Keep these responsibilities in code and SQLite/local runtime state:
 
-- Dashboard and Platform operations.
+- Platform operations.
 - WeChat login, listener, and push queue.
 - Scheduler, scheduled market-watch briefs, reviews, data-quality jobs, and deterministic rule inspection.
 - Market data fetching, source telemetry, and source-quality reporting.
 - Sandbox tokens, permissions, confirmations, and audit.
-- Onboarding write shortcuts under `/api/sandbox/onboarding/*`, so workspace Agents confirm user-visible drafts through service-owned APIs instead of hand-editing YAML state.
-- Local HTTP APIs used by Dashboard, Platform, workspace skills, and portal connector.
-- `invest-agent-service-tools` MCP server for Codex ACP sessions. This is the preferred path for deterministic service capabilities when the Codex shell sandbox cannot access localhost. It exposes read tools for market/portfolio/watchlist/plan facts, plus a small set of confirmed write tools for onboarding, watchlist add, plan set, method-change proposals, review save, and explicit watch-rule creation. Write tools require explicit user confirmation and are audited by the service.
+- Shared onboarding service contract used by both MCP and compatibility HTTP adapters, so state progression and durable writes have one implementation.
+- Onboarding drafts, confirmation binding, frozen commit snapshots, retryable background application, and completion notifications. Workspace onboarding files change only after the final draft commit succeeds.
+- Local HTTP APIs used by Platform, portal connector, operations, and compatibility callers. They are not exposed in workspace prompts or skills.
+- `invest-agent-service-tools` MCP server is the only deterministic service surface exposed to Codex ACP sessions. It exposes named market/portfolio/watchlist/plan tools plus confirmed writes for onboarding, watchlist add, plan set, method-change proposals, review save, and explicit watch-rule creation. Write tools require explicit user confirmation and are audited by the service.
 - Canonical conversation log for user-visible web and WeChat history.
 
 Do not reintroduce service-level triage, fast-lane classification, onboarding short-circuiting, review intent detection, or context-packet wrapping for normal WeChat messages. Those behaviors belong in workspace AGENTS.md, skills, and user config.
@@ -102,7 +103,7 @@ The current watch runtime source is [watch-runtime-phased-implementation.md](./w
 
 ## Portal Boundary
 
-The user portal is a separate cloud entrance. It is not a Dashboard or Platform rewrite.
+The user portal is a separate cloud entrance. It is not a Platform rewrite.
 
 ```text
 Browser
@@ -124,13 +125,11 @@ This repository owns the local side:
 
 The cloud portal may mirror conversation history for UX, but it must not become the source of truth, read local files, access workspace state directly, or expose Platform management commands.
 
-## Dashboard And Platform Boundary
+## Platform Boundary
 
-Dashboard is the local workbench for data operations: holdings, watchlist, plans, alerts, signals, reviews, and WeChat connection.
+Platform is the internal operations surface for assistant/workspace management, holdings/watchlist/plans/reviews read-only summaries, rule inspection, source quality, audit, and connector-related admin workflows. It has two preset roles: `owner` has authorized administrative access; `partner` is read-only and sees only anonymized operating and quality summaries, never raw conversations or customer investment content. The legacy local Dashboard page was retired on 2026-07-16; `/dashboard` now 301-redirects to `/platform`.
 
-Platform is the local operations surface for assistant/workspace management, rule inspection, source quality, audit, and connector-related admin workflows.
-
-Neither is the public user portal.
+Platform is not the public user portal.
 
 ## Data Source Policy
 
@@ -143,4 +142,6 @@ The accepted decision is [data-source-policy-decision.md](./data-source-policy-d
 - New contributor: [../AGENTS.md](../AGENTS.md), [../CLAUDE.md](../CLAUDE.md), then this file.
 - Runtime work: [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md), [table-ownership.md](./table-ownership.md), [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md).
 - Portal work: [user-portal-design.md](./user-portal-design.md), [user-portal-goal-and-acceptance.md](./user-portal-goal-and-acceptance.md), [user-portal-protocol.md](./user-portal-protocol.md).
+- Platform work: [platform-partner-admin-design.md](./platform-partner-admin-design.md), [platform-partner-admin-phase1-implementation.md](./platform-partner-admin-phase1-implementation.md).
+- Onboarding work: [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md), [service-tools-mcp.md](./service-tools-mcp.md).
 - Investment workflow work: [investment-model-design.md](./investment-model-design.md), [trading-strategy-design.md](./trading-strategy-design.md), [04-core-workflows.md](./04-core-workflows.md).
