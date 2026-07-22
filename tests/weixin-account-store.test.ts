@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
@@ -22,13 +22,15 @@ describe("weixin account store", () => {
     tempDirs.push(stateDir);
     saveWeixinAccount("old-bot", { token: "old-token" }, stateDir);
     saveWeixinAccount("another-old-bot", { token: "another-old-token" }, stateDir);
+    const accountsDir = join(resolveWeixinStateDir(stateDir), "accounts");
+    writeFileSync(join(accountsDir, "old.bot.json.sync.json"), "{}");
 
     const replaced = replaceWeixinAccount("new-bot", { token: "new-token" }, stateDir);
 
     assert.deepEqual(replaced.sort(), ["another-old-bot", "old-bot"]);
     assert.deepEqual(listWeixinAccountIds(stateDir), ["new-bot"]);
-    const accountsDir = join(resolveWeixinStateDir(stateDir), "accounts");
     assert.equal(existsSync(join(accountsDir, "old-bot.json")), false);
+    assert.equal(existsSync(join(accountsDir, "old.bot.json.sync.json")), false);
     assert.equal(existsSync(join(accountsDir, "another-old-bot.json")), false);
     assert.equal(existsSync(join(accountsDir, "new-bot.json")), true);
   });

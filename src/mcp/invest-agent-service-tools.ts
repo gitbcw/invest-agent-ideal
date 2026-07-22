@@ -55,6 +55,13 @@ async function main() {
 
   registerJsonTool(
     { server, callServiceTool, context },
+    "market_watch.snapshot",
+    "Read the latest scheduler-captured market-watch facts and change marker for the current user and instance.",
+    {}
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
     "market.quote",
     "Read current quotes for A-share stock codes through the service market-data facade.",
     { codes: z.array(z.string()).min(1).describe("Six-digit stock codes, for example ['002460','601058'].") }

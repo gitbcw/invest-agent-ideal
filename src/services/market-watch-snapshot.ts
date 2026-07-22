@@ -1,0 +1,51 @@
+import { randomUUID } from "node:crypto";
+import { and, desc, eq } from "drizzle-orm";
+import { db } from "../db/index.js";
+import { marketWatchSnapshots } from "../db/schema.js";
+import { marketSnapshot, type MarketSnapshot, type MarketSnapshotItem } from "./market-data.js";
+
+export async function captureMarketWatchSnapshot(input: { userId: string; projectId: string; instanceId: string; windowKey: string }) {
+  const snapshot = await marketSnapshot({ userId: input.userId, instanceId: input.instanceId });
+  const previous = await latestMarketWatchSnapshot(input.userId, input.instanceId);
+  const delta = buildMarketWatchDelta(snapshot, previous?.snapshot ?? null, previous?.windowKey ?? null);
+  const tradingDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
+  const now = new Date().toISOString();
+  const record = { id: randomUUID(), ...input, capturedAt: snapshot.updatedAt, snapshot, delta, createdAt: now };
+  await db.insert(marketWatchSnapshots).values({ id: record.id, userId: input.userId, projectId: input.projectId, instanceId: input.instanceId, tradingDate, windowKey: input.windowKey, capturedAt: record.capturedAt, snapshotJson: JSON.stringify(snapshot), deltaJson: JSON.stringify(delta), createdAt: now });
+  return record;
+}
+
+function snapshotItems(snapshot: MarketSnapshot) {
+  const items = new Map<string, MarketSnapshotItem>();
+  for (const item of [...snapshot.holdings, ...snapshot.watchlist, ...snapshot.plans]) {
+    const existing = items.get(item.stockCode);
+    items.set(item.stockCode, existing ? { ...existing, ...item } : item);
+  }
+  return items;
+}
+
+export function buildMarketWatchDelta(current: MarketSnapshot, previous: MarketSnapshot | null, previousWindowKey: string | null) {
+  if (!previous) return { previousWindowKey: null, materiallyChanged: true, stockChanges: [], indexChanges: [], warningsChanged: false, summary: "本交易日首个快照，无上一窗口可比。" };
+  const prior = snapshotItems(previous); const latest = snapshotItems(current);
+  const stockChanges = [...new Set([...prior.keys(), ...latest.keys()])].sort().map((code) => {
+    const oldItem = prior.get(code); const item = latest.get(code);
+    const previousPrice = oldItem?.quote?.price ?? null; const price = item?.quote?.price ?? null;
+    const previousChangePercent = oldItem?.quote?.changePercent ?? null; const changePercent = item?.quote?.changePercent ?? null;
+    const previousTradingStatus = oldItem?.quote?.tradingStatus.status ?? null; const tradingStatus = item?.quote?.tradingStatus.status ?? null;
+    const previousLevels = oldItem ? levels(oldItem) : null; const currentLevels = item ? levels(item) : null;
+    const state = !oldItem ? "added" : !item ? "removed" : previousPrice !== price || previousChangePercent !== changePercent || previousTradingStatus !== tradingStatus || JSON.stringify(previousLevels) !== JSON.stringify(currentLevels) ? "changed" : "unchanged";
+    return { code, name: item?.stockName ?? oldItem?.stockName ?? code, state, previousPrice, price, priceChange: price !== null && previousPrice !== null ? Number((price - previousPrice).toFixed(3)) : null, previousChangePercent, changePercent, previousTradingStatus, tradingStatus, previousLevels, levels: currentLevels };
+  });
+  const oldIndices = new Map(previous.indices.map((item) => [item.code, item])); const newIndices = new Map(current.indices.map((item) => [item.code, item]));
+  const indexChanges = [...new Set([...oldIndices.keys(), ...newIndices.keys()])].sort().map((code) => { const oldIndex = oldIndices.get(code); const index = newIndices.get(code); return { code, name: index?.name ?? oldIndex?.name ?? code, state: !oldIndex ? "added" : !index ? "removed" : oldIndex.price !== index.price || oldIndex.changePercent !== index.changePercent ? "changed" : "unchanged", previousPrice: oldIndex?.price ?? null, price: index?.price ?? null, previousChangePercent: oldIndex?.changePercent ?? null, changePercent: index?.changePercent ?? null }; });
+  const warningsChanged = previous.warnings.length !== current.warnings.length || previous.warnings.some((warning) => !current.warnings.includes(warning));
+  const materiallyChanged = stockChanges.some((item) => item.state !== "unchanged") || indexChanges.some((item) => item.state !== "unchanged") || warningsChanged;
+  return { previousWindowKey, materiallyChanged, stockChanges, indexChanges, warningsChanged, summary: materiallyChanged ? `相较 ${previousWindowKey} 的有效行情或预案变化见 stockChanges/indexChanges。` : `相较 ${previousWindowKey} 无有效行情、预案或数据质量变化。` };
+}
+
+function levels(item: MarketSnapshotItem) { return { support: item.support ?? null, resistance: item.resistance ?? null, targetPrice: item.targetPrice ?? null, stopLoss: item.stopLoss ?? null }; }
+
+export async function latestMarketWatchSnapshot(userId: string, instanceId: string) {
+  const [row] = await db.select().from(marketWatchSnapshots).where(and(eq(marketWatchSnapshots.userId, userId), eq(marketWatchSnapshots.instanceId, instanceId))).orderBy(desc(marketWatchSnapshots.capturedAt)).limit(1);
+  return row ? { id: row.id, windowKey: row.windowKey, capturedAt: row.capturedAt, snapshot: JSON.parse(row.snapshotJson) as MarketSnapshot, delta: JSON.parse(row.deltaJson) } : null;
+}

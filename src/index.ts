@@ -7,6 +7,18 @@ import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { stopPlatformWeixinListeners } from "./routes/platform.js";
 import { registerDataQualityAlertSink } from "./handlers/data-quality-report.js";
 import { startPortalConnector } from "./portal/connector.js";
+import { startAttachmentRetentionCleanup, stopAttachmentRetentionCleanup } from "./services/attachment-retention.js";
+
+const ACP_START_RETRY_MS = 30_000;
+
+function startDefaultAcpInBackground(attempt = 1): void {
+  void startDefaultAcp()
+    .then(() => logger.info("ACP 启动就绪"))
+    .catch((error) => {
+      logger.error(`ACP 启动失败（第 ${attempt} 次），将在 ${ACP_START_RETRY_MS / 1000}s 后重试: ${(error as Error).message}`);
+      setTimeout(() => startDefaultAcpInBackground(attempt + 1), ACP_START_RETRY_MS).unref();
+    });
+}
 
 async function main() {
   logger.info("正在启动投资选股智能体...");
@@ -29,11 +41,10 @@ async function main() {
   const app = await startServer();
 
   if (!offlineMode) {
-    // 启动当前 ACP backend 子进程。会话上下文后续按微信 conversationId 复用。
-    await startDefaultAcp();
-
-    // 启动定时任务
+    // Runtime services stay available while the ACP executable/login recovers.
     await startScheduler();
+    startAttachmentRetentionCleanup();
+    startDefaultAcpInBackground();
   } else {
     logger.info("OFFLINE 模式:跳过 ACP 子进程和 scheduler 启动。");
   }
@@ -50,6 +61,7 @@ async function main() {
     shuttingDown = true;
     logger.info(`收到 ${signal}，正在停止投资选股智能体...`);
     if (!offlineMode) stopScheduler();
+    stopAttachmentRetentionCleanup();
     stopPlatformWeixinListeners();
     portalConnector?.stop();
     weixinMobileManager.stop();

@@ -97,6 +97,7 @@ try {
       "confirmations.pending",
       "confirmations.request",
       "conversation.history",
+      "market_watch.snapshot",
       "market.calendar",
       "market.capital_flow",
       "market.indices",

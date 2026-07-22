@@ -513,6 +513,20 @@ export const weixinDeliveryAttempts = sqliteTable("weixin_delivery_attempts", {
   createdAt: text("created_at").notNull(),
 });
 
+/** Scheduler-owned, immutable facts used to audit a scheduled market-watch window. */
+export const marketWatchSnapshots = sqliteTable("market_watch_snapshots", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  instanceId: text("instance_id").notNull(),
+  tradingDate: text("trading_date").notNull().default(""),
+  windowKey: text("window_key").notNull(),
+  capturedAt: text("captured_at").notNull(),
+  snapshotJson: text("snapshot_json").notNull(),
+  deltaJson: text("delta_json").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
 export const scheduledTaskRuns = sqliteTable("scheduled_task_runs", {
   taskKey: text("task_key").primaryKey(),
   taskType: text("task_type").notNull(),

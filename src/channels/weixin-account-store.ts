@@ -51,12 +51,26 @@ export function replaceWeixinAccount(accountId: string, update: WeixinAccountRec
 
   saveWeixinAccount(normalizedId, update, stateDir);
   for (const id of replacedAccountIds) {
-    fs.rmSync(resolveAccountPath(id, stateDir), { force: true });
-    fs.rmSync(`${resolveAccountPath(id, stateDir)}.sync.json`, { force: true });
+    removeWeixinAccountState(id, stateDir);
   }
 
   fs.writeFileSync(resolveAccountIndexPath(stateDir), JSON.stringify([normalizedId], null, 2), "utf-8");
   return replacedAccountIds;
+}
+
+function removeWeixinAccountState(accountId: string, stateDir: string) {
+  const accountsDir = resolveAccountsDir(stateDir);
+  if (!fs.existsSync(accountsDir)) return;
+  const normalizedId = normalizeAccountId(accountId);
+  for (const entry of fs.readdirSync(accountsDir)) {
+    const storedId = entry
+      .replace(/\.json\.sync\.json$/, "")
+      .replace(/\.sync\.json$/, "")
+      .replace(/\.json$/, "");
+    if (normalizeAccountId(storedId) === normalizedId) {
+      fs.rmSync(path.join(accountsDir, entry), { force: true });
+    }
+  }
 }
 
 export function listWeixinAccountIds(stateDir = config.weixin.stateDir): string[] {

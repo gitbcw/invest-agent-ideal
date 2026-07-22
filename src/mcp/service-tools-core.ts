@@ -25,6 +25,7 @@ import {
 import { resolveStockRefs } from "../services/stock-resolver.js";
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
+import { latestMarketWatchSnapshot } from "../services/market-watch-snapshot.js";
 import {
   applyConfirmedOnboardingStep,
   isOnboardingStep as isSharedOnboardingStep,
@@ -84,6 +85,8 @@ async function dispatchServiceTool(
   context: ServiceToolContext
 ): Promise<unknown> {
   switch (name) {
+    case "market_watch.snapshot":
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, result: await latestMarketWatchSnapshot(context.userId, context.instanceId) };
     case "market.snapshot": {
       const result = await marketSnapshot({
         userId: context.userId,

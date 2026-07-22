@@ -6,7 +6,6 @@ import { resolveScheduledModelTier, type AcpModelTier } from "./model-router.js"
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
 import { recordAcpTrace } from "./trace.js";
 import { extractFinalCustomerReply, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
-import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { UserContext } from "../lib/user-context.js";
@@ -15,6 +14,7 @@ import { readSchedules } from "../lib/schedules-loader.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
+import { captureMarketWatchSnapshot } from "../services/market-watch-snapshot.js";
 import {
   buildDailyReviewContext,
   buildMonthlyReviewContext,
@@ -36,6 +36,8 @@ type MarketWatchPushMode = "exception_only" | "scheduled_intraday_brief";
 export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
   const userContext = await buildScheduledUserContext(scope, "market-watch");
   const pushMode = await resolveMarketWatchPushMode(userContext.userId);
+  const windowKey = new Date().toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
+  await captureMarketWatchSnapshot({ userId: userContext.userId, projectId: userContext.projectId || DEFAULT_PROJECT_ID, instanceId: userContext.instanceId || DEFAULT_INSTANCE_ID, windowKey });
   const promptContext = await buildAcpPromptContext({
     userText: buildMarketWatchTaskPrompt(userContext, pushMode),
     userContext,
@@ -254,7 +256,6 @@ async function readWatchConfig(userId: string) {
 }
 
 function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: MarketWatchPushMode) {
-  const api = `http://127.0.0.1:${config.port}/api/sandbox/alerts/check`;
   const isBriefMode = pushMode === "scheduled_intraday_brief";
   return [
     "【后台任务：盘中定时简报】",
@@ -265,10 +266,7 @@ function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: MarketWa
     "是否推送、推送频率、推送内容和提醒边界均以 Workspace 配置与 market-watch skill 为准。",
     "结构和详略由 Workspace 规则决定；不要输出执行过程。",
     "数据来源只写可读来源摘要，例如“腾讯行情、腾讯日K、东方财富新闻线索”；禁止展示原始 URL、endpoint 或接口路径。",
-    "",
-    "可调用确定性提醒检查 API 获取本轮异常/提醒结果（sandbox token 已写入 workspace 根目录的 .sandbox-token 文件，curl 必须用 shell 展开，禁止在命令里写出 token 字面值）：",
-    `curl -s -X POST ${api} -H "Authorization: Bearer $(cat .sandbox-token)" -H "Content-Type: application/json" -d '{"force":true}'`,
-    "",
+    "本轮窗口行情事实必须优先通过 market_watch.snapshot 读取；需要补充当前持仓、自选或预案时再使用 market.snapshot。核对明确规则时使用 watch_rules.list 或 watch_rules.dry_run。不要使用 shell、curl、本地 HTTP、sandbox token 或工作区文件兜底。",
     "输出契约：",
     isBriefMode
       ? "- 当前是固定盘中简报模式：必须输出一条微信正文；即使没有异常，也要给出盘面状态、持仓观察和“是否需要操作”。"

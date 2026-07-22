@@ -29,6 +29,7 @@ Implementation:
 Read tools:
 
 - `market.snapshot`
+- `market_watch.snapshot`（当前 user/instance 最近一次 scheduler 盘中快照及有效变化标记）
 - `market.quote`
 - `market.kline`
 - `market.indices`

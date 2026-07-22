@@ -512,6 +512,11 @@ export function initDb() {
       elapsed_since_last_inbound_ms INTEGER,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS market_watch_snapshots (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL, trading_date TEXT NOT NULL DEFAULT '', window_key TEXT NOT NULL, captured_at TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL, delta_json TEXT NOT NULL, created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS scheduled_task_runs (
       task_key TEXT PRIMARY KEY,
       task_type TEXT NOT NULL,
@@ -666,6 +671,7 @@ export function initDb() {
   ensureColumn("push_jobs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("push_jobs", "idempotency_key", "TEXT");
   ensureColumn("weixin_delivery_attempts", "external_account_id", "TEXT");
+  ensureColumn("market_watch_snapshots", "trading_date", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("scheduled_task_runs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("scheduled_task_runs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("scheduled_task_runs", "push_job_id", "TEXT");
@@ -747,6 +753,7 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_push_jobs_backend_status ON push_jobs(backend, status, next_retry_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_push_jobs_idempotency_key ON push_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_weixin_delivery_attempts_scope_time ON weixin_delivery_attempts(instance_id, user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_market_watch_snapshots_scope_time ON market_watch_snapshots(user_id, instance_id, captured_at);
     CREATE INDEX IF NOT EXISTS idx_weixin_delivery_attempts_reason_time ON weixin_delivery_attempts(reason, created_at);
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_scope_time ON scheduled_task_runs(instance_id, user_id, task_type, scheduled_for);
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status, scheduled_for);
