@@ -113,8 +113,11 @@ npm run smoke:workspace-compatibility -- <user> <instance>
 - 新版本生产认证门禁发现缺少 `INVEST_AGENT_API_TOKEN` 和 `PLATFORM_ANONYMIZATION_SECRET`。两个值均在服务器本地随机生成、写入权限为 `600` 的 `.env`，未输出或复制到本机；Platform Owner 首次登录凭据保存在服务器权限为 `600` 的独立文件中。
 - `111`、`dyk`、`mg` 已分别执行显式迁移并复检为 `ready`。迁移备份分别位于 `production-20260723-015253/111`、`production-20260723-015730-dyk/dyk`、`production-20260723-015757-mg/mg`。
 - `111` 已通过生产受限 ACP 单点验收；三个用户均通过对应 user/instance 的持仓与盘中快照服务回读。MCP 服务工具 smoke 通过，共 37 个工具。
-- 生产 runtime 与 Portal 健康正常；三个微信账号均为 `connected` 且 listener 正在运行。维护窗口内没有活动 push job，也没有发送测试消息。
-- 三个账号当前 `pushReady=false`；主动推送需等待各自下一次真实入站会话恢复，不在发布验收中主动打扰真实用户。
+- 生产 runtime 与 Portal 健康正常；三个生产实例的微信连接均为 `connected` 且 listener 正在运行。维护窗口内没有活动 push job，也没有发送测试消息。
+- 三个实例当前 `pushReady=false`；主动推送需等待各自下一次真实入站会话恢复，不在发布验收中主动打扰真实用户。
+- 发布后发现 PM2 进程仍继承旧的 `CODEX_ACP_COMMAND` 和模型环境变量，覆盖了服务器 `.env`，导致主进程尝试启动已不存在的仓库内 ACP 可执行文件。处置时删除旧 PM2 条目，并从干净 shell 依据 `ecosystem.config.js` 重建、保存进程，使应用重新以服务器 `.env` 为唯一 ACP 配置来源；未输出或复制任何生产密钥。
+- PM2 环境清理后，`111` 再次通过生产主进程 `/api/chat` 的只读 ACP 单点验收：ACP 实际读取持仓，返回计数与服务层权威数据一致，未发送微信消息或写入投资数据。
+- 最终复检确认 runtime 与 Portal 健康、PM2 `online`、三个 Workspace 均为 `ready` 且无待迁移受管资产、活动 push job 为 0。`111`、`dyk`、`mg` 的微信 listener 均在重启后自动恢复；本次重启后的日志窗口内没有新 `ERROR`，也没有新的 ACP `ENOENT`。
 
 ## 火山云发布顺序
 
