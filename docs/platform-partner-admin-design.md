@@ -1,6 +1,6 @@
 # Platform 合伙人后台改造设计初稿
 
-> 状态：产品与架构初稿 + Phase 0 盘点稿。角色、Partner 数据边界、登录方式和火山云入口已按当前决策收敛；本阶段不改代码、不部署火山云。
+> 状态：产品与架构来源；Phase 1 账号、角色、Partner 脱敏边界和审计已实现。当前落地范围见 `platform-partner-admin-phase1-implementation.md`，后续页面扩展仍以本文的权限与数据边界为准。
 > 范围：Invest Agent Platform 管理后台，不包含普通用户 Portal 重做。
 
 ## 1. 背景与判断

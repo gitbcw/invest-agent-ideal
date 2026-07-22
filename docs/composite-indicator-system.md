@@ -1,7 +1,7 @@
 # 复合指标系统设计
 
 > Created: 2026-06-22
-> 状态:RFC,待评审后落地
+> 状态:核心 L1/L3a/L3b 与告知协议已落地；调度器联动、衍生信号和 UI 仍按路线图延期
 > 关联文档:`table-ownership.md` / `ideal-refactor-plan.md` / `23-multi-user-sandbox-design.md`
 > 第一个用例:客户主力控盘指标(基于通达信筹码模型)
 

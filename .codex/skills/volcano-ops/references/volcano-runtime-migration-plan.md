@@ -1,8 +1,10 @@
 # 火山云生产运行时迁移计划
 
+> 历史状态说明（2026-07-23）：首次生产迁移和切主已经完成，当前真实 Workspace 为 `111`、`dyk`、`mg`。本文保留迁移阶段、拓扑形成过程和数据替换回滚背景；日常代码发布、健康检查和当前生产基线一律使用 `server-deployment.md`。不得因为本文保留了 `package/apply` 示例，就把数据替换路径用于普通版本发布。
+
 ## 背景与意图
 
-当前 `invest-agent-ideal` 同时承担本地开发、测试和实际运行职责：Platform/Dashboard、SQLite、workspace、Codex ACP、微信监听、scheduler、复盘、巡检、portal connector 都在本机进程内。用户希望先把实际生产运行环境迁到火山云服务器，把本机恢复为开发/测试环境，降低本地断网/断电对微信推送、定时复盘和 portal 在线状态的影响。
+迁移前，`invest-agent-ideal` 曾同时承担本地开发、测试和实际运行职责：Platform/Dashboard、SQLite、workspace、Codex ACP、微信监听、scheduler、复盘、巡检、portal connector 都在本机进程内。该阶段目标是把实际生产运行环境迁到火山云服务器，把本机恢复为开发/测试环境，降低本地断网/断电对微信推送、定时复盘和 portal 在线状态的影响。
 
 第一阶段不是重做用户门户，也不是多租户平台化，而是把当前这套 invest-agent 服务作为“生产运行时”部署到火山云，先服务现有用户助手。本机不必停止服务；它可以继续作为开发/测试 runtime。
 

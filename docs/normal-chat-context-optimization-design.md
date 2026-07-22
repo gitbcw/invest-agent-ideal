@@ -1,8 +1,10 @@
 # 普通对话上下文优化设计
 
+> 状态：已实现，本文记录当前普通消息直通 workspace ACP 的契约和迁移理由。
+
 ## 背景
 
-当前普通消息在进入 workspace ACP 前，会由服务层构造 `ContextPacket` 并拼入 prompt。它包含最近对话、待确认事项、最新产物和状态摘要。它已经有长度限制，但仍存在三个问题：
+本次优化前，普通消息在进入 workspace ACP 前会由服务层构造 `ContextPacket` 并拼入 prompt。它包含最近对话、待确认事项、最新产物和状态摘要。虽然已有长度限制，仍存在三个问题：
 
 - 正常消息每轮都依赖服务层读取和 prompt 拼装，而不是 workspace ACP 会话与 MCP 的权威查询。
 - 最近对话默认按 user/instance 获取，不以 `conversationId` 过滤，可能把同一用户另一个聊天窗口的内容带入当前轮。

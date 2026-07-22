@@ -30,6 +30,7 @@ After that, use the task-based map below instead of reading every file.
 - User portal is a separate cloud entrance, not a Platform rewrite. The local connector and `conversation_sessions` / `conversation_messages` remain the source of truth.
 - Local reliable data service comes first, AI external search second, explicit data gap last. Do not invent missing market facts.
 - Historical docs in [archive/](./archive/) are archaeology unless linked from this README or another current source-of-truth doc.
+- `main` is the only maintained integration and production-release baseline. Volcano snapshots, frozen tags, and reconciliation branches are read-only evidence; normal releases come from a clean worktree at a reviewed `main` commit and never replace production runtime data.
 
 ## Read By Task
 
@@ -68,7 +69,7 @@ After that, use the task-based map below instead of reading every file.
 
 For scheduled-task or push-delivery operations, use the project-only skill `.codex/skills/scheduler-push-debug`.
 
-已完成的 2026-07-23 生产修复收敛与 scheduler 验收记录见 [production-reconciliation-release-gate.md](./archive/production-reconciliation-release-gate.md)。
+已完成的 2026-07-23 生产修复收敛与 scheduler 验收记录见 [production-reconciliation-release-gate.md](./archive/production-reconciliation-release-gate.md)；当前火山云代码发布、真实 Workspace 迁移和回滚基线见 [workspace-compatibility.md](./workspace-compatibility.md)。
 
 ### User Portal
 
@@ -107,6 +108,8 @@ Repeatable operational actions are kept as project-only skills under `.codex/ski
 - `.codex/skills/local-runtime-restart`: restart and verify the PM2-managed local runtime on port `22655`.
 
 Long runbooks that were formerly under `docs/` have been moved into the corresponding skill `references/` directory so the execution path and detailed operating notes stay together.
+
+火山云当前操作入口是 `.codex/skills/volcano-ops/references/server-deployment.md`。普通版本只走代码发布；真实 Workspace 升级需同时遵循 [workspace-compatibility.md](./workspace-compatibility.md) 的逐用户预检、备份、迁移和单点验收。
 
 ### Intent Pack
 

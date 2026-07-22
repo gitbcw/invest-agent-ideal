@@ -89,35 +89,19 @@ npm run smoke:workspace-compatibility -- <user> <instance>
 
 定时日复盘发布可在同一组隔离环境变量下运行 `smoke:scheduled-review-publication`。该探针只开放 `reviews.save`，不会创建 push job 或连接微信。
 
-### 2026-07-23 隔离验收记录
+## 当前生产基线（2026-07-23）
 
-- `111`、`dyk`、`mg` 的迁移副本均通过受限 MCP 持仓与盘中快照单点验收。
-- 三个副本均通过只开放 `reviews.save` 的定时日复盘发布探针，且均在首次尝试成功。
-- 每个隔离数据库的 `reviews.save` 成功审计均只属于对应 user/instance，`push_jobs` 均为 0。
-- 验收报告均落入对应隔离 reviews 目录；临时 `.codex/auth.json` 已清除。
-- 火山云生产仍未部署、未迁移、未写入。
-
-### 2026-07-23 火山云生产只读预检
-
-- 预检前创建在线安全快照：`/home/claude/invest-agent-data/compatibility-backups/20260723-013655`。SQLite 副本 `quick_check=ok`，备份目录权限为 `700`；该快照不替代维护窗口内停写后的最终迁移备份。
-- 从该快照脱敏复制 `111`、`dyk`、`mg` 的预检必要资产到本地隔离目录，未复制认证文件、token、插件缓存或符号链接。
-- 三个真实 Workspace 均为 `migration_required`、`blockers=0`，且需要相同的 5 项受管资产变更：新增 `service-capability-policy` / `conversation-recovery`，替换 `investment-onboarding` / `market-watch` / `daily-portfolio-review`。
-- `111`、`mg` 的旧 `AGENTS.md` 缺少 `onboarding.draft.get` 标记；`dyk` 缺少 `invest-agent-service-tools`、`onboarding.draft.get`、`reviews.save` 标记。它们仅产生 warning，迁移不会覆盖用户 `AGENTS.md`。
-- 预检前后副本文件摘要一致；生产 runtime 保持 `online`，健康检查为 `ok`。
-- 本轮未部署代码、未执行 Workspace 迁移、未重启服务、未改变微信或 Portal 连接。
-
-### 2026-07-23 火山云生产发布与迁移
-
-- 使用干净发布 worktree 执行普通代码发布；服务器 `.env`、SQLite、reviews、`.state` 和真实 Workspace 均由同步排除规则保护。
-- 首次构建暴露服务器残留已退役源码的问题，构建在重启前失败，生产旧进程未被该次尝试中断。部署脚本随后增加受保护的 stale-code 删除契约，并明确禁止删除排除项。
-- 新版本生产认证门禁发现缺少 `INVEST_AGENT_API_TOKEN` 和 `PLATFORM_ANONYMIZATION_SECRET`。两个值均在服务器本地随机生成、写入权限为 `600` 的 `.env`，未输出或复制到本机；Platform Owner 首次登录凭据保存在服务器权限为 `600` 的独立文件中。
-- `111`、`dyk`、`mg` 已分别执行显式迁移并复检为 `ready`。迁移备份分别位于 `production-20260723-015253/111`、`production-20260723-015730-dyk/dyk`、`production-20260723-015757-mg/mg`。
-- `111` 已通过生产受限 ACP 单点验收；三个用户均通过对应 user/instance 的持仓与盘中快照服务回读。MCP 服务工具 smoke 通过，共 37 个工具。
-- 生产 runtime 与 Portal 健康正常；三个生产实例的微信连接均为 `connected` 且 listener 正在运行。维护窗口内没有活动 push job，也没有发送测试消息。
-- 三个实例当前 `pushReady=false`；主动推送需等待各自下一次真实入站会话恢复，不在发布验收中主动打扰真实用户。
-- 发布后发现 PM2 进程仍继承旧的 `CODEX_ACP_COMMAND` 和模型环境变量，覆盖了服务器 `.env`，导致主进程尝试启动已不存在的仓库内 ACP 可执行文件。处置时删除旧 PM2 条目，并从干净 shell 依据 `ecosystem.config.js` 重建、保存进程，使应用重新以服务器 `.env` 为唯一 ACP 配置来源；未输出或复制任何生产密钥。
-- PM2 环境清理后，`111` 再次通过生产主进程 `/api/chat` 的只读 ACP 单点验收：ACP 实际读取持仓，返回计数与服务层权威数据一致，未发送微信消息或写入投资数据。
-- 最终复检确认 runtime 与 Portal 健康、PM2 `online`、三个 Workspace 均为 `ready` 且无待迁移受管资产、活动 push job 为 0。`111`、`dyk`、`mg` 的微信 listener 均在重启后自动恢复；本次重启后的日志窗口内没有新 `ERROR`，也没有新的 ACP `ENOENT`。
+- 火山云运行代码基线为 `9a253e7`，从干净 worktree 通过普通代码发布路径部署；服务器 `.env`、SQLite、reviews、`.state`、根 `.codex` 和真实 Workspace 均受同步排除规则保护。
+- 发布前在线安全快照位于 `/home/claude/invest-agent-data/compatibility-backups/20260723-013655`，SQLite 副本 `quick_check=ok`，目录权限为 `700`。
+- `111`、`dyk`、`mg` 的隔离迁移副本均通过持仓、`market_watch.snapshot` 和只开放 `reviews.save` 的日复盘发布单点验收；探针没有创建 push job、连接微信或输出持仓内容。
+- 三个真实 Workspace 已逐个显式迁移并复检为 `ready`，受管资产差异和 blocker 均为 0。迁移备份分别位于：
+  - `/home/claude/invest-agent-data/workspace-compatibility-backups/production-20260723-015253/111`
+  - `/home/claude/invest-agent-data/workspace-compatibility-backups/production-20260723-015730-dyk/dyk`
+  - `/home/claude/invest-agent-data/workspace-compatibility-backups/production-20260723-015757-mg/mg`
+- 生产 `invest-agent-service-tools` smoke 通过，共 37 个工具；三个用户均通过对应 user/instance 的持仓与盘中快照服务回读。`111` 另外通过生产主进程 `/api/chat` 的只读 ACP 单点验收，持仓计数与服务层权威数据一致。
+- 发布中发现 PM2 遗留 `CODEX_ACP_COMMAND` 和模型变量会覆盖服务器 `.env`。旧 PM2 条目已删除并从干净 shell 按 `ecosystem.config.js` 重建；最终进程不再携带这些覆盖值，重启后的日志窗口内没有新 `ERROR` 或 ACP `ENOENT`。
+- 最终复检确认 runtime 与 Portal 健康、PM2 `online`、活动 push job 为 0，三个生产实例的微信 listener 均自动恢复。验收没有向真实用户发送测试消息，也没有写入投资数据。
+- 发布窗口记录的三个实例均为 `pushReady=false`：连接与监听可用，但主动推送要等对应真实用户下一次入站消息恢复有效 conversation。不得为了改变此状态擅自发送测试消息。
 
 ## 火山云发布顺序
 

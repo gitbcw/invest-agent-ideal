@@ -6,7 +6,7 @@
 
 ## 项目概述
 
-微信入口的 AI 投资决策助手。实验分支当前采用极简主链路：微信消息解析出用户、用户助手和 workspace 后，直接转发给在该 workspace 中运行的当前 ACP 后端，默认 Codex。当前产品语义是一用户一助手一 workspace；代码和数据库中的 `instanceId` / `instance_id` 只作为内部兼容与隔离键，不代表用户门户里可选择多个实例。服务层不再做普通微信消息的分流、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Platform 本地管理入口、行情数据、巡检、提醒、sandbox/API、落库和微信推送。Dashboard 已退役(2026-07-16),`/dashboard` 仅作为到 `/platform` 的 301 重定向保留,兼容期结束后移除。
+微信入口的 AI 投资决策助手。当前 `main` 采用极简主链路：微信消息解析出用户、用户助手和 workspace 后，直接转发给在该 workspace 中运行的当前 ACP 后端，默认 Codex。当前产品语义是一用户一助手一 workspace；代码和数据库中的 `instanceId` / `instance_id` 只作为内部兼容与隔离键，不代表用户门户里可选择多个实例。服务层不再做普通微信消息的分流、快车道、onboarding 包装、复盘意图识别或上下文包拼装。本项目保留确定性能力：数据库、Platform 本地管理入口、行情数据、巡检、提醒、sandbox/API、落库和微信推送。Dashboard 已退役(2026-07-16),`/dashboard` 仅作为到 `/platform` 的 301 重定向保留,兼容期结束后移除。
 
 ## 常用命令
 
@@ -23,6 +23,8 @@ npm run smoke:scheduled-review-publication -- <userId> <instanceId> <YYYY-MM-DD>
 npm run smoke:onboarding-draft-commit  # 验证 onboarding 草稿确认、冻结提交与重试
 npm run smoke:platform-partner-auth    # 验证 Platform 账号、角色和 Partner 脱敏边界
 npm run smoke:platform-partner-migration # 验证 Platform 账号数据迁移
+npm run workspace:preflight -- --workspace-root=<root> --template-root=<template> --user=<user> # 只读兼容预检
+npm run workspace:migrate -- --workspace-root=<root> --template-root=<template> --user=<user> --backup-root=<absolute-dir> --confirm=apply-managed-workspace-assets-v1 # 显式受管资产迁移
 ```
 
 本地管理入口：`http://localhost:22655/platform`（含用户助手、规则巡检审计、日志审计、数据源质量、成本统计、实例级微信连接；实例详情含投资状态摘要）。Platform 是内部管理面：Owner 有授权管理能力，Partner 仅可查看脱敏经营与质量摘要。
@@ -37,6 +39,15 @@ Dashboard 已退役;`/dashboard` 仅作为到 `/platform` 的 301 重定向保�
 - 本机访问火山云 Platform 使用 SSH tunnel：`ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197`，然后打开 `http://127.0.0.1:22648/platform`。
 - 火山云用户门户公网入口是 `http://118.145.115.197:22649/login`，由独立项目 `invest-agent-portal` 提供。
 - 本机 `22649` 不用于 Platform tunnel，避免和火山云公网门户端口混淆。
+
+## 版本与生产基线
+
+- `main` 是唯一集成与生产发布基线。`codex/volcano-snapshot-*`、冻结标签和历史 reconciliation 分支只用于审计、差异比较和回滚，不继续开发、不整体 merge 回主线。
+- 普通改动在 `main` 或短生命周期 `codex/*` 分支完成，运行 `npm run verify` 后收敛到 `main`。生产发布必须从目标 `main` 提交的干净 worktree 执行 `scripts/deploy-volcano.sh`；远端 push / PR 是独立动作，不由部署自动授权。
+- 普通发布只同步代码、模板和构建输入，保留服务器 `.env`、SQLite、真实 Workspace、reviews、`.state` 和根 `.codex` 运行态。`volcano:package-runtime` / `volcano:apply-runtime` 只用于用户明确授权的数据迁移、恢复或灾难恢复。
+- 截至 2026-07-23，火山云运行代码基线为 `9a253e7`；`111`、`dyk`、`mg` 的 Workspace 均已迁移并复检为 `ready`。当前迁移、备份和回滚证据见 `docs/workspace-compatibility.md`。
+- 生产 `.env` 必须显式配置 `INVEST_AGENT_API_TOKEN`、`PLATFORM_ANONYMIZATION_SECRET` 和服务器 ACP 路径。PM2 进程环境不得残留 `CODEX_ACP_COMMAND` / `CODEX_*_MODEL` 覆盖值；发现遗留值时，删除旧 PM2 条目并从干净 shell 按 `ecosystem.config.js` 重建，而不是继续 restart 继承。
+- 当前火山云操作手册是 `.codex/skills/volcano-ops/references/server-deployment.md`；历史首次迁移阶段记录只作考古。
 
 ## 项目专属 Skills
 

@@ -1,386 +1,209 @@
-# 服务器部署说明
+# 火山云生产操作手册
 
-本文档用于把当前单客户 Experimental MVP 部署到服务器，并通过浏览器访问统一看板完成微信连接与巡检/复盘运维。
+> 当前基线：2026-07-23。本文是火山云日常发布、健康检查和回滚的当前操作手册。首次迁移阶段、旧端口方案和历史接管记录见 `volcano-runtime-migration-plan.md`，不得用历史步骤替代本手册。
 
-## 0. 当前生产拓扑（硬约束）
-
-当前保留两套闭环，不能把 portal、relay、connector 互相串错：
+## 1. 当前拓扑
 
 ```text
-本机开发/测试闭环
-  浏览器 -> 阿里云 portal :8088
-  本机 invest-agent connector -> 阿里云 relay :18088
-  本机 invest-agent runtime -> http://127.0.0.1:22655
+真实用户微信
+  -> 火山云 invest-agent runtime
+  -> workspace-scoped Codex ACP
+  -> invest-agent-service-tools MCP
+  -> SQLite / Workspace / scheduler / push
 
-火山云生产闭环
-  浏览器 -> 火山云 portal :22649
-  火山云 invest-agent connector -> 火山云本机 relay :22650
-  火山云 invest-agent runtime -> http://127.0.0.1:22655
+用户浏览器
+  -> 火山云 portal :22649
+  -> 火山云 relay :22650
+  -> 火山云 invest-agent connector
+
+管理员
+  -> SSH tunnel 本机 :22648
+  -> 火山云 runtime 127.0.0.1:22655/platform
 ```
 
-关键端口和目录：
+固定位置：
 
-- 阿里云 portal：`admin@47.107.151.70:/home/admin/invest-agent-portal`，网页 `http://47.107.151.70:8088`，relay `ws://47.107.151.70:18088/`。
-- 火山云 portal：`claude@118.145.115.197:/home/claude/invest-agent-portal`，网页 `http://118.145.115.197:22649`，relay `ws://127.0.0.1:22650/`。
-- 火山云 runtime：`claude@118.145.115.197:/home/claude/invest-agent`，内部监听 `127.0.0.1:22655`。
-- 本机 runtime：`http://127.0.0.1:22655`。
-
-`22655` 是 invest-agent 平台服务内部端口，负责 Dashboard、WeChat、本地 API、scheduler、SQLite、workspace ACP 和 portal connector。本机和火山云都可以使用这个内部端口，但生产 Platform 不裸露公网。火山云 Platform 通过 SSH tunnel 访问：
+- 主机：`claude@118.145.115.197`
+- runtime：`/home/claude/invest-agent`
+- runtime data：`/home/claude/invest-agent-data`
+- Workspace：`/home/claude/invest-agent-data/workspaces`
+- Portal：`/home/claude/invest-agent-portal`
+- PM2 进程：`invest-agent`
+- runtime 内部端口：`127.0.0.1:22655`
+- Portal：`http://118.145.115.197:22649`
+- Relay：`ws://127.0.0.1:22650/`
+- Platform tunnel：
 
 ```bash
 ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197
 ```
 
-然后打开 `http://127.0.0.1:22648/platform`。
+浏览器随后访问 `http://127.0.0.1:22648/platform`。不要把 `22655` 直接开放公网。
 
-本机服务不需要为了生产迁移而停止；它可以继续作为开发/测试 runtime。生产助手 `111` / `dyk` 当前由火山云 runtime 接管，本机必须通过 `PORTAL_CONNECTOR_EXCLUDE_ASSISTANTS=invest-agent-111,invest-agent-dyk` 避免抢占。
+## 2. 版本基线
 
-## 0.1 部署一致性契约
+- `main` 是唯一维护与生产发布基线。
+- `codex/volcano-snapshot-*`、冻结标签和历史 reconciliation 分支只用于审计、比较和回滚，不继续修复、不整体 merge 回 `main`。
+- 普通发布从已审核 `main` 提交的干净 worktree 执行；不要从带有未提交文件、`tmp/` 或其他用户改动的工作树打包发布。
+- 截至 2026-07-23，火山云运行代码基线为 `9a253e7`；`111`、`dyk`、`mg` 的 Workspace 均为 `ready`。详细备份与迁移证据见 `docs/workspace-compatibility.md`。
+- GitHub push、PR、生产部署是三个独立动作。部署授权不自动授权 push 或 PR。
 
-部署脚本和文档必须维持这些一致性，不靠人工临场记忆：
+## 3. 两种发布模式
 
-- 代码同步脚本会删除版本库中已经退役的旧代码，但不覆盖或删除服务器 `.env`、`data/`、`reviews/`、`.state/`、workspace 和 `.codex` 运行态；`--delete-excluded` 禁止使用。
-- 运行时数据迁移只通过 `scripts/package-volcano-runtime.sh` 和 `scripts/apply-volcano-runtime.sh`；迁移后脚本会把 workspace 内 `.codex/config.toml`、`mcp.json` 统一指向服务器 `/home/claude/.codex`。
-- **普通版本发布只能使用代码同步路径**（`scripts/deploy-volcano.sh`），且必须从已审核的生产分支、标签或干净发布目录执行。提示词、Skill、Workspace 模板、服务代码和编译产物的更新都不应触碰生产数据库、Workspace、复盘、`.env` 或微信状态。
-- 代码同步必须只排除项目根目录 `.codex` 运行态，不能误排除 `templates/workspace/.codex`。现有真实用户 Workspace 的核心 Skill 升级不由 rsync 或普通运行时覆盖；先使用 `npm run workspace:preflight` 只读检查，再按 `docs/workspace-compatibility.md` 逐用户备份和显式迁移。
-- **禁止把运行时迁移当作普通部署**。只有用户明确要求迁移、恢复或替换数据库/Workspace 时，才允许使用 `package-volcano-runtime.sh` / `apply-volcano-runtime.sh`；该路径会替换生产资产，必须先停止写入、备份、校验 SHA，并记录回滚位置。
-- 如果需求同时能用代码发布或运行时迁移完成，默认选择代码发布，不得推断用户授权替换生产数据。
-- 火山云 portal env 默认指向火山云 portal/relay：`PORTAL_PUBLIC_URL=http://118.145.115.197:22649`、`PORTAL_RELAY_URL=ws://127.0.0.1:22650/`。连接阿里云 relay 必须显式覆盖变量。
-- Codex ACP shell 沙箱可能无网络，不能假设 workspace 内 `curl 127.0.0.1:22655` 一定可用。长期正解是给 Codex ACP 会话挂载 `invest-agent-service-tools` stdio MCP，只暴露具名服务层工具，让 Codex 自己决定何时读取或在用户确认后写入持仓、自选、预案、复盘、方法候选和规则巡检配置。
-- 不再把 `marketSnapshot` 等行情事实预注入 prompt。行情、持仓、预案和规则事实必须由 Codex 通过 MCP 工具按需读取；HTTP sandbox API 只作为 MCP 不可用时的兜底。
-- 发布后必须跑 `npm run smoke:mcp-service-tools`，并至少跑一次 `userId=111` 的 `/api/chat` 持仓查询 smoke，确认输出包含服务层行情事实，而不是“本地行情服务不可用”。
+### 3.1 普通代码发布
 
-## 1. 部署目标
-
-部署完成后，服务器上应提供：
-
-- `http://127.0.0.1:22655/health`
-- `http://127.0.0.1:22655/dashboard`
-- `http://127.0.0.1:22655/api/weixin/status`
-
-当前 runtime 内部端口统一为 `22655`。`22648` 只作为管理员 SSH tunnel 本地端口使用，不是服务进程监听端口。
-
-用户通过浏览器打开 `/dashboard`，在“微信连接”区域点击“连接微信”，扫码绑定微信，然后由服务端自动启动消息监听。
-
-## 2. 当前部署形态
-
-当前服务是一个单进程 Node.js 服务，包含：
-
-- 投资 Agent 核心逻辑
-- HTTP 管理接口
-- 微信连接后台 UI
-- 微信轻量桥接管理器
-- SQLite 本地数据库
-- 用户门户本地 connector 和 canonical conversation log API
-
-不依赖 OpenClaw 服务本体。
-
-## 3. 服务器要求
-
-- Linux 服务器
-- Node.js 22+
-- npm
-- PM2（推荐）
-- 可写磁盘目录
-- 可开放 22655 端口，或通过 Nginx/Caddy 反向代理
-
-## 4. 必备文件
-
-部署时至少需要：
-
-- 项目代码
-- `.env`
-- `package.json`
-- `package-lock.json`
-
-运行时会生成：
-
-- `dist/`
-- `data/*.db`
-- `logs/*`
-- 微信状态目录（当前 PM2 配置为项目内 `./.state/openclaw-weixin`）
-
-## 5. 部署步骤
-
-### 5.1 上传项目
-
-推荐使用部署脚本自动同步到服务器项目目录：
+适用于服务代码、提示词、Workspace 模板、Skill、测试和编译运行时变化。只能使用：
 
 ```bash
 ./scripts/deploy-volcano.sh
 ```
 
-默认同步到：
+代码同步会删除版本库中已经退役的源码，但必须保护：
 
-```text
-/home/claude/invest-agent
-```
+- `.env`
+- `data/` 和所有 SQLite/WAL/SHM
+- `reviews/`
+- `.state/`
+- 真实 `workspaces/`
+- 项目根 `.codex` 生产运行态
+- 日志和其他运行资产
 
-也可以手动使用 `rsync`，但要保留 `.env` 和数据目录。
+`templates/workspace/.codex` 属于发布代码，必须同步。禁止给 rsync 增加 `--delete-excluded`。
 
-### 5.2 安装依赖
+### 3.2 运行时数据迁移或恢复
 
-```bash
-cd /srv/invest-agent
-npm install
-```
+`volcano:package-runtime` / `volcano:apply-runtime` 会替换数据库、Workspace 或其他运行资产，不属于普通发布。只有用户明确要求数据迁移、快照恢复、生产数据替换或灾难恢复时才允许使用，并且必须：
 
-### 5.3 检查环境变量
+1. 停止或冻结写入。
+2. 创建并验证回滚备份。
+3. 核对包 SHA256 和目标目录。
+4. 使用脚本要求的精确确认短语。
+5. 应用后执行 SQLite `quick_check`、Workspace 预检和真实链路单点验收。
 
-至少确认：
+如果一项变更既能走代码发布也能走数据替换，选择代码发布。
 
-```env
-PORT=22655
-NODE_ENV=production
-DB_PATH=./data/invest-agent.db
-DEEPSEEK_API_KEY=...
-DEEPSEEK_FLASH_MODEL=deepseek-v4-flash
-DEEPSEEK_PRO_MODEL=deepseek-v4-pro
-ACP_AGENT_ID=invest-agent
-ACP_AGENT_NAME=投资选股助手
-ACP_BACKEND=codex
-CODEX_COMPLEX_MODEL=gpt-5.6-terra
-ACP_SIMPLE_MODEL_ENABLED=false
-INVEST_AGENT_SANDBOX_SECRET=<stable-random-secret>
-```
+## 4. 发布前检查
 
-可选：
-
-```env
-WEIXIN_AUTO_START=true
-INVEST_AGENT_WEIXIN_STATE_DIR=./.state
-PORTAL_RELAY_URL=ws://<portal-host>:3199
-PORTAL_CONNECTOR_TOKEN=...
-PORTAL_USER_ID=primary
-PORTAL_INSTANCE_ID=invest-agent-primary
-PORTAL_CONNECTOR_ID_PREFIX=volcano-prod
-PORTAL_CONNECTOR_RUNTIME_LABEL=火山云生产
-```
-
-默认就是自动启动已绑定账号的微信监听。
-如仍保留旧配置 `DEEPSEEK_MODEL=deepseek-chat`，程序会自动按兼容逻辑切换到新的 V4 模型，但建议显式配置 Flash 与 Pro 两档模型。
-
-当前 ACP 默认走 `complex` model tier。`simple` tier 仍保留为未来稳定性调试后的 opt-in 能力；生产默认保持 `ACP_SIMPLE_MODEL_ENABLED=false`。`INVEST_AGENT_SANDBOX_SECRET` 是 sandbox token HMAC secret，生产环境必须显式配置稳定值；本地开发未配置时会生成/复用 `data/.sandbox-secret`，但不要依赖这个文件做服务器长期密钥。
-
-### 5.4 构建
+1. 记录目标 `main` 提交，确认发布 worktree 干净。
+2. 本地运行：
 
 ```bash
-npm run build
+npm run verify
 ```
 
-### 5.5 启动
-
-建议使用 PM2：
+3. 确认发布脚本仍保护所有生产运行资产。
+4. 若模板中的系统受管 Skill 有变化，对每个真实用户先执行只读预检：
 
 ```bash
+npm run workspace:preflight -- \
+  --workspace-root=/home/claude/invest-agent-data/workspaces \
+  --template-root=/home/claude/invest-agent/templates/workspace \
+  --user=<user>
+```
+
+5. 选择没有 scheduler 任务命中的维护窗口，确认没有活动 `pending` / `retry` / `processing` push job。
+6. 不打印、不复制生产 token、密码、二维码或 `.env` 内容。
+
+## 5. 生产环境门禁
+
+生产 `.env` 至少必须显式提供：
+
+- `NODE_ENV=production`
+- `HOST=127.0.0.1`
+- `DB_PATH`
+- `RUNTIME_DATA_ROOT`
+- `WORKSPACE_ROOT`
+- `WORKSPACE_TEMPLATE_PATH`
+- `INVEST_AGENT_WEIXIN_STATE_DIR`
+- `INVEST_AGENT_API_TOKEN`
+- `PLATFORM_ANONYMIZATION_SECRET`
+- `PLATFORM_BOOTSTRAP_PASSWORD_FILE`
+- `INVEST_AGENT_SANDBOX_SECRET`
+- `CODEX_ACP_COMMAND=/home/claude/.local/bin/codex-acp`
+- `CODEX_SOURCE_HOME=/home/claude/.codex`
+- `CODEX_COMPLEX_MODEL`
+- `ACP_SIMPLE_MODEL_ENABLED=false`
+- 火山云 Portal/Relay connector 配置
+
+秘密只在服务器本地生成和保存，文件权限应为 `600`；检查时只验证存在性、长度或权限，不输出值。
+
+## 6. PM2 环境纪律
+
+应用内部通过 dotenv 读取服务器 `.env`。`ecosystem.config.js` 只固定 `NODE_ENV`、`PORT` 和 `HOST`；不要把 ACP 命令、模型或秘密写进 PM2 ecosystem env。
+
+PM2 会保留历史进程环境。仅执行 `restart --update-env` 不保证删除旧变量，因此发布后必须检查 PM2 进程环境中是否仍定义以下覆盖值：
+
+- `CODEX_ACP_COMMAND`
+- `CODEX_COMPLEX_MODEL`
+- `CODEX_SIMPLE_MODEL`
+- 其他已经迁入 `.env` 的 ACP 配置
+
+如果发现旧值，使用干净 shell 重建进程：
+
+```bash
+cd /home/claude/invest-agent
+pm2 delete invest-agent
 pm2 start ecosystem.config.js
 pm2 save
 ```
 
-也可以临时直接启动：
+重建后再次确认 PM2 环境没有 ACP 覆盖值，并通过主进程执行一次只读 ACP 单点验收。不要在检查输出中打印 `.env`。
+
+## 7. Workspace 显式升级
+
+普通代码发布不会覆盖现有真实 Workspace。预检为 `migration_required` 且 `blockers=0` 时，按用户逐个执行：
 
 ```bash
-npm start
+npm run workspace:migrate -- \
+  --workspace-root=/home/claude/invest-agent-data/workspaces \
+  --template-root=/home/claude/invest-agent/templates/workspace \
+  --user=<user> \
+  --backup-root=/home/claude/invest-agent-data/workspace-compatibility-backups \
+  --confirm=apply-managed-workspace-assets-v1
 ```
 
-## 6. 启动后检查
+每个用户迁移后立即重跑预检，必须得到 `ready`。不得省略 `--user` 批量修改所有生产 Workspace。迁移只更新系统受管资产，不覆盖用户 `AGENTS.md`、配置、报告、记忆或自建 Skill。
 
-### 6.1 健康检查
+## 8. 发布后最小验收
 
-```bash
-curl http://127.0.0.1:22655/health
-```
+依次验证：
 
-### 6.2 管理后台
+1. `curl http://127.0.0.1:22655/health` 返回正常。
+2. `pm2 list` 中 `invest-agent` 为 `online`。
+3. `/api/portal/health` 正常，生产 connector/relay 没有冲突。
+4. `npm run smoke:mcp-service-tools` 通过。
+5. 每个迁移用户的 Workspace 预检为 `ready`。
+6. 微信实例仍为 `connected`，listener 已恢复。
+7. 活动 push job 为 0，或每个活动 job 都有明确来源和处置计划。
+8. 从本次 PM2 uptime 开始的日志没有新 `ERROR`、ACP `ENOENT` 或 scope 回退。
+9. 选择一个已授权测试账号做只读主进程 ACP 单点验收：必须实际调用受限 MCP 读取事实，并与服务层同一 user/instance 的结果匹配；不要输出持仓明细。
 
-浏览器访问：
+验收应按变更点单点执行。除非用户明确授权，不给真实用户发送测试微信，不创建规则，不触发主动推送，不运行完整交易日流程。
 
-```text
-http://<server>:22655/dashboard
-```
+## 9. 微信 `pushReady`
 
-### 6.3 微信状态
+扫码连接与 listener 运行不等于主动推送就绪。`pushReady=false` 表示缺少当前可用的真实入站 conversation；真实用户下一次发消息后会恢复。不要为把状态改成 true 而擅自发送测试消息。
 
-```bash
-curl http://127.0.0.1:22655/api/weixin/status
-```
+## 10. 回滚
 
-### 6.4 用户门户本地接口
+### 代码回滚
 
-```bash
-curl http://127.0.0.1:22655/api/portal/health
-npm run smoke:portal-conversation-log
-```
+1. 选择前一个已知正常的 `main` 提交或发布 worktree。
+2. 通过普通代码发布脚本重新部署该提交。
+3. 不回滚或覆盖数据库、Workspace、reviews、`.state` 和 `.env`。
+4. 重新执行健康、MCP、微信 listener 和只读 ACP 单点验收。
 
-如需连接云端 Relay:
+### Workspace 回滚
 
-```bash
-PORTAL_RELAY_URL=ws://47.107.151.70:18088/ PORTAL_CONNECTOR_TOKEN=<token> npm run portal:connector
-```
+代码回滚不会自动回滚已迁移的 Workspace。根据对应备份目录 `manifest.json` 恢复该用户的受管文件，保留迁移记录和审计证据，再重跑预检。
 
-### 6.5 Connector 环境分层
+### 数据恢复
 
-本地开发联调推荐连接本机 portal relay：
+只有数据库或完整运行资产损坏时才走运行时恢复流程。恢复前先备份当前状态，即使当前状态已异常。
 
-```env
-PORTAL_PUBLIC_URL=http://localhost:3100
-PORTAL_RELAY_URL=ws://localhost:3199
-PORTAL_CONNECTOR_TOKEN=dev-connector-token
-PORTAL_CONNECTOR_ID_PREFIX=local-dev
-PORTAL_CONNECTOR_RUNTIME_LABEL=本机开发
-```
+## 11. 当前已知限制
 
-火山云生产 runtime 连接火山云生产 relay：
-
-```env
-PORTAL_PUBLIC_URL=http://118.145.115.197:22649
-PORTAL_DISTRIBUTION_URL=http://127.0.0.1:22649/api/internal/distribution/provision
-PORTAL_RELAY_URL=ws://127.0.0.1:22650/
-PORTAL_CONNECTOR_TOKEN=<same as volcano portal PORTAL_CONNECTOR_TOKEN>
-PORTAL_DISTRIBUTION_TOKEN=<same as volcano portal PORTAL_DISTRIBUTION_TOKEN>
-PORTAL_CONNECTOR_ID_PREFIX=volcano-prod
-PORTAL_CONNECTOR_RUNTIME_LABEL=火山云生产
-PORTAL_CONNECTOR_AUTO_START=true
-# 留空，以便 connector manager 自动为所有 active 实例注册连接器。
-PORTAL_CONNECTOR_INCLUDE_ASSISTANTS=
-# 排除历史默认测试实例；新增正式用户不需要修改此项。
-PORTAL_CONNECTOR_EXCLUDE_ASSISTANTS=invest-agent-primary
-```
-
-约束：
-
-- 同一个 `assistantId` 同一时间只允许一个 active connector。生产 active 实例应只由火山云生产 connector 注册。
-- 本机开发若连接阿里云 relay，应显式排除所有火山云已接管的正式助手，或使用测试助手，避免抢占连接器。
-- connector token 与 distribution token 不要写入仓库，只放服务器 `.env` / `.env.production`。
-
-## 7. 首次绑定微信
-
-1. 打开 `/dashboard`
-2. 点击“连接微信”
-3. 页面显示二维码
-4. 用客户微信扫码并确认
-5. 页面状态进入 `connected`
-6. 让客户微信向助手发送任意一条消息，形成真实入站会话
-7. 若未自动监听，点击“启动监听”
-
-绑定成功后，微信状态会保存在服务器本地，后续服务重启后会自动恢复监听。当前调度器会继续按 workspace `config/schedules.yaml` 和 `config/watch.yaml` 扫描自动巡检与复盘。
-
-扫码只表示 bot/account 登录成功；主动推送必须等真实入站消息写入 `channel_identities.last_conversation_id` 后才算就绪。不要用扫码响应里的 `ilink_user_id` 判断可推送：实测出现过发送接口返回 200 但微信端未实际收到的情况。
-
-## 8. 数据与状态目录
-
-### SQLite 数据库
-
-默认：
-
-```text
-./data/invest-agent.db
-```
-
-### Sandbox token secret
-
-生产环境使用：
-
-```env
-INVEST_AGENT_SANDBOX_SECRET=<stable-random-secret>
-```
-
-本地开发若未设置该变量，服务会使用 `./data/.sandbox-secret` 作为持久 secret，避免本地服务进程和评测进程签名不一致。该文件位于已忽略的 `data/` 目录内，不应提交。
-
-### 微信登录状态
-
-默认：
-
-```text
-./.state/openclaw-weixin/
-```
-
-服务默认将微信状态放到项目目录，避免和全局 Claude Code 微信桥接共用 `~/.openclaw`。如需自定义目录，可以在 PM2 或 shell 里设置：
-
-```env
-INVEST_AGENT_WEIXIN_STATE_DIR=./.state
-```
-
-`OPENCLAW_STATE_DIR` 和 `CLAWDBOT_STATE_DIR` 仍作为兼容旧配置的后备变量，但本项目推荐使用 `INVEST_AGENT_WEIXIN_STATE_DIR`。
-
-## 9. 端口与反向代理
-
-如果服务器不直接暴露 22655，可用 Nginx 或 Caddy 反代，例如：
-
-```text
-https://agent.example.com/dashboard
-```
-
-建议生产环境最终走 HTTPS。
-
-## 10. 运维命令
-
-### 查看日志
-
-```bash
-pm2 logs invest-agent
-```
-
-### 重启
-
-```bash
-pm2 restart invest-agent
-```
-
-### 停止
-
-```bash
-pm2 stop invest-agent
-```
-
-### 查看微信状态
-
-```bash
-curl http://127.0.0.1:22655/api/weixin/status
-```
-
-## 11. 当前运行说明
-
-- 当前默认使用 Codex ACP 作为 workspace 推理后端；Hermes 仅保留为兼容/实验 backend。
-- 盘中巡检与日/周/月复盘都由服务侧 scheduler 触发，再进入当前用户的 workspace。
-- 自动复盘去重已按用户助手 scope 生效；内部仍使用 `userId + instanceId + period` 作为兼容隔离键。若用户已手动生成同周期报告，自动任务默认不重复生成。
-- 用户门户不是本地 `/platform` 的公网化。本地 SQLite 的 `conversation_sessions` / `conversation_messages` 是 web/微信用户可见历史的权威源；云端门户只做镜像与 Relay。
-
-## 12. 当前已知限制
-
-- 单客户版本，只支持一个微信账号绑定。
-- 微信状态保存在本机目录，不是数据库多租户方案。
-- 暂未接入完整信息源和主力控盘直接数据。
-- 多模态仍是后续阶段。
-
-## 13. 部署前建议
-
-上线前先在本地确认：
-
-```bash
-npm run smoke
-```
-
-并确认本地 `/dashboard` 能显示二维码、能绑定微信、能收到消息。
-
-### 13.1 复合指标系统 5 套 smoke(2026-06-22 落地)
-
-复合指标系统拆 5 个独立 smoke,任意一项回归失败都说明 L1-L3b / 告知协议链路被破坏。完整 RFC 见 `docs/composite-indicator-system.md`。
-
-```bash
-npm run smoke:indicators                # L1 算子(MA/EMA/MACD/KDJ/BOLL/RSI/WR/OBV + 筹码)
-npm run smoke:script-indicator          # L3b 沙箱引擎(isolated-vm + esbuild + 熔断)
-npm run smoke:composite-indicator       # L3a 规则树引擎(YAML + 表达式 + 4 模式 combine)
-npm run smoke:indicator-acknowledgement # 告知协议门禁(experimental/data_source_notes/via 白名单)
-npm run smoke:main-force-control        # 主力控盘 L3b 脚本端到端(客户公式)
-```
-
-### 13.2 复合指标缓存清理
-
-L3b 沙箱脚本编译产物落 `workspace/cache/build/<base>.<hash>.js`,30 天未访问自动超期。默认 dry-run,加 `--apply` 实际删除:
-
-```bash
-npm run cache:clear-indicator                  # 默认 dry-run,30 天阈值
-npm run cache:clear-indicator -- --apply       # 实际删除
-npm run cache:clear-indicator -- --days 7 --apply
-```
+- `pushReady` 依赖真实用户入站会话，发布验收不能无副作用地强制恢复。
+- 真实盘中提醒仍应按具体规则和采样窗口单点观察；规则巡检只判断 scheduler tick 可取得的当前/最新事实，不代表盘中曾触达或收盘确认。
+- Platform 是内部管理面，不是公网用户门户。
+- 当前生产模型和 ACP 路径由服务器 `.env` 决定；不得从本地 `.env.example` 推断生产值。

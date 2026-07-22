@@ -2,7 +2,7 @@
 
 > 状态：已完成。候选分支于 2026-07-23 fast-forward 合入本地 `main`。
 > 合入结果：`main` 与 `codex/production-reconciliation-integration-20260722` 均指向 `0070f6c`。
-> 本记录已归档；远端推送、PR 和火山云部署尚未执行，需另行决定。
+> 本记录已归档；其中“尚未部署”只描述该发布闸门关闭时的状态。后续火山云代码发布和 `111`、`dyk`、`mg` Workspace 迁移已于 2026-07-23 完成，当前基线见 `../workspace-compatibility.md`。
 
 ## 目的
 

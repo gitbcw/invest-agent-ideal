@@ -14,6 +14,8 @@ Use this skill from the repo root for production or staging work on the Volcano 
 - Never print secrets, sandbox tokens, portal tokens, QR login state, or `.env` values.
 - Prefer read-only inspection before deployment or rollback.
 - Keep local/dev and production ports separate. Local Platform is usually `localhost:22655`; production may use SSH tunnel or cloud-side process ports.
+- Treat `main` as the sole maintained release baseline. Snapshot/freeze/reconciliation branches are evidence and rollback references, not long-lived production development branches.
+- Production ACP paths, models, and credentials belong to the server `.env`, not PM2's retained process environment. If PM2 still carries old `CODEX_*` overrides, delete and recreate the process from a clean shell before acceptance.
 
 ## Mandatory Deployment Mode Rule
 
@@ -66,8 +68,10 @@ Use the exact port and process manager from the production environment; do not a
    - Normal code release: use `scripts/deploy-volcano.sh` from the reviewed production release tree/tag; do not package or apply runtime data.
    - Explicit data migration/recovery: stop writes, use the package/apply scripts, verify backup and SHA, and record the replacement scope.
 5. Restart or reload the production process according to the documented process manager.
-6. Verify `/health`, Platform tunnel access if applicable, WeChat status, portal connector if enabled, and recent logs.
-7. Report what changed, what was verified, residual risk, and rollback path.
+6. Verify PM2 has not retained ACP/model overrides that shadow `.env`; never print the secret-bearing environment while checking.
+7. Verify `/health`, Platform tunnel access if applicable, WeChat status, portal connector if enabled, active push jobs, and logs since the new process uptime.
+8. Run the smallest authorized real-process ACP acceptance for the changed capability. Do not send a real WeChat test message unless the user explicitly authorized it.
+9. Report what changed, what was verified, residual risk, and rollback path.
 
 ## Rollback Workflow
 
