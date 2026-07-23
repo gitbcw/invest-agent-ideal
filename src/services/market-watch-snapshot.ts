@@ -15,11 +15,21 @@ export async function captureMarketWatchSnapshot(input: { userId: string; projec
   return record;
 }
 
-function snapshotItems(snapshot: MarketSnapshot) {
+/**
+ * Snapshots are retained audit records. Older records predate some optional
+ * collections, so read them defensively instead of making scheduler progress
+ * depend on a historical JSON shape.
+ */
+function snapshotItems(snapshot: Partial<MarketSnapshot>) {
   const items = new Map<string, MarketSnapshotItem>();
-  for (const item of [...snapshot.holdings, ...snapshot.watchlist, ...snapshot.plans]) {
-    const existing = items.get(item.stockCode);
-    items.set(item.stockCode, existing ? { ...existing, ...item } : item);
+  const collections = [snapshot.holdings, snapshot.watchlist, snapshot.plans];
+  for (const collection of collections) {
+    if (!Array.isArray(collection)) continue;
+    for (const item of collection) {
+      if (!item || typeof item.stockCode !== "string" || !item.stockCode) continue;
+      const existing = items.get(item.stockCode);
+      items.set(item.stockCode, existing ? { ...existing, ...item } : item);
+    }
   }
   return items;
 }
@@ -36,9 +46,13 @@ export function buildMarketWatchDelta(current: MarketSnapshot, previous: MarketS
     const state = !oldItem ? "added" : !item ? "removed" : previousPrice !== price || previousChangePercent !== changePercent || previousTradingStatus !== tradingStatus || JSON.stringify(previousLevels) !== JSON.stringify(currentLevels) ? "changed" : "unchanged";
     return { code, name: item?.stockName ?? oldItem?.stockName ?? code, state, previousPrice, price, priceChange: price !== null && previousPrice !== null ? Number((price - previousPrice).toFixed(3)) : null, previousChangePercent, changePercent, previousTradingStatus, tradingStatus, previousLevels, levels: currentLevels };
   });
-  const oldIndices = new Map(previous.indices.map((item) => [item.code, item])); const newIndices = new Map(current.indices.map((item) => [item.code, item]));
+  const previousIndices = Array.isArray(previous.indices) ? previous.indices : [];
+  const currentIndices = Array.isArray(current.indices) ? current.indices : [];
+  const oldIndices = new Map(previousIndices.map((item) => [item.code, item])); const newIndices = new Map(currentIndices.map((item) => [item.code, item]));
   const indexChanges = [...new Set([...oldIndices.keys(), ...newIndices.keys()])].sort().map((code) => { const oldIndex = oldIndices.get(code); const index = newIndices.get(code); return { code, name: index?.name ?? oldIndex?.name ?? code, state: !oldIndex ? "added" : !index ? "removed" : oldIndex.price !== index.price || oldIndex.changePercent !== index.changePercent ? "changed" : "unchanged", previousPrice: oldIndex?.price ?? null, price: index?.price ?? null, previousChangePercent: oldIndex?.changePercent ?? null, changePercent: index?.changePercent ?? null }; });
-  const warningsChanged = previous.warnings.length !== current.warnings.length || previous.warnings.some((warning) => !current.warnings.includes(warning));
+  const previousWarnings = Array.isArray(previous.warnings) ? previous.warnings : [];
+  const currentWarnings = Array.isArray(current.warnings) ? current.warnings : [];
+  const warningsChanged = previousWarnings.length !== currentWarnings.length || previousWarnings.some((warning) => !currentWarnings.includes(warning));
   const materiallyChanged = stockChanges.some((item) => item.state !== "unchanged") || indexChanges.some((item) => item.state !== "unchanged") || warningsChanged;
   return { previousWindowKey, materiallyChanged, stockChanges, indexChanges, warningsChanged, summary: materiallyChanged ? `相较 ${previousWindowKey} 的有效行情或预案变化见 stockChanges/indexChanges。` : `相较 ${previousWindowKey} 无有效行情、预案或数据质量变化。` };
 }
