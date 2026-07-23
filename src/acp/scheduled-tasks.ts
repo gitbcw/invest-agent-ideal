@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { and, eq } from "drizzle-orm";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
 import { resolveScheduledModelTier, type AcpModelTier } from "./model-router.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
@@ -15,6 +16,9 @@ import { WorkspaceStore } from "../lib/workspace-store.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { captureMarketWatchSnapshot } from "../services/market-watch-snapshot.js";
+import { db } from "../db/index.js";
+import { sandboxAuditLogs } from "../db/schema.js";
+import type { MarketSnapshot } from "../services/market-data.js";
 import {
   buildDailyReviewContext,
   buildMonthlyReviewContext,
@@ -39,6 +43,7 @@ export interface ScheduledReviewPublicationProbeInput {
 
 type ScheduledReviewKind = "daily" | "weekly" | "monthly";
 type MarketWatchPushMode = "exception_only" | "scheduled_intraday_brief";
+const MARKET_WATCH_ALLOWED_TOOLS = ["market_watch.snapshot", "watch_rules.list", "watch_rules.dry_run"];
 
 /**
  * Single-purpose acceptance probe for the scheduled review publication step.
@@ -126,15 +131,18 @@ export async function runScheduledReviewPublicationProbe(
 }
 
 export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
-  const userContext = await buildScheduledUserContext(scope, "market-watch");
+  const userContext = {
+    ...await buildScheduledUserContext(scope, "market-watch"),
+    mcpAllowedTools: MARKET_WATCH_ALLOWED_TOOLS,
+  };
   const pushMode = await resolveMarketWatchPushMode(userContext.userId);
   const windowKey = new Date().toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
-  await captureMarketWatchSnapshot({ userId: userContext.userId, projectId: userContext.projectId || DEFAULT_PROJECT_ID, instanceId: userContext.instanceId || DEFAULT_INSTANCE_ID, windowKey });
+  const captured = await captureMarketWatchSnapshot({ userId: userContext.userId, projectId: userContext.projectId || DEFAULT_PROJECT_ID, instanceId: userContext.instanceId || DEFAULT_INSTANCE_ID, windowKey });
   const promptContext = await buildAcpPromptContext({
     userText: buildMarketWatchTaskPrompt(userContext, pushMode),
     userContext,
   });
-  const reply = await runAcpTask({
+  let reply = await runAcpTask({
     userContext,
     promptText: promptContext.promptText,
     conversationId: userContext.conversationId!,
@@ -143,6 +151,18 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
     sandboxTokenId: promptContext.sandboxContext.tokenId,
     sandboxPermissions: promptContext.sandboxContext.permissions,
   });
+  if (!await readMarketWatchSnapshotWasAudited(userContext, captured.id)) {
+    reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "上一轮未读取本轮快照。现在必须先调用 market_watch.snapshot，再基于该快照重写简报。");
+  }
+  if (!await readMarketWatchSnapshotWasAudited(userContext, captured.id)) {
+    throw new Error("scheduled market-watch did not read the captured snapshot through market_watch.snapshot");
+  }
+  if (marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
+    reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "本轮快照存在有效实时行情，但上一版正文仍声称行情不可用。必须以 market_watch.snapshot 的本轮事实重写，不得沿用昨日行情。 ");
+  }
+  if (marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
+    throw new Error("scheduled market-watch reply contradicts a usable captured snapshot");
+  }
   const cleaned = sanitizeScheduledReply(reply);
   if (!cleaned) return null;
   if (cleaned === "NO_PUSH") {
@@ -153,6 +173,42 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
     return null;
   }
   return cleaned;
+}
+
+async function runMarketWatchCorrection(
+  userContext: UserContext,
+  pushMode: MarketWatchPushMode,
+  promptContext: Awaited<ReturnType<typeof buildAcpPromptContext>>,
+  correction: string,
+) {
+  return runAcpTask({
+    userContext,
+    promptText: [buildMarketWatchTaskPrompt(userContext, pushMode), correction].join("\n"),
+    conversationId: userContext.conversationId!,
+    messageId: randomUUID(),
+    mode: "scheduled-market-watch",
+    sandboxTokenId: promptContext.sandboxContext.tokenId,
+    sandboxPermissions: promptContext.sandboxContext.permissions,
+  });
+}
+
+async function readMarketWatchSnapshotWasAudited(userContext: UserContext, snapshotId: string) {
+  const [audit] = await db.select({ id: sandboxAuditLogs.id }).from(sandboxAuditLogs).where(and(
+    eq(sandboxAuditLogs.userId, userContext.userId),
+    eq(sandboxAuditLogs.instanceId, userContext.instanceId || DEFAULT_INSTANCE_ID),
+    eq(sandboxAuditLogs.conversationId, userContext.conversationId || ""),
+    eq(sandboxAuditLogs.operation, "market_watch.snapshot"),
+    eq(sandboxAuditLogs.resourceId, snapshotId),
+    eq(sandboxAuditLogs.status, "success"),
+  )).limit(1);
+  return Boolean(audit);
+}
+
+export function marketWatchReplyClaimsMissingData(reply: string, snapshot: MarketSnapshot) {
+  const hasUsableQuote = [...snapshot.holdings, ...snapshot.watchlist, ...snapshot.plans]
+    .some((item) => item.quote && !["stale", "invalid", "unknown"].includes(item.quote.tradingStatus.status));
+  if (!hasUsableQuote) return false;
+  return /(?:实时行情|行情快照|本轮行情).{0,12}(?:不可用|未返回|缺失|未获得)/.test(reply);
 }
 
 export async function runScheduledReviewTask(scope: ScheduledScope, kind: ScheduledReviewKind): Promise<string | null> {

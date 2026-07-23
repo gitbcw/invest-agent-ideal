@@ -86,8 +86,18 @@ async function dispatchServiceTool(
   context: ServiceToolContext
 ): Promise<unknown> {
   switch (name) {
-    case "market_watch.snapshot":
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, result: await latestMarketWatchSnapshot(context.userId, context.instanceId) };
+    case "market_watch.snapshot": {
+      const result = await latestMarketWatchSnapshot(context.userId, context.instanceId);
+      await audit(context, {
+        operation: "market_watch.snapshot",
+        resourceType: "market_watch_snapshot",
+        resourceId: result?.id,
+        resultSummary: result
+          ? `window=${result.windowKey}; capturedAt=${result.capturedAt}`
+          : "no scheduler snapshot available",
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
+    }
     case "market.snapshot": {
       const result = await marketSnapshot({
         userId: context.userId,
