@@ -54,7 +54,8 @@ export function beijingNow(date = new Date()): Date {
 }
 
 export function beijingDateKey(date = new Date()): string {
-  return beijingNow(date).toISOString().slice(0, 10);
+  const bj = beijingNow(date);
+  return `${bj.getFullYear()}-${String(bj.getMonth() + 1).padStart(2, "0")}-${String(bj.getDate()).padStart(2, "0")}`;
 }
 
 export function isAshareTradingDay(date = new Date()): boolean {

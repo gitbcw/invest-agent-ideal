@@ -9,6 +9,11 @@ describe("A-share market calendar", () => {
     assert.equal(beijingDateKey(bj("2026-06-24T01:35:00.000Z")), "2026-06-24");
   });
 
+  test("keeps a +08 quote date on its Beijing trading date", () => {
+    // Tencent quote times such as 20260723101030 are parsed as this instant.
+    assert.equal(beijingDateKey(bj("2026-07-22T16:00:00.000Z")), "2026-07-23");
+  });
+
   test("treats regular weekdays as trading days", () => {
     assert.equal(isAshareTradingDay(bj("2026-06-24T01:35:00.000Z")), true);
   });
