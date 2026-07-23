@@ -7,7 +7,7 @@ description: Use whenever the investment assistant needs service-owned facts, co
 
 Use only the named tools exposed by `invest-agent-service-tools` for service-owned facts and durable actions. HTTP routes, localhost ports, tokens, curl commands, database access, and service files are implementation details and must not be discovered or called from the workspace Agent.
 
-Prefer the narrowest named read tool. Available market tools include `market.snapshot`, `market.quote`, `market.kline`, `market.indices`, `market.capital_flow`, `market.sector_theme`, `market.stock_info`, `market.resolve`, `market.calendar`, and `market.health`. Current user state is available through `portfolio.read`, `watchlist.read`, `plans.read`, `conversation.history`, and the watch-rule read tools.
+For service-owned facts, inspect the read capabilities currently exposed by MCP and choose the narrowest useful capability from its description and schema. Gather only the user state, market evidence, trading-session context, or source-health evidence needed for the task. Do not maintain a hard-coded read-tool inventory in Workspace instructions.
 
 For durable user-visible writes, register the exact operation and payload with `confirmations.request`, show the draft, and wait for a later explicit user confirmation. Then consume the returned `confirmationId` through the corresponding named write tool. Never edit workspace state files to imitate a successful service write. Onboarding is intentionally different: use `onboarding.draft.*` to keep each accepted section in the service-owned draft, then use `onboarding.draft.enqueue_commit` only after all sections are accepted; the background service is the sole writer of final onboarding configuration.
 

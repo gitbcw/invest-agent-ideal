@@ -11,9 +11,9 @@ Use `service-capability-policy`. Do not call localhost HTTP, curl, sandbox token
 
 `market-watch` is a scheduled intraday brief, not deterministic rule evaluation. `rule-alert-check` is the separate service-owned rule evaluator.
 
-1. Obtain current market facts through at least one named market tool before forming a conclusion. Choose the smallest useful set: `market_watch.snapshot` for scheduler-window comparison, `market.snapshot` for the current portfolio picture, and `market.quote` / `market.indices` / `market.kline` / `market.capital_flow` / `market.sector_theme` / `market.stock_info` for follow-up questions.
-2. Use `market.calendar` and `market.health` to assess trading session or data quality when useful, but do not treat either one alone as market evidence.
-3. Treat `market_watch.snapshot` as an immutable audit and comparison input, not as the only permitted source of thought. When sources disagree, state the conflict and reduce conclusion strength.
+1. Obtain current market facts through at least one exposed MCP read capability before forming a conclusion. Choose capabilities by their descriptions and schemas, using the smallest useful combination for the portfolio picture, scheduler-window comparison, indices, targeted quotes, price history, flows, themes, or event evidence actually needed.
+2. Assess the trading session and source health when useful, but do not treat calendar or health evidence alone as current market evidence.
+3. A scheduler-captured window snapshot may be used as immutable audit and comparison evidence, but it is not the only permitted source of thought. When sources disagree, state the conflict and reduce conclusion strength.
 4. Respect `config/notification.yaml`: active watch may receive window briefs; low disturbance and evening summary do not receive routine intraday pushes.
 5. Separate facts, inference, explicit-rule status, risk level, notification decision, evidence time, and the next check.
 6. If data is missing, stale, conflicting, or unchanged, say so plainly and reduce conclusion strength. Never fabricate intraday facts.

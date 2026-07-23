@@ -10,7 +10,7 @@ Use `service-capability-policy`. Do not call localhost HTTP, shell fallbacks, sa
 ## Evidence And Analysis
 
 1. Read the user's confirmed portfolio, watchlist, plans, strategy, schedules, notification preference, and relevant Workspace methods.
-2. Use `market.snapshot` as the primary current portfolio and index fact source. Add `market.quote`, `market.kline`, `market.indices`, `market.capital_flow`, `market.sector_theme`, or `market.stock_info` only when needed.
+2. Inspect the currently exposed MCP read capabilities and choose the narrowest useful sources for the current portfolio picture, indices, targeted quotes, price history, flows, themes, announcements, or news. Tool selection follows the task and returned evidence, not a hard-coded Workspace inventory.
 3. Record the data cutoff, source confidence, warnings, conflicts, and missing evidence. Never invent exact prices or events.
 4. Separate facts, inference, action, required user confirmation, validation signals, and invalidation signals.
 5. Connect any action suggestion to the user's confirmed strategy, plans, rules, position state, and risk discipline. Do not promise returns or imply automatic trading.

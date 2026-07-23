@@ -89,6 +89,8 @@ Typical workspace-owned artifacts:
 
 The template is a seed and an optional update catalog, not the authority for an existing Workspace. Compatibility checks may report that a newer template version exists, but they do not replace user-evolved Skills. Hard guarantees such as scope, confirmation, audit, scheduler gates, and push behavior are enforced by the service/MCP layer.
 
+Research and market-evidence instructions describe the facts and quality needed rather than maintaining MCP read-tool inventories. The Agent discovers current read capabilities from MCP descriptions and schemas. Transactional workflows such as onboarding, confirmed writes, explicit-rule creation, and review publication retain precise service contracts until their multi-step state machines can be discovered with equal reliability.
+
 The table-level split is defined in [table-ownership.md](./table-ownership.md).
 
 ## Scheduler Boundary

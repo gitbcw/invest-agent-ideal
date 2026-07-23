@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { MARKET_WATCH_FACT_TOOLS, marketWatchReplyClaimsMissingData } from "../src/acp/scheduled-tasks.js";
+import {
+  MARKET_WATCH_FACT_TOOLS,
+  buildMarketWatchTaskPrompt,
+  marketWatchReplyClaimsMissingData,
+} from "../src/acp/scheduled-tasks.js";
 
 const snapshot = {
   ok: true as const,
@@ -39,4 +43,11 @@ test("scheduled market-watch accepts several current-fact tools without treating
   ]);
   assert.equal(MARKET_WATCH_FACT_TOOLS.includes("market.health" as never), false);
   assert.equal(MARKET_WATCH_FACT_TOOLS.includes("market.calendar" as never), false);
+});
+
+test("scheduled market-watch prompt delegates read-tool selection to MCP discovery", () => {
+  const prompt = buildMarketWatchTaskPrompt({ userId: "user-a", instanceId: "instance-a" }, "scheduled_intraday_brief");
+  assert.doesNotMatch(prompt, /market(?:_watch)?\.(?:snapshot|quote|indices|kline|capital_flow|sector_theme|stock_info|calendar|health)/);
+  assert.match(prompt, /MCP 能力描述和参数 schema 自行选择/);
+  assert.match(prompt, /至少一个当前暴露的具名行情读取能力/);
 });

@@ -136,19 +136,8 @@ Onboarding 写入遵守以下边界：
 ## 服务层事实工具
 
 - 涉及持仓涨跌、现价、指数、观察池距离、预案触发、行情复盘或市场事实时，只使用 `invest-agent-service-tools` 的具名 MCP 工具，不通过 shell 或内部接口自行取数。
-- 当前事实读取工具包括：
-  - `market.snapshot`：一次性读取持仓、自选、预案、指数、source metadata 和 warnings。
-  - `market.quote`：按代码读取实时行情。
-  - `market.kline`：读取日线或 5 分钟 K 线。
-  - `market.indices`：读取核心指数。
-  - `market.capital_flow`：读取资金流观察信号。
-  - `market.sector_theme`：读取行业、概念和题材标签。
-  - `market.stock_info`：读取公告、新闻和研报类补充证据。
-  - `market.resolve`：解析证券名称和代码。
-  - `market.calendar`：读取交易日与交易时段事实。
-  - `market.health`：读取行情源健康状态。
-  - `portfolio.read` / `watchlist.read` / `plans.read`：读取当前用户的持仓、自选和预案。
-- `market.snapshot` 是持仓、自选、预案、指数的一次性行情快照；持仓涨跌、日复盘、巡检和预案距离问题优先使用它。
+- 根据当前 MCP 暴露的能力说明和参数 schema，自行选择完成任务所需的最窄读取能力；Workspace 不维护行情或用户状态读取工具名清单。
+- 按问题获取必要的用户状态、组合全貌、实时行情、指数、价格历史、资金流、行业题材、公告新闻、交易时段或数据源健康证据，不为“多调用工具”而扩大取数范围。
 - 工具返回的 `source.provider`、`fetchedAt`、`marketTime`、`confidence`、`warnings` 是数据质量契约，输出结论时必须尊重。
 - 东方财富资金流只能作为观察信号，不能单独证明主力建仓、控盘或作为买卖依据。
 - 若行情缺失、过期、冲突或返回 warnings，必须明确数据缺口并降低结论强度，不要输出假精确价格。
