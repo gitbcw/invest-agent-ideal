@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { rm } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import { db, initDb } from "../dist/db/index.js";
 import { conversationMessages, conversationSessions, onboardingDrafts, pendingSandboxConfirmations, pushJobs } from "../dist/db/schema.js";
-import { ensureWorkspace } from "../dist/lib/workspace.js";
+import { ensureWorkspace, resolveWorkspacePath } from "../dist/lib/workspace.js";
 import { WorkspaceStore } from "../dist/lib/workspace-store.js";
 import { callServiceTool } from "../dist/mcp/service-tools-core.js";
 import { processOnboardingDraftCommits } from "../dist/services/onboarding-drafts.js";
 import { appendConversationMessage } from "../dist/services/conversation-log.js";
 
-const USER_ID = "onboarding-draft-commit-smoke";
-const INSTANCE_ID = "invest-agent-onboarding-draft-commit-smoke";
-const CONVERSATION_ID = "onboarding-draft-commit-smoke-conversation";
+const USER_ID = "eval-onboarding-draft-commit-smoke";
+const INSTANCE_ID = "invest-agent-eval-onboarding-draft-commit-smoke";
+const CONVERSATION_ID = "eval-onboarding-draft-commit-smoke-conversation";
 const context = { userId: USER_ID, instanceId: INSTANCE_ID, projectId: "invest-agent", conversationId: CONVERSATION_ID };
 
 initDb();
@@ -151,4 +152,5 @@ try {
   console.log("✓ onboarding draft commit smoke passed");
 } finally {
   await cleanup();
+  await rm(resolveWorkspacePath(USER_ID), { recursive: true, force: true });
 }
