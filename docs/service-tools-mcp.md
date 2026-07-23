@@ -32,7 +32,7 @@ Codex ACP receives an explicit MCP child-process environment. The wiring must ca
 Read tools:
 
 - `market.snapshot`
-- `market_watch.snapshot`（当前 user/instance 最近一次 scheduler 盘中快照及有效变化标记）
+- `market_watch.snapshot`（当前 user/instance 最近一次 scheduler 盘中快照及有效变化标记；定时简报可将其作为审计/比较输入，而非唯一行情来源）
 - `market.quote`
 - `market.kline`
 - `market.indices`

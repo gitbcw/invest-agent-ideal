@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
 import { resolveScheduledModelTier, type AcpModelTier } from "./model-router.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
@@ -43,7 +43,33 @@ export interface ScheduledReviewPublicationProbeInput {
 
 type ScheduledReviewKind = "daily" | "weekly" | "monthly";
 type MarketWatchPushMode = "exception_only" | "scheduled_intraday_brief";
-const MARKET_WATCH_ALLOWED_TOOLS = ["market_watch.snapshot", "watch_rules.list", "watch_rules.dry_run"];
+const MARKET_WATCH_ALLOWED_TOOLS = [
+  "market_watch.snapshot",
+  "market.snapshot",
+  "market.quote",
+  "market.indices",
+  "market.kline",
+  "market.capital_flow",
+  "market.sector_theme",
+  "market.stock_info",
+  "market.calendar",
+  "market.health",
+  "watch_rules.list",
+  "watch_rules.dry_run",
+];
+
+// Calendar and health describe the availability of a market session or source,
+// but neither supplies the market facts a scheduled brief is required to use.
+export const MARKET_WATCH_FACT_TOOLS = [
+  "market_watch.snapshot",
+  "market.snapshot",
+  "market.quote",
+  "market.indices",
+  "market.kline",
+  "market.capital_flow",
+  "market.sector_theme",
+  "market.stock_info",
+] as const;
 
 /**
  * Single-purpose acceptance probe for the scheduled review publication step.
@@ -151,14 +177,14 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
     sandboxTokenId: promptContext.sandboxContext.tokenId,
     sandboxPermissions: promptContext.sandboxContext.permissions,
   });
-  if (!await readMarketWatchSnapshotWasAudited(userContext, captured.id)) {
-    reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "上一轮未读取本轮快照。现在必须先调用 market_watch.snapshot，再基于该快照重写简报。");
+  if (!await readMarketWatchFactsWereAudited(userContext)) {
+    reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "上一轮没有通过任何具名行情工具取得本轮市场事实。现在必须调用至少一个行情事实工具，再依据实际返回结果重写简报。");
   }
-  if (!await readMarketWatchSnapshotWasAudited(userContext, captured.id)) {
-    throw new Error("scheduled market-watch did not read the captured snapshot through market_watch.snapshot");
+  if (!await readMarketWatchFactsWereAudited(userContext)) {
+    throw new Error("scheduled market-watch did not read current facts through a named market MCP tool");
   }
   if (marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
-    reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "本轮快照存在有效实时行情，但上一版正文仍声称行情不可用。必须以 market_watch.snapshot 的本轮事实重写，不得沿用昨日行情。 ");
+    reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "调度器已采集到有效实时行情，但上一版正文仍声称行情不可用。请通过具名行情工具核实本轮事实后重写；不得沿用昨日行情，也不得把可用事实写成不可用。 ");
   }
   if (marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
     throw new Error("scheduled market-watch reply contradicts a usable captured snapshot");
@@ -192,13 +218,12 @@ async function runMarketWatchCorrection(
   });
 }
 
-async function readMarketWatchSnapshotWasAudited(userContext: UserContext, snapshotId: string) {
+export async function readMarketWatchFactsWereAudited(userContext: UserContext) {
   const [audit] = await db.select({ id: sandboxAuditLogs.id }).from(sandboxAuditLogs).where(and(
     eq(sandboxAuditLogs.userId, userContext.userId),
     eq(sandboxAuditLogs.instanceId, userContext.instanceId || DEFAULT_INSTANCE_ID),
     eq(sandboxAuditLogs.conversationId, userContext.conversationId || ""),
-    eq(sandboxAuditLogs.operation, "market_watch.snapshot"),
-    eq(sandboxAuditLogs.resourceId, snapshotId),
+    inArray(sandboxAuditLogs.operation, [...MARKET_WATCH_FACT_TOOLS]),
     eq(sandboxAuditLogs.status, "success"),
   )).limit(1);
   return Boolean(audit);
@@ -427,7 +452,7 @@ function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: MarketWa
     "是否推送、推送频率、推送内容和提醒边界均以 Workspace 配置与 market-watch skill 为准。",
     "结构和详略由 Workspace 规则决定；不要输出执行过程。",
     "数据来源只写可读来源摘要，例如“腾讯行情、腾讯日K、东方财富新闻线索”；禁止展示原始 URL、endpoint 或接口路径。",
-    "本轮窗口行情事实必须优先通过 market_watch.snapshot 读取；需要补充当前持仓、自选或预案时再使用 market.snapshot。核对明确规则时使用 watch_rules.list 或 watch_rules.dry_run。不要使用 shell、curl、本地 HTTP、sandbox token 或工作区文件兜底。",
+    "开始判断前，必须通过至少一个具名行情工具取得本轮市场事实。按问题自行选择并组合：market_watch.snapshot 用于调度窗口快照与变化对照，market.snapshot 用于当前组合全貌，market.quote、market.indices、market.kline、market.capital_flow、market.sector_theme、market.stock_info 用于有针对性的补充。market.calendar 和 market.health 只辅助判断交易时段或数据质量，不能单独作为行情事实。核对明确规则时使用 watch_rules.list 或 watch_rules.dry_run。不要使用 shell、curl、本地 HTTP、sandbox token 或工作区文件兜底。",
     "输出契约：",
     isBriefMode
       ? "- 当前是固定盘中简报模式：必须输出一条微信正文；即使没有异常，也要给出盘面状态、持仓观察和“是否需要操作”。"
