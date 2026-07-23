@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync } from "node:fs";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
   WORKSPACE_MIGRATION_CONFIRMATION,
+  WORKSPACE_OPTIONAL_TEMPLATE_ASSETS,
+  WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION,
+  adoptWorkspaceTemplateAssets,
   inspectWorkspaceCompatibility,
   migrateWorkspaceCompatibility,
 } from "../src/lib/workspace-compatibility.js";
@@ -14,7 +17,19 @@ import {
 const templatePath = path.resolve("templates/workspace");
 const managedDailySkill = ".codex/skills/daily-portfolio-review/SKILL.md";
 
-test("workspace compatibility migration backs up and updates only managed assets", async () => {
+test("optional template catalog covers every seeded Codex Skill asset", async () => {
+  const skillsRoot = path.join(templatePath, ".codex/skills");
+  const skillFiles = (await listFiles(skillsRoot))
+    .map((filePath) => path.relative(templatePath, filePath))
+    .sort();
+  const catalogSkills = WORKSPACE_OPTIONAL_TEMPLATE_ASSETS
+    .filter((relativePath) => relativePath.startsWith(".codex/skills/"))
+    .slice()
+    .sort();
+  assert.deepEqual(catalogSkills, skillFiles);
+});
+
+test("workspace compatibility preserves user-evolved template skills by default", async () => {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-workspace-compat-"));
   const workspacePath = path.join(tempRoot, "workspaces", "111");
   const backupRoot = path.join(tempRoot, "backups");
@@ -32,9 +47,10 @@ test("workspace compatibility migration backs up and updates only managed assets
     await writeFile(managedSkillPath, oldManagedContent, "utf8");
 
     const report = await inspectWorkspaceCompatibility({ workspacePath, templatePath });
-    assert.equal(report.status, "migration_required");
+    assert.equal(report.status, "ready");
+    assert.equal(report.managedAssetChanges.length, 0);
     assert.deepEqual(
-      report.managedAssetChanges.filter((change) => change.relativePath === managedDailySkill).map((change) => change.action),
+      report.availableTemplateUpdates.filter((change) => change.relativePath === managedDailySkill).map((change) => change.action),
       ["replace"],
     );
 
@@ -57,20 +73,12 @@ test("workspace compatibility migration backs up and updates only managed assets
       confirmation: WORKSPACE_MIGRATION_CONFIRMATION,
       runId: "test-run",
     });
-    assert.equal(result.changed, true);
-    assert.equal(result.changes.length, 1);
-    assert.equal(
-      await readFile(managedSkillPath, "utf8"),
-      await readFile(path.join(templatePath, managedDailySkill), "utf8"),
-    );
-    assert.equal(
-      await readFile(path.join(backupRoot, "test-run", "111", managedDailySkill), "utf8"),
-      oldManagedContent,
-    );
+    assert.equal(result.changed, false);
+    assert.equal(result.changes.length, 0);
+    assert.equal(await readFile(managedSkillPath, "utf8"), oldManagedContent);
     assert.equal(await readFile(portfolioPath, "utf8"), originalPortfolio);
     assert.equal(await readFile(customSkillPath, "utf8"), "user-owned custom skill\n");
-    assert.equal(existsSync(path.join(workspacePath, ".invest-agent/workspace-compatibility.json")), true);
-    assert.equal(existsSync(path.join(backupRoot, "test-run", "111", "manifest.json")), true);
+    assert.equal(existsSync(path.join(backupRoot, "test-run", "111", "manifest.json")), false);
 
     const repeated = await migrateWorkspaceCompatibility({
       workspacePath,
@@ -81,6 +89,59 @@ test("workspace compatibility migration backs up and updates only managed assets
     });
     assert.equal(repeated.changed, false);
     assert.equal(repeated.backupPath, null);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("workspace template adoption replaces only explicitly approved assets with backup", async () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-workspace-adopt-"));
+  const workspacePath = path.join(tempRoot, "workspaces", "111");
+  const backupRoot = path.join(tempRoot, "backups");
+  const portfolioPath = path.join(workspacePath, "config/portfolio.yaml");
+  const skillPath = path.join(workspacePath, managedDailySkill);
+  const customizedSkill = "user-customized daily skill\n";
+  try {
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    await cp(templatePath, workspacePath, { recursive: true });
+    const originalPortfolio = await readFile(portfolioPath, "utf8");
+    await writeFile(skillPath, customizedSkill, "utf8");
+
+    await assert.rejects(
+      adoptWorkspaceTemplateAssets({
+        workspacePath,
+        templatePath,
+        backupRoot,
+        confirmation: "wrong-confirmation",
+        relativePaths: [managedDailySkill],
+      }),
+      /confirmation must equal/,
+    );
+    await assert.rejects(
+      adoptWorkspaceTemplateAssets({
+        workspacePath,
+        templatePath,
+        backupRoot,
+        confirmation: WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION,
+        relativePaths: [".codex/skills/user-custom/SKILL.md"],
+      }),
+      /unsupported assets/,
+    );
+
+    const result = await adoptWorkspaceTemplateAssets({
+      workspacePath,
+      templatePath,
+      backupRoot,
+      confirmation: WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION,
+      relativePaths: [managedDailySkill],
+      runId: "adopt-run",
+    });
+    assert.equal(result.changed, true);
+    assert.deepEqual(result.changes.map((change) => change.relativePath), [managedDailySkill]);
+    assert.equal(await readFile(skillPath, "utf8"), await readFile(path.join(templatePath, managedDailySkill), "utf8"));
+    assert.equal(await readFile(path.join(backupRoot, "adopt-run", "111", managedDailySkill), "utf8"), customizedSkill);
+    assert.equal(await readFile(portfolioPath, "utf8"), originalPortfolio);
+    assert.equal(existsSync(path.join(workspacePath, ".invest-agent/workspace-template-adoption.json")), true);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -117,7 +178,7 @@ test("Volcano code deploy preserves root runtime state but includes nested works
   assert.match(deployScript, /for attempt in 1 2 3 4 5 6 7 8 9 10/);
 });
 
-test("ordinary access does not overwrite an existing workspace managed asset", async () => {
+test("ordinary access does not overwrite an existing template-derived asset", async () => {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-workspace-access-"));
   const workspaceRoot = path.join(tempRoot, "workspaces");
   const workspacePath = path.join(workspaceRoot, "111");
@@ -166,3 +227,12 @@ test("workspace compatibility acceptance refuses to run outside an isolated eval
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /WORKSPACE_COMPATIBILITY_EVAL must equal true/);
 });
+
+async function listFiles(root: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const entryPath = path.join(root, entry.name);
+    return entry.isDirectory() ? listFiles(entryPath) : [entryPath];
+  }));
+  return nested.flat();
+}

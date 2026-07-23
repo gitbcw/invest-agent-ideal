@@ -4,22 +4,37 @@ import { copyFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/p
 import path from "node:path";
 import { parse } from "yaml";
 
-export const WORKSPACE_COMPATIBILITY_VERSION = 1;
+export const WORKSPACE_COMPATIBILITY_VERSION = 2;
 export const WORKSPACE_MIGRATION_CONFIRMATION = "apply-managed-workspace-assets-v1";
+export const WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION = "adopt-template-assets-v1";
 
 /**
- * These files define service/runtime contracts and are owned by the product.
- * User data, investment methods, reports, memory, schedules and AGENTS.md are
- * intentionally absent: the compatibility migrator must never overwrite them.
+ * Hard runtime contracts belong in the service/MCP layer. Workspace files are
+ * not trusted enforcement points, so no Skill is automatically replaceable.
+ * Keep this list for future non-customizable runtime metadata only.
  */
-export const WORKSPACE_MANAGED_ASSETS = [
+export const WORKSPACE_MANAGED_ASSETS = [] as const;
+
+/**
+ * These files are seeded into new Workspaces and may evolve there. A version
+ * difference is an available update, not a migration requirement.
+ */
+export const WORKSPACE_OPTIONAL_TEMPLATE_ASSETS = [
   ".codex/skills/service-capability-policy/SKILL.md",
   ".codex/skills/conversation-recovery/SKILL.md",
   ".codex/skills/capability-extension/SKILL.md",
   ".codex/skills/capability-extension/agents/openai.yaml",
+  ".codex/skills/core-company-fundamental-review/SKILL.md",
+  ".codex/skills/core-company-fundamental-review/agents/openai.yaml",
   ".codex/skills/investment-onboarding/SKILL.md",
   ".codex/skills/market-watch/SKILL.md",
   ".codex/skills/daily-portfolio-review/SKILL.md",
+  ".codex/skills/daily-portfolio-review/agents/openai.yaml",
+  ".codex/skills/monthly-portfolio-review/SKILL.md",
+  ".codex/skills/monthly-portfolio-review/agents/openai.yaml",
+  ".codex/skills/observation-pool/SKILL.md",
+  ".codex/skills/weekly-portfolio-review/SKILL.md",
+  ".codex/skills/weekly-portfolio-review/agents/openai.yaml",
   "knowledge/capability_extension_protocol.md",
 ] as const;
 
@@ -54,6 +69,7 @@ export interface WorkspaceCompatibilityReport {
   compatibilityVersion: number;
   status: WorkspaceCompatibilityStatus;
   managedAssetChanges: ManagedAssetChange[];
+  availableTemplateUpdates: ManagedAssetChange[];
   blockers: string[];
   warnings: string[];
 }
@@ -78,6 +94,13 @@ export interface WorkspaceMigrationResult {
   changes: ManagedAssetChange[];
 }
 
+export interface AdoptWorkspaceTemplateAssetsInput extends InspectWorkspaceInput {
+  backupRoot: string;
+  confirmation: string;
+  relativePaths: string[];
+  runId?: string;
+}
+
 export async function discoverWorkspacePaths(workspaceRoot: string): Promise<string[]> {
   if (!existsSync(workspaceRoot)) return [];
   const entries = await readdir(workspaceRoot, { withFileTypes: true });
@@ -97,6 +120,7 @@ export async function inspectWorkspaceCompatibility(
   const blockers: string[] = [];
   const warnings: string[] = [];
   const managedAssetChanges: ManagedAssetChange[] = [];
+  const availableTemplateUpdates: ManagedAssetChange[] = [];
 
   const agentsPath = path.join(workspacePath, "AGENTS.md");
   if (!existsSync(agentsPath)) {
@@ -140,6 +164,24 @@ export async function inspectWorkspaceCompatibility(
     }
   }
 
+  for (const relativePath of WORKSPACE_OPTIONAL_TEMPLATE_ASSETS) {
+    const sourcePath = path.join(templatePath, relativePath);
+    const targetPath = path.join(workspacePath, relativePath);
+    if (!existsSync(sourcePath)) {
+      warnings.push(`optional template asset unavailable: ${relativePath}`);
+      continue;
+    }
+    const targetSha256 = await sha256File(sourcePath);
+    if (!existsSync(targetPath)) {
+      availableTemplateUpdates.push({ relativePath, action: "add", currentSha256: null, targetSha256 });
+      continue;
+    }
+    const currentSha256 = await sha256File(targetPath);
+    if (currentSha256 !== targetSha256) {
+      availableTemplateUpdates.push({ relativePath, action: "replace", currentSha256, targetSha256 });
+    }
+  }
+
   const status: WorkspaceCompatibilityStatus = blockers.length > 0
     ? "blocked"
     : managedAssetChanges.length > 0
@@ -152,9 +194,57 @@ export async function inspectWorkspaceCompatibility(
     compatibilityVersion: WORKSPACE_COMPATIBILITY_VERSION,
     status,
     managedAssetChanges,
+    availableTemplateUpdates,
     blockers,
     warnings,
   };
+}
+
+export async function adoptWorkspaceTemplateAssets(
+  input: AdoptWorkspaceTemplateAssetsInput,
+): Promise<WorkspaceMigrationResult> {
+  if (input.confirmation !== WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION) {
+    throw new Error(`workspace template adoption confirmation must equal ${WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION}`);
+  }
+  if (input.relativePaths.length === 0) {
+    throw new Error("workspace template adoption requires at least one explicit asset");
+  }
+
+  const allowedAssets = new Set<string>(WORKSPACE_OPTIONAL_TEMPLATE_ASSETS);
+  const relativePaths = [...new Set(input.relativePaths)];
+  const unsupported = relativePaths.filter((relativePath) => !allowedAssets.has(relativePath));
+  if (unsupported.length > 0) {
+    throw new Error(`workspace template adoption contains unsupported assets: ${unsupported.join(", ")}`);
+  }
+
+  const workspacePath = path.resolve(input.workspacePath);
+  const templatePath = path.resolve(input.templatePath);
+  const backupRoot = validateBackupRoot(input.backupRoot, workspacePath);
+  const report = await inspectWorkspaceCompatibility({ workspacePath, templatePath });
+  if (report.status === "blocked") {
+    throw new Error(`workspace compatibility blocked: ${report.blockers.join("; ")}`);
+  }
+  const selectedChanges = report.availableTemplateUpdates.filter((change) => relativePaths.includes(change.relativePath));
+  if (selectedChanges.length === 0) {
+    return {
+      workspaceId: report.workspaceId,
+      workspacePath,
+      compatibilityVersion: WORKSPACE_COMPATIBILITY_VERSION,
+      changed: false,
+      backupPath: null,
+      changes: [],
+    };
+  }
+
+  return applyAssetChanges({
+    workspacePath,
+    templatePath,
+    backupRoot,
+    runId: validateRunId(input.runId || timestampId()),
+    workspaceId: report.workspaceId,
+    changes: selectedChanges,
+    recordName: "workspace-template-adoption.json",
+  });
 }
 
 export async function migrateWorkspaceCompatibility(
@@ -166,13 +256,7 @@ export async function migrateWorkspaceCompatibility(
 
   const workspacePath = path.resolve(input.workspacePath);
   const templatePath = path.resolve(input.templatePath);
-  const backupRoot = path.resolve(input.backupRoot);
-  if (!path.isAbsolute(input.backupRoot)) {
-    throw new Error("workspace migration backup root must be absolute");
-  }
-  if (isSameOrChildPath(backupRoot, workspacePath)) {
-    throw new Error("workspace migration backup root must be outside the workspace");
-  }
+  const backupRoot = validateBackupRoot(input.backupRoot, workspacePath);
 
   const report = await inspectWorkspaceCompatibility({ workspacePath, templatePath });
   if (report.status === "blocked") {
@@ -189,12 +273,31 @@ export async function migrateWorkspaceCompatibility(
     };
   }
 
-  const runId = input.runId || timestampId();
-  const backupPath = path.join(backupRoot, runId, report.workspaceId);
+  return applyAssetChanges({
+    workspacePath,
+    templatePath,
+    backupRoot,
+    runId: validateRunId(input.runId || timestampId()),
+    workspaceId: report.workspaceId,
+    changes: report.managedAssetChanges,
+    recordName: "workspace-compatibility.json",
+  });
+}
+
+async function applyAssetChanges(input: {
+  workspacePath: string;
+  templatePath: string;
+  backupRoot: string;
+  runId: string;
+  workspaceId: string;
+  changes: ManagedAssetChange[];
+  recordName: string;
+}): Promise<WorkspaceMigrationResult> {
+  const backupPath = path.join(input.backupRoot, input.runId, input.workspaceId);
   await mkdir(backupPath, { recursive: true });
 
-  for (const change of report.managedAssetChanges) {
-    const targetPath = path.join(workspacePath, change.relativePath);
+  for (const change of input.changes) {
+    const targetPath = path.join(input.workspacePath, change.relativePath);
     if (change.action === "replace") {
       const backupFile = path.join(backupPath, change.relativePath);
       await mkdir(path.dirname(backupFile), { recursive: true });
@@ -202,17 +305,17 @@ export async function migrateWorkspaceCompatibility(
     }
   }
 
-  const statePath = path.join(workspacePath, ".invest-agent", "workspace-compatibility.json");
+  const statePath = path.join(input.workspacePath, ".invest-agent", input.recordName);
   if (existsSync(statePath)) {
-    await copyFile(statePath, path.join(backupPath, "previous-workspace-compatibility.json"));
+    await copyFile(statePath, path.join(backupPath, `previous-${input.recordName}`));
   }
 
   const migrationRecord = {
     compatibilityVersion: WORKSPACE_COMPATIBILITY_VERSION,
-    workspaceId: report.workspaceId,
+    workspaceId: input.workspaceId,
     appliedAt: new Date().toISOString(),
     backupPath,
-    changes: report.managedAssetChanges,
+    changes: input.changes,
   };
   const manifestPath = path.join(backupPath, "manifest.json");
   await writeFile(
@@ -221,10 +324,10 @@ export async function migrateWorkspaceCompatibility(
     "utf8",
   );
 
-  for (const change of report.managedAssetChanges) {
+  for (const change of input.changes) {
     await atomicCopy(
-      path.join(templatePath, change.relativePath),
-      path.join(workspacePath, change.relativePath),
+      path.join(input.templatePath, change.relativePath),
+      path.join(input.workspacePath, change.relativePath),
     );
   }
 
@@ -233,13 +336,31 @@ export async function migrateWorkspaceCompatibility(
   await atomicWriteJson(manifestPath, { ...migrationRecord, status: "completed" });
 
   return {
-    workspaceId: report.workspaceId,
-    workspacePath,
+    workspaceId: input.workspaceId,
+    workspacePath: input.workspacePath,
     compatibilityVersion: WORKSPACE_COMPATIBILITY_VERSION,
     changed: true,
     backupPath,
-    changes: report.managedAssetChanges,
+    changes: input.changes,
   };
+}
+
+function validateBackupRoot(backupRootInput: string, workspacePath: string): string {
+  if (!path.isAbsolute(backupRootInput)) {
+    throw new Error("workspace migration backup root must be absolute");
+  }
+  const backupRoot = path.resolve(backupRootInput);
+  if (isSameOrChildPath(backupRoot, workspacePath)) {
+    throw new Error("workspace migration backup root must be outside the workspace");
+  }
+  return backupRoot;
+}
+
+function validateRunId(runId: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId) || runId.includes("..")) {
+    throw new Error("workspace migration runId must be a safe path segment");
+  }
+  return runId;
 }
 
 async function sha256File(filePath: string): Promise<string> {

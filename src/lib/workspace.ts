@@ -1,10 +1,9 @@
 import { existsSync } from "node:fs";
-import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "yaml";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import { WORKSPACE_MANAGED_ASSETS } from "./workspace-compatibility.js";
 
 const TENANT_FILE = "config/tenant.yaml";
 
@@ -58,25 +57,11 @@ export async function ensureWorkspace(identity: WorkspaceIdentity): Promise<Ensu
 
   await mkdir(config.workspace.root, { recursive: true });
   await cp(workspaceTemplatePath(), targetPath, { recursive: true });
-  await ensureFreshWorkspaceManagedAssets(targetPath);
   await stampTenantIdentity(targetPath, identity).catch((error) => {
     logger.warn(`workspace.stampTenantIdentity failed (fresh) path=${targetPath}: ${error}`);
   });
   logger.info(`workspace.created userId=${identity.userId} path=${targetPath}`);
   return { path: targetPath, created: true };
-}
-
-async function ensureFreshWorkspaceManagedAssets(workspacePath: string) {
-  // Fresh workspaces should already contain these template files. This pass
-  // only guards against an incomplete copy. Existing workspaces are never
-  // changed here; all upgrades go through the explicit compatibility tool.
-  for (const relativePath of WORKSPACE_MANAGED_ASSETS) {
-    const sourcePath = path.join(workspaceTemplatePath(), relativePath);
-    const targetPath = path.join(workspacePath, relativePath);
-    if (!existsSync(sourcePath) || existsSync(targetPath)) continue;
-    await mkdir(path.dirname(targetPath), { recursive: true });
-    await copyFile(sourcePath, targetPath);
-  }
 }
 
 async function migrateLegacyWorkspaceIfNeeded(userId: string, targetPath: string) {

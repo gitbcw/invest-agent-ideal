@@ -36,14 +36,14 @@ Invest Agent 是当前主线投资助手项目。在实验性 MVP 阶段，它�
 
 不要为普通微信消息重新引入服务层分流、快车道分类、onboarding 短路、复盘意图检测或上下文包裹。如果行为需要改变，优先更新 workspace 模板、AGENTS.md、skills 或 workspace 配置。
 
-真正长期稳定的产品资产是 workspace 模板、Skills、sandbox/tool 协议、确定性服务 API、确认工作流、审计、调度器行为和已保存产物。Codex ACP 是当前优先后端；后端选择属于运行时管线，不属于产品语义。
+真正长期稳定的产品资产是 Workspace 自己演化出的 Skills、sandbox/tool 协议、确定性服务 API、确认工作流、审计、调度器行为和已保存产物。Workspace 模板只负责新建时的初始种子和后续可选参考，不是既有 Workspace 的权威副本；模板 Skill 与用户版本不同不能成为自动覆盖理由。Codex ACP 是当前优先后端；后端选择属于运行时管线，不属于产品语义。
 
 > **运行时语义纠正(2026-06-30)**:Codex ACP 是当前默认 invest-agent workspace 后端。Hermes 仅保留为兼容/实验 backend；历史 `codex_acp_traces` 表名仅作为兼容存储保留。
 > **模型路由收敛(2026-07-06)**:默认 ACP model tier 是 `complex`。`simple` tier 仍保留为未来稳定性调试后的 opt-in 能力,只有显式设置 `ACP_SIMPLE_MODEL_ENABLED=true` 时才允许路由到 simple。
 
 把 workspace-scoped ACP 后端作为复杂推理和边缘情况吸收层。重复模式稳定后，再沉淀到 workspace skills、服务 API、sandbox 确认流程、确定性契约和 scheduled ACP tasks。
 
-Profile 应只保留为运行时兼容摘要或路由/配置残留，不要再给 Profile 增加新的方法论职责。投资方法应放在 Strategy Skills 中：受保护骨架 + 实例扩展。
+Profile 应只保留为运行时兼容摘要或路由/配置残留，不要再给 Profile 增加新的方法论职责。投资方法应放在用户 Workspace 的 Strategy Skills 中，由实例自行演化；模板只提供起始版本和可选升级参考。
 
 ## 工程收敛原则
 
@@ -52,6 +52,8 @@ Profile 应只保留为运行时兼容摘要或路由/配置残留，不要再�
 版本维护以 `main` 为唯一集成与生产发布基线。火山云快照、冻结标签和历史收敛分支只用于审计、比较和回滚，不继续承接日常修复，也不得整体合回 `main`。普通改动应在 `main` 或短生命周期 `codex/*` 分支完成验证并收敛回 `main`，再从该提交的干净发布目录执行代码发布；生产服务器上的紧急修复也必须回写 `main`，不能形成新的长期云端分叉。
 
 普通火山云版本发布只同步代码、模板和编译运行时，必须保留生产 `.env`、SQLite、真实 Workspace、reviews、微信状态和其他运行资产。只有明确的数据迁移、恢复或灾难恢复任务才允许使用运行时数据替换路径，并且必须先备份和确认。
+
+真实 Workspace 内的 `AGENTS.md`、`.codex/skills`、方法、配置和产物默认归该用户实例所有。兼容预检可以报告模板更新，但普通发布和兼容迁移不得据此替换；只有逐用户明确选择具体资产、确认采用标准版本并生成外部备份后，才允许替换该文件。必须遵守的权限、scope、确认、审计、调度与推送约束要在服务/MCP 层强制执行，不能把 Skill 文本当作安全边界。
 
 文档收敛也是工程收敛的一部分。`docs/` 只保留当前有效、对 Agent 有用的文档；历史计划、实验、测试记录、迁移说明和已被取代的决策移入 `docs/archive/`。当前可信文档应描述微信直达 workspace ACP 路径、服务层拥有的 scheduler/push/sandbox/API 职责、Profile 作为兼容摘要的边界，以及 Strategy Skills 作为方法论载体的定位。
 

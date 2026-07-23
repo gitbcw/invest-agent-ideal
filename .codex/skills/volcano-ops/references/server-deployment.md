@@ -75,7 +75,7 @@ curl http://127.0.0.1:22648/health
 - `main` 是唯一维护与生产发布基线。
 - `codex/volcano-snapshot-*`、冻结标签和历史 reconciliation 分支只用于审计、比较和回滚，不继续修复、不整体 merge 回 `main`。
 - 普通发布从已审核 `main` 提交的干净 worktree 执行；不要从带有未提交文件、`tmp/` 或其他用户改动的工作树打包发布。
-- 截至 2026-07-23，火山云运行代码基线为 `9a253e7`；`111`、`dyk`、`mg` 的 Workspace 均为 `ready`。详细备份与迁移证据见 `docs/workspace-compatibility.md`。
+- 火山云运行代码始终以最近一次从 `main` 干净 worktree 完成的发布为准；`111`、`dyk`、`mg` 的历史 Workspace 备份与迁移证据见 `docs/workspace-compatibility.md`。兼容模型 v2 起，`ready` 允许存在尚未采用的 `template_updates`。
 - GitHub push、PR、生产部署是三个独立动作。部署授权不自动授权 push 或 PR。
 
 ## 3. 两种发布模式
@@ -122,7 +122,7 @@ npm run verify
 ```
 
 3. 确认发布脚本仍保护所有生产运行资产。
-4. 若模板中的系统受管 Skill 有变化，对每个真实用户先执行只读预检：
+4. 若 Workspace 模板有变化，对每个真实用户执行只读预检，记录 `template_updates`；这些更新不阻塞代码发布，也不授权替换用户文件：
 
 ```bash
 npm run workspace:preflight -- \
@@ -179,20 +179,23 @@ pm2 save
 
 重建后再次确认 PM2 环境没有 ACP 覆盖值，并通过主进程执行一次只读 ACP 单点验收。不要在检查输出中打印 `.env`。
 
-## 7. Workspace 显式升级
+## 7. Workspace 模板采用
 
-普通代码发布不会覆盖现有真实 Workspace。预检为 `migration_required` 且 `blockers=0` 时，按用户逐个执行：
+普通代码发布不会覆盖现有真实 Workspace。预检中的 `template_updates` 只是可选更新；没有用户或负责人对具体文件的明确决定时，不执行任何 Workspace 修改。
+
+明确决定采用某个标准模板文件后，按用户和精确相对路径执行：
 
 ```bash
-npm run workspace:migrate -- \
+npm run workspace:adopt-template -- \
   --workspace-root=/home/claude/invest-agent-data/workspaces \
   --template-root=/home/claude/invest-agent/templates/workspace \
   --user=<user> \
+  --assets=<exact-relative-path> \
   --backup-root=/home/claude/invest-agent-data/workspace-compatibility-backups \
-  --confirm=apply-managed-workspace-assets-v1
+  --confirm=adopt-template-assets-v1
 ```
 
-每个用户迁移后立即重跑预检，必须得到 `ready`。不得省略 `--user` 批量修改所有生产 Workspace。迁移只更新系统受管资产，不覆盖用户 `AGENTS.md`、配置、报告、记忆或自建 Skill。
+不得省略 `--user`，不得使用目录或通配符批量覆盖。操作前审阅差异，操作后核对外部备份并重新预检。硬契约变更应通过服务代码、MCP schema、权限、确认或调度门禁发布，不通过强制同步 Skill 实现。
 
 ## 8. 发布后最小验收
 
@@ -202,7 +205,7 @@ npm run workspace:migrate -- \
 2. `pm2 list` 中 `invest-agent` 为 `online`。
 3. `/api/portal/health` 正常，生产 connector/relay 没有冲突。
 4. `npm run smoke:mcp-service-tools` 通过。
-5. 每个迁移用户的 Workspace 预检为 `ready`。
+5. 每个 Workspace 预检没有 blocker；`template_updates` 可以继续存在。
 6. 微信实例仍为 `connected`，listener 已恢复。
 7. 活动 push job 为 0，或每个活动 job 都有明确来源和处置计划。
 8. 从本次 PM2 uptime 开始的日志没有新 `ERROR`、ACP `ENOENT` 或 scope 回退。
@@ -225,7 +228,7 @@ npm run workspace:migrate -- \
 
 ### Workspace 回滚
 
-代码回滚不会自动回滚已迁移的 Workspace。根据对应备份目录 `manifest.json` 恢复该用户的受管文件，保留迁移记录和审计证据，再重跑预检。
+代码回滚不会自动回滚用户已经明确采用的模板文件。根据对应备份目录 `manifest.json` 恢复原文件，保留采用记录和审计证据，再重跑预检。
 
 ### 数据恢复
 

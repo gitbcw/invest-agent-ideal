@@ -24,7 +24,8 @@ npm run smoke:onboarding-draft-commit  # 验证 onboarding 草稿确认、冻结
 npm run smoke:platform-partner-auth    # 验证 Platform 账号、角色和 Partner 脱敏边界
 npm run smoke:platform-partner-migration # 验证 Platform 账号数据迁移
 npm run workspace:preflight -- --workspace-root=<root> --template-root=<template> --user=<user> # 只读兼容预检
-npm run workspace:migrate -- --workspace-root=<root> --template-root=<template> --user=<user> --backup-root=<absolute-dir> --confirm=apply-managed-workspace-assets-v1 # 显式受管资产迁移
+npm run workspace:migrate -- --workspace-root=<root> --template-root=<template> --user=<user> --backup-root=<absolute-dir> --confirm=apply-managed-workspace-assets-v1 # 仅迁移不可定制的系统元数据；当前不包含 Skill
+npm run workspace:adopt-template -- --workspace-root=<root> --template-root=<template> --user=<user> --assets=<exact-relative-path> --backup-root=<absolute-dir> --confirm=adopt-template-assets-v1 # 明确采用指定模板资产
 ```
 
 本地管理入口：`http://localhost:22655/platform`（含用户助手、规则巡检审计、日志审计、数据源质量、成本统计、实例级微信连接；实例详情含投资状态摘要）。Platform 是内部管理面：Owner 有授权管理能力，Partner 仅可查看脱敏经营与质量摘要。
@@ -45,7 +46,8 @@ Dashboard 已退役;`/dashboard` 仅作为到 `/platform` 的 301 重定向保�
 - `main` 是唯一集成与生产发布基线。`codex/volcano-snapshot-*`、冻结标签和历史 reconciliation 分支只用于审计、差异比较和回滚，不继续开发、不整体 merge 回主线。
 - 普通改动在 `main` 或短生命周期 `codex/*` 分支完成，运行 `npm run verify` 后收敛到 `main`。生产发布必须从目标 `main` 提交的干净 worktree 执行 `scripts/deploy-volcano.sh`；远端 push / PR 是独立动作，不由部署自动授权。
 - 普通发布只同步代码、模板和构建输入，保留服务器 `.env`、SQLite、真实 Workspace、reviews、`.state` 和根 `.codex` 运行态。`volcano:package-runtime` / `volcano:apply-runtime` 只用于用户明确授权的数据迁移、恢复或灾难恢复。
-- 截至 2026-07-23，火山云运行代码基线为 `9a253e7`；`111`、`dyk`、`mg` 的 Workspace 均已迁移并复检为 `ready`。当前迁移、备份和回滚证据见 `docs/workspace-compatibility.md`。
+- 模板中的 Skills 只用于新 Workspace 初始化和可选更新参考；现有 Workspace 的 Skill 即使与模板不同也保持 `ready`，不得在发布时自动替换。只有逐用户明确点名文件并走 `workspace:adopt-template` 备份流程才能采用标准版本。
+- 火山云始终从 `main` 的干净发布目录执行代码发布；`111`、`dyk`、`mg` 的历史 Workspace 迁移、备份和回滚证据见 `docs/workspace-compatibility.md`。兼容模型 v2 起，`ready` 允许存在未采用的模板 Skill 更新。
 - 生产 `.env` 必须显式配置 `INVEST_AGENT_API_TOKEN`、`PLATFORM_ANONYMIZATION_SECRET` 和服务器 ACP 路径。PM2 进程环境不得残留 `CODEX_ACP_COMMAND` / `CODEX_*_MODEL` 覆盖值；发现遗留值时，删除旧 PM2 条目并从干净 shell 按 `ecosystem.config.js` 重建，而不是继续 restart 继承。
 - 当前火山云操作手册是 `.codex/skills/volcano-ops/references/server-deployment.md`；历史首次迁移阶段记录只作考古。
 

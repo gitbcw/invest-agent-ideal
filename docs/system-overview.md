@@ -79,12 +79,15 @@ The workspace is the product-level isolation unit. User-specific investment arti
 
 Typical workspace-owned artifacts:
 
+- `AGENTS.md` and all `.codex/skills`, including copies originally seeded from the product template.
 - Portfolio, watchlist, and stock plans.
 - Investment model and trading strategies.
 - Method notes and review viewpoints.
 - Behavior events and method-change candidates.
 - User-created composite indicator YAML or sandbox scripts.
 - Review artifacts and generated reports.
+
+The template is a seed and an optional update catalog, not the authority for an existing Workspace. Compatibility checks may report that a newer template version exists, but they do not replace user-evolved Skills. Hard guarantees such as scope, confirmation, audit, scheduler gates, and push behavior are enforced by the service/MCP layer.
 
 The table-level split is defined in [table-ownership.md](./table-ownership.md).
 

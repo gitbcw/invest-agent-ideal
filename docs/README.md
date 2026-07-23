@@ -109,7 +109,7 @@ Repeatable operational actions are kept as project-only skills under `.codex/ski
 
 Long runbooks that were formerly under `docs/` have been moved into the corresponding skill `references/` directory so the execution path and detailed operating notes stay together.
 
-火山云当前操作入口是 `.codex/skills/volcano-ops/references/server-deployment.md`。普通版本只走代码发布；真实 Workspace 升级需同时遵循 [workspace-compatibility.md](./workspace-compatibility.md) 的逐用户预检、备份、迁移和单点验收。
+火山云当前操作入口是 `.codex/skills/volcano-ops/references/server-deployment.md`。普通版本只走代码发布；真实 Workspace 的模板差异只读报告，不自动覆盖。明确采用具体模板资产时，需同时遵循 [workspace-compatibility.md](./workspace-compatibility.md) 的逐用户、逐文件确认、备份和单点验收。
 
 ### Intent Pack
 

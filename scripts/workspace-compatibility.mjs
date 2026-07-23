@@ -4,6 +4,8 @@ import path from "node:path";
 import process from "node:process";
 import {
   WORKSPACE_MIGRATION_CONFIRMATION,
+  WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION,
+  adoptWorkspaceTemplateAssets,
   discoverWorkspacePaths,
   inspectWorkspaceCompatibility,
   migrateWorkspaceCompatibility,
@@ -16,7 +18,7 @@ const templatePath = path.resolve(args["template-root"] || process.env.WORKSPACE
 const selectedUser = args.user;
 const jsonOutput = args.json === "true";
 
-if (!new Set(["preflight", "apply"]).has(command)) {
+if (!new Set(["preflight", "apply", "adopt"]).has(command)) {
   fail(`unknown command: ${command}`);
 }
 
@@ -41,7 +43,7 @@ if (command === "preflight") {
     printPreflight(reports);
   }
   if (reports.some((report) => report.status === "blocked")) process.exitCode = 2;
-} else {
+} else if (command === "apply") {
   const backupRootValue = args["backup-root"];
   if (!backupRootValue) fail("apply requires --backup-root=/absolute/path");
   if (!path.isAbsolute(backupRootValue)) fail("apply backup root must be absolute");
@@ -67,6 +69,35 @@ if (command === "preflight") {
       console.log(`${result.workspaceId}: ${result.changed ? `updated ${result.changes.length} managed assets; backup=${result.backupPath}` : "already ready"}`);
     }
   }
+} else {
+  const backupRootValue = args["backup-root"];
+  const assets = (args.assets || "").split(",").map((value) => value.trim()).filter(Boolean);
+  if (!backupRootValue) fail("adopt requires --backup-root=/absolute/path");
+  if (!path.isAbsolute(backupRootValue)) fail("adopt backup root must be absolute");
+  if (assets.length === 0) fail("adopt requires --assets=<relative-path>[,<relative-path>]");
+  if (args.confirm !== WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION) {
+    fail(`adopt requires --confirm=${WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION}`);
+  }
+  const runId = args["run-id"] || timestampId();
+  const results = [];
+  for (const workspacePath of workspacePaths) {
+    results.push(await adoptWorkspaceTemplateAssets({
+      workspacePath,
+      templatePath,
+      backupRoot: backupRootValue,
+      confirmation: args.confirm,
+      relativePaths: assets,
+      runId,
+    }));
+  }
+  if (jsonOutput) {
+    console.log(JSON.stringify({ workspaceRoot, templatePath, runId, assets, results }, null, 2));
+  } else {
+    console.log(`Workspace template adoption run: ${runId}`);
+    for (const result of results) {
+      console.log(`${result.workspaceId}: ${result.changed ? `adopted ${result.changes.length} explicit template assets; backup=${result.backupPath}` : "selected assets already match"}`);
+    }
+  }
 }
 
 function parseArgs(values) {
@@ -82,9 +113,12 @@ function parseArgs(values) {
 
 function printPreflight(reports) {
   for (const report of reports) {
-    console.log(`${report.workspaceId}: ${report.status}; managed_changes=${report.managedAssetChanges.length}; blockers=${report.blockers.length}; warnings=${report.warnings.length}`);
+    console.log(`${report.workspaceId}: ${report.status}; managed_changes=${report.managedAssetChanges.length}; template_updates=${report.availableTemplateUpdates.length}; blockers=${report.blockers.length}; warnings=${report.warnings.length}`);
     for (const change of report.managedAssetChanges) {
       console.log(`  ${change.action} ${change.relativePath}`);
+    }
+    for (const change of report.availableTemplateUpdates) {
+      console.log(`  AVAILABLE ${change.action} ${change.relativePath}`);
     }
     for (const blocker of report.blockers) console.log(`  BLOCKED ${blocker}`);
     for (const warning of report.warnings) console.log(`  WARN ${warning}`);
