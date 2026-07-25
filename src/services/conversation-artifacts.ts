@@ -16,6 +16,7 @@ export const ARTIFACT_PREVIEWABLE_MIME_TYPES = [
   "application/pdf",
   "text/plain",
   "text/markdown",
+  "text/html",
   "application/json",
   "text/csv",
 ] as const;
@@ -29,6 +30,8 @@ const EXT_MIME_MAP: Record<string, string> = {
   ".pdf": "application/pdf",
   ".md": "text/markdown",
   ".markdown": "text/markdown",
+  ".html": "text/html",
+  ".htm": "text/html",
   ".txt": "text/plain",
   ".json": "application/json",
   ".csv": "text/csv",
@@ -42,6 +45,7 @@ const MIME_PREVIEW_MODE: Record<string, ConversationArtifact["previewMode"]> = {
   "application/pdf": "pdf",
   "text/plain": "text",
   "text/markdown": "markdown",
+  "text/html": "html",
   "application/json": "text",
   "text/csv": "table",
 };
@@ -54,6 +58,7 @@ const KIND_BY_MIME: Record<string, ConversationArtifact["kind"]> = {
   "application/pdf": "document",
   "text/plain": "data",
   "text/markdown": "report",
+  "text/html": "report",
   "application/json": "data",
   "text/csv": "data",
 };
@@ -61,6 +66,7 @@ const KIND_BY_MIME: Record<string, ConversationArtifact["kind"]> = {
 const TEXT_MIME_TYPES = new Set([
   "text/plain",
   "text/markdown",
+  "text/html",
   "application/json",
   "text/csv",
   "image/svg+xml",
@@ -68,6 +74,10 @@ const TEXT_MIME_TYPES = new Set([
 
 const MAX_PUBLISH_BYTES = 15 * 1024 * 1024;
 const MAX_INLINE_BYTES = 15 * 1024 * 1024;
+// HTML renders inside a sandboxed Portal iframe, so it gets a much tighter
+// cap than binary media: it is meant for static document previews, not for
+// shipping large applications or embedded datasets.
+const MAX_HTML_BYTES = 1 * 1024 * 1024;
 const REPORT_ROOT = "reports";
 
 export interface ConversationArtifact {
@@ -77,7 +87,7 @@ export interface ConversationArtifact {
   mimeType: string;
   sizeBytes: number;
   kind: "report" | "chart" | "data" | "document";
-  previewMode: "markdown" | "image" | "pdf" | "text" | "table" | "unsupported";
+  previewMode: "markdown" | "html" | "image" | "pdf" | "text" | "table" | "unsupported";
   createdAt: string;
   checksum?: string;
 }
@@ -155,7 +165,8 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
   if (!fileStat.isFile()) {
     throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", relativePath);
   }
-  if (fileStat.size > MAX_PUBLISH_BYTES) {
+  const maxPublishBytes = inferredMime === "text/html" ? MAX_HTML_BYTES : MAX_PUBLISH_BYTES;
+  if (fileStat.size > maxPublishBytes) {
     throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(fileStat.size));
   }
 
@@ -163,7 +174,7 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
   const checksum = sha256Hex(raw);
   const { mimeType, sanitizedBase64 } = await prepareArtifactPayload(inferredMime, raw);
   const sizeBytes = sanitizedBase64 ? Buffer.from(sanitizedBase64, "base64").length : raw.length;
-  if (sizeBytes > MAX_PUBLISH_BYTES) {
+  if (sizeBytes > maxPublishBytes) {
     throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(sizeBytes));
   }
 
@@ -329,7 +340,8 @@ export async function readConversationArtifactPayload(input: {
   if (!fileStat.isFile()) {
     throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", record.relativePath);
   }
-  if (fileStat.size > MAX_INLINE_BYTES) {
+  const maxInlineBytes = record.mimeType === "text/html" ? MAX_HTML_BYTES : MAX_INLINE_BYTES;
+  if (fileStat.size > maxInlineBytes) {
     throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(fileStat.size));
   }
   const raw = await readFile(realTargetPath);
