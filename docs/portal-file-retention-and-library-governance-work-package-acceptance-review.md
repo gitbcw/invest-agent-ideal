@@ -59,3 +59,86 @@ Runtime 与 Portal UI 的主体实现已经存在，两个仓库均可构建，R
 - [ ] Phase C 仍需单独展示备份、quick_check、拟删除统计并取得明确确认；当前不得启用真实清理。
 - [x] 补 Portal 真实下载行为自动化验收。
 - [ ] 补真实 connector 联合删除状态与 offline 恢复的自动化验收。
+
+---
+
+## 2026-07-25 发布后复核
+
+### Acceptance Verdict
+
+Status: **Partial**
+
+阻塞发布的问题已经解决：Runtime `c97b176` 与 Portal `298175e` 均已从干净 release tree 完成普通代码发布，当前生产 `invest-agent` 与 `invest-agent-portal` 均在线，三个真实 connector 已重新注册。发布后四个 retention 只读命令成功，新版 `backfill --dry-run` 前后 report 完全一致，确认此前“dry-run 写分类”的缺陷已修复并上线。
+
+工作包仍不能标记为完整完成。生产当前只完成 additive schema、代码发布与只读盘点；60 个精选 Workspace 文件和 8 个历史附件候选尚未 apply，cleanup gate 仍为关闭状态，也未执行首次附件物理清理或 trash purge。根据工作包 Completion Definition，这些动作必须在备份、逐用户核对和负责人单独确认后执行，因此当前保持 `Partial` 是正确状态，而不是部署失败。
+
+### Changed Acceptance Status
+
+| 编号 | 当前状态 | 发布后证据与判断 |
+| --- | --- | --- |
+| D4 精选历史 | Partial | `backfill --dry-run` 扫描 17 个用户、62 个文件；60 个待注册、2 个已索引、0 错误。尚未 apply，因此生产文件树未完整纳入精选历史。 |
+| D9 删除结果 | Partial | 代码、自动化和隔离 Portal UI 已通过；仍未经真实 connector 执行有副作用的联合删除验收。 |
+| D15 首次清理门禁 | Partial | `cleanupEnabled=false`；附件 cleanup 与 trash dry-run 均扫描 0 条。8 个历史附件候选只在 backfill dry-run 中识别，未建立权威索引、未清理。首次 apply 仍需备份和明确确认。 |
+| D16 生产健康 | Pass | Runtime `/health` 正常；Portal `/login` 返回 200；PM2 两进程 online；111/dyk/mg connector 在 22:22 CST 注册成功。发布后未发现本工作包相关新 ERROR。 |
+| D17 数据保护 | Pass | Runtime/Portal `.env` 仍存在且权限为 `600`，修改时间早于本次发布；生产 SQLite `quick_check=ok`；data/workspaces 目录仍存在。发布采用代码发布路径，未执行 runtime-data apply。 |
+
+### Findings
+
+- **[P1] 生产数据阶段尚未完成。** 精选库 backfill 仍有 60 个待注册文件；8 个历史附件候选尚未回填。Completion Definition 中“现有用户精选历史完成幂等 backfill”尚未满足。
+- **[P1] 首次真实清理仍需单独授权。** 当前 cleanup gate 为关闭，且本次复核没有执行 `--apply`、附件物理删除或 trash purge。这符合生产门禁，但意味着 Phase C/D 尚未完成。
+- **[P2] Portal 健康检查手册与实现不一致。** 运维手册要求 `/api/portal/health`，生产该路由返回 404；`/login` 与 PM2 状态正常。应为 Portal 增加稳定健康端点或修正文档。
+- **[P2] Relay `MaxListenersExceededWarning` 仍属独立技术债。** 本次发布后日志未出现新告警，但此前浏览器验收已复现；不阻塞当前工作包的代码发布结论。
+
+### Verification Performed
+
+- `npm run retention:report`：attachments 0；artifacts 21（durable 1、reference-only 20、unclassified 0）；cleanup disabled。
+- `npm run retention:backfill -- --dry-run`：classification 扫描 0；Workspace 待注册 60；历史附件 cleanup candidates 8；0 errors。
+- dry-run 后再次执行 `retention:report`：结果与 dry-run 前完全一致，确认新版 dry-run 没有修改 artifact 行。
+- `npm run retention:cleanup -- --dry-run` 与 `npm run retention:trash -- --dry-run`：均扫描 0、删除 0、错误 0。
+- Runtime `/health`：`status=ok`；Portal `/login`：HTTP 200；PM2：`invest-agent`、`invest-agent-portal` online。
+- Connector 日志：`invest-agent-111`、`invest-agent-dyk`、`invest-agent-mg` 均在发布后重新注册；微信监听恢复。
+- SQLite 只读检查：`quick_check=ok`；未打印生产 `.env` 内容或任何 token。
+
+### Follow-Up Checklist
+
+- [x] 从可复现提交和干净 release tree 发布 Runtime 与 Portal。
+- [x] 发布后确认新版 `backfill --dry-run` 不再写 artifact 分类。
+- [x] 核对 Runtime/Portal 健康、PM2、三个 connector、SQLite 与 `.env` 保护状态。
+- [ ] 审阅 60 个精选文件的逐用户清单，完成备份后单独确认并执行 workspace backfill apply。
+- [ ] 审阅 8 个历史附件候选，确认归属与预期到期状态后执行 attachment index backfill apply。
+- [ ] 在备份、`quick_check`、拟删除统计和负责人明确确认后，才启用首次 cleanup；执行后关闭临时门禁或按正式策略留存。
+- [ ] 补真实 connector 删除状态与 offline 恢复验收。
+- [ ] 另行处理 Relay listener 告警，并统一 Portal 健康检查端点与运维手册。
+
+---
+
+## 2026-07-25 索引可见性修复
+
+### 修复结果
+
+此前 Portal 侧边栏只显示 1 个文件，并非代码回退，而是生产精选 Workspace 文件尚未写入 `conversation_artifacts` 索引。经只读盘点，旧的 22 条 `origin=legacy` 记录按设计保持 `reference_only/conversation_only`，没有将它们错误升级为永久库；真正缺失的是 60 个 `reports/**` 精选文件的 backfill 索引。
+
+已完成一次非破坏性修复：
+
+1. 生产 SQLite 备份：`data/backups/invest-agent.db.2026-07-25T14-33-14-936Z-file-retention.bak`，备份前 `quick_check=ok`。
+2. 执行 `retention:backfill -- --apply`，仅写入 artifact/attachment 索引，不移动、不删除任何文件。
+3. Workspace backfill：17 个用户、62 个文件扫描，60 条注册，2 条已存在，0 错误。
+4. 附件 backfill：8 条历史附件建立权威索引，标记为 cleanup candidate，但未物理删除。
+5. cleanup gate 仍为 `false`，未执行 cleanup/trash purge。
+
+### 修复后验证
+
+- 生产报告：artifacts 总数 83，`durable_library=61`，`reference_only=22`，`unclassified=0`。
+- 当前 111 Portal 页面侧边栏已恢复分类文档：日复盘 6 条、周复盘 3 条。
+- 原有对话内 SVG 查看/下载、Markdown 下载、“打开制品”按钮仍存在。
+- SQLite `quick_check=ok`，Runtime/Portal 进程未重启，未发生文件字节删除。
+
+### 当前结论
+
+索引可见性回退已修复。剩余 `Partial` 只涉及首次真实附件清理、回收站 purge、真实 connector 删除联合验收和 Relay 健康端点/监听器技术债；不再是 Portal 代码部署失败或版本回退问题。
+
+### HTTP 生产兼容约束
+
+火山云 Portal 使用固定公网 IP + HTTP，当前不具备域名备案条件，HTTPS 不能作为依赖或整改前提。生产复现确认 `crypto.subtle` 在该非安全上下文不可用，并导致 artifact checksum 校验抛错、界面永久停在“加载制品中...”。后续验收必须在实际 HTTP 入口覆盖图片 Lightbox、Markdown/HTML 文档、download-only 文件和附件读取；所有 checksum 实现必须支持非 secure context，所有异步异常必须进入可见错误/重试状态。
+
+Portal `09c5f4f` 已将 checksum 改为纯 JavaScript SHA-256，并为 artifact 异步加载增加可重试错误收敛；`npm test`、`npm run typecheck`、`npm run build` 通过。该提交已发布到火山云，生产 HTTP 入口实测 SVG 图片正常显示并提供下载按钮，侧边栏 Markdown 正常打开和渲染，浏览器不再出现 `crypto.subtle.digest` 错误。

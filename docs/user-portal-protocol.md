@@ -400,6 +400,7 @@ Runtime 侧的映射规则：
 - `report.asset.get` 的扩展名白名单不包含 `html`/`htm`：HTML 文档永远不会通过 legacy 同源路由 inline 返回，只能作为 artifact bytes 由 Portal 在受限 sandbox iframe 中预览。
 - Portal 遇到未知的 preview mode 必须降级为 `unsupported`。
 - 已删除（`ARTIFACT_DELETED`）或已过期（`ARTIFACT_EXPIRED`）的 artifact 不返回 bytes；对话卡片保留 descriptor，Portal 应显示对应状态而非 loading。
+- 生产 Portal 运行在火山云固定公网 IP 的 HTTP 入口（当前为 `http://118.145.115.197:22649`）；由于无域名备案，HTTPS 不是前置条件。预览、下载、附件读取和 checksum 校验必须在非安全 HTTP 上工作，前端不得依赖 `crypto.subtle` 等仅在 secure context 提供的 API；任何异步读取异常必须落到可见错误/重试状态，不能永久显示 loading。
 
 ## Attachment Get
 

@@ -31,6 +31,7 @@
 - PM2 进程：`invest-agent`
 - runtime 内部端口：`127.0.0.1:22655`
 - Portal：`http://118.145.115.197:22649`
+- 生产 Portal 必须支持固定公网 IP + HTTP。当前火山云未配置域名备案，不能把 HTTPS 作为运行前提；Portal 前端不得依赖 secure-context-only API（例如 `crypto.subtle`），HTTP 下的预览、下载和附件校验必须可用。
 - Relay：`ws://127.0.0.1:22650/`
 - Platform tunnel：
 

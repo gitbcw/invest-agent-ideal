@@ -51,6 +51,7 @@ Runtime 侧已落地的代码：
 - 侧栏删除只作用于当前 user/instance 的永久库文件，确认后立即从 UI 消失，30 天内可由运维恢复，之后才物理清除。
 - 跨用户、跨实例、路径逃逸、symlink、删除其他用户和重复清理均被拒绝或安全幂等。
 - Runtime/Portal 测试、类型检查、构建、迁移升级测试和桌面浏览器验收通过。
+- 火山云生产 Portal 必须在固定公网 IP + HTTP（非 secure context）下完整支持图片预览、文档打开、下载与 checksum 校验；不得把 HTTPS 或 `crypto.subtle` 作为功能前提，异步失败不得永久停留在 loading。
 - 火山云代码和 additive schema 发布后，生产数据先备份并完成 dry-run；未经单独确认不执行首次批量物理删除。
 
 ## 2. 当前实现审计结论
