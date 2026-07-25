@@ -313,6 +313,47 @@ interface ConversationChatResult {
 
 第一版不要求 connector 返回 chunk。Portal 收到完整 `assistantMessage.content` 后，在前端做打字机式呈现。
 
+## Artifact Library List
+
+Portal 右侧文件树不是 workspace 目录浏览，而是 Runtime 基于 artifact 权威索引生成的精选只读文档库。Portal 通过 `artifact.library.list` 向当前 session 的 connector 拉取一页描述符，树刷新和"加载更多"都走这一条命令；文件内容读取继续走 `artifact.get`。
+
+```ts
+interface ArtifactLibraryListRequest {
+  cursor?: string;
+  limit?: number; // 默认 200，最大 500
+}
+
+interface ArtifactLibraryItem {
+  artifactId: string;
+  title: string;
+  fileName: string;
+  displayPath: string; // reports/ 以下的安全相对展示路径，不含 reports 前缀
+  directorySegments: string[];
+  mimeType: "text/markdown" | "text/html";
+  previewMode: "markdown" | "html";
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+  checksum?: string;
+}
+
+interface ArtifactLibraryListResult {
+  items: ArtifactLibraryItem[];
+  nextCursor?: string;
+}
+```
+
+约束：
+
+- `userId` / `instanceId` 由 connector 从已注册 session scope 注入，payload 不接受浏览器提交；payload 只允许 `cursor` 和 `limit` 两个字段，任何其他字段（尤其是 path / glob / 目录遍历类参数）都返回 `INVALID_REQUEST` 确定错误，不做静默忽略。
+- `limit` 默认 200，超过 500 时 clamp 到 500，不报错；非数字由 connector 拒绝（`INVALID_REQUEST`）。
+- cursor 不透明（base64url 编码的 keyset 位置），排序固定为 `updated_at DESC, artifact_id DESC`，保证翻页无重复、无漏项；无法解码或形状不符的 cursor 返回 `fail`，`error.code = "ARTIFACT_INVALID_CURSOR"`，`retryable = false`。
+- 精选准入由 Runtime 服务层权威执行：`source ∈ {artifacts.publish, reviews.save}`（排除 `legacy_path`）、`previewMode ∈ {markdown, html}`、路径在 `reports/**` 下、无隐藏路径段、文件名不属于固定临时/备份模式（`.#` 前缀，`~`/`.tmp`/`.temp`/`.bak`/`.swp` 后缀，大小写不敏感），且文件当前存在、是普通文件、realpath 仍在真实 reports 根内（防 symlink 逃逸）。Portal 不自行判断文件资格。
+- 同一 `displayPath` 多条发布记录只返回最新有效版本；最新记录不合格时回退到同路径最近一个仍有效的正式版本，但绝不回退到 legacy 来源；同路径全部失效则该路径不出现。
+- 返回项是严格白名单描述符：不含 absolute path、`userId`、`instanceId`、`conversationId`、`projectId`、内部 `scope` 或 `source`，列表阶段不读取文件正文。`displayPath` 仅用于构造虚拟树展示，不能当作读取路径回传。
+- 每次 list 由 Runtime 写入一条聚合审计事件（scope、返回数量、分页信息），不为每个树节点写事件。
+- capability 列表显式包含 `artifact.library.list`；旧 connector 不支持时 Portal 显示"文件目录暂时不可用"，不影响聊天与已打开 artifact。
+
 ## Artifact Preview
 
 一等 artifact 通过 `artifact.get` / `artifact.publish.legacy` 通道传输（base64 bytes + checksum），不经过任何同源 inline 路由。助手消息通过 `metadata.artifacts` 携带 descriptor。

@@ -10,6 +10,7 @@ import { AttachmentStoreError } from "../lib/attachment-store.js";
 import { WorkspaceReportAssetError, readWorkspaceReportAsset } from "../services/workspace-report-assets.js";
 import {
   ConversationArtifactError,
+  listCuratedArtifactLibrary,
   logArtifactEvent,
   publishLegacyPathArtifact,
   readConversationArtifactPayload,
@@ -24,6 +25,7 @@ const TYPES = {
   CONVERSATION_CHAT: "conversation.chat",
   REPORT_ASSET_GET: "report.asset.get",
   ARTIFACT_GET: "artifact.get",
+  ARTIFACT_LIBRARY_LIST: "artifact.library.list",
   ARTIFACT_PUBLISH_LEGACY: "artifact.publish.legacy",
   ARTIFACT_EVENT: "artifact.event",
 } as const;
@@ -236,6 +238,31 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         throw error;
       }
     }
+    case TYPES.ARTIFACT_LIBRARY_LIST: {
+      // The library list is scope-only: the payload may carry pagination
+      // (`cursor`, `limit`) and nothing else. Any other field — especially
+      // path/glob-like parameters — is rejected deterministically instead of
+      // being silently ignored, so a malformed client fails loudly.
+      const payload = (message.payload ?? {}) as Record<string, unknown>;
+      for (const key of Object.keys(payload)) {
+        if (key !== "cursor" && key !== "limit") {
+          return finish(fail(message.type, message.requestId, "INVALID_REQUEST", `unsupported payload field: ${key}`, false));
+        }
+      }
+      if (payload.cursor !== undefined && typeof payload.cursor !== "string") {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "cursor must be a string", false));
+      }
+      if (payload.limit !== undefined && typeof payload.limit !== "number") {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "limit must be a number", false));
+      }
+      const result = await listCuratedArtifactLibrary({
+        userId: scope.userId,
+        instanceId: scope.instanceId,
+        cursor: payload.cursor as string | undefined,
+        limit: payload.limit as number | undefined,
+      });
+      return finish(ok(message.type, message.requestId, result));
+    }
     case TYPES.ARTIFACT_PUBLISH_LEGACY: {
       const record = await publishLegacyPathArtifact({
         userId: scope.userId,
@@ -390,7 +417,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.publish.legacy", "artifact.event"],
+        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -791,4 +791,366 @@ test("SVG artifact published inside a turn binds to the assistant message artifa
   assert.equal(messageArtifacts[0].mimeType, "image/svg+xml");
   assert.equal(messageArtifacts[0].previewMode, "image");
   assert.equal(messageArtifacts[0].checksum, record.checksum);
+});
+
+// --- artifact.library.list curated listing ---------------------------------
+
+async function createLibraryUser(ctx: TestContext, userId: string): Promise<string> {
+  const workspace = path.join(ctx.workspaceRoot, userId);
+  await mkdir(path.join(workspace, "reports", "daily"), { recursive: true });
+  return workspace;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function publishLibraryMarkdown(
+  ctx: TestContext,
+  input: {
+    userId: string;
+    instanceId: string;
+    relativePath: string;
+    content?: string;
+    source?: "artifacts.publish" | "reviews.save" | "legacy_path";
+  },
+): Promise<ArtifactModuleType.ConversationArtifactRecord> {
+  const workspace = path.join(ctx.workspaceRoot, input.userId);
+  const target = path.join(workspace, input.relativePath);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, input.content ?? `# ${input.relativePath}\n`);
+  return ctx.mod.publishConversationArtifact({
+    userId: input.userId,
+    instanceId: input.instanceId,
+    relativePath: input.relativePath,
+    scope: {
+      projectId: "invest-agent",
+      assistantId: input.instanceId,
+      source: input.source ?? "artifacts.publish",
+    },
+  });
+}
+
+/** Inserts a row that publish would have rejected, to test list-time curation. */
+function insertLibraryRow(
+  ctx: TestContext,
+  input: {
+    userId: string;
+    instanceId: string;
+    artifactId: string;
+    relativePath: string;
+    fileName?: string;
+    source?: string;
+    previewMode?: string;
+    mimeType?: string;
+    updatedAt?: string;
+  },
+): void {
+  const now = new Date().toISOString();
+  ctx.sqlite
+    .prepare(
+      `INSERT INTO conversation_artifacts (
+         artifact_id, user_id, instance_id, assistant_id, source, kind,
+         preview_mode, title, file_name, mime_type, relative_path, size_bytes,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      input.artifactId,
+      input.userId,
+      input.instanceId,
+      input.instanceId,
+      input.source ?? "artifacts.publish",
+      "report",
+      input.previewMode ?? "markdown",
+      input.fileName ?? input.relativePath.split("/").pop() ?? "row.md",
+      input.fileName ?? input.relativePath.split("/").pop() ?? "row.md",
+      input.mimeType ?? "text/markdown",
+      input.relativePath,
+      10,
+      now,
+      input.updatedAt ?? now,
+    );
+}
+
+test("library list isolates artifacts by user and instance", async () => {
+  const ctx = await getCtx();
+  await createLibraryUser(ctx, "lib-iso-a");
+  await createLibraryUser(ctx, "lib-iso-b");
+  const mine = await publishLibraryMarkdown(ctx, {
+    userId: "lib-iso-a",
+    instanceId: "inst-1",
+    relativePath: "reports/daily/mine.md",
+  });
+  await publishLibraryMarkdown(ctx, {
+    userId: "lib-iso-a",
+    instanceId: "inst-2",
+    relativePath: "reports/daily/other-instance.md",
+  });
+  await publishLibraryMarkdown(ctx, {
+    userId: "lib-iso-b",
+    instanceId: "inst-1",
+    relativePath: "reports/daily/other-user.md",
+  });
+
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-iso-a", instanceId: "inst-1" });
+  assert.deepEqual(result.items.map((item) => item.artifactId), [mine.artifactId]);
+});
+
+test("library list excludes legacy, image, pdf, text and table artifacts", async () => {
+  const ctx = await getCtx();
+  await createLibraryUser(ctx, "lib-excl");
+  const userId = "lib-excl";
+  const instanceId = "lib-excl";
+  const scope = { projectId: "invest-agent", assistantId: instanceId };
+
+  const validPublish = await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: "reports/daily/valid.md" });
+  const validReview = await publishLibraryMarkdown(ctx, {
+    userId,
+    instanceId,
+    relativePath: "reports/daily/review.md",
+    source: "reviews.save",
+  });
+  await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: "reports/daily/legacy.md", source: "legacy_path" });
+
+  const workspace = path.join(ctx.workspaceRoot, userId);
+  const svgTarget = path.join(workspace, "reports", "daily", "chart.svg");
+  await writeFile(svgTarget, VALID_SVG);
+  await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/chart.svg", scope });
+
+  const pdfTarget = path.join(workspace, "reports", "daily", "doc.pdf");
+  await writeFile(pdfTarget, Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\n"));
+  await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/doc.pdf", scope });
+
+  const txtTarget = path.join(workspace, "reports", "daily", "notes.txt");
+  await writeFile(txtTarget, "plain text");
+  await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/notes.txt", scope });
+
+  const csvTarget = path.join(workspace, "reports", "daily", "table.csv");
+  await writeFile(csvTarget, "a,b\n1,2\n");
+  await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/table.csv", scope });
+
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  assert.deepEqual(
+    result.items.map((item) => item.artifactId).sort(),
+    [validPublish.artifactId, validReview.artifactId].sort(),
+  );
+});
+
+test("library list excludes non-reports, absolute, traversal, hidden and temp/backup paths", async () => {
+  const ctx = await getCtx();
+  await createLibraryUser(ctx, "lib-paths");
+  const valid = await publishLibraryMarkdown(ctx, {
+    userId: "lib-paths",
+    instanceId: "lib-paths",
+    relativePath: "reports/daily/valid.md",
+  });
+
+  const badPaths = [
+    "docs/outside.md", // outside reports
+    "/etc/passwd.md", // absolute path
+    "reports/../reports/evil.md", // parent traversal
+    "reports/daily/.hidden.md", // hidden file name
+    "reports/.secret/notes.md", // hidden directory segment
+    "reports/daily/.#lock.md", // editor lock file
+    "reports/daily/notes~", // backup suffix
+    "reports/daily/scratch.tmp",
+    "reports/daily/scratch.TEMP", // suffix match is case-insensitive
+    "reports/daily/scratch.bak",
+    "reports/daily/scratch.swp",
+  ];
+  badPaths.forEach((relativePath, index) =>
+    insertLibraryRow(ctx, {
+      userId: "lib-paths",
+      instanceId: "lib-paths",
+      artifactId: `art_bad_${index}`,
+      relativePath,
+    }),
+  );
+
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-paths", instanceId: "lib-paths" });
+  assert.deepEqual(result.items.map((item) => item.artifactId), [valid.artifactId]);
+});
+
+test("library list excludes artifacts whose file escapes the reports root via symlink", async () => {
+  const ctx = await getCtx();
+  const workspace = await createLibraryUser(ctx, "lib-sym");
+  const outside = path.join(ctx.root, "lib-sym-outside.md");
+  await writeFile(outside, "# escaped");
+  await symlink(outside, path.join(workspace, "reports", "daily", "escape.md"));
+  insertLibraryRow(ctx, {
+    userId: "lib-sym",
+    instanceId: "lib-sym",
+    artifactId: "art_sym_escape",
+    relativePath: "reports/daily/escape.md",
+  });
+  const valid = await publishLibraryMarkdown(ctx, {
+    userId: "lib-sym",
+    instanceId: "lib-sym",
+    relativePath: "reports/daily/ok.md",
+  });
+
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-sym", instanceId: "lib-sym" });
+  assert.deepEqual(result.items.map((item) => item.artifactId), [valid.artifactId]);
+});
+
+test("library list keeps the newest valid formal version per path and never falls back to legacy", async () => {
+  const ctx = await getCtx();
+  const workspace = await createLibraryUser(ctx, "lib-ver");
+  const userId = "lib-ver";
+  const instanceId = "lib-ver";
+
+  await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: "reports/daily/report.md", content: "v1" });
+  await sleep(5);
+  const v2 = await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: "reports/daily/report.md", content: "v2" });
+
+  let result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  assert.deepEqual(result.items.map((item) => item.artifactId), [v2.artifactId]);
+
+  // A legacy re-publish of the same path is the newest record, but legacy
+  // sources never enter the tree: the listing falls back to the newest
+  // still-valid formal version (v2), not to the legacy record.
+  await sleep(5);
+  const legacy = await publishLibraryMarkdown(ctx, {
+    userId,
+    instanceId,
+    relativePath: "reports/daily/report.md",
+    content: "v2",
+    source: "legacy_path",
+  });
+  result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  assert.deepEqual(result.items.map((item) => item.artifactId), [v2.artifactId]);
+  assert.notEqual(result.items[0].artifactId, legacy.artifactId);
+
+  // A path whose only record is legacy never appears at all.
+  await publishLibraryMarkdown(ctx, {
+    userId,
+    instanceId,
+    relativePath: "reports/daily/only-legacy.md",
+    source: "legacy_path",
+  });
+  result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  assert.deepEqual(result.items.map((item) => item.artifactId), [v2.artifactId]);
+
+  // Once the file disappears, every version of the path is invalid and the
+  // path drops out of the listing entirely.
+  await unlink(path.join(workspace, "reports", "daily", "report.md"));
+  result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  assert.deepEqual(result.items, []);
+});
+
+test("library list paginates with an opaque cursor without duplicates or gaps", async () => {
+  const ctx = await getCtx();
+  await createLibraryUser(ctx, "lib-page");
+  const userId = "lib-page";
+  const instanceId = "lib-page";
+  const published: ArtifactModuleType.ConversationArtifactRecord[] = [];
+  for (let index = 0; index < 5; index += 1) {
+    published.push(
+      await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: `reports/daily/page-${index}.md` }),
+    );
+    await sleep(5);
+  }
+
+  const seen: string[] = [];
+  const pageSizes: number[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId, cursor, limit: 2 });
+    pageSizes.push(page.items.length);
+    seen.push(...page.items.map((item) => item.artifactId));
+    cursor = page.nextCursor;
+  } while (cursor);
+
+  assert.deepEqual(pageSizes, [2, 2, 1]);
+  assert.equal(new Set(seen).size, 5);
+  assert.deepEqual([...seen].sort(), published.map((record) => record.artifactId).sort());
+
+  // Page order must follow the (updated_at DESC, artifact_id DESC) keyset.
+  const expectedOrder = (
+    ctx.sqlite
+      .prepare(
+        `SELECT artifact_id AS artifactId FROM conversation_artifacts
+         WHERE user_id = ? AND instance_id = ?
+         ORDER BY updated_at DESC, artifact_id DESC`
+      )
+      .all(userId, instanceId) as Array<{ artifactId: string }>
+  ).map((row) => row.artifactId);
+  assert.deepEqual(seen, expectedOrder);
+
+  // Oversized limits are clamped, not rejected.
+  const all = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId, limit: 100000 });
+  assert.equal(all.items.length, 5);
+  assert.equal(all.nextCursor, undefined);
+});
+
+test("library list rejects malformed cursors with a deterministic error", async () => {
+  const ctx = await getCtx();
+  await createLibraryUser(ctx, "lib-cursor");
+  await publishLibraryMarkdown(ctx, {
+    userId: "lib-cursor",
+    instanceId: "lib-cursor",
+    relativePath: "reports/daily/doc.md",
+  });
+
+  const badCursors = [
+    "not-a-cursor",
+    Buffer.from("[]", "utf8").toString("base64url"),
+    Buffer.from("{}", "utf8").toString("base64url"),
+    Buffer.from(JSON.stringify({ u: 1, a: "x" }), "utf8").toString("base64url"),
+  ];
+  for (const cursor of badCursors) {
+    await assert.rejects(
+      () => ctx.mod.listCuratedArtifactLibrary({ userId: "lib-cursor", instanceId: "lib-cursor", cursor }),
+      (error: unknown) => expectErrorCode(error, "ARTIFACT_INVALID_CURSOR"),
+    );
+  }
+});
+
+test("library list returns only whitelisted descriptor fields and records one aggregate audit event", async () => {
+  const ctx = await getCtx();
+  await createLibraryUser(ctx, "lib-fields");
+  await publishLibraryMarkdown(ctx, {
+    userId: "lib-fields",
+    instanceId: "lib-fields",
+    relativePath: "reports/daily/fields.md",
+  });
+
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-fields", instanceId: "lib-fields" });
+  assert.equal(result.items.length, 1);
+  const item = result.items[0];
+  assert.deepEqual(
+    Object.keys(item).sort(),
+    [
+      "artifactId",
+      "checksum",
+      "createdAt",
+      "directorySegments",
+      "displayPath",
+      "fileName",
+      "mimeType",
+      "previewMode",
+      "sizeBytes",
+      "title",
+      "updatedAt",
+    ].sort(),
+  );
+  assert.equal(item.displayPath, "daily/fields.md");
+  assert.deepEqual(item.directorySegments, ["daily"]);
+  assert.ok(!item.displayPath.startsWith("reports/"));
+  assert.ok(!path.isAbsolute(item.displayPath));
+  assert.equal(item.mimeType, "text/markdown");
+  assert.equal(item.previewMode, "markdown");
+  // The list never ships file contents or internal scope fields.
+  assert.ok(!("content" in item) && !("base64" in item));
+  const serialized = JSON.stringify(result);
+  assert.ok(!serialized.includes("lib-fields"));
+  assert.ok(!serialized.includes(ctx.workspaceRoot));
+
+  const events = ctx.sqlite
+    .prepare("SELECT event, reason FROM conversation_artifact_events WHERE artifact_id = 'library.list' AND user_id = ?")
+    .all("lib-fields") as Array<{ event: string; reason: string }>;
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "library.list");
+  assert.ok(events[0].reason.includes("count=1"));
 });

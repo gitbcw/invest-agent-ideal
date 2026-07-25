@@ -5,7 +5,7 @@ import path from "node:path";
 import { sqlite } from "../db/index.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import { scanForUnsafeContent } from "./svg-sanitizer.js";
-import { recordArtifactEvent } from "./artifact-events.js";
+import { recordArtifactEvent, recordArtifactLibraryListEvent } from "./artifact-events.js";
 import { getCurrentTurnId } from "./conversation-turns.js";
 
 export const ARTIFACT_PREVIEWABLE_MIME_TYPES = [
@@ -116,7 +116,8 @@ export class ConversationArtifactError extends Error {
       | "ARTIFACT_UNSUPPORTED"
       | "ARTIFACT_TOO_LARGE"
       | "ARTIFACT_UNSAFE"
-      | "ARTIFACT_SCOPE_MISMATCH",
+      | "ARTIFACT_SCOPE_MISMATCH"
+      | "ARTIFACT_INVALID_CURSOR",
     message: string,
   ) {
     super(`${code}:${message}`);
@@ -465,6 +466,268 @@ export function findArtifactsForTurn(input: {
     )
     .all(input.userId, input.instanceId, input.conversationId, input.turnId) as ConversationArtifactRecord[];
   return rows;
+}
+
+export interface ArtifactLibraryItem {
+  artifactId: string;
+  title: string;
+  fileName: string;
+  /** Safe display path under `reports/`, without the `reports/` prefix. */
+  displayPath: string;
+  directorySegments: string[];
+  mimeType: string;
+  previewMode: "markdown" | "html";
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+  checksum?: string;
+}
+
+export interface ArtifactLibraryListResult {
+  items: ArtifactLibraryItem[];
+  nextCursor?: string;
+}
+
+const LIBRARY_DEFAULT_LIMIT = 200;
+const LIBRARY_MAX_LIMIT = 500;
+const LIBRARY_TEMP_BACKUP_SUFFIXES = ["~", ".tmp", ".temp", ".bak", ".swp"];
+
+interface LibraryRow {
+  artifactId: string;
+  source: string;
+  previewMode: string;
+  title: string;
+  fileName: string;
+  mimeType: string;
+  relativePath: string;
+  sizeBytes: number;
+  checksum: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface LibraryCursor {
+  u: string;
+  a: string;
+}
+
+/**
+ * Lists the curated, read-only artifact library for one user + instance. The
+ * library is a virtual document tree built from the authoritative artifact
+ * index — it is NOT a workspace directory listing. A record qualifies only
+ * when ALL of the following hold:
+ *
+ * 1. Exact `user_id + instance_id` match (scope is injected by the caller).
+ * 2. `source` is `artifacts.publish` or `reviews.save` (never `legacy_path`).
+ * 3. `preview_mode` is `markdown` or `html`.
+ * 4. `relative_path` passes the same `normalizeReportPath` validation as
+ *    publish/read and round-trips unchanged.
+ * 5. No path segment starts with `.`, and the file name does not match the
+ *    fixed temp/backup patterns (`.#` prefix; `~`/`.tmp`/`.temp`/`.bak`/`.swp`
+ *    suffix, case-insensitive).
+ * 6. The file still exists, is a regular file, stays within the real reports
+ *    root after `realpath` (no symlink escape), and is within the size cap.
+ *
+ * When one `relative_path` has several publish records, versions are walked
+ * newest-first and the first version passing every rule wins. If the newest
+ * record is disqualified (e.g. a legacy_path re-publish), the listing falls
+ * back to the newest still-valid formal version; it never falls back to a
+ * legacy record, and a path whose versions all fail is omitted entirely.
+ *
+ * Pagination is keyset-based on `(updated_at DESC, artifact_id DESC)` with an
+ * opaque base64url(JSON) cursor. `limit` defaults to 200 and is clamped to
+ * [1, 500]. An undecodable or malformed cursor throws
+ * `ARTIFACT_INVALID_CURSOR`. The list never reads file contents — it returns
+ * whitelisted descriptors only (no absolute paths, userId, instanceId,
+ * conversationId, projectId, scope or source). Each call records one
+ * aggregate `library.list` audit event, never one event per item.
+ */
+export async function listCuratedArtifactLibrary(input: {
+  userId: string;
+  instanceId: string;
+  cursor?: string;
+  limit?: number;
+}): Promise<ArtifactLibraryListResult> {
+  const cursor = input.cursor && input.cursor.trim() ? decodeLibraryCursor(input.cursor.trim()) : undefined;
+  const limit = normalizeLibraryLimit(input.limit);
+
+  const workspacePath = resolveWorkspacePath(input.userId);
+  const reportsPath = path.join(workspacePath, REPORT_ROOT);
+  let realReportsPath: string;
+  try {
+    realReportsPath = await realpath(reportsPath);
+  } catch {
+    recordArtifactLibraryListEvent({
+      userId: input.userId,
+      instanceId: input.instanceId,
+      itemCount: 0,
+      limit,
+      hasCursor: Boolean(cursor),
+      hasNextCursor: false,
+    });
+    return { items: [] };
+  }
+
+  const rows = sqlite
+    .prepare(
+      `SELECT
+         artifact_id AS artifactId,
+         source,
+         preview_mode AS previewMode,
+         title,
+         file_name AS fileName,
+         mime_type AS mimeType,
+         relative_path AS relativePath,
+         size_bytes AS sizeBytes,
+         checksum,
+         created_at AS createdAt,
+         updated_at AS updatedAt
+       FROM conversation_artifacts
+       WHERE user_id = ? AND instance_id = ?
+       ORDER BY updated_at DESC, artifact_id DESC`
+    )
+    .all(input.userId, input.instanceId) as LibraryRow[];
+
+  // Rows arrive newest-first, so grouping in iteration order keeps each
+  // path's versions sorted newest -> oldest for the fallback walk below.
+  const versionsByPath = new Map<string, LibraryRow[]>();
+  for (const row of rows) {
+    const versions = versionsByPath.get(row.relativePath);
+    if (versions) versions.push(row);
+    else versionsByPath.set(row.relativePath, [row]);
+  }
+
+  const curated: ArtifactLibraryItem[] = [];
+  for (const versions of versionsByPath.values()) {
+    for (const version of versions) {
+      if (version.source !== "artifacts.publish" && version.source !== "reviews.save") continue;
+      if (version.previewMode !== "markdown" && version.previewMode !== "html") continue;
+      if (!isCuratedLibraryPath(version.relativePath)) continue;
+      if (!(await isLibraryFileValid(realReportsPath, workspacePath, version.relativePath, version.mimeType))) continue;
+      curated.push(toLibraryItem(version));
+      break;
+    }
+  }
+
+  curated.sort((a, b) => {
+    if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1;
+    if (a.artifactId !== b.artifactId) return a.artifactId < b.artifactId ? 1 : -1;
+    return 0;
+  });
+
+  const afterCursor = cursor
+    ? curated.filter(
+        (item) => item.updatedAt < cursor.u || (item.updatedAt === cursor.u && item.artifactId < cursor.a),
+      )
+    : curated;
+  const items = afterCursor.slice(0, limit);
+  const last = items[items.length - 1];
+  const nextCursor =
+    afterCursor.length > items.length && last
+      ? encodeLibraryCursor({ u: last.updatedAt, a: last.artifactId })
+      : undefined;
+
+  recordArtifactLibraryListEvent({
+    userId: input.userId,
+    instanceId: input.instanceId,
+    itemCount: items.length,
+    limit,
+    hasCursor: Boolean(cursor),
+    hasNextCursor: Boolean(nextCursor),
+  });
+
+  return nextCursor ? { items, nextCursor } : { items };
+}
+
+function toLibraryItem(row: LibraryRow): ArtifactLibraryItem {
+  const displayPath = row.relativePath.slice(REPORT_ROOT.length + 1);
+  return {
+    artifactId: row.artifactId,
+    title: row.title,
+    fileName: row.fileName,
+    displayPath,
+    directorySegments: displayPath.split("/").slice(0, -1),
+    mimeType: row.mimeType,
+    previewMode: row.previewMode as ArtifactLibraryItem["previewMode"],
+    sizeBytes: row.sizeBytes,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    checksum: row.checksum ?? undefined,
+  };
+}
+
+function isCuratedLibraryPath(relativePath: string): boolean {
+  let normalized: string;
+  try {
+    normalized = normalizeReportPath(relativePath);
+  } catch {
+    return false;
+  }
+  if (normalized !== relativePath) return false;
+  const segments = normalized.split("/").slice(1); // drop the "reports" root
+  if (segments.length === 0) return false;
+  for (const segment of segments) {
+    if (segment.startsWith(".")) return false;
+  }
+  const fileName = segments[segments.length - 1];
+  if (fileName.startsWith(".#")) return false;
+  const lowerFileName = fileName.toLowerCase();
+  if (LIBRARY_TEMP_BACKUP_SUFFIXES.some((suffix) => lowerFileName.endsWith(suffix))) return false;
+  return true;
+}
+
+async function isLibraryFileValid(
+  realReportsPath: string,
+  workspacePath: string,
+  relativePath: string,
+  mimeType: string,
+): Promise<boolean> {
+  const targetPath = path.resolve(workspacePath, relativePath);
+  let realTargetPath: string;
+  try {
+    realTargetPath = await realpath(targetPath);
+  } catch {
+    return false;
+  }
+  if (!isWithin(realReportsPath, realTargetPath)) return false;
+  try {
+    const fileStat = await stat(realTargetPath);
+    if (!fileStat.isFile()) return false;
+    const maxBytes = mimeType === "text/html" ? MAX_HTML_BYTES : MAX_INLINE_BYTES;
+    if (fileStat.size > maxBytes) return false;
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+function normalizeLibraryLimit(value: unknown): number {
+  if (value === undefined || value === null) return LIBRARY_DEFAULT_LIMIT;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return LIBRARY_DEFAULT_LIMIT;
+  return Math.min(Math.max(Math.floor(num), 1), LIBRARY_MAX_LIMIT);
+}
+
+function encodeLibraryCursor(cursor: LibraryCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeLibraryCursor(raw: string): LibraryCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    throw new ConversationArtifactError("ARTIFACT_INVALID_CURSOR", "cursor is not decodable");
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    typeof (parsed as LibraryCursor).u !== "string" ||
+    typeof (parsed as LibraryCursor).a !== "string"
+  ) {
+    throw new ConversationArtifactError("ARTIFACT_INVALID_CURSOR", "cursor has an unexpected shape");
+  }
+  return parsed as LibraryCursor;
 }
 
 /**
