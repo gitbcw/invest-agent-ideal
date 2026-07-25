@@ -159,3 +159,27 @@ Portal `09c5f4f` 已将 checksum 改为纯 JavaScript SHA-256，并为 artifact 
 4. 单独处理 Relay listener 告警，以及 Portal 健康端点文档差异。
 
 不再属于未完成项的内容：Runtime/Portal 可复现发布、精选历史 backfill、HTTP 下图片预览/文档打开/下载、checksum 校验和侧边栏索引可见性均已完成并在生产验证。
+
+---
+
+## 2026-07-25 清理与真实删除验收
+
+### 生产处理
+
+- 使用备份 `data/backups/invest-agent.db.2026-07-25T14-33-14-936Z-file-retention.bak` 完成首次 `cleanup --apply`；8 条过期附件全部为 missing，实际删除文件 0、错误 0，索引收口为 `deleted=8`、`expiredPending=0`。
+- 将 `FILE_RETENTION_CLEANUP_ENABLED=true` 写入生产 `.env`（`.env` 另存为 `data/backups/invest-agent.env.2026-07-25T14-53-00.bak`），Runtime 重启后 scheduler 启动，三个 connector 和微信监听恢复。
+- 使用 111 workspace 的无用户数据测试文件完成真实 Portal 删除：确认弹窗、connector `artifact.delete.prepare/confirm`、树和已打开标签即时移除、刷新后仍不可见、文件进入 30 天隐藏回收区。
+
+### Acceptance 状态更新
+
+| 编号 | 当前状态 | 证据 |
+| --- | --- | --- |
+| D4 精选历史 | Pass | 生产已完成 60 条 workspace backfill；当前 61 条 durable library。 |
+| D9 删除结果 | Pass | 真实 HTTP Portal + connector 删除测试通过，文件进入 `.trash/artifacts`，刷新后树/标签均不再显示。 |
+| D15 首次清理门禁 | Pass | 已有 SQLite/.env 备份、`quick_check=ok`、dry-run 统计、明确确认和首次 apply；cleanup gate 已持久启用。 |
+
+### 仍需处理
+
+- Relay `MaxListenersExceededWarning`：独立并发稳定性问题，不阻塞本工作包核心生命周期验收。
+- Portal `/api/portal/health` 文档与实际路由不一致：当前 `/login` 和 PM2 可用，但应统一健康检查契约。
+- 30 天后 trash purge 尚未到期；scheduler 已启用，届时需按运维流程验证 purge 审计和幂等性。
