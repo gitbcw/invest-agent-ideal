@@ -142,3 +142,20 @@ Status: **Partial**
 火山云 Portal 使用固定公网 IP + HTTP，当前不具备域名备案条件，HTTPS 不能作为依赖或整改前提。生产复现确认 `crypto.subtle` 在该非安全上下文不可用，并导致 artifact checksum 校验抛错、界面永久停在“加载制品中...”。后续验收必须在实际 HTTP 入口覆盖图片 Lightbox、Markdown/HTML 文档、download-only 文件和附件读取；所有 checksum 实现必须支持非 secure context，所有异步异常必须进入可见错误/重试状态。
 
 Portal `09c5f4f` 已将 checksum 改为纯 JavaScript SHA-256，并为 artifact 异步加载增加可重试错误收敛；`npm test`、`npm run typecheck`、`npm run build` 通过。该提交已发布到火山云，生产 HTTP 入口实测 SVG 图片正常显示并提供下载按钮，侧边栏 Markdown 正常打开和渲染，浏览器不再出现 `crypto.subtle.digest` 错误。
+
+---
+
+## 2026-07-25 当前生产状态复核
+
+- `retention:report`：artifacts `86`，其中 `durable_library=61`、`reference_only=25`、`unclassified=0`；附件索引 `8` 条，`expiredPending=8`、`cleanupCandidates=8`、`deleted=0`；cleanup gate 仍为 `false`。
+- `retention:cleanup --dry-run` 扫描 8 条，结果为 `missing=8`、`errors=0`、`deletedFiles=0`；这 8 个候选的文件字节已不存在，当前没有待由本次任务物理删除的附件，但索引仍需通过 apply 标记为 missing/完成状态。
+- `retention:trash --dry-run` 扫描 0 条，没有回收站文件待 purge。
+
+因此当前未完成项已收敛为：
+
+1. 关闭 8 条已缺失附件的索引尾账，并确认不会误标成可恢复文件。
+2. 在明确的生产负责人确认后，执行一次小批量 cleanup apply，验证审计、幂等和 scheduler 运行记录；在此之前继续保持 cleanup disabled。
+3. 用真实 connector 完成删除后的树、标签、历史卡片一致性和 offline 恢复联合验收。
+4. 单独处理 Relay listener 告警，以及 Portal 健康端点文档差异。
+
+不再属于未完成项的内容：Runtime/Portal 可复现发布、精选历史 backfill、HTTP 下图片预览/文档打开/下载、checksum 校验和侧边栏索引可见性均已完成并在生产验证。
