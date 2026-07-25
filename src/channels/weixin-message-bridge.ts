@@ -4,12 +4,13 @@ import { clearAcpSessions } from "../acp/stdio-agent.js";
 import { sanitizeCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
 import { resolveOrCreateChannelUser } from "../lib/user-identity.js";
-import { DEFAULT_USER_ID } from "../lib/user-context.js";
+import { DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
 import { appendConversationMessage } from "../services/conversation-log.js";
 import { config } from "../lib/config.js";
 import { resolveWeixinAccount } from "./weixin-account-store.js";
 import { storeWeixinAttachment, type IncomingMediaAttachment, type StoredAttachment } from "../lib/attachment-store.js";
+import { registerAttachment } from "../services/file-retention.js";
 import { listPendingWeixinDeliveries, markPendingWeixinDeliveriesRecovered } from "../services/weixin-delivery.js";
 
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
@@ -264,7 +265,7 @@ export class InvestAgentMobileBridge {
     }
 
     const userText = formatBatchedUserText(items, attachments.length);
-    appendConversationMessage({
+    const userMessage = appendConversationMessage({
       scope: {
         userId: userContext.userId,
         projectId: userContext.projectId,
@@ -276,6 +277,22 @@ export class InvestAgentMobileBridge {
       role: "user",
       content: formatConversationUserContent(userText, attachments),
     });
+    // Register WeChat uploads in the authoritative attachment table so they get
+    // the same 7-day TTL and cleanup path as Portal uploads. Failures are
+    // non-fatal: the bytes are already on disk and the conversation proceeds.
+    for (const stored of attachments) {
+      try {
+        registerAttachment({
+          userId: userContext.userId,
+          instanceId: userContext.instanceId || defaultInstanceIdForUser(userContext.userId),
+          conversationId,
+          messageId: userMessage.messageId,
+          stored,
+        });
+      } catch (error) {
+        logger.warn(`微信附件索引失败 attachmentId=${stored.id}: ${(error as Error).message}`);
+      }
+    }
     const pendingDeliveries = userContext.instanceId
       ? await listPendingWeixinDeliveries(userContext.userId, userContext.instanceId)
       : [];

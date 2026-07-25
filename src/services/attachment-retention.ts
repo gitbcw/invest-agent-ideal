@@ -1,59 +1,60 @@
-import { readdir, lstat, rm, rmdir } from "node:fs/promises";
-import path from "node:path";
-import { config } from "../lib/config.js";
+import { cleanupExpiredAttachments as cleanupExpiredAttachmentRows, pruneEmptyAttachmentDateDirs } from "./file-retention.js";
 import { logger } from "../lib/logger.js";
 
-const DEFAULT_RETENTION_DAYS = 3;
-const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/**
+ * @deprecated Retention is now driven by the authoritative
+ * `conversation_attachments` table in `./file-retention.ts`. This module is
+ * kept only so existing call sites (`src/index.ts`) keep importing a stable
+ * symbol; the actual cleanup delegates to the table-based implementation.
+ *
+ * The old 3-day mtime sweep is gone. The new loop:
+ *  - runs the table-based attachment cleanup (7-day `expires_at`);
+ *  - prunes now-empty `attachments/YYYY-MM-DD/` directories as a best-effort
+ *    cosmetic step.
+ *
+ * The first real production cleanup still requires an explicit operator
+ * confirmation — see
+ * `docs/portal-file-retention-and-library-governance-work-package.md` §10.C.
+ * Until that confirmation is given, `startAttachmentRetentionCleanup` is a
+ * no-op so the daily job cannot fire prematurely. Flip
+ * `FILE_RETENTION_CLEANUP_ENABLED=true` once the dry-run + backup + confirm
+ * gate has been satisfied.
+ */
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
-export async function cleanupExpiredAttachments(input: { workspaceRoot?: string; now?: number; retentionDays?: number } = {}) {
-  const root = input.workspaceRoot ?? config.workspace.root;
-  const cutoff = (input.now ?? Date.now()) - (input.retentionDays ?? DEFAULT_RETENTION_DAYS) * 86_400_000;
-  const result = { deletedFiles: 0, deletedBytes: 0, errors: 0 };
-  let workspaces;
-  try { workspaces = await readdir(root, { withFileTypes: true }); } catch { return result; }
-  for (const workspace of workspaces) {
-    if (workspace.isDirectory() && !workspace.isSymbolicLink()) {
-      await cleanup(path.join(root, workspace.name, "attachments"), cutoff, result);
-    }
+export async function cleanupExpiredAttachments() {
+  if (process.env.FILE_RETENTION_CLEANUP_ENABLED !== "true") {
+    return { deletedFiles: 0, deletedBytes: 0, errors: 0, skipped: true as const };
   }
-  return result;
+  const summary = await cleanupExpiredAttachmentRows({});
+  await pruneEmptyAttachmentDateDirs({}).catch((error) => {
+    logger.warn(`attachment date-dir prune failed: ${(error as Error).message}`);
+  });
+  if (summary.deletedFiles || summary.errors) {
+    logger.info(`attachment cleanup deleted=${summary.deletedFiles} bytes=${summary.deletedBytes} missing=${summary.missing} errors=${summary.errors}`);
+  }
+  return {
+    deletedFiles: summary.deletedFiles,
+    deletedBytes: summary.deletedBytes,
+    errors: summary.errors,
+    skipped: false as const,
+  };
 }
 
 export function startAttachmentRetentionCleanup() {
   stopAttachmentRetentionCleanup();
-  const run = () => void cleanupExpiredAttachments().then((result) => {
-    if (result.deletedFiles || result.errors) logger.info(`attachment cleanup deleted=${result.deletedFiles} errors=${result.errors}`);
-  });
-  run();
+  const enabled = process.env.FILE_RETENTION_CLEANUP_ENABLED === "true";
+  if (!enabled) {
+    logger.info("attachment cleanup disabled (FILE_RETENTION_CLEANUP_ENABLED != true); run dry-run + confirm before enabling");
+    return;
+  }
+  const run = () => void cleanupExpiredAttachments();
   cleanupTimer = setInterval(run, CLEANUP_INTERVAL_MS);
+  cleanupTimer.unref?.();
 }
 
 export function stopAttachmentRetentionCleanup() {
   if (cleanupTimer) clearInterval(cleanupTimer);
   cleanupTimer = null;
-}
-
-async function cleanup(directory: string, cutoff: number, result: { deletedFiles: number; deletedBytes: number; errors: number }) {
-  let entries;
-  try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
-  for (const entry of entries) {
-    const target = path.join(directory, entry.name);
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) {
-      await cleanup(target, cutoff, result);
-      await rmdir(target).catch(() => {});
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    try {
-      const details = await lstat(target);
-      if (details.mtimeMs < cutoff) {
-        await rm(target, { force: true });
-        result.deletedFiles += 1;
-        result.deletedBytes += details.size;
-      }
-    } catch { result.errors += 1; }
-  }
 }

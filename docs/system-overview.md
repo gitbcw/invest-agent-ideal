@@ -130,6 +130,12 @@ This repository owns the local side:
 
 The cloud portal may mirror conversation history for UX, but it must not become the source of truth, read local files, access workspace state directly, or expose Platform management commands.
 
+### File retention & library governance
+
+Portal file lifecycle is service-owned and deterministic. User uploads (Portal/WeChat images and documents) keep bytes for 7 days via the authoritative `conversation_attachments.expires_at` column, then only metadata remains. AI artifacts published to the curated library (`reports/{daily,weekly,monthly,company,metrics,memory}`) are promoted to permanent `durable_library` when `<= 1 MiB`; oversized formal artifacts and non-curated files are 7-day `transient_generated`. The model never decides importance — the service layer does, from source/path/size/MIME. Raw `memory/*.jsonl`, `financials/companies/**`, `config/**`, Skills, audit/task/alerts and the full Workspace filesystem are never exposed to the Portal.
+
+The daily attachment-cleanup and 30-day trash-purge jobs run through the scheduler with `scheduled_task_runs` locks. The first real production cleanup is gated behind `FILE_RETENTION_CLEANUP_ENABLED=true` plus a backup + dry-run + explicit operator confirmation. See `docs/portal-file-retention-and-library-governance-work-package.md` and the `retention:*` commands in `CLAUDE.md`.
+
 ## Platform Boundary
 
 Platform is the internal operations surface for assistant/workspace management, holdings/watchlist/plans/reviews read-only summaries, rule inspection, source quality, audit, and connector-related admin workflows. It has two preset roles: `owner` has authorized administrative access; `partner` is read-only and sees only anonymized operating and quality summaries, never raw conversations or customer investment content. The legacy local Dashboard page was retired on 2026-07-16; `/dashboard` now 301-redirects to `/platform`.

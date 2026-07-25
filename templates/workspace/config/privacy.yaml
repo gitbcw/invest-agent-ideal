@@ -20,9 +20,18 @@ logging:
   audit_output: "memory/audit_events.jsonl"
 
 retention:
+  # 用户上传附件（Portal/微信图片与文档）：服务端 conversation_attachments 表
+  # 按 expires_at=stored_at+7d 删除字节，保留消息与安全元数据；访问不续期。
+  user_uploads: "7d_bytes_then_metadata_only"
+  # 正式发布的 AI artifact：<=1 MiB 且落在精选目录的文件为永久（durable_library），
+  # 直到用户从侧栏删除；超过 1 MiB 的正式产物按 7d transient_generated 处理。
+  ai_artifacts: "durable_if_curated_and_under_1mib_else_7d_transient"
   reports: "user_controlled"
   memory: "user_controlled"
   raw_screenshots: "delete_after_structured_confirmation_unless_user_keeps"
+  # 用户主动删除的永久库文件进入 30 天隐藏回收区（.trash/artifacts/...），
+  # 之后物理清除；首版无用户侧自助恢复 UI，仅运维受审计恢复。
+  trashed_library: "30d_hidden_then_purge"
 
 wechat_safety:
   require_project_binding: true

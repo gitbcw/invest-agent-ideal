@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -8,6 +8,15 @@ const MAX_IMAGE_BYTES = Number(process.env.ATTACHMENT_IMAGE_MAX_BYTES) || 10 * 1
 const MAX_DOCUMENT_BYTES = Number(process.env.ATTACHMENT_DOCUMENT_MAX_BYTES) || 25 * 1024 * 1024;
 const MAX_FILES_PER_MESSAGE = Number(process.env.ATTACHMENT_MAX_FILES_PER_MESSAGE) || 8;
 const MAX_TOTAL_BYTES_PER_MESSAGE = Number(process.env.ATTACHMENT_MAX_TOTAL_BYTES_PER_MESSAGE) || 40 * 1024 * 1024;
+
+/**
+ * Authoritative TTL for user uploads, in days. The previous cleanup loop
+ * guessed retention from the `attachments/YYYY-MM-DD/` directory name; the
+ * file-retention work package replaces that with an explicit `expires_at`
+ * column on `conversation_attachments`. This constant is the single source
+ * of truth for both the upload write path and the cleanup job.
+ */
+export const ATTACHMENT_RETENTION_DAYS = 7;
 
 const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 const ALLOWED_DOCUMENT_MIME = new Set([
@@ -62,6 +71,8 @@ export type StoredAttachment = {
   path: string;
   relativePath: string;
   source: "weixin" | "portal";
+  /** sha256 of the stored bytes; persisted on the `conversation_attachments` row. */
+  checksum: string;
 };
 
 export type PublicAttachmentMetadata = Omit<StoredAttachment, "path">;
@@ -132,6 +143,7 @@ export async function storeWeixinAttachment(input: {
     path: targetPath,
     relativePath,
     source: "weixin",
+    checksum: sha256Hex(bytes),
   };
 }
 
@@ -227,6 +239,7 @@ async function storeIncomingAttachment(input: {
     path: targetPath,
     relativePath,
     source: input.source,
+    checksum: sha256Hex(bytes),
   };
 }
 
@@ -454,4 +467,8 @@ function safeFileName(value: string | undefined, fallbackExt: string) {
   if (!base) return "";
   const withExt = path.extname(base) ? base : `${base}${fallbackExt}`;
   return withExt.length > 120 ? withExt.slice(-120) : withExt;
+}
+
+function sha256Hex(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }

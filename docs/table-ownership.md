@@ -11,7 +11,7 @@
 
 ## 三类归属
 
-### 🟢 服务层保留(19 张)
+### 🟢 服务层保留(23 张)
 
 这些表承载平台基础设施,不与具体用户的投资判断耦合,继续留在 SQLite。
 
@@ -27,6 +27,12 @@
 | `codex_acp_traces` | ACP 调用审计(历史表名保留) | 系统审计,与用户方法无关 |
 | `conversation_sessions` | canonical conversation log 会话索引 | 用户门户与微信共享的权威对话历史索引;云端 portal 只保存镜像,本地 SQLite 是权威源 |
 | `conversation_messages` | canonical conversation log 消息明细 | 用户门户 `conversation.list/get/chat` 和微信对话审计共用;需要分页、幂等和跨 channel 查询索引 |
+| `conversation_artifacts` | 一等 AI artifact 权威索引(复盘、公司分析、指标、正式发布的图表/文档) | 文件树、过期/删除生命周期、retention 分类和同路径版本 tombstone 都靠这张表权威判定;Workspace 文件本身归该用户实例,但索引与生命周期状态归服务层 |
+| `conversation_attachments` | 用户上传附件权威索引(Portal/微信图片与文档) | 7 天 TTL 由服务端 `expires_at` 决定,不再依赖 `attachments/YYYY-MM-DD/` 目录名;清理任务按行删字节并保留消息元数据 |
+| `conversation_artifact_events` | artifact 遥测事件(open/success/failure/download 与 library.list 聚合哨兵) | 轻量审计,与 artifact 行分离 |
+| `file_lifecycle_events` | 文件生命周期分类、回填、过期、删除与 purge 审计 | 服务层权威审计；不保存绝对路径或文件内容 |
+| `artifact_delete_confirmations` | Portal artifact 删除确认与可重试状态 | 服务层权威事务状态；token 绑定 user/instance/artifact/path/checksum |
+| `conversation_turn_active` | 当前会话 active turn 标记(跨进程) | MCP `artifacts.publish`/`reviews.save` 在另一进程触发时需要据此绑定 turnId |
 | `sandbox_audit_logs` | 沙箱令牌调用审计 | 合规/安全审计 |
 | `pending_sandbox_confirmations` | 待确认的沙箱操作 | 跨进程状态(微信消息 ↔ 沙箱执行) |
 | `onboarding_drafts` | Onboarding 草稿、确认版本与异步提交快照 | 草稿期不能写 Workspace；需要跨会话确认绑定、后台提交领取、失败恢复和通知去重 |

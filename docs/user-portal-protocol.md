@@ -84,7 +84,17 @@ interface PortalError {
     | "INVALID_REQUEST"
     | "TIMEOUT"
     | "ACP_FAILED"
-    | "INTERNAL_ERROR";
+    | "INTERNAL_ERROR"
+    // artifact lifecycle (file-retention governance)
+    | "ATTACHMENT_NOT_FOUND"
+    | "ATTACHMENT_EXPIRED"
+    | "ATTACHMENT_DELETED"
+    | "ARTIFACT_EXPIRED"
+    | "ARTIFACT_DELETED"
+    | "ARTIFACT_NOT_DELETABLE"
+    | "ARTIFACT_DELETE_CONFIRMATION_REQUIRED"
+    | "ARTIFACT_DELETE_CONFIRMATION_EXPIRED"
+    | "ARTIFACT_DELETE_CONFLICT";
   message: string;
   retryable: boolean;
   details?: Record<string, unknown>;
@@ -329,12 +339,25 @@ interface ArtifactLibraryItem {
   fileName: string;
   displayPath: string; // reports/ 以下的安全相对展示路径，不含 reports 前缀
   directorySegments: string[];
-  mimeType: "text/markdown" | "text/html";
-  previewMode: "markdown" | "html";
+  mimeType:
+    | "text/markdown"
+    | "text/html"
+    | "image/svg+xml"
+    | "image/png"
+    | "image/jpeg"
+    | "image/webp"
+    | "application/pdf"
+    | "text/plain"
+    | "application/json"
+    | "text/csv";
+  previewMode: "markdown" | "html" | "image" | "pdf" | "text" | "table";
   sizeBytes: number;
   createdAt: string;
   updatedAt: string;
   checksum?: string;
+  category: "daily" | "weekly" | "monthly" | "company" | "metrics" | "memory" | "other";
+  downloadable: boolean; // true 时 Portal 只提供下载动作，不打开标签
+  openRoute: "document" | "image" | "download";
 }
 
 interface ArtifactLibraryListResult {
@@ -348,8 +371,9 @@ interface ArtifactLibraryListResult {
 - `userId` / `instanceId` 由 connector 从已注册 session scope 注入，payload 不接受浏览器提交；payload 只允许 `cursor` 和 `limit` 两个字段，任何其他字段（尤其是 path / glob / 目录遍历类参数）都返回 `INVALID_REQUEST` 确定错误，不做静默忽略。
 - `limit` 默认 200，超过 500 时 clamp 到 500，不报错；非数字由 connector 拒绝（`INVALID_REQUEST`）。
 - cursor 不透明（base64url 编码的 keyset 位置），排序固定为 `updated_at DESC, artifact_id DESC`，保证翻页无重复、无漏项；无法解码或形状不符的 cursor 返回 `fail`，`error.code = "ARTIFACT_INVALID_CURSOR"`，`retryable = false`。
-- 精选准入由 Runtime 服务层权威执行：`source ∈ {artifacts.publish, reviews.save}`（排除 `legacy_path`）、`previewMode ∈ {markdown, html}`、路径在 `reports/**` 下、无隐藏路径段、文件名不属于固定临时/备份模式（`.#` 前缀，`~`/`.tmp`/`.temp`/`.bak`/`.swp` 后缀，大小写不敏感），且文件当前存在、是普通文件、realpath 仍在真实 reports 根内（防 symlink 逃逸）。Portal 不自行判断文件资格。
-- 同一 `displayPath` 多条发布记录只返回最新有效版本；最新记录不合格时回退到同路径最近一个仍有效的正式版本，但绝不回退到 legacy 来源；同路径全部失效则该路径不出现。
+- 精选准入由 Runtime 服务层权威执行：`source ∈ {artifacts.publish, reviews.save, workspace_backfill}`（排除 `legacy_path`）、retention 标签为 `visibility='library' AND retention_class='durable_library'`（backfill 完成前 NULL 列按旧规则放行）、路径在固定精选目录（`reports/{daily,weekly,monthly,company,metrics,memory}`）或正式 `artifacts.publish` 下、文件大小 `<= 1 MiB`、文件当前存在、是普通文件、realpath 仍在真实 reports 根内（防 symlink 逃逸）。Portal 不自行判断文件资格，也不让模型主观决定"重要性"。
+- Markdown/HTML 在 `openRoute="document"` 走右侧多标签文档区；`image/*` 在 `openRoute="image"` 走 Lightbox，不进文档标签；PDF/TXT/JSON/CSV 在 `openRoute="download"` 仅提供下载，首版不新增预览器。
+- 同一 `displayPath` 多条发布记录只返回最新有效版本；最新记录不合格时回退到同路径最近一个仍有效的正式版本，但绝不回退到 legacy 或已被 tombstone（用户删除）的来源；同路径全部失效则该路径不出现。
 - 返回项是严格白名单描述符：不含 absolute path、`userId`、`instanceId`、`conversationId`、`projectId`、内部 `scope` 或 `source`，列表阶段不读取文件正文。`displayPath` 仅用于构造虚拟树展示，不能当作读取路径回传。
 - 每次 list 由 Runtime 写入一条聚合审计事件（scope、返回数量、分页信息），不为每个树节点写事件。
 - capability 列表显式包含 `artifact.library.list`；旧 connector 不支持时 Portal 显示"文件目录暂时不可用"，不影响聊天与已打开 artifact。
@@ -375,6 +399,99 @@ Runtime 侧的映射规则：
 - 所有类型沿用 reports 目录约束、realpath/symlink 检查、scope 隔离、checksum 和 MIME 一致性校验。通用上限 15 MB；`text/html` 单独收紧到 1 MB。
 - `report.asset.get` 的扩展名白名单不包含 `html`/`htm`：HTML 文档永远不会通过 legacy 同源路由 inline 返回，只能作为 artifact bytes 由 Portal 在受限 sandbox iframe 中预览。
 - Portal 遇到未知的 preview mode 必须降级为 `unsupported`。
+- 已删除（`ARTIFACT_DELETED`）或已过期（`ARTIFACT_EXPIRED`）的 artifact 不返回 bytes；对话卡片保留 descriptor，Portal 应显示对应状态而非 loading。
+
+## Attachment Get
+
+用户上传的图片/文件（Portal 或微信）保留 7 天，到期后只删字节、保留消息和安全元数据。Portal 通过 `attachment.get` 用 `attachmentId` 读取字节或状态；浏览器永远只提交 `attachmentId`，不接受 raw path。`attachmentId` 来自消息 `metadata.attachments[].attachmentId`，元数据同时携带 `expiresAt` 供卡片直接展示倒计时。
+
+```ts
+interface AttachmentGetRequest {
+  attachmentId: string;
+}
+
+interface AttachmentGetActiveResponse {
+  attachmentId: string;
+  status: "active";
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  checksum?: string;
+  storedAt: string;
+  expiresAt: string;
+  base64: string; // 字节内容
+}
+
+interface AttachmentGetStatusResponse {
+  attachmentId: string;
+  status: "expired" | "deleted";
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  expiresAt: string;
+}
+```
+
+响应语义：
+
+- `ATTACHMENT_NOT_FOUND`：未注册或跨 scope。
+- 已过期或已删除不是协议错误：connector 返回 `ok: true`，并分别使用
+  `status: "expired"` 或 `status: "deleted"`，且不返回 `base64`。
+- `ATTACHMENT_EXPIRED` / `ATTACHMENT_DELETED` 仅为旧 connector 的兼容错误码；
+  新实现不得用它们表达正常生命周期状态。
+
+约束：
+
+- scope（`userId`/`instanceId`）由 connector 注入；伪造 `attachmentId`、跨用户/跨实例访问均返回 `ATTACHMENT_NOT_FOUND`。
+- 查看/下载/切换标签都不会延长 `expiresAt`；权威 TTL 由服务端 `conversation_attachments.expires_at` 决定，不依赖 `attachments/YYYY-MM-DD/` 目录名。
+- 消息 `metadata.attachments` 在字节清理后仍然可解析，Portal 据此渲染"附件已过期"卡片。
+
+## Artifact Delete (prepare / confirm)
+
+侧栏永久库文件删除走两步确认。浏览器只提交 `artifactId`（prepare）或 `tokenId`（confirm），永远不提交 `userId`/`instanceId`/`relativePath`/trash path。
+
+```ts
+interface ArtifactDeletePrepareRequest {
+  artifactId: string;
+}
+
+interface ArtifactDeletePrepareResponse {
+  tokenId: string; // 一次性，短时有效
+  artifactId: string;
+  title: string;
+  fileName: string;
+  displayPath: string;
+  sizeBytes: number;
+  category: string;
+  expiresAt: string; // token 过期时间，非文件 TTL
+  impactNotes: string[]; // 确认弹窗必须展示的影响说明
+}
+
+interface ArtifactDeleteConfirmRequest {
+  tokenId: string;
+}
+
+interface ArtifactDeleteConfirmResponse {
+  artifactId: string;
+  deletedVersions: number;
+  trashRelativePath: string;
+  purgeAt: string; // 30 天隐藏回收区到期时间
+}
+```
+
+错误：
+
+- `ARTIFACT_NOT_DELETABLE`：不是 `durable_library`+`library` 可见（含 transient、pre-backfill NULL 行）。
+- `ARTIFACT_DELETE_CONFIRMATION_REQUIRED`：confirm 缺 token。
+- `ARTIFACT_DELETE_CONFIRMATION_EXPIRED`：token 已消费/过期/伪造。
+- `ARTIFACT_DELETE_CONFLICT`：prepare 与 confirm 之间 artifact 变更（path/checksum 不一致）。
+
+约束：
+
+- token 绑定 `user/instance/artifact/path/checksum`，一次性，10 分钟有效；重复 confirm 返回幂等结果，不重复移动文件。
+- 删除只作用于当前 scope 的永久库文件，禁止删除 transient upload、raw memory、config、Skills、financials 来源。
+- 文件移入用户 Workspace 内隐藏回收区 `.trash/artifacts/<opaque-id>/...`（路径由服务端生成），同路径所有版本一并 tombstone；library list、文档标签、历史卡片状态一致变为 deleted。
+- 30 天隐藏恢复窗口；首版无用户侧回收站 UI，仅运维受审计恢复。Runtime 回滚不能让 tombstone 文件重新出现。
 
 ## History Sync
 

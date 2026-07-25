@@ -8,7 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "NODE_ENV=test DB_PATH=./data/test.db WORKSPACE_ROOT=./data/test-workspaces RUNTIME_DATA_ROOT=./data/test-runtime tsx scripts/test-db-bootstrap.ts && NODE_ENV=test DB_PATH=./data/test.db WORKSPACE_ROOT=./data/test-workspaces RUNTIME_DATA_ROOT=./data/test-runtime node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check:agent-context": "node scripts/check-agent-context.mjs",
     "verify": "npm run typecheck && npm test && npm run check:agent-context && npm run build && node scripts/db-legacy-migration-smoke.mjs && node scripts/db-legacy-alerts-drop-smoke.mjs && node scripts/mcp-service-tools-smoke.mjs && node scripts/security-boundary-smoke.mjs && node scripts/route-uniqueness-smoke.mjs && node scripts/platform-investment-state-smoke.mjs && node scripts/market-watch-snapshot-compatibility-smoke.mjs && node scripts/offline-runtime-smoke.mjs",
@@ -57,7 +57,12 @@
     "workspace:migrate": "npm run build && node scripts/workspace-compatibility.mjs apply",
     "workspace:adopt-template": "npm run build && node scripts/workspace-compatibility.mjs adopt",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "retention:report": "tsx src/scripts/file-retention-backfill.ts report",
+    "retention:backup": "tsx src/scripts/file-retention-backfill.ts backup",
+    "retention:backfill": "tsx src/scripts/file-retention-backfill.ts backfill",
+    "retention:cleanup": "tsx src/scripts/file-retention-backfill.ts cleanup",
+    "retention:trash": "tsx src/scripts/file-retention-backfill.ts trash"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.16.1",

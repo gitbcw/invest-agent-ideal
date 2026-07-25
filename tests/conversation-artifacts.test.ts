@@ -897,7 +897,7 @@ test("library list isolates artifacts by user and instance", async () => {
   assert.deepEqual(result.items.map((item) => item.artifactId), [mine.artifactId]);
 });
 
-test("library list excludes legacy, image, pdf, text and table artifacts", async () => {
+test("library list admits images, pdf, text and table as downloadable/lightbox items but never legacy", async () => {
   const ctx = await getCtx();
   await createLibraryUser(ctx, "lib-excl");
   const userId = "lib-excl";
@@ -911,30 +911,44 @@ test("library list excludes legacy, image, pdf, text and table artifacts", async
     relativePath: "reports/daily/review.md",
     source: "reviews.save",
   });
-  await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: "reports/daily/legacy.md", source: "legacy_path" });
+  const legacy = await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: "reports/daily/legacy.md", source: "legacy_path" });
 
   const workspace = path.join(ctx.workspaceRoot, userId);
   const svgTarget = path.join(workspace, "reports", "daily", "chart.svg");
   await writeFile(svgTarget, VALID_SVG);
-  await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/chart.svg", scope });
+  const svg = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/chart.svg", scope });
 
   const pdfTarget = path.join(workspace, "reports", "daily", "doc.pdf");
   await writeFile(pdfTarget, Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\n"));
-  await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/doc.pdf", scope });
+  const pdf = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/doc.pdf", scope });
 
   const txtTarget = path.join(workspace, "reports", "daily", "notes.txt");
   await writeFile(txtTarget, "plain text");
-  await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/notes.txt", scope });
+  const txt = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/notes.txt", scope });
 
   const csvTarget = path.join(workspace, "reports", "daily", "table.csv");
   await writeFile(csvTarget, "a,b\n1,2\n");
-  await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/table.csv", scope });
+  const csv = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/table.csv", scope });
 
   const result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
-  assert.deepEqual(
-    result.items.map((item) => item.artifactId).sort(),
-    [validPublish.artifactId, validReview.artifactId].sort(),
-  );
+  const ids = result.items.map((item) => item.artifactId).sort();
+  // Legacy path is the only excluded type now.
+  assert.ok(!ids.includes(legacy.artifactId), "legacy_path artifact must not appear in the library");
+  assert.deepEqual(ids, [validPublish.artifactId, validReview.artifactId, svg.artifactId, pdf.artifactId, txt.artifactId, csv.artifactId].sort());
+
+  const byId = new Map(result.items.map((item) => [item.artifactId, item]));
+  // Markdown documents open in a tab and are not downloadable.
+  assert.equal(byId.get(validPublish.artifactId)!.openRoute, "document");
+  assert.equal(byId.get(validPublish.artifactId)!.downloadable, false);
+  // Images route to the Lightbox, not a document tab.
+  assert.equal(byId.get(svg.artifactId)!.openRoute, "image");
+  assert.equal(byId.get(svg.artifactId)!.downloadable, false);
+  assert.equal(byId.get(svg.artifactId)!.previewMode, "image");
+  // PDF / TXT / CSV are download-only — no new previewer is added.
+  assert.equal(byId.get(pdf.artifactId)!.openRoute, "download");
+  assert.equal(byId.get(pdf.artifactId)!.downloadable, true);
+  assert.equal(byId.get(txt.artifactId)!.openRoute, "download");
+  assert.equal(byId.get(csv.artifactId)!.openRoute, "download");
 });
 
 test("library list excludes non-reports, absolute, traversal, hidden and temp/backup paths", async () => {
@@ -1123,12 +1137,15 @@ test("library list returns only whitelisted descriptor fields and records one ag
     Object.keys(item).sort(),
     [
       "artifactId",
+      "category",
       "checksum",
       "createdAt",
       "directorySegments",
       "displayPath",
+      "downloadable",
       "fileName",
       "mimeType",
+      "openRoute",
       "previewMode",
       "sizeBytes",
       "title",

@@ -5,16 +5,17 @@ import type { AcpMessage } from "../acp/protocol.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser, type UserContext } from "../lib/user-context.js";
 import { ensureDefaultAiInstanceForUser } from "../lib/user-identity.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
+import { logger } from "../lib/logger.js";
 import { getProjectRuntimeContext } from "../platform/project-registry.js";
 import { rememberConversationTurn } from "../lib/weixin-conversation-memory.js";
 import {
   storePortalAttachments,
-  toPublicAttachmentMetadata,
   type IncomingPortalAttachment,
   type StoredAttachment,
 } from "../lib/attachment-store.js";
 import { findArtifactsForMessage, findArtifactsForTurn, type ConversationArtifact } from "./conversation-artifacts.js";
 import { markTurnStart, markTurnEnd } from "./conversation-turns.js";
+import { registerAttachment, ATTACHMENT_RETENTION_MS } from "./file-retention.js";
 
 export type ConversationChannel = "web" | "weixin-mobile";
 export type ConversationRole = "user" | "assistant" | "system";
@@ -563,7 +564,7 @@ async function chatViaConversationLogOnce(input: {
   });
   const userTextForAgent = buildPortalUserText(input.text, storedAttachments);
   const userMetadata = storedAttachments.length > 0
-    ? { attachments: storedAttachments.map(toPublicAttachmentMetadata) }
+    ? { attachments: storedAttachments.map((stored) => toPublicAttachmentDescriptorWithExpiry(stored)) }
     : undefined;
   const requestId = `portal-${randomUUID()}`;
   const userMessage = appendConversationMessage({
@@ -578,6 +579,23 @@ async function chatViaConversationLogOnce(input: {
     createdAt: input.clientSentAt,
     metadata: userMetadata,
   });
+  // Persist each uploaded attachment in the authoritative
+  // `conversation_attachments` table so the 7-day TTL is computed server-side
+  // (not guessed from the date directory) and the cleanup job has a row to
+  // act on. The messageId binding is back-filled once the message is saved.
+  for (const stored of storedAttachments) {
+    try {
+      registerAttachment({
+        userId: scope.userId,
+        instanceId: runtime?.instanceId || scope.instanceId,
+        conversationId: input.conversationId,
+        messageId: userMessage.messageId,
+        stored,
+      });
+    } catch (error) {
+      logger.warn(`failed to register attachment row userId=${scope.userId} attachmentId=${stored.id}: ${(error as Error).message}`);
+    }
+  }
 
   const agent = createAgent();
   const acpMessage: AcpMessage = {
@@ -674,6 +692,28 @@ function toPublicArtifactDescriptor(artifact: ConversationArtifact) {
     previewMode: artifact.previewMode,
     createdAt: artifact.createdAt,
     checksum: artifact.checksum,
+  };
+}
+
+/**
+ * Attachment descriptor embedded in message metadata. Includes the
+ * authoritative `expiresAt` so the Portal can render a deterministic
+ * "附件已过期" card without ever guessing from the date directory. The
+ * `attachmentId` is the only key the client needs to read or download bytes;
+ * it never receives the raw workspace path.
+ */
+function toPublicAttachmentDescriptorWithExpiry(stored: StoredAttachment, now = new Date()) {
+  const expiresAt = new Date(now.getTime() + ATTACHMENT_RETENTION_MS).toISOString();
+  return {
+    attachmentId: stored.id,
+    type: stored.type,
+    mimeType: stored.mimeType,
+    fileName: stored.fileName,
+    sizeBytes: stored.sizeBytes,
+    relativePath: stored.relativePath,
+    source: stored.source,
+    checksum: stored.checksum,
+    expiresAt,
   };
 }
 

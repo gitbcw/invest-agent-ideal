@@ -633,6 +633,55 @@ export function initDb() {
       started_at TEXT NOT NULL,
       PRIMARY KEY (user_id, instance_id, conversation_id)
     );
+    CREATE TABLE IF NOT EXISTS conversation_attachments (
+      attachment_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      message_id TEXT,
+      source TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      checksum TEXT,
+      retention_class TEXT NOT NULL DEFAULT 'transient_upload',
+      stored_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      deleted_at TEXT,
+      delete_reason TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS file_lifecycle_events (
+      id TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      instance_id TEXT,
+      event TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS artifact_delete_confirmations (
+      token_id TEXT PRIMARY KEY,
+      artifact_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      checksum TEXT,
+      issued_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'prepared',
+      trash_relative_path TEXT,
+      purge_at TEXT,
+      deleted_versions INTEGER,
+      error_code TEXT,
+      completed_at TEXT,
+      updated_at TEXT NOT NULL
+    );
   `);
   ensureDefaultUser();
   ensureDefaultAiInstance();
@@ -668,6 +717,17 @@ export function initDb() {
   ensureColumn("conversation_messages", "idempotency_key", "TEXT");
   ensureColumn("conversation_messages", "metadata", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("conversation_artifacts", "turn_id", "TEXT");
+  // Portal file-retention governance (additive, nullable). Backfill assigns
+  // these values; rows left NULL behave as they did before the migration.
+  ensureColumn("conversation_artifacts", "origin", "TEXT");
+  ensureColumn("conversation_artifacts", "retention_class", "TEXT");
+  ensureColumn("conversation_artifacts", "visibility", "TEXT");
+  ensureColumn("conversation_artifacts", "expires_at", "TEXT");
+  ensureColumn("conversation_artifacts", "deleted_at", "TEXT");
+  ensureColumn("conversation_artifacts", "deleted_by", "TEXT");
+  ensureColumn("conversation_artifacts", "delete_reason", "TEXT");
+  ensureColumn("conversation_artifacts", "trash_relative_path", "TEXT");
+  ensureColumn("conversation_artifacts", "purge_at", "TEXT");
   ensureColumn("daily_plans", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("daily_plans", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("investment_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
@@ -806,6 +866,16 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_assistant ON conversation_artifacts(assistant_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_artifact ON conversation_artifact_events(artifact_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_scope_time ON conversation_artifact_events(user_id, instance_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_library ON conversation_artifacts(user_id, instance_id, visibility, retention_class, deleted_at, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_retention ON conversation_artifacts(retention_class, expires_at, deleted_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_purge ON conversation_artifacts(retention_class, purge_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_attachments_scope ON conversation_attachments(user_id, instance_id, conversation_id, message_id);
+    CREATE INDEX IF NOT EXISTS idx_conversation_attachments_expiry ON conversation_attachments(expires_at, deleted_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_attachments_message ON conversation_attachments(message_id);
+    CREATE INDEX IF NOT EXISTS idx_file_lifecycle_events_scope_time ON file_lifecycle_events(user_id, instance_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_file_lifecycle_events_entity ON file_lifecycle_events(entity_type, entity_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_artifact_delete_confirmations_scope ON artifact_delete_confirmations(user_id, instance_id, artifact_id, status);
+    CREATE INDEX IF NOT EXISTS idx_artifact_delete_confirmations_expiry ON artifact_delete_confirmations(expires_at, status);
   `);
   logger.info("数据库初始化完成");
 }

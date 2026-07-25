@@ -227,6 +227,26 @@ Dashboard 退役后,投资数据修改只能通过用户对话 + MCP 确认流�
 
 相关环境变量：`PORTAL_LOCAL_ONLY`、`PORTAL_RELAY_URL`、`PORTAL_CONNECTOR_TOKEN`、`PORTAL_USER_ID`、`PORTAL_INSTANCE_ID`、`PORTAL_ASSISTANT_ID`、`PORTAL_PROJECT_ID`、`PORTAL_CONNECTOR_ID`、`PORTAL_CONNECTOR_DISPLAY_NAME`、`PORTAL_CONNECTOR_REFRESH_MS`。
 
+## Portal 文件生命周期运维
+
+用户上传附件保留 7 天（服务端 `conversation_attachments.expires_at` 权威），AI 正式 artifact `<=1 MiB` 落精选目录即永久（`durable_library`），其余 AI 临时产物 7 天；用户删除的永久库文件进 30 天隐藏回收区（`.trash/artifacts/`）。首次生产真实清理必须经过备份 + dry-run + 明确确认。完整策略见 `docs/portal-file-retention-and-library-governance-work-package.md`。
+
+| 命令 | 说明 |
+|------|------|
+| `npm run retention:report` | 只读统计：附件/ artifact retention 分类、待清理、待 purge 数量 |
+| `npm run retention:backup` | SQLite 文件级备份 + `PRAGMA quick_check`（清理前的必要前置） |
+| `npm run retention:backfill -- --dry-run` | Phase B 幂等回填：artifact retention 分类、精选目录扫描、附件索引（dry-run 不写破坏性状态） |
+| `npm run retention:backfill -- --apply` | 实际执行回填写库 |
+| `npm run retention:cleanup -- --dry-run` | 报告拟删除的到期附件，绝不 unlink |
+| `FILE_RETENTION_CLEANUP_ENABLED=true npm run retention:cleanup -- --apply` | 在备份 + dry-run + 明确确认后执行首次真实附件清理 |
+| `npm run retention:trash -- --dry-run` | 报告拟物理清除的 30 天回收区文件 |
+| `FILE_RETENTION_CLEANUP_ENABLED=true npm run retention:trash -- --apply` | 在确认后执行首次真实回收区清除 |
+
+关键约束：
+
+- 日常到期清理由 scheduler 内的 file-retention job 自动运行，但首次启用必须显式设置 `FILE_RETENTION_CLEANUP_ENABLED=true`，且此前必须完成 `retention:backup` + `retention:cleanup --dry-run` + 逐用户拟删除统计的明确确认。
+- 普通部署不替换 `.env`、SQLite、Workspace、reviews、`.state` 或微信状态；只有明确的数据迁移/恢复任务才允许运行时数据替换路径，且必须先备份和确认。
+
 本地开发应设置 `PORTAL_LOCAL_ONLY=true`。该开关仅在非生产环境生效，并强制 Platform 门户凭据文案、账号分发和 connector 使用 `http://localhost:3100`、`http://127.0.0.1:3100/api/internal/distribution/provision` 与 `ws://127.0.0.1:3199`；它会忽略历史远端 Portal URL、token 和 connector 筛选配置。火山云生产环境不会启用该开关，必须由显式 `PORTAL_PUBLIC_URL`、`PORTAL_DISTRIBUTION_URL`、`PORTAL_RELAY_URL` 和生产 token 配置。
 
 ## 数据源

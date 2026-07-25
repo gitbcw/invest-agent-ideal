@@ -15,6 +15,15 @@ import {
   publishLegacyPathArtifact,
   readConversationArtifactPayload,
 } from "../services/conversation-artifacts.js";
+import {
+  AttachmentRetentionError,
+  findAttachmentRecord,
+  readAttachmentBytes,
+} from "../services/file-retention.js";
+import {
+  confirmArtifactDeletion,
+  prepareArtifactDeletion,
+} from "../services/artifact-deletion.js";
 
 const PROTOCOL_VERSION = "2026-07-04";
 const TYPES = {
@@ -28,6 +37,9 @@ const TYPES = {
   ARTIFACT_LIBRARY_LIST: "artifact.library.list",
   ARTIFACT_PUBLISH_LEGACY: "artifact.publish.legacy",
   ARTIFACT_EVENT: "artifact.event",
+  ATTACHMENT_GET: "attachment.get",
+  ARTIFACT_DELETE_PREPARE: "artifact.delete.prepare",
+  ARTIFACT_DELETE_CONFIRM: "artifact.delete.confirm",
 } as const;
 
 type PortalEnvelope = {
@@ -313,6 +325,83 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       });
       return finish(ok(message.type, message.requestId, { accepted: true }));
     }
+    case TYPES.ATTACHMENT_GET: {
+      // Attachment reads are scope-bound: the browser only sends the
+      // attachmentId (and optionally a download flag); userId/instanceId come
+      // from the authenticated connector session. The service refuses to
+      // resolve raw paths.
+      const attachmentId = String(message.payload?.attachmentId || "");
+      if (!attachmentId) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "attachmentId is required", false));
+      }
+      const preview = findAttachmentRecord({ attachmentId, userId: scope.userId, instanceId: scope.instanceId });
+      if (!preview) {
+        return finish(fail(message.type, message.requestId, "ATTACHMENT_NOT_FOUND", attachmentId, false));
+      }
+      if (preview.status !== "active") {
+        // Expired/deleted attachments keep their metadata so the Portal can
+        // render the right card state, but no bytes are returned.
+        return finish(ok(message.type, message.requestId, {
+          attachmentId: preview.attachmentId,
+          status: preview.status,
+          fileName: preview.fileName,
+          mimeType: preview.mimeType,
+          sizeBytes: preview.sizeBytes,
+          expiresAt: preview.expiresAt,
+        }));
+      }
+      try {
+        const { bytes, record } = await readAttachmentBytes({ attachmentId, userId: scope.userId, instanceId: scope.instanceId });
+        return finish(ok(message.type, message.requestId, {
+          attachmentId: record.attachmentId,
+          status: "active" as const,
+          fileName: record.fileName,
+          mimeType: record.mimeType,
+          sizeBytes: record.sizeBytes,
+          checksum: record.checksum,
+          storedAt: record.storedAt,
+          expiresAt: record.expiresAt,
+          base64: bytes.toString("base64"),
+        }));
+      } catch (error) {
+        if (error instanceof AttachmentRetentionError) {
+          return finish(fail(message.type, message.requestId, error.code, error.message, false));
+        }
+        throw error;
+      }
+    }
+    case TYPES.ARTIFACT_DELETE_PREPARE: {
+      // Step 1 of the side-bar delete flow. Returns a single-use token bound
+      // to the caller's scope + artifact + path + checksum plus the impact
+      // notes the Portal must surface in its confirmation dialog. The browser
+      // never submits a path or trash target.
+      const artifactId = String(message.payload?.artifactId || "");
+      if (!artifactId) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "artifactId is required", false));
+      }
+      const prepared = await prepareArtifactDeletion({
+        artifactId,
+        userId: scope.userId,
+        instanceId: scope.instanceId,
+      });
+      return finish(ok(message.type, message.requestId, prepared));
+    }
+    case TYPES.ARTIFACT_DELETE_CONFIRM: {
+      // Step 2. Consumes the token, moves the file into the hidden trash,
+      // tombstones same-path versions. A replayed or expired token fails
+      // deterministically; a repeated confirm with a fresh token after the
+      // file is gone returns ARTIFACT_NOT_FOUND.
+      const tokenId = String(message.payload?.tokenId || "");
+      if (!tokenId) {
+        return finish(fail(message.type, message.requestId, "ARTIFACT_DELETE_CONFIRMATION_REQUIRED", "tokenId is required", false));
+      }
+      const confirmed = await confirmArtifactDeletion({
+        tokenId,
+        userId: scope.userId,
+        instanceId: scope.instanceId,
+      });
+      return finish(ok(message.type, message.requestId, confirmed));
+    }
     default:
       return finish(fail(message.type, message.requestId, "INVALID_REQUEST", `unsupported command: ${message.type}`));
   }
@@ -417,7 +506,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event"],
+        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "artifact.delete.prepare", "artifact.delete.confirm"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {
@@ -481,6 +570,10 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
           return;
         }
         if (error instanceof WorkspaceReportAssetError) {
+          send(socket, fail(message.type, message.requestId, error.code, error.message, false));
+          return;
+        }
+        if (error instanceof AttachmentRetentionError) {
           send(socket, fail(message.type, message.requestId, error.code, error.message, false));
           return;
         }

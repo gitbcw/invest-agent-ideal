@@ -6,7 +6,9 @@ import { sqlite } from "../db/index.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import { scanForUnsafeContent } from "./svg-sanitizer.js";
 import { recordArtifactEvent, recordArtifactLibraryListEvent } from "./artifact-events.js";
+import { withArtifactPathLock } from "./artifact-path-lock.js";
 import { getCurrentTurnId } from "./conversation-turns.js";
+import { recordFileLifecycleEvent } from "./file-lifecycle-audit.js";
 
 export const ARTIFACT_PREVIEWABLE_MIME_TYPES = [
   "image/svg+xml",
@@ -80,6 +82,134 @@ const MAX_INLINE_BYTES = 15 * 1024 * 1024;
 const MAX_HTML_BYTES = 1 * 1024 * 1024;
 const REPORT_ROOT = "reports";
 
+/**
+ * Boundary for the durable library. A file at most this many bytes can be
+ * promoted to `retention_class = durable_library` (kept forever until the user
+ * deletes it). Anything larger is admitted only as `transient_generated` with
+ * a 7-day TTL. The threshold is a hard service-layer rule — never let the
+ * model decide "this one is important enough to keep". See
+ * `docs/portal-file-retention-and-library-governance-work-package.md` §3.2.
+ */
+export const DURABLE_LIBRARY_MAX_BYTES = 1 * 1024 * 1024; // 1,048,576
+
+/**
+ * TTL applied to transient AI-generated artifacts (oversized or non-curated).
+ * Same 7-day window as user uploads; re-reading does not extend it.
+ */
+export const TRANSIENT_ARTIFACT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Curated library directories that backfill scans for existing workspace
+ * reports. Anything outside this set is never auto-promoted to the durable
+ * library, even if it appears under `reports/`. See work package §4.1.
+ */
+export const CURATED_LIBRARY_DIRECTORIES = [
+  "reports/daily",
+  "reports/weekly",
+  "reports/monthly",
+  "reports/company",
+  "reports/metrics",
+  "reports/memory",
+] as const;
+
+/**
+ * MIME types admissible to the durable library. The Portal viewer only renders
+ * Markdown/HTML inline; image/PDF/text/json/csv are listed here so the file
+ * tree can show them with download/Lightbox affordances.
+ */
+export const DURABLE_LIBRARY_MIME_TYPES = new Set([
+  "text/markdown",
+  "text/html",
+  "image/svg+xml",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "application/json",
+  "text/csv",
+]);
+
+/** MIME types that the Portal file tree shows but only offers download for. */
+const DOWNLOAD_ONLY_MIME_TYPES = new Set([
+  "application/pdf",
+  "text/plain",
+  "application/json",
+  "text/csv",
+]);
+
+const IMAGE_MIME_TYPES = new Set([
+  "image/svg+xml",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
+
+export type ArtifactRetentionClass = "durable_library" | "transient_generated" | "reference_only" | "trashed";
+export type ArtifactVisibility = "library" | "conversation_only" | "hidden";
+export type ArtifactOrigin = "assistant" | "system" | "workspace_backfill" | "legacy";
+
+export interface ArtifactRetentionClassification {
+  origin: ArtifactOrigin;
+  retentionClass: ArtifactRetentionClass;
+  visibility: ArtifactVisibility;
+  expiresAt: string | null;
+}
+
+/**
+ * Determines retention for a freshly published artifact from deterministic
+ * service-layer signals only: source, relative path, size, MIME and the
+ * curated directory list. Never asks the model. Returns `null` when the row
+ * should keep its pre-migration behaviour (e.g. legacy_path records).
+ */
+export function classifyArtifactRetention(input: {
+  source: ConversationArtifactScope["source"];
+  relativePath: string;
+  sizeBytes: number;
+  mimeType: string;
+  now?: Date;
+}): ArtifactRetentionClassification | null {
+  const now = input.now ?? new Date();
+  if (input.source === "legacy_path") {
+    return {
+      origin: "legacy",
+      retentionClass: "reference_only",
+      visibility: "conversation_only",
+      expiresAt: null,
+    };
+  }
+  const origin: ArtifactOrigin = input.source === "reviews.save" || input.source === "artifacts.publish" ? "assistant" : "system";
+  const withinCuratedDir = isWithinCuratedLibraryDirectory(input.relativePath);
+  const mimeAllowed = DURABLE_LIBRARY_MIME_TYPES.has(input.mimeType);
+  const withinDurableSize = input.sizeBytes <= DURABLE_LIBRARY_MAX_BYTES;
+  if (withinCuratedDir && mimeAllowed && withinDurableSize) {
+    return {
+      origin,
+      retentionClass: "durable_library",
+      visibility: "library",
+      expiresAt: null,
+    };
+  }
+  // Oversized or non-curated formal artifacts fall through to transient: the
+  // file stays readable in the original conversation for 7 days but never
+  // enters the permanent file tree.
+  const expiresAt = new Date(now.getTime() + TRANSIENT_ARTIFACT_RETENTION_MS).toISOString();
+  return {
+    origin,
+    retentionClass: "transient_generated",
+    visibility: "conversation_only",
+    expiresAt,
+  };
+}
+
+function isWithinCuratedLibraryDirectory(relativePath: string): boolean {
+  const normalized = relativePath.replace(/^\/+/, "");
+  for (const dir of CURATED_LIBRARY_DIRECTORIES) {
+    if (normalized === dir || normalized.startsWith(`${dir}/`)) return true;
+  }
+  return false;
+}
+
 export interface ConversationArtifact {
   artifactId: string;
   title: string;
@@ -98,6 +228,15 @@ export interface ConversationArtifactRecord extends ConversationArtifact {
   relativePath: string;
   scope: ConversationArtifactScope;
   turnId?: string | null;
+  origin?: ArtifactOrigin | null;
+  retentionClass?: ArtifactRetentionClass | null;
+  visibility?: ArtifactVisibility | null;
+  expiresAt?: string | null;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+  deleteReason?: string | null;
+  trashRelativePath?: string | null;
+  purgeAt?: string | null;
 }
 
 export interface ConversationArtifactScope {
@@ -105,7 +244,7 @@ export interface ConversationArtifactScope {
   assistantId: string;
   conversationId?: string | null;
   messageId?: string | null;
-  source: "reviews.save" | "artifacts.publish" | "legacy_path";
+  source: "reviews.save" | "artifacts.publish" | "legacy_path" | "workspace_backfill";
 }
 
 export class ConversationArtifactError extends Error {
@@ -117,7 +256,13 @@ export class ConversationArtifactError extends Error {
       | "ARTIFACT_TOO_LARGE"
       | "ARTIFACT_UNSAFE"
       | "ARTIFACT_SCOPE_MISMATCH"
-      | "ARTIFACT_INVALID_CURSOR",
+      | "ARTIFACT_INVALID_CURSOR"
+      | "ARTIFACT_EXPIRED"
+      | "ARTIFACT_DELETED"
+      | "ARTIFACT_NOT_DELETABLE"
+      | "ARTIFACT_DELETE_CONFIRMATION_REQUIRED"
+      | "ARTIFACT_DELETE_CONFIRMATION_EXPIRED"
+      | "ARTIFACT_DELETE_CONFLICT",
     message: string,
   ) {
     super(`${code}:${message}`);
@@ -133,6 +278,42 @@ export interface PublishArtifactInput {
   title?: string;
   scope: Omit<ConversationArtifactScope, "source"> & { source?: ConversationArtifactScope["source"] };
 }
+
+/**
+ * Shared SELECT column list so the publish/read/list/turn-binding queries all
+ * agree on the retention lifecycle fields. Aliases match
+ * `ConversationArtifactRecord`. Exported so the deletion service can reuse
+ * the exact same projection.
+ */
+export const ARTIFACT_SELECT_COLUMNS = [
+  "artifact_id AS artifactId",
+  "user_id AS userId",
+  "instance_id AS instanceId",
+  "project_id AS projectId",
+  "assistant_id AS assistantId",
+  "conversation_id AS conversationId",
+  "message_id AS messageId",
+  "turn_id AS turnId",
+  "source",
+  "kind",
+  "preview_mode AS previewMode",
+  "title",
+  "file_name AS fileName",
+  "mime_type AS mimeType",
+  "relative_path AS relativePath",
+  "size_bytes AS sizeBytes",
+  "checksum",
+  "created_at AS createdAt",
+  "origin",
+  "retention_class AS retentionClass",
+  "visibility",
+  "expires_at AS expiresAt",
+  "deleted_at AS deletedAt",
+  "deleted_by AS deletedBy",
+  "delete_reason AS deleteReason",
+  "trash_relative_path AS trashRelativePath",
+  "purge_at AS purgeAt",
+].join(",\n           ");
 
 /**
  * Registers a workspace file as a first-class artifact. The file must already
@@ -209,6 +390,16 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     source: input.scope.source ?? "artifacts.publish",
   };
 
+  // Compute retention once at write time. The library list and the read path
+  // consult these columns directly rather than re-inferring from source/size
+  // on every call, so backfill only has to populate the columns once.
+  const classification = classifyArtifactRetention({
+    source: scope.source,
+    relativePath: normalizeReportPath(relativePath),
+    sizeBytes,
+    mimeType,
+  });
+
   const record: ConversationArtifactRecord = {
     artifactId,
     title,
@@ -224,6 +415,10 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     relativePath: normalizeReportPath(relativePath),
     scope,
     turnId,
+    origin: classification?.origin ?? null,
+    retentionClass: classification?.retentionClass ?? null,
+    visibility: classification?.visibility ?? null,
+    expiresAt: classification?.expiresAt ?? null,
   };
 
   sqlite
@@ -232,8 +427,9 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
          artifact_id, user_id, instance_id, project_id, assistant_id,
          conversation_id, message_id, turn_id, source, kind, preview_mode,
          title, file_name, mime_type, relative_path, size_bytes, checksum,
-         created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         created_at, updated_at,
+         origin, retention_class, visibility, expires_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(artifact_id) DO UPDATE SET
          updated_at = excluded.updated_at,
          title = excluded.title,
@@ -242,7 +438,11 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
          relative_path = excluded.relative_path,
          size_bytes = excluded.size_bytes,
          checksum = excluded.checksum,
-         turn_id = COALESCE(excluded.turn_id, conversation_artifacts.turn_id)`
+         turn_id = COALESCE(excluded.turn_id, conversation_artifacts.turn_id),
+         origin = COALESCE(excluded.origin, conversation_artifacts.origin),
+         retention_class = COALESCE(excluded.retention_class, conversation_artifacts.retention_class),
+         visibility = COALESCE(excluded.visibility, conversation_artifacts.visibility),
+         expires_at = COALESCE(excluded.expires_at, conversation_artifacts.expires_at)`
     )
     .run(
       artifactId,
@@ -264,7 +464,29 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
       checksum,
       now,
       now,
+      classification?.origin ?? null,
+      classification?.retentionClass ?? null,
+      classification?.visibility ?? null,
+      classification?.expiresAt ?? null,
     );
+
+  if (classification) {
+    recordFileLifecycleEvent({
+      entityType: "artifact",
+      entityId: artifactId,
+      userId: input.userId,
+      instanceId: input.instanceId,
+      event: "artifact.classified",
+      status: "success",
+      summary: {
+        source: scope.source,
+        retentionClass: classification.retentionClass,
+        visibility: classification.visibility,
+        sizeBytes,
+        expiresAt: classification.expiresAt,
+      },
+    });
+  }
 
   return record;
 }
@@ -290,78 +512,71 @@ export async function readConversationArtifactPayload(input: {
   userId: string;
   instanceId?: string;
 }): Promise<{ descriptor: ConversationArtifactRecord; payload: ReadArtifactPayload }> {
-  const record = requireRecord(
+  const initialRecord = requireRecord(
     sqlite
       .prepare(
-        `SELECT
-           artifact_id AS artifactId,
-           user_id AS userId,
-           instance_id AS instanceId,
-           project_id AS projectId,
-           assistant_id AS assistantId,
-           conversation_id AS conversationId,
-           message_id AS messageId,
-           turn_id AS turnId,
-           source,
-           kind,
-           preview_mode AS previewMode,
-           title,
-           file_name AS fileName,
-           mime_type AS mimeType,
-           relative_path AS relativePath,
-           size_bytes AS sizeBytes,
-           checksum,
-           created_at AS createdAt
+        `SELECT ${ARTIFACT_SELECT_COLUMNS}
          FROM conversation_artifacts
          WHERE artifact_id = ?`
       )
       .get(input.artifactId) as ConversationArtifactRecord | undefined,
   );
-  if (record.userId !== input.userId) {
+  if (initialRecord.userId !== input.userId) {
     throw new ConversationArtifactError("ARTIFACT_SCOPE_MISMATCH", input.artifactId);
   }
-  if (input.instanceId && record.instanceId !== input.instanceId) {
+  if (input.instanceId && initialRecord.instanceId !== input.instanceId) {
     throw new ConversationArtifactError("ARTIFACT_SCOPE_MISMATCH", input.artifactId);
   }
+  return withArtifactPathLock(initialRecord.userId, initialRecord.relativePath, async () => {
+    // Re-read after acquiring the lock so a delete that won the race cannot
+    // leave this read using stale lifecycle fields.
+    const record = requireRecord(
+      sqlite
+        .prepare(`SELECT ${ARTIFACT_SELECT_COLUMNS} FROM conversation_artifacts WHERE artifact_id = ?`)
+        .get(input.artifactId) as ConversationArtifactRecord | undefined,
+    );
+    if (record.deletedAt) throw new ConversationArtifactError("ARTIFACT_DELETED", input.artifactId);
+    if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) {
+      throw new ConversationArtifactError("ARTIFACT_EXPIRED", input.artifactId);
+    }
 
-  const workspacePath = resolveWorkspacePath(record.userId);
-  const reportsPath = path.join(workspacePath, REPORT_ROOT);
-  const targetPath = path.resolve(workspacePath, record.relativePath);
-  let realReportsPath: string;
-  let realTargetPath: string;
-  try {
-    [realReportsPath, realTargetPath] = await Promise.all([realpath(reportsPath), realpath(targetPath)]);
-  } catch {
-    throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", record.relativePath);
-  }
-  if (!isWithin(realReportsPath, realTargetPath)) {
-    throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", record.relativePath);
-  }
-  const fileStat = await stat(realTargetPath);
-  if (!fileStat.isFile()) {
-    throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", record.relativePath);
-  }
-  const maxInlineBytes = record.mimeType === "text/html" ? MAX_HTML_BYTES : MAX_INLINE_BYTES;
-  if (fileStat.size > maxInlineBytes) {
-    throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(fileStat.size));
-  }
-  const raw = await readFile(realTargetPath);
-  if (record.checksum && sha256Hex(raw) !== record.checksum) {
-    throw new ConversationArtifactError("ARTIFACT_UNSAFE", "checksum mismatch");
-  }
-  const { mimeType, sanitizedBase64, sanitized } = await prepareArtifactPayload(record.mimeType, raw);
-  const bytes = sanitizedBase64 ? Buffer.from(sanitizedBase64, "base64") : raw;
-  return {
-    descriptor: record,
-    payload: {
-      fileName: record.fileName,
-      mimeType,
-      sizeBytes: bytes.length,
-      base64: bytes.toString("base64"),
-      checksum: record.checksum ?? undefined,
-      sanitized,
-    },
-  };
+    const workspacePath = resolveWorkspacePath(record.userId);
+    const reportsPath = path.join(workspacePath, REPORT_ROOT);
+    const targetPath = path.resolve(workspacePath, record.relativePath);
+    let realReportsPath: string;
+    let realTargetPath: string;
+    try {
+      [realReportsPath, realTargetPath] = await Promise.all([realpath(reportsPath), realpath(targetPath)]);
+    } catch {
+      throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", record.relativePath);
+    }
+    if (!isWithin(realReportsPath, realTargetPath)) {
+      throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", record.relativePath);
+    }
+    const fileStat = await stat(realTargetPath);
+    if (!fileStat.isFile()) throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", record.relativePath);
+    const maxInlineBytes = record.mimeType === "text/html" ? MAX_HTML_BYTES : MAX_INLINE_BYTES;
+    if (fileStat.size > maxInlineBytes) {
+      throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(fileStat.size));
+    }
+    const raw = await readFile(realTargetPath);
+    if (record.checksum && sha256Hex(raw) !== record.checksum) {
+      throw new ConversationArtifactError("ARTIFACT_UNSAFE", "checksum mismatch");
+    }
+    const { mimeType, sanitizedBase64, sanitized } = await prepareArtifactPayload(record.mimeType, raw);
+    const bytes = sanitizedBase64 ? Buffer.from(sanitizedBase64, "base64") : raw;
+    return {
+      descriptor: record,
+      payload: {
+        fileName: record.fileName,
+        mimeType,
+        sizeBytes: bytes.length,
+        base64: bytes.toString("base64"),
+        checksum: record.checksum ?? undefined,
+        sanitized,
+      },
+    };
+  });
 }
 
 /**
@@ -399,25 +614,7 @@ export function findArtifactsForMessage(input: {
 }): ConversationArtifactRecord[] {
   const rows = sqlite
     .prepare(
-      `SELECT
-         artifact_id AS artifactId,
-         user_id AS userId,
-         instance_id AS instanceId,
-         project_id AS projectId,
-         assistant_id AS assistantId,
-         conversation_id AS conversationId,
-         message_id AS messageId,
-         turn_id AS turnId,
-         source,
-         kind,
-         preview_mode AS previewMode,
-         title,
-         file_name AS fileName,
-         mime_type AS mimeType,
-         relative_path AS relativePath,
-         size_bytes AS sizeBytes,
-         checksum,
-         created_at AS createdAt
+      `SELECT ${ARTIFACT_SELECT_COLUMNS}
        FROM conversation_artifacts
        WHERE user_id = ? AND instance_id = ? AND conversation_id = ? AND message_id = ?
        ORDER BY created_at ASC, artifact_id ASC`
@@ -441,25 +638,7 @@ export function findArtifactsForTurn(input: {
 }): ConversationArtifactRecord[] {
   const rows = sqlite
     .prepare(
-      `SELECT
-         artifact_id AS artifactId,
-         user_id AS userId,
-         instance_id AS instanceId,
-         project_id AS projectId,
-         assistant_id AS assistantId,
-         conversation_id AS conversationId,
-         message_id AS messageId,
-         turn_id AS turnId,
-         source,
-         kind,
-         preview_mode AS previewMode,
-         title,
-         file_name AS fileName,
-         mime_type AS mimeType,
-         relative_path AS relativePath,
-         size_bytes AS sizeBytes,
-         checksum,
-         created_at AS createdAt
+      `SELECT ${ARTIFACT_SELECT_COLUMNS}
        FROM conversation_artifacts
        WHERE user_id = ? AND instance_id = ? AND conversation_id = ? AND turn_id = ?
        ORDER BY created_at ASC, artifact_id ASC`
@@ -476,12 +655,34 @@ export interface ArtifactLibraryItem {
   displayPath: string;
   directorySegments: string[];
   mimeType: string;
-  previewMode: "markdown" | "html";
+  previewMode: "markdown" | "html" | "image" | "pdf" | "text" | "table";
   sizeBytes: number;
   createdAt: string;
   updatedAt: string;
   checksum?: string;
+  /**
+   * Curated category derived from the curated directory the file lives in.
+   * Lets the Portal file tree group items without re-deriving the mapping.
+   * `other` covers formal `artifacts.publish` files outside the fixed dirs.
+   */
+  category: ArtifactLibraryCategory;
+  /** True when the Portal should show a download affordance instead of a preview. */
+  downloadable: boolean;
+  /**
+   * Routing hint for the Portal: `document` opens a tab, `image` opens the
+   * Lightbox, `download` is download-only.
+   */
+  openRoute: "document" | "image" | "download";
 }
+
+export type ArtifactLibraryCategory =
+  | "daily"
+  | "weekly"
+  | "monthly"
+  | "company"
+  | "metrics"
+  | "memory"
+  | "other";
 
 export interface ArtifactLibraryListResult {
   items: ArtifactLibraryItem[];
@@ -491,6 +692,7 @@ export interface ArtifactLibraryListResult {
 const LIBRARY_DEFAULT_LIMIT = 200;
 const LIBRARY_MAX_LIMIT = 500;
 const LIBRARY_TEMP_BACKUP_SUFFIXES = ["~", ".tmp", ".temp", ".bak", ".swp"];
+const LIBRARY_PREVIEW_MODES = new Set(["markdown", "html", "image", "pdf", "text", "table"]);
 
 interface LibraryRow {
   artifactId: string;
@@ -504,6 +706,11 @@ interface LibraryRow {
   checksum: string | null;
   createdAt: string;
   updatedAt: string;
+  origin: string | null;
+  retentionClass: string | null;
+  visibility: string | null;
+  expiresAt: string | null;
+  deletedAt: string | null;
 }
 
 interface LibraryCursor {
@@ -518,21 +725,29 @@ interface LibraryCursor {
  * when ALL of the following hold:
  *
  * 1. Exact `user_id + instance_id` match (scope is injected by the caller).
- * 2. `source` is `artifacts.publish` or `reviews.save` (never `legacy_path`).
- * 3. `preview_mode` is `markdown` or `html`.
- * 4. `relative_path` passes the same `normalizeReportPath` validation as
- *    publish/read and round-trips unchanged.
- * 5. No path segment starts with `.`, and the file name does not match the
+ * 2. `source` is `artifacts.publish`, `reviews.save`, or `workspace_backfill`
+ *    (never `legacy_path`).
+ * 3. After backfill: `visibility='library'` AND `retention_class='durable_library'`
+ *    AND `deleted_at IS NULL`. Pre-backfill rows (NULL columns) are still
+ *    admitted under the legacy rules so the rollout window does not blank the
+ *    tree.
+ * 4. `preview_mode` is one of markdown/html/image/pdf/text/table. Markdown/HTML
+ *    open as document tabs; images open in the Lightbox; the rest are
+ *    download-only.
+ * 5. `relative_path` passes the same `normalizeReportPath` validation as
+ *    publish/read and round-trips unchanged, and lives under one of the
+ *    curated directories (or is a formal `artifacts.publish` outside them).
+ * 6. No path segment starts with `.`, and the file name does not match the
  *    fixed temp/backup patterns (`.#` prefix; `~`/`.tmp`/`.temp`/`.bak`/`.swp`
  *    suffix, case-insensitive).
- * 6. The file still exists, is a regular file, stays within the real reports
- *    root after `realpath` (no symlink escape), and is within the size cap.
+ * 7. The file still exists, is a regular file, stays within the real reports
+ *    root after `realpath` (no symlink escape), and is within the durable size
+ *    cap (1 MiB) — oversize files are not promoted to the library.
  *
  * When one `relative_path` has several publish records, versions are walked
- * newest-first and the first version passing every rule wins. If the newest
- * record is disqualified (e.g. a legacy_path re-publish), the listing falls
- * back to the newest still-valid formal version; it never falls back to a
- * legacy record, and a path whose versions all fail is omitted entirely.
+ * newest-first and the first version passing every rule wins. Tombstoned
+ * (deleted) versions never win, and a path whose versions are all deleted is
+ * omitted entirely.
  *
  * Pagination is keyset-based on `(updated_at DESC, artifact_id DESC)` with an
  * opaque base64url(JSON) cursor. `limit` defaults to 200 and is clamped to
@@ -581,7 +796,12 @@ export async function listCuratedArtifactLibrary(input: {
          size_bytes AS sizeBytes,
          checksum,
          created_at AS createdAt,
-         updated_at AS updatedAt
+         updated_at AS updatedAt,
+         origin,
+         retention_class AS retentionClass,
+         visibility,
+         expires_at AS expiresAt,
+         deleted_at AS deletedAt
        FROM conversation_artifacts
        WHERE user_id = ? AND instance_id = ?
        ORDER BY updated_at DESC, artifact_id DESC`
@@ -600,8 +820,17 @@ export async function listCuratedArtifactLibrary(input: {
   const curated: ArtifactLibraryItem[] = [];
   for (const versions of versionsByPath.values()) {
     for (const version of versions) {
-      if (version.source !== "artifacts.publish" && version.source !== "reviews.save") continue;
-      if (version.previewMode !== "markdown" && version.previewMode !== "html") continue;
+      if (version.deletedAt) continue;
+      if (version.expiresAt && new Date(version.expiresAt).getTime() <= Date.now()) continue;
+      if (version.source !== "artifacts.publish" && version.source !== "reviews.save" && version.source !== "workspace_backfill") continue;
+      // Retention gate. After backfill every durable library row is tagged
+      // `visibility='library' AND retention_class='durable_library'`. While
+      // backfill is still running, NULL columns are admitted so the tree does
+      // not go dark; once tagged, a row must carry the durable library tag to
+      // remain visible.
+      if (version.retentionClass !== null && version.retentionClass !== "durable_library") continue;
+      if (version.visibility !== null && version.visibility !== "library") continue;
+      if (!LIBRARY_PREVIEW_MODES.has(version.previewMode)) continue;
       if (!isCuratedLibraryPath(version.relativePath)) continue;
       if (!(await isLibraryFileValid(realReportsPath, workspacePath, version.relativePath, version.mimeType))) continue;
       curated.push(toLibraryItem(version));
@@ -641,6 +870,13 @@ export async function listCuratedArtifactLibrary(input: {
 
 function toLibraryItem(row: LibraryRow): ArtifactLibraryItem {
   const displayPath = row.relativePath.slice(REPORT_ROOT.length + 1);
+  const category = categoryForPath(row.relativePath);
+  const downloadable = DOWNLOAD_ONLY_MIME_TYPES.has(row.mimeType);
+  const openRoute: ArtifactLibraryItem["openRoute"] = IMAGE_MIME_TYPES.has(row.mimeType)
+    ? "image"
+    : downloadable
+      ? "download"
+      : "document";
   return {
     artifactId: row.artifactId,
     title: row.title,
@@ -653,7 +889,21 @@ function toLibraryItem(row: LibraryRow): ArtifactLibraryItem {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     checksum: row.checksum ?? undefined,
+    category,
+    downloadable,
+    openRoute,
   };
+}
+
+function categoryForPath(relativePath: string): ArtifactLibraryCategory {
+  const normalized = relativePath.replace(/^\/+/, "");
+  for (const dir of CURATED_LIBRARY_DIRECTORIES) {
+    if (normalized === dir || normalized.startsWith(`${dir}/`)) {
+      const segment = dir.split("/")[1] as ArtifactLibraryCategory;
+      return segment;
+    }
+  }
+  return "other";
 }
 
 function isCuratedLibraryPath(relativePath: string): boolean {
@@ -693,7 +943,10 @@ async function isLibraryFileValid(
   try {
     const fileStat = await stat(realTargetPath);
     if (!fileStat.isFile()) return false;
-    const maxBytes = mimeType === "text/html" ? MAX_HTML_BYTES : MAX_INLINE_BYTES;
+    // HTML still has its own tighter preview cap; everything else in the
+    // library is bounded by the durable 1 MiB threshold so the file tree only
+    // shows files the retention layer would actually promote.
+    const maxBytes = mimeType === "text/html" ? MAX_HTML_BYTES : DURABLE_LIBRARY_MAX_BYTES;
     if (fileStat.size > maxBytes) return false;
   } catch {
     return false;

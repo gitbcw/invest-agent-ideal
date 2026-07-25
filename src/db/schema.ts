@@ -640,4 +640,77 @@ export const conversationArtifacts = sqliteTable("conversation_artifacts", {
   checksum: text("checksum"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
+  // ---- Portal file-retention additive columns (added 2026-07-25) ----
+  // All nullable so existing rows keep their pre-migration behaviour until
+  // backfill classifies them. `origin` records how the row was created;
+  // `retentionClass` + `visibility` decide whether the file belongs in the
+  // permanent library; `expiresAt`/`deletedAt`/`purgeAt` drive the lifecycle.
+  origin: text("origin"),
+  retentionClass: text("retention_class"),
+  visibility: text("visibility"),
+  expiresAt: text("expires_at"),
+  deletedAt: text("deleted_at"),
+  deletedBy: text("deleted_by"),
+  deleteReason: text("delete_reason"),
+  trashRelativePath: text("trash_relative_path"),
+  purgeAt: text("purge_at"),
+});
+
+/**
+ * Authoritative index for Portal/WeChat user uploads. Replaces the previous
+ * "guess TTL from `attachments/YYYY-MM-DD/` directory name" approach: every
+ * stored upload gets one row here, and the cleanup job deletes bytes only for
+ * rows whose `expires_at` has passed. See
+ * `docs/portal-file-retention-and-library-governance-work-package.md` §5.
+ */
+export const conversationAttachments = sqliteTable("conversation_attachments", {
+  attachmentId: text("attachment_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  messageId: text("message_id"),
+  source: text("source").notNull(), // portal | weixin
+  kind: text("kind").notNull(), // image | document
+  mimeType: text("mime_type").notNull(),
+  fileName: text("file_name").notNull(),
+  relativePath: text("relative_path").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum"),
+  retentionClass: text("retention_class").notNull().default("transient_upload"),
+  storedAt: text("stored_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  deletedAt: text("deleted_at"),
+  deleteReason: text("delete_reason"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const fileLifecycleEvents = sqliteTable("file_lifecycle_events", {
+  id: text("id").primaryKey(),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id").notNull(),
+  userId: text("user_id").notNull(),
+  instanceId: text("instance_id"),
+  event: text("event").notNull(),
+  status: text("status").notNull(),
+  reason: text("reason"),
+  summaryJson: text("summary_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const artifactDeleteConfirmations = sqliteTable("artifact_delete_confirmations", {
+  tokenId: text("token_id").primaryKey(),
+  artifactId: text("artifact_id").notNull(),
+  userId: text("user_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  relativePath: text("relative_path").notNull(),
+  checksum: text("checksum"),
+  issuedAt: text("issued_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  status: text("status").notNull().default("prepared"),
+  trashRelativePath: text("trash_relative_path"),
+  purgeAt: text("purge_at"),
+  deletedVersions: integer("deleted_versions"),
+  errorCode: text("error_code"),
+  completedAt: text("completed_at"),
+  updatedAt: text("updated_at").notNull(),
 });

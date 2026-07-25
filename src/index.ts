@@ -1,6 +1,7 @@
 import { startServer } from "./server.js";
 import { initDb } from "./db/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/index.js";
+import { startFileRetentionScheduler, stopFileRetentionScheduler } from "./scheduler/file-retention.js";
 import { logger } from "./lib/logger.js";
 import { disposeAllAcp, startDefaultAcp } from "./acp/stdio-agent.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
@@ -44,6 +45,7 @@ async function main() {
     // Runtime services stay available while the ACP executable/login recovers.
     await startScheduler();
     startAttachmentRetentionCleanup();
+    startFileRetentionScheduler();
     startDefaultAcpInBackground();
   } else {
     logger.info("OFFLINE 模式:跳过 ACP 子进程和 scheduler 启动。");
@@ -62,6 +64,7 @@ async function main() {
     logger.info(`收到 ${signal}，正在停止投资选股智能体...`);
     if (!offlineMode) stopScheduler();
     stopAttachmentRetentionCleanup();
+    stopFileRetentionScheduler();
     stopPlatformWeixinListeners();
     portalConnector?.stop();
     weixinMobileManager.stop();
