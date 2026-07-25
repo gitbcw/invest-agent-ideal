@@ -274,6 +274,20 @@ interface ConversationChatRequest {
 - 推荐使用 `base64`；`downloadUrl` 默认关闭，只有其 HTTPS 主机被本地 `PORTAL_ATTACHMENT_DOWNLOAD_HOSTS` 精确列入白名单时才可用。本地 connector 下载后仍执行同一套类型、大小和 magic bytes 校验。
 - 云端消息镜像只能保存 `metadata.attachments` 中的安全字段：`id`、`type`、`mimeType`、`fileName`、`sizeBytes`、`relativePath`、`source`，不得保存或展示本地绝对路径。
 
+## Report Asset Get
+
+用户在对话中打开 workspace 生成的图表或报告时，Portal 通过 `report.asset.get` 向该用户的 connector 读取内容。浏览器只访问 Portal 的登录态路由，不能访问本地 runtime、workspace 或 connector token。
+
+请求只包含相对 workspace 路径：
+
+```ts
+interface ReportAssetGetRequest {
+  relativePath: string; // 必须以 reports/ 开头
+}
+```
+
+connector 强制使用已注册的 user / assistant scope，拒绝绝对路径、路径穿越、`reports/` 外的路径、逃逸 reports 目录的符号链接、非白名单扩展名和超过 15 MB 的文件。响应为 `{ fileName, mimeType, sizeBytes, base64 }`，仅用于 Portal 将内容流式返回给当前登录用户。
+
 Connector 需要：
 
 1. 写入本地 canonical conversation log 的用户消息。

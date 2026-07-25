@@ -594,6 +594,45 @@ export function initDb() {
       summary_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS conversation_artifacts (
+      artifact_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      assistant_id TEXT NOT NULL,
+      conversation_id TEXT,
+      message_id TEXT,
+      turn_id TEXT,
+      source TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      preview_mode TEXT NOT NULL,
+      title TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      checksum TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS conversation_artifact_events (
+      id TEXT PRIMARY KEY,
+      artifact_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      instance_id TEXT,
+      event TEXT NOT NULL,
+      status TEXT,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS conversation_turn_active (
+      user_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, instance_id, conversation_id)
+    );
   `);
   ensureDefaultUser();
   ensureDefaultAiInstance();
@@ -628,6 +667,7 @@ export function initDb() {
   ensureColumn("conversation_messages", "request_id", "TEXT");
   ensureColumn("conversation_messages", "idempotency_key", "TEXT");
   ensureColumn("conversation_messages", "metadata", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("conversation_artifacts", "turn_id", "TEXT");
   ensureColumn("daily_plans", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("daily_plans", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("investment_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
@@ -761,6 +801,11 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_weixin_delivery_attempts_reason_time ON weixin_delivery_attempts(reason, created_at);
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_scope_time ON scheduled_task_runs(instance_id, user_id, task_type, scheduled_for);
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status, scheduled_for);
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_scope_message ON conversation_artifacts(user_id, instance_id, conversation_id, message_id);
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_turn ON conversation_artifacts(user_id, instance_id, conversation_id, turn_id);
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_assistant ON conversation_artifacts(assistant_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_artifact ON conversation_artifact_events(artifact_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_scope_time ON conversation_artifact_events(user_id, instance_id, created_at);
   `);
   logger.info("数据库初始化完成");
 }

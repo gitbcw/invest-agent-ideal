@@ -87,6 +87,12 @@ Confirmed write tools:
 
 `reviews.save` is the only current write exception: a scheduled daily-review conversation may publish without an interactive confirmation record. The Agent owns the report content and calls the tool with full Markdown `content` plus an independent WeChat `pushBrief`; optional `decisionRecords` and `sourceEvents` are appended to workspace memory. The service preserves the content, mirrors/indexes the artifact, records audit, and never derives the full report from the final customer reply. Manual durable saves still require `confirmedByUser=true`.
 
+Artifact publication tool:
+
+- `artifacts.publish`
+
+`artifacts.publish` registers an already-created file under the scoped workspace `reports/` directory and returns a first-class artifact descriptor for Portal message metadata. It rejects absolute paths, parent traversal, escaping symlinks, unsupported or forged MIME content, oversized files, unsafe SVG, and cross-scope reads. It does not create or edit the report file and cannot select another user scope.
+
 ## Verification
 
 Run locally or on Volcano:
@@ -112,4 +118,5 @@ Expected checks:
 - `market.snapshot` returns usable holdings/watchlist/plan facts without relying on shell network access.
 - Durable writes reject missing, expired, replayed, cross-scope, or payload-mismatched confirmations.
 - Scheduled `reviews.save` accepts only the trusted scheduler conversation scope, preserves full report and push brief separately, appends optional decision/source records, and keeps manual unconfirmed saves rejected.
+- `artifacts.publish` accepts only allowlisted `reports/` files and returns a scoped descriptor whose payload checksum matches the workspace bytes.
 - Final onboarding watch setup completes after an explicit skip or verified confirmed-rule creation without a redundant completion-only confirmation.

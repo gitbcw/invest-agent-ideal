@@ -1,11 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { initDb } from "../db/index.js";
+import { initDb, sqlite } from "../db/index.js";
 import { disposeAllAcp } from "../acp/stdio-agent.js";
+import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { chatViaConversationLog, getConversation, listConversations } from "../services/conversation-log.js";
 import { listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { AttachmentStoreError } from "../lib/attachment-store.js";
+import { WorkspaceReportAssetError, readWorkspaceReportAsset } from "../services/workspace-report-assets.js";
+import {
+  ConversationArtifactError,
+  logArtifactEvent,
+  publishLegacyPathArtifact,
+  readConversationArtifactPayload,
+} from "../services/conversation-artifacts.js";
 
 const PROTOCOL_VERSION = "2026-07-04";
 const TYPES = {
@@ -14,6 +22,10 @@ const TYPES = {
   CONVERSATION_LIST: "conversation.list",
   CONVERSATION_GET: "conversation.get",
   CONVERSATION_CHAT: "conversation.chat",
+  REPORT_ASSET_GET: "report.asset.get",
+  ARTIFACT_GET: "artifact.get",
+  ARTIFACT_PUBLISH_LEGACY: "artifact.publish.legacy",
+  ARTIFACT_EVENT: "artifact.event",
 } as const;
 
 type PortalEnvelope = {
@@ -56,10 +68,12 @@ function env(name: string, fallback?: string) {
 }
 
 function connectorIdPrefix() {
+  if (config.portal.localOnly) return "local";
   return env("PORTAL_CONNECTOR_ID_PREFIX", "local")!;
 }
 
 function connectorRuntimeLabel() {
+  if (config.portal.localOnly) return "本机开发";
   return env("PORTAL_CONNECTOR_RUNTIME_LABEL", connectorIdPrefix())!;
 }
 
@@ -73,6 +87,7 @@ function csvEnvSet(name: string): Set<string> {
 }
 
 function connectorScopeAllowed(project: AiProjectRuntimeContext) {
+  if (config.portal.localOnly) return true;
   const include = csvEnvSet("PORTAL_CONNECTOR_INCLUDE_ASSISTANTS");
   const exclude = csvEnvSet("PORTAL_CONNECTOR_EXCLUDE_ASSISTANTS");
   const keys = new Set([project.instanceId, project.ownerUserId]);
@@ -138,6 +153,10 @@ function localPayloadScope(scope: ConnectorScope, payload: any) {
   };
 }
 
+function isArtifactEventName(value: string): value is "open" | "success" | "failure" | "download" {
+  return value === "open" || value === "success" || value === "failure" || value === "download";
+}
+
 async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
   const commandScope = localPayloadScope(scope, message.payload);
   const startedAt = Date.now();
@@ -173,6 +192,100 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         idempotencyKey: message.payload?.idempotencyKey,
         clientSentAt: message.payload?.clientSentAt,
       })));
+    case TYPES.REPORT_ASSET_GET:
+      return finish(ok(message.type, message.requestId, await readWorkspaceReportAsset({
+        userId: scope.userId,
+        relativePath: String(message.payload?.relativePath || ""),
+      })));
+    case TYPES.ARTIFACT_GET: {
+      const artifactId = String(message.payload?.artifactId || "");
+      // The connector no longer records open/success events here. Those
+      // are owned by the Portal client (which fires them once per real
+      // user interaction, deduplicated across collapse/expand). The
+      // connector still records a failure when it cannot serve the
+      // payload, since that signal is only visible at this layer.
+      try {
+        const result = await readConversationArtifactPayload({
+          artifactId,
+          userId: scope.userId,
+          instanceId: scope.instanceId,
+        });
+        return finish(ok(message.type, message.requestId, {
+          artifactId: result.descriptor.artifactId,
+          title: result.descriptor.title,
+          fileName: result.payload.fileName,
+          mimeType: result.payload.mimeType,
+          sizeBytes: result.payload.sizeBytes,
+          base64: result.payload.base64,
+          checksum: result.payload.checksum,
+          sanitized: result.payload.sanitized,
+          kind: result.descriptor.kind,
+          previewMode: result.descriptor.previewMode,
+          createdAt: result.descriptor.createdAt,
+        }));
+      } catch (error) {
+        const reason = error instanceof ConversationArtifactError ? error.code : (error as Error).message;
+        logArtifactEvent({
+          artifactId,
+          userId: scope.userId,
+          instanceId: scope.instanceId,
+          event: "failure",
+          status: "failure",
+          reason,
+        });
+        throw error;
+      }
+    }
+    case TYPES.ARTIFACT_PUBLISH_LEGACY: {
+      const record = await publishLegacyPathArtifact({
+        userId: scope.userId,
+        instanceId: scope.instanceId,
+        projectId: scope.projectId,
+        assistantId: scope.assistantId,
+        conversationId: typeof message.payload?.conversationId === "string" ? message.payload.conversationId : null,
+        relativePath: String(message.payload?.relativePath || ""),
+      });
+      return finish(ok(message.type, message.requestId, {
+        artifactId: record.artifactId,
+        title: record.title,
+        fileName: record.fileName,
+        mimeType: record.mimeType,
+        sizeBytes: record.sizeBytes,
+        kind: record.kind,
+        previewMode: record.previewMode,
+        createdAt: record.createdAt,
+        checksum: record.checksum,
+      }));
+    }
+    case TYPES.ARTIFACT_EVENT: {
+      const artifactId = String(message.payload?.artifactId || "");
+      const rawEvent = String(message.payload?.event || "");
+      const event = isArtifactEventName(rawEvent) ? rawEvent : null;
+      if (!event) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", `unknown artifact event: ${rawEvent}`));
+      }
+      // Validate that the artifact actually belongs to the caller before
+      // accepting the event. Without this gate a malicious client could
+      // poison telemetry with arbitrary artifact IDs.
+      const owned = sqlite
+        .prepare(
+          `SELECT 1 FROM conversation_artifacts
+           WHERE artifact_id = ? AND user_id = ? AND instance_id = ?`
+        )
+        .get(artifactId, scope.userId, scope.instanceId);
+      if (!owned) {
+        return finish(fail(message.type, message.requestId, "ARTIFACT_SCOPE_MISMATCH", "artifact does not belong to caller", false));
+      }
+      logArtifactEvent({
+        artifactId,
+        userId: scope.userId,
+        instanceId: scope.instanceId,
+        event,
+        status: typeof message.payload?.status === "string" ? (message.payload.status as "success" | "failure" | "denied") : undefined,
+        reason: typeof message.payload?.reason === "string" ? message.payload.reason : undefined,
+      });
+      return finish(ok(message.type, message.requestId, { accepted: true }));
+    }
     default:
       return finish(fail(message.type, message.requestId, "INVALID_REQUEST", `unsupported command: ${message.type}`));
   }
@@ -208,8 +321,12 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
     throw new Error("当前 Node.js 运行时没有全局 WebSocket，请升级 Node 或改用门户项目 mock connector 联调。");
   }
 
-  const relayUrl = env("PORTAL_RELAY_URL", "ws://localhost:3199")!;
-  const token = env("PORTAL_CONNECTOR_TOKEN", "dev-connector-token")!;
+  const relayUrl = config.portal.localOnly
+    ? "ws://127.0.0.1:3199"
+    : env("PORTAL_RELAY_URL", "ws://localhost:3199")!;
+  const token = config.portal.localOnly
+    ? "dev-connector-token"
+    : env("PORTAL_CONNECTOR_TOKEN", "dev-connector-token")!;
   const startedAt = new Date().toISOString();
   let socket: AnyWebSocket | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -273,7 +390,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments"],
+        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.publish.legacy", "artifact.event"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {
@@ -334,6 +451,14 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         logger.error(`Portal connector command failed assistant=${scope.assistantId}:`, error);
         if (error instanceof AttachmentStoreError) {
           send(socket, fail(message.type, message.requestId, "INVALID_REQUEST", error.message, false));
+          return;
+        }
+        if (error instanceof WorkspaceReportAssetError) {
+          send(socket, fail(message.type, message.requestId, error.code, error.message, false));
+          return;
+        }
+        if (error instanceof ConversationArtifactError) {
+          send(socket, fail(message.type, message.requestId, error.code, error.message, false));
           return;
         }
         send(socket, fail(message.type, message.requestId, "ACP_FAILED", (error as Error).message, true));

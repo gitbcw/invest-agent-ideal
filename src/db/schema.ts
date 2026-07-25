@@ -610,3 +610,34 @@ export const platformAdminAuditLogs = sqliteTable("platform_admin_audit_logs", {
   summaryJson: text("summary_json").notNull().default("{}"),
   createdAt: text("created_at").notNull(),
 });
+
+/**
+ * First-class artifact index for the Portal viewer.
+ *
+ * Each row binds an unguessable `artifactId` to a precise
+ * `userId + instanceId + relativePath` so the Portal never exposes workspace
+ * absolute paths in conversation messages. The relative path is validated
+ * against the user's `reports/` directory on every read (see
+ * `src/services/conversation-artifacts.ts`).
+ */
+export const conversationArtifacts = sqliteTable("conversation_artifacts", {
+  artifactId: text("artifact_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  assistantId: text("assistant_id").notNull(),
+  conversationId: text("conversation_id"),
+  messageId: text("message_id"),
+  turnId: text("turn_id"),
+  source: text("source").notNull(),
+  kind: text("kind").notNull(),
+  previewMode: text("preview_mode").notNull(),
+  title: text("title").notNull(),
+  fileName: text("file_name").notNull(),
+  mimeType: text("mime_type").notNull(),
+  relativePath: text("relative_path").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});

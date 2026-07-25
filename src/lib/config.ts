@@ -11,6 +11,11 @@ function defaultWorkspaceRoot() {
 export type LlmProvider = "deepseek" | "stepfun" | "doubao";
 export type RuntimeBackend = "hermes" | "codex";
 
+// Development machines can retain historic cloud Portal values in .env. Keep
+// local Portal testing explicitly local unless production config is in use.
+export const portalLocalOnly =
+  process.env.PORTAL_LOCAL_ONLY === "true" && process.env.NODE_ENV !== "production";
+
 export const config = {
   port: Number(process.env.PORT) || 22655,
   host: process.env.HOST || process.env.BIND_HOST || "127.0.0.1",
@@ -100,9 +105,14 @@ export const config = {
   },
 
   portal: {
-    publicUrl: process.env.PORTAL_PUBLIC_URL || "http://localhost:3100",
-    distributionUrl: process.env.PORTAL_DISTRIBUTION_URL || "http://127.0.0.1:3100/api/internal/distribution/provision",
-    distributionToken: process.env.PORTAL_DISTRIBUTION_TOKEN || process.env.PORTAL_CONNECTOR_TOKEN || "dev-connector-token",
+    localOnly: portalLocalOnly,
+    publicUrl: portalLocalOnly ? "http://localhost:3100" : (process.env.PORTAL_PUBLIC_URL || "http://localhost:3100"),
+    distributionUrl: portalLocalOnly
+      ? "http://127.0.0.1:3100/api/internal/distribution/provision"
+      : (process.env.PORTAL_DISTRIBUTION_URL || "http://127.0.0.1:3100/api/internal/distribution/provision"),
+    distributionToken: portalLocalOnly
+      ? "dev-connector-token"
+      : (process.env.PORTAL_DISTRIBUTION_TOKEN || process.env.PORTAL_CONNECTOR_TOKEN || "dev-connector-token"),
   },
 
   /**

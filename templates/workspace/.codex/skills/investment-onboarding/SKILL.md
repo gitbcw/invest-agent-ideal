@@ -5,14 +5,15 @@ description: Guide a new investment user through the service-owned onboarding dr
 
 # Investment Onboarding
 
-Use `service-capability-policy` for every read and write. The service-owned draft is the only onboarding progress source; do not edit Workspace YAML directly and do not call legacy HTTP or shell fallbacks.
+Use `service-capability-policy` for every read and write. `config/onboarding_state.yaml` is the first initialization gate; the service-owned draft is only the progress source when that state is not completed. Do not edit Workspace YAML directly and do not call legacy HTTP or shell fallbacks.
 
 ## Start Or Resume
 
-1. Call `onboarding.draft.get` first.
-2. If an active draft exists, continue from its `nextStep` without repeating accepted information.
-3. Only when no active draft exists, read `config/onboarding_state.yaml` to decide whether onboarding is complete.
-4. Keep each turn focused on one clear decision. Reuse information the user already supplied.
+1. Read `config/onboarding_state.yaml` first.
+2. If `status` is `completed`, stop onboarding. Handle ordinary investment requests normally; do not call any `onboarding.draft.*` write tool and do not let an old or unrelated active draft block the request.
+3. Only when `status` is not `completed`, call `onboarding.draft.get` and continue from its `nextStep` without repeating accepted information.
+4. A new or revised draft requires explicit user intent to start or change initialization, such as “重新配置投资风格”“重新录入持仓” or “修改初始化设置”. A review, holdings query, market question, screening request, or next-day action assessment is not onboarding intent.
+5. Keep each turn focused on one clear decision. Reuse information the user already supplied.
 
 ## Draft And Confirmation Contract
 
@@ -32,6 +33,8 @@ If the user skips explicit rules, call `onboarding.draft.skip_watch_rules`. When
 ## Safety
 
 - Never expose tool names, internal step names, payload schemas, paths, or audit details in the final user reply.
+- Never start or resume onboarding for a user whose `config/onboarding_state.yaml` already has `status: completed` unless the user explicitly requests reconfiguration.
+- Never create an onboarding draft while answering an ordinary investment request.
 - Never bypass the service draft by editing portfolio, strategy, schedules, notification, watch, or onboarding-state files.
 - Never invent codes, holdings, methods, rules, or notification choices.
 - If a named capability is unavailable, state the user-visible limitation and stop the write path.

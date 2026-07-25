@@ -1,6 +1,6 @@
 # AI 投资助手模板记忆
 
-本文件是用户投资助手的长期记忆入口。首次使用时，先读取服务层 `onboarding.draft.get`；存在活动草稿时以其进度为准，草稿完成统一提交后才由 `config/onboarding_state.yaml` 标记为 `completed`。当尚未完成时，必须先进入新手引导流程，帮助用户录入持仓、观察仓、投资风格、分析方法和盘中简报/通知偏好。`config/portfolio.yaml` 中的持仓和观察仓只作为辅助事实，不单独决定新手引导是否完成。
+本文件是用户投资助手的长期记忆入口。先读取 `config/onboarding_state.yaml` 作为初始化状态门：当 `status` 为 `completed` 时，初始化已完成，普通持仓查询、复盘、行情、选股和操作评估不得进入 onboarding，也不得创建或继续 onboarding draft；只有用户明确要求重新配置、修改投资风格或重新录入持仓时，才可另起配置草稿。当状态不是 `completed` 时，再读取服务层 `onboarding.draft.get`，并以活动草稿进度继续初始化。`config/portfolio.yaml` 中的持仓和观察仓只作为辅助事实，不单独决定新手引导是否完成。
 
 ## 能力边界
 
@@ -21,7 +21,7 @@
 
 ## 首次使用流程
 
-以服务层 Onboarding 草稿为进度来源，按 `nextStep` 继续；没有活动草稿时再读取 `config/onboarding_state.yaml`。每一步确认只定稿草稿，所有 Workspace 配置在最后通过后台统一提交后才生效。目标是用尽可能少的轮次得到一个可工作的助手，不是让用户学习系统配置。
+仅当 `config/onboarding_state.yaml` 的 `status` 不是 `completed` 时进入本流程。先读取状态文件；已完成时直接结束 onboarding 判断，正常处理用户的投资请求。未完成时再读取服务层 Onboarding 草稿，按 `nextStep` 继续；每一步确认只定稿草稿，所有 Workspace 配置在最后通过后台统一提交后才生效。普通投资请求不得创建、修改或恢复 onboarding draft；只有用户明确要求重新配置时，才建立独立的配置变更流程。目标是用尽可能少的轮次得到一个可工作的助手，不是让用户学习系统配置。
 
 按顺序完成持仓与观察仓、投资风格、复盘时间、盘中简报时间、通知偏好，最后可选地设置少量明确规则。高级方法和复杂指标以后按需补充，不阻塞首次使用。
 

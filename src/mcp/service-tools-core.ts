@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { alertRules, conversationMessages, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
+import { publishConversationArtifact, type ConversationArtifact } from "../services/conversation-artifacts.js";
 import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
@@ -66,7 +67,7 @@ export async function callServiceTool(
   try {
     return await dispatchServiceTool(name, input, context);
   } catch (error) {
-    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save") {
+    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish") {
       await audit(context, {
         operation: name,
         resourceType: "service_tool",
@@ -334,6 +335,8 @@ async function dispatchServiceTool(
       return proposeMethodChange(input, context);
     case "reviews.save":
       return saveReview(input, context);
+    case "artifacts.publish":
+      return publishArtifact(input, context);
     case "watch_rules.catalog":
       return { ok: true, userId: context.userId, instanceId: context.instanceId, items: listWatchRuleCatalog() };
     case "watch_rules.list":
@@ -973,6 +976,38 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
     },
     resultSummary: `saved daily review ${saved.date}; decisions=${decisionRecords.length}; sourceEvents=${sourceEvents.length}`,
   });
+  let artifact: ConversationArtifact | undefined;
+  try {
+    const published = await publishConversationArtifact({
+      userId: context.userId,
+      instanceId: context.instanceId,
+      relativePath: `reports/daily/${saved.date}.md`,
+      kind: "report",
+      title: `每日复盘 ${saved.date}`,
+      scope: {
+        projectId: context.projectId || DEFAULT_PROJECT_ID,
+        assistantId: context.conversationId?.startsWith("scheduler:daily-review:")
+          ? context.instanceId
+          : context.instanceId,
+        conversationId: context.conversationId ?? null,
+        source: "reviews.save",
+      },
+    });
+    artifact = published;
+  } catch (error) {
+    // Artifact registration is a structural convenience for the Portal viewer.
+    // If the file has not been mirrored into the workspace yet (for example a
+    // workspace that has not been initialised), fall back silently rather than
+    // failing the whole review publish.
+    await audit(context, {
+      operation: "reviews.save",
+      resourceType: "daily_review",
+      resourceId: saved.date,
+      requestBody: { artifactPublish: "failed" },
+      resultSummary: `artifact publish skipped: ${(error as Error).message}`,
+      status: "error",
+    }).catch(() => undefined);
+  }
   return {
     ok: true,
     userId: context.userId,
@@ -981,7 +1016,46 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
     pushBrief,
     decisionRecordCount: decisionRecords.length,
     sourceEventCount: sourceEvents.length,
+    artifact,
   };
+}
+
+async function publishArtifact(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const relativePath = stringInput(input?.relativePath);
+  if (!relativePath) throw new Error("relativePath is required");
+  const title = stringInput(input?.title) || undefined;
+  const kindRaw = stringInput(input?.kind);
+  const kind = isArtifactKind(kindRaw) ? kindRaw : undefined;
+  const published = await publishConversationArtifact({
+    userId: context.userId,
+    instanceId: context.instanceId,
+    relativePath,
+    kind,
+    title,
+    scope: {
+      projectId: context.projectId || DEFAULT_PROJECT_ID,
+      assistantId: context.instanceId,
+      conversationId: context.conversationId ?? null,
+      source: "artifacts.publish",
+    },
+  });
+  await audit(context, {
+    operation: "artifacts.publish",
+    resourceType: "conversation_artifact",
+    resourceId: published.artifactId,
+    requestBody: { relativePath, kind, title },
+    resultSummary: `published ${published.kind}/${published.previewMode} ${published.fileName}`,
+  });
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    artifact: published,
+  };
+}
+
+function isArtifactKind(value: string | undefined): value is ConversationArtifact["kind"] {
+  return value === "report" || value === "chart" || value === "data" || value === "document";
 }
 
 function normalizeCodes(value: unknown): string[] {

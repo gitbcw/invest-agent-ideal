@@ -245,7 +245,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "onboarding.draft.get",
-    "Read the current onboarding draft and its next unconfirmed step. During onboarding, use this before reading workspace onboarding state so confirmed draft sections are not replayed.",
+    "Read the current onboarding draft and its next unconfirmed step. First read config/onboarding_state.yaml: if status is completed, handle ordinary investment requests without starting or resuming onboarding; only inspect this draft when onboarding state is not completed or the user explicitly requests reconfiguration.",
     {}
   );
 
@@ -379,7 +379,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "reviews.save",
-    "Publish an Agent-authored daily review. Preserve the full Markdown as the report, store an independent WeChat push brief, and optionally append Agent-authored decision/source records. Scheduled daily reviews do not need interactive confirmation; manual durable saves require confirmedByUser=true.",
+    "Publish an Agent-authored daily review. Preserve the full Markdown as the report, store an independent WeChat push brief, and optionally append Agent-authored decision/source records. Scheduled daily reviews do not need interactive confirmation; manual durable saves require confirmedByUser=true. The reply includes an `artifact` descriptor whose `artifactId` should be embedded in the assistant reply metadata so the Portal can render it inline.",
     {
       confirmedByUser: z.literal(true).optional(),
       date: z.string().optional(),
@@ -389,6 +389,18 @@ async function main() {
       decisionRecords: z.array(z.record(z.string(), z.unknown())).max(100).optional(),
       sourceEvents: z.array(z.record(z.string(), z.unknown())).max(100).optional(),
       context: z.unknown().optional(),
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "artifacts.publish",
+    "Register an already-existing workspace file (under reports/) as a first-class artifact and return its descriptor. Use this for ad-hoc chart, table, or supplementary report files. Never accept absolute paths or paths outside the user's reports directory.",
+    {
+      relativePath: z.string().min(1).describe("Workspace-relative path that begins with reports/, e.g. reports/daily/2026-07-24.md."),
+      kind: z.enum(["report", "chart", "data", "document"]).optional(),
+      title: z.string().max(200).optional(),
     },
     { readOnlyHint: false, destructiveHint: false }
   );

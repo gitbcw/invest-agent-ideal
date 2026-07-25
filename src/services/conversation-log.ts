@@ -13,6 +13,8 @@ import {
   type IncomingPortalAttachment,
   type StoredAttachment,
 } from "../lib/attachment-store.js";
+import { findArtifactsForMessage, findArtifactsForTurn, type ConversationArtifact } from "./conversation-artifacts.js";
+import { markTurnStart, markTurnEnd } from "./conversation-turns.js";
 
 export type ConversationChannel = "web" | "weixin-mobile";
 export type ConversationRole = "user" | "assistant" | "system";
@@ -66,6 +68,33 @@ export class ConversationScopeError extends Error {
 }
 
 const pendingPortalChats = new Map<string, Promise<ConversationChatResult>>();
+const conversationChatTails = new Map<string, Promise<void>>();
+
+/**
+ * ACP currently allows only one active turn per conversation. Keep the
+ * service entry point consistent with that invariant so the persisted active
+ * turn marker cannot be overwritten by a second request before ACP reports
+ * `ACP_TURN_BUSY`.
+ */
+export async function withConversationChatLock<T>(
+  input: { userId: string; instanceId: string; conversationId: string },
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = `${input.userId}\u0000${input.instanceId}\u0000${input.conversationId}`;
+  const previous = conversationChatTails.get(key);
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  conversationChatTails.set(key, current);
+  if (previous) await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (conversationChatTails.get(key) === current) conversationChatTails.delete(key);
+  }
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -476,7 +505,11 @@ export async function chatViaConversationLog(input: {
     const pending = pendingPortalChats.get(input.idempotencyKey);
     if (pending) return pending;
   }
-  const operation = chatViaConversationLogOnce(input);
+  const scope = normalizeConversationScope(input);
+  const operation = withConversationChatLock(
+    { ...scope, conversationId: input.conversationId },
+    () => chatViaConversationLogOnce(input),
+  );
   if (!input.idempotencyKey) return operation;
   pendingPortalChats.set(input.idempotencyKey, operation);
   try {
@@ -563,7 +596,23 @@ async function chatViaConversationLogOnce(input: {
       attachments: storedAttachments,
     },
   };
-  const response = await agent.handleMessage(acpMessage);
+  // Mark the active turn so any MCP `artifacts.publish` / `reviews.save`
+  // call made by the ACP backend records this requestId as its `turn_id`.
+  // The assistant message is also stored with the same requestId, which
+  // lets us bind artifacts deterministically instead of attaching every
+  // unbound conversation-level artifact to whichever reply finishes next.
+  const turnScope = {
+    userId: scope.userId,
+    instanceId: runtime?.instanceId || scope.instanceId,
+    conversationId: input.conversationId,
+  };
+  markTurnStart({ ...turnScope, turnId: requestId });
+  let response;
+  try {
+    response = await agent.handleMessage(acpMessage);
+  } finally {
+    markTurnEnd({ ...turnScope, turnId: requestId });
+  }
   const assistantText = response.content.text ?? "处理完成，但没有生成文本回复。";
   const assistantMessage = appendConversationMessage({
     scope: {
@@ -578,6 +627,13 @@ async function chatViaConversationLogOnce(input: {
     content: assistantText,
     requestId,
   });
+  const artifacts = attachArtifactsToAssistantMessage({
+    conversationId: input.conversationId,
+    assistantMessageId: assistantMessage.messageId,
+    userId: scope.userId,
+    instanceId: runtime?.instanceId || scope.instanceId,
+    turnId: requestId,
+  });
   await rememberConversationTurn({
     userId: scope.userId,
     projectId: runtime?.projectId || scope.projectId,
@@ -590,9 +646,95 @@ async function chatViaConversationLogOnce(input: {
   return {
     conversationId: input.conversationId,
     userMessage,
-    assistantMessage,
+    assistantMessage: withArtifactMetadata(assistantMessage, artifacts),
     traceId: requestId,
   };
+}
+
+function withArtifactMetadata(
+  message: ConversationMessageRecord,
+  artifacts: ConversationArtifact[] | undefined,
+): ConversationMessageRecord {
+  if (!artifacts || artifacts.length === 0) return message;
+  const baseMetadata = (message.metadata ?? {}) as Record<string, unknown>;
+  return {
+    ...message,
+    metadata: { ...baseMetadata, artifacts: artifacts.map(toPublicArtifactDescriptor) },
+  };
+}
+
+function toPublicArtifactDescriptor(artifact: ConversationArtifact) {
+  return {
+    artifactId: artifact.artifactId,
+    title: artifact.title,
+    fileName: artifact.fileName,
+    mimeType: artifact.mimeType,
+    sizeBytes: artifact.sizeBytes,
+    kind: artifact.kind,
+    previewMode: artifact.previewMode,
+    createdAt: artifact.createdAt,
+    checksum: artifact.checksum,
+  };
+}
+
+function attachArtifactsToAssistantMessage(input: {
+  conversationId: string;
+  assistantMessageId: string;
+  userId: string;
+  instanceId: string;
+  turnId: string;
+}): ConversationArtifact[] | undefined {
+  // Bind artifacts by their explicit `turn_id`, not by `message_id IS NULL`.
+  // The turnId was recorded on each artifact row at publish time (see
+  // `publishConversationArtifact`) and is the same requestId that was
+  // stored on the assistant message. This means only the artifacts that
+  // were truly produced during THIS specific ACP turn can attach to this
+  // assistant message, even if another turn publishes artifacts moments
+  // later or in parallel.
+  const pending = findArtifactsForTurn({
+    userId: input.userId,
+    instanceId: input.instanceId,
+    conversationId: input.conversationId,
+    turnId: input.turnId,
+  });
+  if (pending.length === 0) return undefined;
+  const now = new Date().toISOString();
+  const update = sqlite.prepare(
+    `UPDATE conversation_artifacts
+     SET message_id = ?, updated_at = ?
+     WHERE artifact_id = ? AND turn_id = ?`,
+  );
+  for (const row of pending) {
+    update.run(input.assistantMessageId, now, row.artifactId, input.turnId);
+  }
+  const records = findArtifactsForMessage({
+    userId: input.userId,
+    instanceId: input.instanceId,
+    conversationId: input.conversationId,
+    messageId: input.assistantMessageId,
+  });
+  const descriptors = records.map((record) => ({
+    artifactId: record.artifactId,
+    title: record.title,
+    fileName: record.fileName,
+    mimeType: record.mimeType,
+    sizeBytes: record.sizeBytes,
+    kind: record.kind,
+    previewMode: record.previewMode,
+    createdAt: record.createdAt,
+    checksum: record.checksum,
+  }));
+  if (descriptors.length === 0) return undefined;
+  const existing = sqlite
+    .prepare("SELECT metadata FROM conversation_messages WHERE message_id = ?")
+    .get(input.assistantMessageId) as { metadata?: string } | undefined;
+  const parsed = parseMetadata(existing?.metadata) ?? {};
+  const merged = { ...parsed, artifacts: descriptors };
+  sqlite.prepare("UPDATE conversation_messages SET metadata = ? WHERE message_id = ?").run(
+    JSON.stringify(merged),
+    input.assistantMessageId,
+  );
+  return records;
 }
 
 function buildPortalUserText(text: string | undefined, attachments: StoredAttachment[]) {

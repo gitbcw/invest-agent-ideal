@@ -249,17 +249,13 @@ async function getAnnouncementsFromCninfo(code: string, days: number, targetDate
 // ─── 公告源 2：东方财富个股公告 ─────────────────────────
 
 async function getAnnouncementsFromEastMoney(code: string, days: number, targetDate?: string): Promise<StockAnnouncementItem[]> {
-  // 东方财富公告接口 (secid: 0.深圳 / 1.上海)
-  const market = code.startsWith("6") ? "1" : "0";
-  const secid = `${market}.${code}`;
-
   const now = targetDate ? new Date(targetDate + "T23:59:59") : new Date();
   const begin = new Date(now);
   begin.setDate(now.getDate() - days);
   const beginTime = begin.toISOString().slice(0, 10).replace(/-/g, "");
   const endTime = now.toISOString().slice(0, 10).replace(/-/g, "");
 
-  const url = `https://np-anotice-stock.eastmoney.com/api/security/ann?page_size=10&page_index=1&ann_type=A&client_source=web&f_node=0&s_node=0&begin_time=${beginTime}&end_time=${endTime}&secid=${secid}`;
+  const url = `https://np-anotice-stock.eastmoney.com/api/security/ann?page_size=10&page_index=1&ann_type=A&client_source=web&f_node=0&s_node=0&begin_time=${beginTime}&end_time=${endTime}&stock_list=${code}`;
 
   try {
     const res = await fetch(url, {
@@ -276,11 +272,16 @@ async function getAnnouncementsFromEastMoney(code: string, days: number, targetD
     const list = json?.data?.list;
     if (!Array.isArray(list)) return [];
 
-    return (list as Record<string, unknown>[]).map((item) => ({
-      title: String(item.title ?? ""),
-      date: String(item.notice_date ?? "").slice(0, 10),
-      secName: String(item.sec_name ?? ""),
-    }));
+    return (list as Record<string, unknown>[]).flatMap((item) => {
+      const codes = Array.isArray(item.codes) ? item.codes as Record<string, unknown>[] : [];
+      const matched = codes.find((candidate) => String(candidate.stock_code ?? "") === code);
+      if (!matched) return [];
+      return [{
+        title: String(item.title ?? ""),
+        date: String(item.notice_date ?? "").slice(0, 10),
+        secName: String(matched.short_name ?? ""),
+      }];
+    });
   } catch (error) {
     logger.warn(`公告源[东财]获取失败 ${code}: ${(error as Error).message}`);
     return [];
@@ -306,7 +307,8 @@ export async function getStockAnnouncements(code: string, days: number, name?: s
     const colonIdx = cleanTitle.indexOf(":");
     if (colonIdx > 0 && name) {
       const oldName = cleanTitle.slice(0, colonIdx);
-      cleanTitle = cleanTitle.slice(colonIdx + 1).replace(new RegExp(oldName, "g"), name);
+      const escapedOldName = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      cleanTitle = cleanTitle.slice(colonIdx + 1).replace(new RegExp(escapedOldName, "g"), name);
     }
     if (seen.has(cleanTitle)) continue;
     seen.add(cleanTitle);

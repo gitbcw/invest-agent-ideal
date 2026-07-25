@@ -118,6 +118,30 @@ export async function getOnboardingDraft(scope: Pick<OnboardingDraftScope, "user
   return row ? draftView(row) : null;
 }
 
+/**
+ * Cancel an accidental, not-yet-committed draft while retaining its row for audit.
+ * This is intentionally limited to drafts that cannot have changed workspace state.
+ */
+export async function cancelOnboardingDraft(scope: Pick<OnboardingDraftScope, "userId" | "instanceId">, draftId: string, reason: string) {
+  const row = await scopedDraft(scope, draftId);
+  if (!["collecting", "ready_to_commit", "failed_retryable"].includes(row.status)) {
+    throw new Error("当前草稿已提交或正在提交，不能取消");
+  }
+  const now = nowIso();
+  const steps = parseSteps(row.stepsJson);
+  const confirmationIds = Object.values(steps).map((step) => step?.confirmationId).filter((id): id is string => Boolean(id));
+  if (confirmationIds.length > 0) {
+    await db.update(pendingSandboxConfirmations).set({ status: "superseded", updatedAt: now }).where(inArray(pendingSandboxConfirmations.id, confirmationIds));
+  }
+  await db.update(onboardingDrafts).set({
+    status: "cancelled",
+    lastError: reason.slice(0, 1200),
+    updatedAt: now,
+  }).where(and(eq(onboardingDrafts.id, row.id), inArray(onboardingDrafts.status, ["collecting", "ready_to_commit", "failed_retryable"])))
+  const updated = (await db.select().from(onboardingDrafts).where(eq(onboardingDrafts.id, row.id)).limit(1))[0]!;
+  return draftView(updated);
+}
+
 export async function upsertOnboardingDraftStep(scope: OnboardingDraftScope, input: { draftId?: string; step: DraftStepKey; payload: Record<string, unknown> }) {
   if (!isDraftStep(input.step)) throw new Error("invalid onboarding draft step");
   const now = nowIso();

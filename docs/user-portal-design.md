@@ -161,10 +161,10 @@ invest-agent-portal
 
 ### 本地服务注册
 
-本地 invest-agent 启动后，用配置中的 `PORTAL_RELAY_URL` 和 `PORTAL_CONNECTOR_TOKEN` 主动连接云端：
+生产 Runtime 使用显式配置的 `PORTAL_RELAY_URL` 和 `PORTAL_CONNECTOR_TOKEN` 主动连接火山云 Relay。开发环境设置 `PORTAL_LOCAL_ONLY=true` 后，connector 强制连接本机 `ws://127.0.0.1:3199`，不读取历史远端配置：
 
 ```text
-local connector -> cloud relay WebSocket
+local connector -> local Portal relay WebSocket
 ```
 
 注册信息：

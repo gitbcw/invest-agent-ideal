@@ -222,10 +222,12 @@ Dashboard 退役后,投资数据修改只能通过用户对话 + MCP 确认流�
 | `GET /api/portal/conversations` | 查询权威对话日志会话列表 |
 | `GET /api/portal/conversations/:conversationId` | 查询会话消息 |
 | `POST /api/portal/conversations/:conversationId/messages` | 写入网页用户消息并调用 workspace ACP 生成回复 |
-| `npm run portal:connector` | 启动本地 connector，主动连接云端 Relay |
+| `npm run portal:connector` | 启动本地 connector；本地模式连接本机 Portal Relay，生产由显式 URL 决定 |
 | `npm run smoke:portal-conversation-log` | 权威对话日志 / portal 本地接口烟测 |
 
-相关环境变量：`PORTAL_RELAY_URL`、`PORTAL_CONNECTOR_TOKEN`、`PORTAL_USER_ID`、`PORTAL_INSTANCE_ID`、`PORTAL_ASSISTANT_ID`、`PORTAL_PROJECT_ID`、`PORTAL_CONNECTOR_ID`、`PORTAL_CONNECTOR_DISPLAY_NAME`、`PORTAL_CONNECTOR_REFRESH_MS`。
+相关环境变量：`PORTAL_LOCAL_ONLY`、`PORTAL_RELAY_URL`、`PORTAL_CONNECTOR_TOKEN`、`PORTAL_USER_ID`、`PORTAL_INSTANCE_ID`、`PORTAL_ASSISTANT_ID`、`PORTAL_PROJECT_ID`、`PORTAL_CONNECTOR_ID`、`PORTAL_CONNECTOR_DISPLAY_NAME`、`PORTAL_CONNECTOR_REFRESH_MS`。
+
+本地开发应设置 `PORTAL_LOCAL_ONLY=true`。该开关仅在非生产环境生效，并强制 Platform 门户凭据文案、账号分发和 connector 使用 `http://localhost:3100`、`http://127.0.0.1:3100/api/internal/distribution/provision` 与 `ws://127.0.0.1:3199`；它会忽略历史远端 Portal URL、token 和 connector 筛选配置。火山云生产环境不会启用该开关，必须由显式 `PORTAL_PUBLIC_URL`、`PORTAL_DISTRIBUTION_URL`、`PORTAL_RELAY_URL` 和生产 token 配置。
 
 ## 数据源
 
