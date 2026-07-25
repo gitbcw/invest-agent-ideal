@@ -204,7 +204,7 @@ npm run workspace:adopt-template -- \
 
 1. `curl http://127.0.0.1:22655/health` 返回正常。
 2. `pm2 list` 中 `invest-agent` 为 `online`。
-3. `/api/portal/health` 正常，生产 connector/relay 没有冲突。
+3. Portal `/api/health` 正常，生产 connector/relay 没有冲突。
 4. `npm run smoke:mcp-service-tools` 通过。
 5. 每个 Workspace 预检没有 blocker；`template_updates` 可以继续存在。
 6. 微信实例仍为 `connected`，listener 已恢复。

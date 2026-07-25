@@ -180,6 +180,14 @@ Portal `09c5f4f` 已将 checksum 改为纯 JavaScript SHA-256，并为 artifact 
 
 ### 仍需处理
 
-- Relay `MaxListenersExceededWarning`：独立并发稳定性问题，不阻塞本工作包核心生命周期验收。
-- Portal `/api/portal/health` 文档与实际路由不一致：当前 `/login` 和 PM2 可用，但应统一健康检查契约。
+- Relay `MaxListenersExceededWarning`：已改为每 socket 单一响应分发器并发布；生产重启后未出现新的 listener 告警。
+- Portal 健康端点：已统一为无需登录的 `/api/health`，生产返回 `ok=true`。
 - 30 天后 trash purge 尚未到期；scheduler 已启用，届时需按运维流程验证 purge 审计和幂等性。
+
+### 2026-07-25 运维尾项收口
+
+- Portal `7066716` 已发布：Relay 请求响应改为每 socket 单一 listener + requestId 分发，新增 `/api/health`。
+- Portal `f2e8cbe` 已声明 `playwright-core`，浏览器验收脚本不再依赖本机残留包；生产未直接运行会删除 mock 数据的整套脚本。
+- 生产 `/api/health` 返回 `{"ok":true,"data":{"status":"ok","service":"invest-agent-portal"}}`；PM2 online，三个 connector 已重连。
+
+当前工作包的生产阻塞项已清零。剩余仅是 30 天回收期到期后的 purge 观察，以及定期确认 cleanup scheduler 的运行审计。
