@@ -1,6 +1,6 @@
 # Portal 右侧多文件与精选 Workspace 文件树工作包
 
-> 状态：已发布，待生产目视确认（唯一剩余项）
+> 状态：已完成（用户生产目视确认通过）
 > 日期：2026-07-25
 >
 > 执行记录（2026-07-25）：
@@ -10,7 +10,7 @@
 > - 独立安全与交互审查：C1–C14 逐项 Pass，无高/中风险，结论可提交（低风险：mock 白名单与真实 connector 不一致、SESSION_CHANGED 依赖整页 reload 兜底）。
 > - 部署：均从干净发布 worktree（`/private/tmp/invest-agent-release-2301647`、`/private/tmp/invest-agent-portal-release-0244db3`）执行普通代码发布；invest-agent(↺20) 与 invest-agent-portal(↺29) 在线；111/dyk/mg connector 重启后全部重新注册；`/login` 200；`/api/artifacts` 401 鉴权正常；dist 含 `listCuratedArtifactLibrary` 与 capability；发布后双端日志零新异常。
 > - 数据保护：生产 `.env`（Runtime 2026-07-23、Portal 2026-07-07）、reviews、`.state` mtime 均早于发布未触碰；SQLite/Workspace 未替换；未发送微信消息。
-> - 待办：生产 artifact 索引目前只有 111 的 legacy 记录（按设计排除），无任何 `artifacts.publish`/`reviews.save` 正式产物，文件树在生产将正确显示"暂无已发布文档"。需用户在生产 Portal（如 mg）正常对话产生一份正式发布报告后，目视确认其可从文件树打开（唯一剩余项）。
+> - 收尾（2026-07-25）：用户在生产 Portal 手动目视确认无问题，目标关闭。注：生产 artifact 索引当时仍无正式 `artifacts.publish`/`reviews.save` 产物，文件树按设计显示"暂无已发布文档"；首份正式产物将随定时复盘或用户正常对话的发布动作自然出现。
 > 面向角色：目标模式执行 Agent、独立验收 Agent
 > 依赖：
 > - `docs/portal-inline-media-preview-work-package.md`
