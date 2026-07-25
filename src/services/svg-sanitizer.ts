@@ -34,7 +34,6 @@ const FORBIDDEN_TAGS = [
   "set",
   "handler",
   "listener",
-  "style",
 ];
 
 const FORBIDDEN_ATTR_PREFIXES = ["on", "data:", "xlink:href"];
@@ -63,6 +62,9 @@ export function scanForUnsafeContent(svg: string): SvgScanResult {
     const match = attrPattern.exec(svg);
     return { safe: false, reason: `forbidden attribute or protocol: ${match?.[0]}` };
   }
+
+  const styleResult = scanStyleBlocks(svg);
+  if (!styleResult.safe) return styleResult;
 
   if (lowered.includes("<![cdata[")) {
     return { safe: false, reason: "CDATA region" };
@@ -94,9 +96,60 @@ export function sanitizeSvgForInline(svg: string): string {
     const prefixRegex = new RegExp(`\\s${escapeRegex(prefix)}[a-z0-9-]*\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)`, "gi");
     cleaned = cleaned.replace(prefixRegex, "");
   }
+  cleaned = cleaned.replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, (block) => (
+    scanStyleBlocks(block).safe ? block : ""
+  ));
   cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, "");
   cleaned = cleaned.replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, "");
   return cleaned.trim();
+}
+
+function scanStyleBlocks(svg: string): SvgScanResult {
+  const completeBlocks = /<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi;
+  let remainder = svg;
+  let match: RegExpExecArray | null;
+  while ((match = completeBlocks.exec(svg)) !== null) {
+    const openingTag = match[0].slice(0, match[0].indexOf(">") + 1);
+    if (!/^<style(?:\s+type\s*=\s*["']text\/css["'])?\s*>$/i.test(openingTag)) {
+      return { safe: false, reason: "forbidden style attributes" };
+    }
+    const cssResult = scanStaticCss(match[1]);
+    if (!cssResult.safe) return cssResult;
+    remainder = remainder.replace(match[0], "");
+  }
+  if (/<\/?style\b/i.test(remainder)) {
+    return { safe: false, reason: "malformed style block" };
+  }
+  return { safe: true };
+}
+
+function scanStaticCss(css: string): SvgScanResult {
+  if (/[<>]/.test(css)) {
+    return { safe: false, reason: "markup inside style block" };
+  }
+  // Reject CSS comments, escapes and XML/HTML entities. Browsers resolve
+  // these before interpreting CSS, so accepting them would let a payload
+  // disguise tokens such as `url` or `javascript` from the checks below.
+  if (/\/\*|\\|&/.test(css)) {
+    return { safe: false, reason: "CSS obfuscation token" };
+  }
+  const forbiddenCss = /@|javascript\s*:|data\s*:|expression\s*\(|behavior\s*:|-moz-binding\s*:/i;
+  const forbiddenMatch = forbiddenCss.exec(css);
+  if (forbiddenMatch) {
+    return { safe: false, reason: `forbidden CSS token: ${forbiddenMatch[0]}` };
+  }
+
+  // SVG diagrams commonly reference their own markers and gradients with
+  // url(#id). Keep those local references, but reject every URL that could
+  // cause the browser to fetch or interpret external content.
+  const withoutLocalFragments = css.replace(
+    /url\s*\(\s*(["']?)#[A-Za-z_][A-Za-z0-9_.:-]*\1\s*\)/gi,
+    "",
+  );
+  if (/url\s*\(/i.test(withoutLocalFragments)) {
+    return { safe: false, reason: "external CSS URL" };
+  }
+  return { safe: true };
 }
 
 function escapeRegex(value: string): string {
