@@ -39,6 +39,7 @@ Dashboard 已退役;`/dashboard` 仅作为到 `/platform` 的 301 重定向保�
 - 火山云 `invest-agent` runtime 内部监听 `127.0.0.1:22655`，不作为普通用户门户。
 - 本机访问火山云 Platform 使用 SSH tunnel：`ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197`，然后打开 `http://127.0.0.1:22648/platform`。
 - 火山云用户门户公网入口是 `http://118.145.115.197:22649/login`，由独立项目 `invest-agent-portal` 提供。
+- 生产 Portal 的固定公网 IP + HTTP 是强制兼容基线；由于没有域名备案，不能要求 HTTPS。Portal 前端不得把 `crypto.subtle` 等 secure-context-only API 当作必要依赖，HTTP 下必须支持文件预览、下载和 checksum 校验。
 - 本机 `22649` 不用于 Platform tunnel，避免和火山云公网门户端口混淆。
 
 ## 版本与生产基线

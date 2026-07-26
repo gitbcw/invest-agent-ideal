@@ -8,6 +8,19 @@
 
 ## 当前状态评估
 
+### Workspace 文件写权限现状（2026-07-25）
+
+Portal 与 AI 的文件权限必须分开判断：Portal 已通过 `workspace.file.list/get` 收敛为只读工程文件视图，connector 不再 advertise 或处理网页文件删除；但 Codex ACP 当前仍以 `sandbox_mode="workspace-write"`、`approval_policy="never"` 在用户 workspace 中运行。现有 `AGENTS.md`、Skills、具名 MCP、确认和审计能约束标准业务流程，却不能构成文件系统级允许列表。
+
+在不破坏真实 Workspace 已演化 Skills 和现有报告生成路径的前提下，目标迁移如下：
+
+1. 定义服务层文件写能力，只允许用户拥有的 `reports/`、`knowledge/`、`.codex/skills/`、受控 `config/` 和明确的 memory append 目标；禁止 `.env*`、凭据、数据库、日志、缓存、运行状态、`.git`、`.state` 和隐藏回收区。
+2. 覆盖 create/update/append/rename/delete 的逐操作 schema、路径校验、symlink/TOCTOU 防护、大小/MIME 上限、scope、checksum、审计和确认规则；删除必须先生成精确草案并在后续用户确认后执行。
+3. 迁移模板与逐用户真实 Workspace 的写入工作流，使报告、策略方法和 Skill 演化只走具名服务能力；真实 Workspace 资产仍需逐用户选择和备份，普通发布不得覆盖。
+4. 真实工作流全部验收后，才把 Codex ACP 从整个 workspace 可写切到只读/受限模式。迁移完成前，文档和客户输出不得声称 AI 已具备文件级硬白名单。
+
+Portal 扩大只读可见范围不依赖这项迁移，也不能反向授予任何写权限。
+
 ### 已具备的隔离能力
 
 - 微信消息进入时会通过 `channel_identities` 映射到内部 `userId`。

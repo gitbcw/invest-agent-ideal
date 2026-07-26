@@ -628,3 +628,15 @@ npm run smoke:portal-conversation-log
 ```text
 请基于 docs/user-portal-protocol.md 在新门户项目中实现 Relay 和 mock connector 测试路径。门户项目不得 import invest-agent-ideal 内部源码，只能依赖协议文档、fixtures 和运行时连接。第一阶段先通过 mock connector 验收 UI/登录/历史/发送/失败/离线状态，再接真实 local connector 做端到端验收。
 ```
+## Workspace 文件只读边界（2026-07-25）
+
+Portal 当前文件入口是用户 workspace 的受控只读工程文件视图，不再是精选 artifact 库：
+
+- connector capability：`workspace.file.list`、`workspace.file.get`；scope 由已认证 connector session 注入，浏览器不能指定 `userId`、`instanceId` 或 workspace 根路径。
+- `workspace.file.list` 不接受路径、glob 或过滤参数，返回安全相对路径、文件名、MIME、大小、更新时间和预览模式。
+- `workspace.file.get` 只接受列表中的安全相对路径；Runtime 拒绝绝对路径、`.` / `..`、符号链接、路径逃逸、敏感文件和运行目录。
+- Portal 允许查看和下载，不提供编辑、重命名、移动或删除。历史 `artifact.delete.prepare` / `artifact.delete.confirm` 不再由 connector advertise 或处理，Portal 对旧删除 HTTP 路由固定返回 `405`。
+- 当前排除 `.env*`、凭据/密钥、SQLite、日志、`.git`、`.state`、`.trash`、`node_modules`、构建/缓存/临时目录；`.codex/skills` 作为用户工程资产允许只读查看。
+- 固定公网 IP + HTTP 仍是生产兼容基线；文件 checksum 校验不得依赖 secure-context-only API。
+
+以下 artifact library/delete 章节保留为历史兼容契约，只约束存量 artifact 元数据和生命周期，不再定义 Portal 当前文件目录或网页删除能力。

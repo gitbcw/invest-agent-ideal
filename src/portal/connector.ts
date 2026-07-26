@@ -21,9 +21,10 @@ import {
   readAttachmentBytes,
 } from "../services/file-retention.js";
 import {
-  confirmArtifactDeletion,
-  prepareArtifactDeletion,
-} from "../services/artifact-deletion.js";
+  listWorkspaceFiles,
+  readWorkspaceFile,
+  WorkspaceFileError,
+} from "../services/workspace-files.js";
 
 const PROTOCOL_VERSION = "2026-07-04";
 const TYPES = {
@@ -38,8 +39,8 @@ const TYPES = {
   ARTIFACT_PUBLISH_LEGACY: "artifact.publish.legacy",
   ARTIFACT_EVENT: "artifact.event",
   ATTACHMENT_GET: "attachment.get",
-  ARTIFACT_DELETE_PREPARE: "artifact.delete.prepare",
-  ARTIFACT_DELETE_CONFIRM: "artifact.delete.confirm",
+  WORKSPACE_FILE_LIST: "workspace.file.list",
+  WORKSPACE_FILE_GET: "workspace.file.get",
 } as const;
 
 type PortalEnvelope = {
@@ -275,6 +276,30 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       });
       return finish(ok(message.type, message.requestId, result));
     }
+    case TYPES.WORKSPACE_FILE_LIST: {
+      const payload = (message.payload ?? {}) as Record<string, unknown>;
+      if (Object.keys(payload).length > 0) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "workspace file list does not accept filters", false));
+      }
+      return finish(ok(message.type, message.requestId, await listWorkspaceFiles({ userId: scope.userId })));
+    }
+    case TYPES.WORKSPACE_FILE_GET: {
+      const relativePath = String(message.payload?.relativePath || "");
+      if (!relativePath) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "relativePath is required", false));
+      }
+      try {
+        return finish(ok(message.type, message.requestId, await readWorkspaceFile({
+          userId: scope.userId,
+          relativePath,
+        })));
+      } catch (error) {
+        if (error instanceof WorkspaceFileError) {
+          return finish(fail(message.type, message.requestId, error.code, error.message, false));
+        }
+        throw error;
+      }
+    }
     case TYPES.ARTIFACT_PUBLISH_LEGACY: {
       const record = await publishLegacyPathArtifact({
         userId: scope.userId,
@@ -369,38 +394,6 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         }
         throw error;
       }
-    }
-    case TYPES.ARTIFACT_DELETE_PREPARE: {
-      // Step 1 of the side-bar delete flow. Returns a single-use token bound
-      // to the caller's scope + artifact + path + checksum plus the impact
-      // notes the Portal must surface in its confirmation dialog. The browser
-      // never submits a path or trash target.
-      const artifactId = String(message.payload?.artifactId || "");
-      if (!artifactId) {
-        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "artifactId is required", false));
-      }
-      const prepared = await prepareArtifactDeletion({
-        artifactId,
-        userId: scope.userId,
-        instanceId: scope.instanceId,
-      });
-      return finish(ok(message.type, message.requestId, prepared));
-    }
-    case TYPES.ARTIFACT_DELETE_CONFIRM: {
-      // Step 2. Consumes the token, moves the file into the hidden trash,
-      // tombstones same-path versions. A replayed or expired token fails
-      // deterministically; a repeated confirm with a fresh token after the
-      // file is gone returns ARTIFACT_NOT_FOUND.
-      const tokenId = String(message.payload?.tokenId || "");
-      if (!tokenId) {
-        return finish(fail(message.type, message.requestId, "ARTIFACT_DELETE_CONFIRMATION_REQUIRED", "tokenId is required", false));
-      }
-      const confirmed = await confirmArtifactDeletion({
-        tokenId,
-        userId: scope.userId,
-        instanceId: scope.instanceId,
-      });
-      return finish(ok(message.type, message.requestId, confirmed));
     }
     default:
       return finish(fail(message.type, message.requestId, "INVALID_REQUEST", `unsupported command: ${message.type}`));
@@ -506,7 +499,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "artifact.delete.prepare", "artifact.delete.confirm"],
+        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {
