@@ -12,6 +12,7 @@ import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import type { UserContext } from "../lib/user-context.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
+import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 
 const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
   Number(process.env.WEIXIN_DIRECT_ACP_TIMEOUT_MS) || 600_000;
@@ -94,7 +95,10 @@ export function createAgent(): AcpAgent {
           userContext,
           originalText: text,
         });
-        const deduped = dedupeRepeatedCustomerText(postProcessed.finalReply);
+        const extractedVisuals = userChannel === "web"
+          ? extractInlineSvgVisuals(postProcessed.finalReply)
+          : { text: postProcessed.finalReply, visuals: [] };
+        const deduped = dedupeRepeatedCustomerText(extractedVisuals.text);
         const cleaned = userChannel === "weixin-mobile"
           ? sanitizeWeixinCustomerText(deduped)
           : sanitizeCustomerText(deduped);
@@ -114,7 +118,11 @@ export function createAgent(): AcpAgent {
           elapsedMs: Date.now() - startedAt,
           usage: acpResult.usage,
         });
-        return textResponse(cleaned);
+        return textResponse(
+          cleaned,
+          true,
+          extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined,
+        );
       } catch (error) {
         logger.error("转发 ACP 后端失败:", error);
         const errorMessage = formatUnknownError(error);
@@ -198,7 +206,7 @@ function buildAttachmentPrompt(input: unknown): string | null {
   ].join("\n");
 }
 
-function buildChannelContextInstruction(channel: UserContext["channel"]): string | null {
+export function buildChannelContextInstruction(channel: UserContext["channel"]): string | null {
   if (channel === "weixin-mobile") {
     return [
       "【通道上下文】这是一条来自微信用户的消息，回复会直接发回微信。",
@@ -211,6 +219,8 @@ function buildChannelContextInstruction(channel: UserContext["channel"]): string
       "【通道上下文】这是一条来自门户网页聊天的消息。",
       "这是同一个 workspace-backed 投资助手，必须沿用同一套投资纪律、事实标准和结论口径；渠道只影响呈现方式。",
       "网页端可以稍微更结构化，但不要输出执行过程、内部路径或调试信息。",
+      "门户内联图示的选择原则是“看比读更划算时才给”，不是等用户每次都说画图。以下情形默认主动给一张简洁 SVG：教学/讲解/介绍投资概念；两个或以上对象或方案的比较；行业景气、估值、风险或投资方法的阶段/周期；筛选漏斗；多条件决策路径；已有预案的情景分支。复杂话题可用 2-3 张小图并用文字串联。用户明确要求“图、示意图、流程图、可视化、diagram、chart”时同样必须给。纯词义解释、单一事实或简短行情问答、文字已足够清楚的回答，以及用户明确要求文件/报告/下载/HTML 时，不要生成内联图；后者走现有 workspace 文件/artifact 路径。图示必须基于本轮已取证事实；概念图要明确为概念框架，不能伪造行情或数据。",
+      "门户图示协议是硬约束：凡是决定生成内联图示的情况，只能使用下方的 `invest-svg` 内联图示，绝不能创建或发布 HTML、SVG、PNG 等 workspace 文件，也不得调用 artifacts.publish。每个图示必须用独立的 ```invest-svg 代码块包裹；代码块内只能有一个以 <svg 开始、带 viewBox=\"0 0 宽 高\" 的静态 SVG。图中必须显式设置填充色，必须包含简短 <title>；禁止 HTML、脚本、外链、图片、动画或交互。最多 3 张。图示只辅助正文，正文仍须给出事实、判断、行动和验证条件。",
     ].join("");
   }
   return null;

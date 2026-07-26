@@ -637,6 +637,7 @@ async function chatViaConversationLogOnce(input: {
     markTurnEnd({ ...turnScope, turnId: requestId });
   }
   const assistantText = response.content.text ?? "处理完成，但没有生成文本回复。";
+  const inlineVisuals = Array.isArray(response.data?.inlineVisuals) ? response.data.inlineVisuals : undefined;
   const assistantMessage = appendConversationMessage({
     scope: {
       ...scope,
@@ -649,6 +650,7 @@ async function chatViaConversationLogOnce(input: {
     role: "assistant",
     content: assistantText,
     requestId,
+    metadata: inlineVisuals && inlineVisuals.length > 0 ? { inlineVisuals } : undefined,
   });
   const artifacts = attachArtifactsToAssistantMessage({
     conversationId: input.conversationId,

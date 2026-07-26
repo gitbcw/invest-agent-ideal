@@ -42,7 +42,17 @@ appendConversationMessage({
   conversationId,
   channel: "web",
   role: "assistant",
-  content: "门户烟测：助手回复已记录"
+  content: "门户烟测：助手回复已记录",
+  metadata: {
+    inlineVisuals: [{
+      version: 1,
+      id: "visual_smoke_1",
+      kind: "svg",
+      title: "门户 SVG 烟测",
+      alt: "门户 SVG 烟测",
+      svg: '<svg viewBox="0 0 680 320"><title>门户 SVG 烟测</title><rect width="680" height="320" fill="#ffffff"/></svg>'
+    }]
+  }
 });
 
 const list = listConversations({ ...scope, channel: "web", limit: 5 });
@@ -56,6 +66,9 @@ if (detail.messages.length !== 2) {
 }
 if (detail.messages[0].role !== "user" || detail.messages[1].role !== "assistant") {
   throw new Error("conversation messages should preserve user -> assistant order");
+}
+if (detail.messages[1].metadata?.inlineVisuals?.[0]?.id !== "visual_smoke_1") {
+  throw new Error("conversation messages should preserve inline SVG metadata");
 }
 
 console.log("[portal-conversation-log-smoke] ok", {

@@ -40,9 +40,10 @@ export interface AcpResponse {
 }
 
 /** 创建文本响应 */
-export function textResponse(text: string, finished = true): AcpResponse {
+export function textResponse(text: string, finished = true, data?: Record<string, unknown>): AcpResponse {
   return {
     content: { type: "text", text },
     finished,
+    ...(data ? { data } : {}),
   };
 }
