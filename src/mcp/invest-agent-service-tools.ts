@@ -94,6 +94,16 @@ async function main() {
 
   registerJsonTool(
     { server, callServiceTool, context },
+    "market.fundamentals",
+    "Read normalized fundamentals assembled by the service from allowlisted providers. The result includes source metadata, reporting periods, units, and warnings; it does not accept vendor queries.",
+    {
+      code: z.string().describe("Six-digit A-share stock code."),
+      tradeDate: z.string().regex(/^[0-9]{8}$/).optional().describe("Optional Tushare trading date in YYYYMMDD format."),
+    }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
     "market.indices",
     "Read core market index quotes with source metadata and warnings.",
     {}

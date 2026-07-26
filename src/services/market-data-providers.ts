@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 
-export type MarketDataProvider = "tencent" | "sina" | "eastmoney" | "service";
+export type MarketDataProvider = "tencent" | "sina" | "eastmoney" | "tushare" | "tdx" | "service";
 export type MarketDataConfidence = "high" | "medium" | "low";
 export type EvidenceLevel = "primary_fact" | "secondary_evidence" | "signal" | "operational";
 
@@ -36,7 +36,11 @@ export type ProviderName =
   | "eastmoney_stock_news"
   | "eastmoney_stock_reports"
   | "cninfo_announcements"
-  | "eastmoney_flow";
+  | "eastmoney_flow"
+  | "tushare_daily"
+  | "tushare_daily_basic"
+  | "tushare_trade_cal"
+  | "tdx_mcp_fundamentals";
 
 export interface ProviderMeta {
   /** 细粒度 provider 标识,程序内部使用 */
@@ -58,7 +62,8 @@ export interface ProviderMeta {
     | "sector_theme"
     | "news"
     | "research_report"
-    | "announcement";
+    | "announcement"
+    | "fundamentals";
 }
 
 const PROVIDERS: Record<ProviderName, ProviderMeta> = {
@@ -187,6 +192,42 @@ const PROVIDERS: Record<ProviderName, ProviderMeta> = {
     evidenceLevel: "signal",
     usageBoundary: "资金流只作观察信号,不能证明主力控盘或单独触发交易。",
     category: "capital_flow",
+  },
+  tushare_daily: {
+    name: "tushare_daily",
+    runtimeProvider: "tushare",
+    endpoint: "api.tushare.pro/daily",
+    confidence: "high",
+    evidenceLevel: "primary_fact",
+    usageBoundary: "用于经授权的日线事实和交叉校验；复权、权限和返回日期必须随结果记录。",
+    category: "kline_day",
+  },
+  tushare_daily_basic: {
+    name: "tushare_daily_basic",
+    runtimeProvider: "tushare",
+    endpoint: "api.tushare.pro/daily_basic",
+    confidence: "medium",
+    evidenceLevel: "secondary_evidence",
+    usageBoundary: "用于估值与换手等结构化参考，报告期和交易日期必须明确；不能替代正式财报。",
+    category: "fundamentals",
+  },
+  tushare_trade_cal: {
+    name: "tushare_trade_cal",
+    runtimeProvider: "tushare",
+    endpoint: "api.tushare.pro/trade_cal",
+    confidence: "high",
+    evidenceLevel: "operational",
+    usageBoundary: "用于交易日历交叉校验和补齐，临时休市仍需以交易所公告为准。",
+    category: "trading_calendar",
+  },
+  tdx_mcp_fundamentals: {
+    name: "tdx_mcp_fundamentals",
+    runtimeProvider: "tdx",
+    endpoint: "official TDX MCP fixed fundamentals prompt",
+    confidence: "medium",
+    evidenceLevel: "secondary_evidence",
+    usageBoundary: "仅接受服务层固定提问并校验结构化字段；返回值需要带报告期，不能替代公告或正式财报。",
+    category: "fundamentals",
   },
 };
 

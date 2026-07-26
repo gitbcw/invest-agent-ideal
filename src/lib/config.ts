@@ -51,6 +51,15 @@ export const config = {
     api: process.env.STOCK_API || "tencent",
   },
 
+  marketProviders: {
+    /** Optional official Tushare Pro token. Kept service-side only. */
+    tushareToken: process.env.TUSHARE_TOKEN || "",
+    /** Optional official TDX MCP credentials and endpoint. */
+    tdxMcpUrl: process.env.TDX_MCP_URL || "https://mcp.tdx.com.cn:3001/mcp",
+    tdxMcpApiKey: process.env.TDX_MCP_API_KEY || "",
+    tdxMcpFundamentalsTool: process.env.TDX_MCP_FUNDAMENTALS_TOOL || "tdx_wenda_quotes",
+  },
+
   db: {
     path: process.env.DB_PATH || "./data/invest-agent.db",
   },

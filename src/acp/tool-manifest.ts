@@ -31,6 +31,7 @@ const TOOL_MANIFEST: ToolManifestItem[] = [
   { name: "monitor.overview", policy: "read", description: "查看监控、巡检、整体状态、概览" },
   { name: "market.quote", policy: "read", description: "通过服务层读取股票实时/延时行情，返回来源、抓取时间、行情时间和数据质量提示" },
   { name: "market.kline", policy: "read", description: "通过服务层读取日 K 或 5 分钟 K 线，用于技术指标、复盘和巡检事实输入" },
+  { name: "market.fundamentals", policy: "read", description: "通过服务层读取经过来源校验的结构化基本面，返回报告期、来源和数据质量提示" },
   { name: "market.indices", policy: "read", description: "通过服务层读取上证、深成、创业板、沪深300等指数行情" },
   { name: "market.capital_flow", policy: "read", description: "通过服务层读取东方财富资金流观察数据；只能作为辅助观察，不能单独证明主力建仓或控盘" },
   { name: "market.snapshot", policy: "read", description: "读取当前实例持仓、自选、预案关联行情快照，适合复盘、巡检和持仓涨跌问答" },

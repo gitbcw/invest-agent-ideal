@@ -92,6 +92,7 @@ For scheduled-task or push-delivery operations, use the project-only skill `.cod
 | --- | --- |
 | [data-source-policy-decision.md](./data-source-policy-decision.md) | Accepted data-source policy and cost posture |
 | [data-provider-cost-evaluation.md](./data-provider-cost-evaluation.md) | Provider cost bands and build-vs-buy decision support |
+| [market-data-resource-inventory.md](./market-data-resource-inventory.md) | Active provider/resource ledger, evidence status, and promotion acceptance set |
 
 ### Operations
 

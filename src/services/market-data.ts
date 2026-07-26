@@ -41,6 +41,7 @@ import {
   type MarketDataProvider,
   type ProviderName,
 } from "./market-data-providers.js";
+import { externalProviderAvailability, type ExternalProviderAvailability } from "./external-market-providers.js";
 
 export type { MarketDataProvider, MarketDataConfidence } from "./market-data-providers.js";
 export type { EndpointStat } from "./market-data-providers.js";
@@ -130,6 +131,8 @@ export interface MarketSnapshot {
 export interface MarketHealthReport {
   ok: true;
   checkedAt: string;
+  /** Optional providers are visible here without exposing credentials or vendor tools. */
+  externalProviders: ExternalProviderAvailability[];
   capabilities: MarketDataCapability[];
   endpoints: Array<{
     provider: ProviderName;
@@ -813,6 +816,7 @@ export async function marketHealth(): Promise<MarketHealthReport> {
   return {
     ok: true,
     checkedAt: new Date().toISOString(),
+    externalProviders: externalProviderAvailability(),
     capabilities: MARKET_DATA_CAPABILITIES,
     endpoints: snapshotEndpointStats().map((stat) => ({
       provider: stat.provider,

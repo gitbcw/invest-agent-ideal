@@ -43,6 +43,7 @@
     "smoke:platform-partner-auth": "npm run build && node scripts/platform-partner-auth-smoke.mjs",
     "smoke:platform-partner-migration": "npm run build && node scripts/platform-partner-migration-smoke.mjs",
     "smoke:offline-runtime": "npm run build && node scripts/offline-runtime-smoke.mjs",
+    "smoke:external-market-providers": "npm run build && node scripts/external-market-providers-smoke.mjs",
     "logs": "node scripts/recent-logs.mjs",
     "logs:errors": "node scripts/recent-logs.mjs errors",
     "repair:orphan-conversation-log": "node scripts/repair-orphan-conversation-log.mjs",

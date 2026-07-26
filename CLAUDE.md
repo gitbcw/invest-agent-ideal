@@ -140,7 +140,7 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 
 **Codex 服务层 MCP 工具：**
 - `invest-agent-service-tools` 在 `session/new` 时由 `src/acp/stdio-agent.ts` 挂到 Codex ACP 会话。
-- 读取工具：`market.snapshot`、`market.quote`、`market.kline`、`market.indices`、`market.capital_flow`、`market.sector_theme`、`market.stock_info`、`market.resolve`、`market.calendar`、`market.health`、`portfolio.read`、`watchlist.read`、`plans.read`、`watch_rules.catalog/list/validate/dry_run`。
+- 读取工具：`market.snapshot`、`market.quote`、`market.kline`、`market.fundamentals`、`market.indices`、`market.capital_flow`、`market.sector_theme`、`market.stock_info`、`market.resolve`、`market.calendar`、`market.health`、`portfolio.read`、`watchlist.read`、`plans.read`、`watch_rules.catalog/list/validate/dry_run`。
 - 确认工具：`confirmations.pending`、`confirmations.request`；前者读取当前会话待确认项，后者在询问用户前登记精确写入草案。
 - 确认写入工具：`onboarding.confirm_portfolio`、`onboarding.confirm_step`、`watchlist.add`、`plans.set`、`plans.watch_conditions`、`method_changes.propose`、`watch_rules.create`。用户下一轮明确确认后，调用时必须同时带服务端签发的 `confirmationId` 和 `confirmedByUser: true`；确认绑定 scope、operation、payload，且只能消费一次。
 - `onboarding.complete_watch_setup` 是流程收口工具：用户明确跳过首次规则，或本会话内所有指定规则已分别确认创建并有成功审计后，直接完成 onboarding，不再要求“确认完成”。

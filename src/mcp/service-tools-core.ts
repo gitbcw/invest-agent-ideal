@@ -23,6 +23,7 @@ import {
   marketStockInfo,
   type MarketKlinePeriod,
 } from "../services/market-data.js";
+import { integratedFundamentals } from "../services/external-market-providers.js";
 import { resolveStockRefs } from "../services/stock-resolver.js";
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
@@ -153,6 +154,21 @@ async function dispatchServiceTool(
         resourceId: code,
         requestBody: { code, period, count: input?.count, startDate: input?.startDate, endDate: input?.endDate },
         resultSummary: `period=${result.period}; count=${result.items.length}; warnings=${result.source.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), result };
+    }
+    case "market.fundamentals": {
+      const code = stringInput(input?.code);
+      if (!code) throw new Error("code is required");
+      const tradeDate = stringInput(input?.tradeDate);
+      if (tradeDate && !/^\d{8}$/.test(tradeDate)) throw new Error("tradeDate must use YYYYMMDD");
+      const result = await integratedFundamentals({ code, tradeDate: tradeDate || undefined, userId: context.userId });
+      await audit(context, {
+        operation: "market.fundamentals",
+        resourceType: "market_data",
+        resourceId: code,
+        requestBody: { code, tradeDate: tradeDate || undefined },
+        resultSummary: `sources=${result.sources.length}; warnings=${result.warnings.length}`,
       });
       return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), result };
     }

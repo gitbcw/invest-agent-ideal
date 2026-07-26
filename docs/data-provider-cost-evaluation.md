@@ -122,6 +122,44 @@ Decision implication:
 - The product value they provide is not only data API; it includes terminal workflows, research tooling, news, reports, and institutional support.
 - We should not design Invest Agent assuming access to these products.
 
+### MCP Candidate Observation (2026-07-25, No Adoption Decision)
+
+The following is a research record only. An MCP server is a transport and
+tool-schema wrapper; it does not itself grant reliable data, commercial
+redistribution rights, or a production support commitment. None of the listed
+servers is approved for direct Workspace use or production deployment.
+
+| Candidate | Verified shape | Practical value | Decision status |
+| --- | --- | --- | --- |
+| TDX MCP | Official remote MCP, API-key authenticated, one natural-language financial query tool | Returned A-share quote and structured PE/PB/ROE/financial fields in a local read-only probe; announcement/report query did not return the requested items | Keep as paid-candidate observation; its natural-language response needs service-side templates, field validation, and commercial redistribution approval |
+| `buuzzy/tushare_MCP` | MIT Python server, 30+ documented A-share/fund tools, runs locally or as self-hosted MCP | Broad claimed Tushare coverage | Do not use customer credentials: static review found persistent home-directory token storage, an unpinned `tinyshare` dependency and a default all-interface HTTP bind |
+| `guangxiangdebizi/FinanceMCP` | MIT Node MCP wrapper around Tushare/Binance and other public sources; local stdio mode supports a caller-owned Tushare token | Local stdio probe returned Tushare daily bars and surfaced upstream limit/permission errors clearly | Do not use its shared public server for customer data; at most treat its local stdio implementation as a reference until it is independently audited and pinned |
+| AKShare MCP variants | No single canonical `mcp-akshare` project exists. The metadata-driven variant exposes dictionary lookup plus a reflective arbitrary-AKShare execution tool | Very broad free-data exploration and offline/backfill potential | Not suitable for direct Agent exposure: dynamic function execution makes source scope, parameter safety, output size and reliability hard to govern. Select individual AKShare functions behind our own typed adapter instead |
+| yfinance MCP variants | Several independent open-source servers consume Yahoo Finance; no official Yahoo MCP was identified | Good candidate for US/global prices, statements, corporate actions, options and news supplementation | Use only as supplemental evidence. Yahoo/yfinance is unofficial, availability and fields can change, and it is not a licensed real-time feed or an A-share authority |
+| Alpha Vantage MCP | Official `alphavantage/alpha_vantage_mcp`, remote OAuth endpoint and local mode | Strong typed global-market, FX, crypto, macro and technical-indicator coverage | Best global-market MCP candidate. Free tier is currently 25 requests/day, not 500/day; real-time/delayed US data and meaningful production volume require paid entitlement |
+
+Integration rule for every future candidate:
+
+1. The provider runs behind a service-owned adapter, never directly in a
+   Workspace or Portal browser.
+2. The adapter emits provider, upstream source, fetched time, market/reporting
+   period, freshness, warnings and a redacted audit record.
+3. Only allowlisted typed capabilities become `invest-agent-service-tools` MCP
+   tools. Do not expose generic natural-language query or arbitrary upstream
+   function-call tools to the Agent.
+4. A provider cannot become a production source until a fixed acceptance set
+   proves field correctness, fallback behavior, rate/cost behavior and the
+   required display/cache/redistribution rights.
+
+Sources checked:
+
+- Tushare MCP: https://github.com/buuzzy/tushare_MCP
+- FinanceMCP: https://github.com/guangxiangdebizi/FinanceMCP
+- AKShare metadata-driven MCP: https://github.com/cwjcw/AKShareMCP
+- yfinance MCP reference: https://github.com/narumiruna/yfinance-mcp
+- official Alpha Vantage MCP: https://github.com/alphavantage/alpha_vantage_mcp
+- Alpha Vantage usage limits: https://www.alphavantage.co/support/
+
 ## Build vs Buy
 
 ### Buying Data Helps With
