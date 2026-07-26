@@ -23,7 +23,7 @@ Codex ACP receives an explicit MCP child-process environment. The wiring must ca
 - A confirmation is consumed only after the durable write succeeds. Failed validation or state progression remains auditable and leaves the confirmation pending instead of forcing the user to confirm the same draft again.
 - Write tools must record service audit.
 - ACP sessions may set a service-owned MCP allowlist for an isolated task phase. When present, the stdio server registers only those named tools; the scheduled review publication probe uses this boundary to expose only `reviews.save`.
-- Deletion, disabling, active push, and forced scheduler triggers are not exposed in the first write batch.
+- Holding removal and watchlist transition are exposed only as part of the revision-bound `portfolio.apply_changes` transaction. Other deletion, disabling, active push, and forced scheduler triggers are not exposed in the first write batch.
 - When a required MCP capability is unavailable, the Agent reports the capability or data gap. It must not discover or call hidden HTTP routes, tokens, ports, or local files as a fallback.
 - MCP and HTTP adapters reuse the same deterministic service functions; neither adapter owns independent product semantics.
 
@@ -80,6 +80,7 @@ This tool closes the final watch-setup step without another user confirmation. T
 
 Confirmed write tools:
 
+- `portfolio.apply_changes`
 - `onboarding.confirm_portfolio`
 - `onboarding.confirm_step`
 - `watchlist.add`
@@ -88,6 +89,10 @@ Confirmed write tools:
 - `method_changes.propose`
 - `reviews.save`
 - `watch_rules.create`
+
+`portfolio.apply_changes` is a portfolio-domain transaction, not a file-field CRUD surface. The Agent first reads the current portfolio revision, resolves all holding identities, decides every watched-stock keep/remove action with the user, and supplies an explicit cash ratio when known weights would otherwise stop totaling 100%. `confirmations.request` previews and validates the exact change set before a confirmation is created. A later confirmed call rejects stale revisions, writes the complete portfolio once, preserves completed onboarding state, appends the change log, records service audit, and returns the saved state for read-back verification.
+
+User-owned Workspace methods, Skills, knowledge, ordinary reports, and research scripts do not each require a named domain MCP tool. They remain Agent-maintained Workspace assets and require an exact draft plus later explicit user confirmation. Service-consumed deterministic state and runtime capabilities still require named service contracts so scope, schema, audit, and execution guarantees are not delegated to prompt text.
 
 `reviews.save` is the only current write exception: a scheduled daily-review conversation may publish without an interactive confirmation record. The Agent owns the report content and calls the tool with full Markdown `content` plus an independent WeChat `pushBrief`; optional `decisionRecords` and `sourceEvents` are appended to workspace memory. The service preserves the content, mirrors/indexes the artifact, records audit, and never derives the full report from the final customer reply. Manual durable saves still require `confirmedByUser=true`.
 
@@ -121,7 +126,7 @@ Expected checks:
 - A restricted stdio MCP session exposes only its allowlisted tools.
 - `market.snapshot` returns usable holdings/watchlist/plan facts without relying on shell network access.
 - General web tools are discoverable through MCP, page reads cannot reach local/private addresses, and search/page results preserve final URL, fetch time, provider and warnings.
-- Durable writes reject missing, expired, replayed, cross-scope, or payload-mismatched confirmations.
+- Durable writes reject missing, expired, replayed, cross-scope, payload-mismatched, or stale-revision confirmations. Portfolio writes also reject unresolved watchlist transitions and complete allocations that do not total 100%.
 - Scheduled `reviews.save` accepts only the trusted scheduler conversation scope, preserves full report and push brief separately, appends optional decision/source records, and keeps manual unconfirmed saves rejected.
 - `artifacts.publish` accepts only allowlisted `reports/` files and returns a scoped descriptor whose payload checksum matches the workspace bytes.
 - Final onboarding watch setup completes after an explicit skip or verified confirmed-rule creation without a redundant completion-only confirmation.

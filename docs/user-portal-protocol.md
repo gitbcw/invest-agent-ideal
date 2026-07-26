@@ -249,6 +249,38 @@ interface ConversationGetResult {
 }
 ```
 
+### Inline SVG Visuals
+
+Portal-only static visualizations are carried in an assistant message's
+`metadata.inlineVisuals`; they are not workspace files, artifacts, or HTML
+reports. Each item has this additive shape:
+
+```ts
+interface InlineSvgVisual {
+  version: 1;
+  id: string;
+  kind: "svg";
+  title: string;
+  alt: string;
+  svg: string; // server-sanitized, one static SVG document
+}
+```
+
+The local runtime extracts these only from a Portal ACP reply, validates the
+root SVG/viewBox, applies its SVG safety policy and persists the sanitized
+payload with the authoritative conversation message. The Relay mirrors this
+metadata unchanged. Portal renders it as an image data URL, never as raw HTML
+or same-origin DOM. Clients that do not understand this optional field ignore
+it. HTML reports continue through the workspace artifact/file preview flow.
+
+For Portal chats, the ACP presentation policy uses an explicit visual-value
+test: it proactively emits an inline SVG for teaching/explaining investment
+concepts, comparisons, stages/cycles, screening funnels, decision paths and
+plan scenarios when the diagram communicates more clearly than prose. It does
+not emit one for dictionary-style explanations, single facts, concise market
+answers, cases where prose is clearer, or explicit file/report/download/HTML
+requests. The policy applies only to `web`; WeChat remains text-first.
+
 When an artifact is backed by a Portal-browsable workspace file, its public
 descriptor includes an optional `workspacePath`. The value is relative to the
 bound user workspace and never an absolute server path. Portal uses it to
@@ -329,9 +361,9 @@ interface ConversationChatResult {
 
 第一版不要求 connector 返回 chunk。Portal 收到完整 `assistantMessage.content` 后，在前端做打字机式呈现。
 
-## Artifact Library List
+## Retired Artifact Library List
 
-Portal 右侧文件树不是 workspace 目录浏览，而是 Runtime 基于 artifact 权威索引生成的精选只读文档库。Portal 通过 `artifact.library.list` 向当前 session 的 connector 拉取一页描述符，树刷新和"加载更多"都走这一条命令；文件内容读取继续走 `artifact.get`。
+> Retired on 2026-07-25. This section records the former curated-library contract for archaeology and lifecycle compatibility only. The current Portal directory uses `workspace.file.list/get`; see [Workspace 文件只读边界](#workspace-文件只读边界2026-07-25). Do not implement new UI against `artifact.library.list`.
 
 ```ts
 interface ArtifactLibraryListRequest {
@@ -642,7 +674,7 @@ Portal 当前文件入口是用户 workspace 的受控只读工程文件视图�
 - `workspace.file.list` 不接受路径、glob 或过滤参数，返回安全相对路径、文件名、MIME、大小、更新时间和预览模式。
 - `workspace.file.get` 只接受列表中的安全相对路径；Runtime 拒绝绝对路径、`.` / `..`、符号链接、路径逃逸、敏感文件和运行目录。
 - Portal 允许查看和下载，不提供编辑、重命名、移动或删除。历史 `artifact.delete.prepare` / `artifact.delete.confirm` 不再由 connector advertise 或处理，Portal 对旧删除 HTTP 路由固定返回 `405`。
-- 当前排除 `.env*`、凭据/密钥、SQLite、日志、`.git`、`.state`、`.trash`、`node_modules`、构建/缓存/临时目录；`.codex/skills` 作为用户工程资产允许只读查看。
+- 当前排除 `.env*`、凭据/密钥、SQLite、日志、`.codex`、`.git`、`.state`、`.trash`、`node_modules`、构建/缓存/临时目录。
 - 固定公网 IP + HTTP 仍是生产兼容基线；文件 checksum 校验不得依赖 secure-context-only API。
 
-以下 artifact library/delete 章节保留为历史兼容契约，只约束存量 artifact 元数据和生命周期，不再定义 Portal 当前文件目录或网页删除能力。
+The retired artifact library/delete section above constrains historical metadata and lifecycle records only. It does not define the current Portal directory or authorize browser-side deletion.

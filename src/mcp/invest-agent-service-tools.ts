@@ -190,8 +190,35 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "portfolio.read",
-    "Read active portfolio holdings for the current user and instance.",
+    "Read active portfolio holdings, weights, cash state, and the current revision for the current user and instance. Read this before drafting portfolio changes.",
     {}
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "portfolio.apply_changes",
+    "After a later explicit user confirmation, apply one complete portfolio change set. Use a single draft for holding removals/upserts, cash ratio, and explicit keep/remove decisions when a watched stock becomes a holding. Read portfolio first and pass its revision. Re-read after success.",
+    {
+      confirmedByUser: z.literal(true),
+      confirmationId: z.string(),
+      expectedLastConfirmedAt: z.string().datetime().nullable(),
+      removeHoldingCodes: z.array(z.string().regex(/^\d{6}$/)).optional(),
+      upsertHoldings: z.array(z.object({
+        code: z.string().regex(/^\d{6}$/),
+        name: z.string().min(1),
+        weight: z.number().min(0).max(100).nullable().optional(),
+        cost: z.number().nonnegative().nullable().optional(),
+        shares: z.number().nonnegative().nullable().optional(),
+        notes: z.string().optional(),
+      })).optional(),
+      watchlistActions: z.array(z.object({
+        code: z.string().regex(/^\d{6}$/),
+        action: z.enum(["keep", "remove"]),
+      })).optional(),
+      cashRatioPercent: z.number().min(0).max(100).optional(),
+      summary: z.string().optional(),
+    },
+    { readOnlyHint: false, destructiveHint: true }
   );
 
   registerJsonTool(
@@ -233,7 +260,7 @@ async function main() {
     "confirmations.request",
     "Register an exact durable-write draft before asking the user to confirm it. The returned confirmationId is bound to the current conversation, operation, and payload.",
     {
-      operation: z.enum(["onboarding.confirm_portfolio", "onboarding.confirm_step", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "watch_rules.create"]),
+      operation: z.enum(["portfolio.apply_changes", "onboarding.confirm_portfolio", "onboarding.confirm_step", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "watch_rules.create"]),
       payload: z.record(z.string(), z.unknown()),
       summary: z.string().optional(),
     },

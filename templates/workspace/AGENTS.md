@@ -131,7 +131,7 @@ Onboarding 写入遵守以下边界：
 - 修改基本面、技术面、宏观或风控方法。
 - 修改信息源、报告目录或 skill 执行时间。
 - 修改智能盯盘频率、阈值或提醒规则。
-- 新增或修改当前模板未覆盖的 Workspace 方法、Skill、配置、脚本、数据结构或 schema。MCP、服务能力和新调度任务不能由 Workspace 写入，必须转为系统能力申请。
+- 新增或修改用户自有的 Workspace 方法、Skill、知识、普通报告或研究脚本。Agent 应展示具体文件和变更摘要，在用户下一轮明确确认后直接维护这些用户资产；不需要为每个文件或字段新增 MCP。涉及服务 API、MCP、scheduler、权限、审计、服务消费的确定性配置 schema 或运行时代码时，必须转为系统能力申请，不能靠修改 Workspace 文本冒充服务能力。
 
 ## 服务层事实工具
 
@@ -146,18 +146,20 @@ Onboarding 写入遵守以下边界：
 - 对同一主题、标的和时间窗口，某类证据查询已返回非空结果且没有 warning 时，不要仅靠改写关键词重复调用同类能力。先使用已有结果区分正式披露、新闻和研报；证据层级不足时直接说明边界，只有缺少不同类别的必要证据时才做互补查询。
 - 微信最终回复必须保持干净，不要泄露工具名、workspace 或内部执行过程。
 
-## 服务层写入工具
+## 确定性状态写入工具
 
-- 用户确认后的确定性写入只能调用 `invest-agent-service-tools` 的具名工具，不得通过 shell、内部接口或直接改文件绕过。
+- 持仓、观察仓、预案、明确规则、调度和 onboarding 等会被服务持续读取或执行的确定性状态，用户确认后只能调用 `invest-agent-service-tools` 的领域工具，不得通过 shell、内部接口或直接改配置文件绕过。用户自有方法、Skill、知识、普通报告和研究脚本不属于这一限制，按上一节的确认规则在 Workspace 内维护。
 - 已开放的写入工具包括：
+  - `portfolio.apply_changes`
   - `onboarding.draft.get` / `onboarding.draft.upsert_step` / `onboarding.draft.request_confirmation` / `onboarding.draft.accept_step` / `onboarding.draft.enqueue_commit`
   - `watchlist.add`
   - `plans.set` / `plans.watch_conditions`
   - `method_changes.propose`
   - `reviews.save`
   - `watch_rules.validate` / `watch_rules.create` / `watch_rules.list` / `watch_rules.dry_run`
-- Onboarding 是例外流程：每一节先用 `onboarding.draft.upsert_step` 和 `onboarding.draft.request_confirmation` 展示精确草案，用户确认后用 `onboarding.draft.accept_step` 只定稿草稿，不写 Workspace。中间回复必须说“已加入初始配置草稿”或等价的未生效表述，禁止说“已保存”“已整理确认”。全部步骤确认后用 `onboarding.draft.enqueue_commit` 排队统一提交；立即告知用户正在完成初始配置，完成后由服务通知，不再要求“确认完成”。其他写入类 MCP 必须先用 `confirmations.request` 登记精确 operation/payload，再在用户下一轮明确确认后携带服务端 `confirmationId` 和 `confirmedByUser: true` 写入。`reviews.save` 是报告发布例外：定时日复盘无需交互式确认；用户主动要求生成复盘时，该请求本身授权保存本次报告，调用时标记 `confirmedByUser: true`，不要再要求二次确认。定时日复盘由 Agent 自主生成完整报告，通过 `reviews.save` 同时发布 `content` 与独立 `pushBrief`，成功后最终回复只发送该微信简报；服务层不替 Agent 生成或裁剪报告。
-- 删除、关闭、主动推送和强制触发调度不在当前 MCP 写入工具开放范围内；遇到这类需求，明确说明当前不能执行，不得寻找隐藏接口绕过。
+- 持仓变更先读取当前 revision，再形成一份完整组合草案。若观察仓标的转为持仓，必须让用户明确选择保留或移出观察仓；已知持仓权重和现金比例时，变更后合计必须为 100%，不明确就先追问。草案完整后用 `confirmations.request` 登记 `portfolio.apply_changes` 的精确 payload，用户下一轮确认后再执行，并回读验证。
+- Onboarding 是例外流程：每一节先用 `onboarding.draft.upsert_step` 和 `onboarding.draft.request_confirmation` 展示精确草案，用户确认后用 `onboarding.draft.accept_step` 只定稿草稿，不写 Workspace。中间回复必须说“已加入初始配置草稿”或等价的未生效表述，禁止说“已保存”“已整理确认”。全部步骤确认后用 `onboarding.draft.enqueue_commit` 排队统一提交；立即告知用户正在完成初始配置，完成后由服务通知，不再要求“确认完成”。其他确定性状态写入必须先用 `confirmations.request` 登记精确 operation/payload，再在用户下一轮明确确认后携带服务端 `confirmationId` 和 `confirmedByUser: true` 写入。`reviews.save` 是报告发布例外：定时日复盘无需交互式确认；用户主动要求生成复盘时，该请求本身授权保存本次报告，调用时标记 `confirmedByUser: true`，不要再要求二次确认。定时日复盘由 Agent 自主生成完整报告，通过 `reviews.save` 同时发布 `content` 与独立 `pushBrief`，成功后最终回复只发送该微信简报；服务层不替 Agent 生成或裁剪报告。
+- `portfolio.apply_changes` 已支持同一确认单内的持仓新增、更新、移除、观察仓保留/移除和现金比例调整。其他尚未开放的删除、关闭、主动推送和强制触发调度需求仍应明确说明不能执行，不得寻找隐藏接口绕过。
 
 ## 阶段二明确规则盯盘约束
 

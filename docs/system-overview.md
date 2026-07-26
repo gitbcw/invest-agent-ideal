@@ -68,7 +68,7 @@ The service is the machine room. Keep these responsibilities in code and SQLite/
 - Shared onboarding service contract used by both MCP and compatibility HTTP adapters, so state progression and durable writes have one implementation.
 - Onboarding drafts, confirmation binding, frozen commit snapshots, retryable background application, and completion notifications. Workspace onboarding files change only after the final draft commit succeeds.
 - Local HTTP APIs used by Platform, portal connector, operations, and compatibility callers. They are not exposed in workspace prompts or skills.
-- `invest-agent-service-tools` MCP server is the only deterministic service surface exposed to Codex ACP sessions. It exposes named market/portfolio/watchlist/plan tools plus confirmed writes for onboarding, watchlist add, plan set, method-change proposals, review save, and explicit watch-rule creation. Write tools require explicit user confirmation and are audited by the service.
+- `invest-agent-service-tools` MCP server is the only deterministic service surface exposed to Codex ACP sessions. It exposes named market/portfolio/watchlist/plan tools plus confirmed writes for complete portfolio change sets, onboarding, watchlist add, plan set, method-change proposals, review save, and explicit watch-rule creation. Write tools require explicit user confirmation and are audited by the service.
 - Canonical conversation log for user-visible web and WeChat history.
 
 Do not reintroduce service-level triage, fast-lane classification, onboarding short-circuiting, review intent detection, or context-packet wrapping for normal WeChat messages. Those behaviors belong in workspace AGENTS.md, skills, and user config.
@@ -88,6 +88,8 @@ Typical workspace-owned artifacts:
 - Review artifacts and generated reports.
 
 The template is a seed and an optional update catalog, not the authority for an existing Workspace. Compatibility checks may report that a newer template version exists, but they do not replace user-evolved Skills. Hard guarantees such as scope, confirmation, audit, scheduler gates, and push behavior are enforced by the service/MCP layer.
+
+This does not mean every user-owned Workspace file needs its own MCP tool. After an exact draft and a later explicit confirmation, the Agent may maintain user-owned methods, Skills, knowledge, ordinary reports, and research scripts inside its Workspace. Named domain tools are reserved for deterministic state consumed or executed by the service, such as portfolio allocation, rules, schedules, onboarding state, and publication contracts.
 
 Research and market-evidence instructions describe the facts and quality needed rather than maintaining MCP read-tool inventories. The Agent discovers current read capabilities from MCP descriptions and schemas. Transactional workflows such as onboarding, confirmed writes, explicit-rule creation, and review publication retain precise service contracts until their multi-step state machines can be discovered with equal reliability.
 
@@ -134,7 +136,7 @@ The cloud portal may mirror conversation history for UX, but it must not become 
 
 Portal file lifecycle is service-owned and deterministic. User uploads (Portal/WeChat images and documents) keep bytes for 7 days via the authoritative `conversation_attachments.expires_at` column, then only metadata remains. AI artifacts published to the curated library (`reports/{daily,weekly,monthly,company,metrics,memory}`) are promoted to permanent `durable_library` when `<= 1 MiB`; oversized formal artifacts and non-curated files are 7-day `transient_generated`. The model never decides importance — the service layer does, from source/path/size/MIME. Raw `memory/*.jsonl`, `financials/companies/**`, `config/**`, Skills, audit/task/alerts and the full Workspace filesystem are never exposed to the Portal.
 
-The daily attachment-cleanup and 30-day trash-purge jobs run through the scheduler with `scheduled_task_runs` locks. The first real production cleanup is gated behind `FILE_RETENTION_CLEANUP_ENABLED=true` plus a backup + dry-run + explicit operator confirmation. See `docs/portal-file-retention-and-library-governance-work-package.md` and the `retention:*` commands in `CLAUDE.md`.
+The daily attachment-cleanup and 30-day trash-purge jobs run through the scheduler with `scheduled_task_runs` locks. The first real production cleanup is gated behind `FILE_RETENTION_CLEANUP_ENABLED=true` plus a backup + dry-run + explicit operator confirmation. See the `retention:*` commands in `CLAUDE.md`; the original implementation work package is archived under `docs/archive/portal/2026-07/`.
 
 ## Platform Boundary
 
@@ -152,7 +154,7 @@ The accepted decision is [data-source-policy-decision.md](./data-source-policy-d
 
 - New contributor: [../AGENTS.md](../AGENTS.md), [../CLAUDE.md](../CLAUDE.md), then this file.
 - Runtime work: [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md), [table-ownership.md](./table-ownership.md), [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md).
-- Portal work: [user-portal-design.md](./user-portal-design.md), [user-portal-goal-and-acceptance.md](./user-portal-goal-and-acceptance.md), [user-portal-protocol.md](./user-portal-protocol.md).
+- Portal current contract: [user-portal.md](./user-portal.md). Exact connector schemas: [user-portal-protocol.md](./user-portal-protocol.md). Initial design and acceptance documents are archived and provide historical context only.
 - Platform work: [platform-partner-admin-design.md](./platform-partner-admin-design.md), [platform-partner-admin-phase1-implementation.md](./platform-partner-admin-phase1-implementation.md).
 - Onboarding work: [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md), [service-tools-mcp.md](./service-tools-mcp.md).
 - Investment workflow work: [investment-model-design.md](./investment-model-design.md), [trading-strategy-design.md](./trading-strategy-design.md), [04-core-workflows.md](./04-core-workflows.md).

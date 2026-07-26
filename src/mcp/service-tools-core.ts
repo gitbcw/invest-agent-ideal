@@ -7,7 +7,13 @@ import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId } from "../lib/user-context.js";
-import { WorkspaceStore, type OnboardingStateYaml } from "../lib/workspace-store.js";
+import {
+  WorkspaceStore,
+  type OnboardingStateYaml,
+  type PortfolioHolding,
+  type PortfolioWatchItem,
+  type PortfolioYaml,
+} from "../lib/workspace-store.js";
 import { saveSkillDailyReview } from "../handlers/review.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
 import {
@@ -307,21 +313,36 @@ async function dispatchServiceTool(
     }
     case "portfolio.read": {
       const rows = await portfolioBackend.listActive(context.userId, context.instanceId);
+      const portfolio = await new WorkspaceStore(context.userId).readPortfolio();
+      await audit(context, {
+        operation: "portfolio.read",
+        resourceType: "portfolio",
+        resourceId: context.instanceId,
+        resultSummary: `holdings=${rows.length}; revision=${portfolio?.last_confirmed_at ?? "null"}`,
+      });
       return {
         ok: true,
         userId: context.userId,
         instanceId: context.instanceId,
         count: rows.length,
-        items: rows.map((row) => ({
-          id: row.rowId ?? null,
-          stockCode: row.code,
-          stockName: row.name,
-          buyDate: row.buyDate,
-          costPrice: row.costPrice ?? null,
-          sellPrice: row.sellPrice ?? null,
-          sellDate: row.sellDate ?? null,
-          status: row.status,
-        })),
+        revision: portfolio?.last_confirmed_at ?? null,
+        cash: portfolio?.cash ?? null,
+        items: rows.map((row) => {
+          const holding = portfolio?.holdings?.find((item) => item.code === row.code);
+          return {
+            id: row.rowId ?? null,
+            stockCode: row.code,
+            stockName: row.name,
+            buyDate: row.buyDate,
+            costPrice: holding?.cost ?? row.costPrice ?? null,
+            shares: holding?.shares ?? null,
+            weight: holding?.weight ?? null,
+            notes: holding?.notes ?? null,
+            sellPrice: row.sellPrice ?? null,
+            sellDate: row.sellDate ?? null,
+            status: row.status,
+          };
+        }),
       };
     }
     case "watchlist.read": {
@@ -369,6 +390,8 @@ async function dispatchServiceTool(
       return readPendingConfirmations(input, context);
     case "confirmations.request":
       return requestConfirmation(input, context);
+    case "portfolio.apply_changes":
+      return applyPortfolioChanges(input, context);
     case "onboarding.confirm_portfolio":
       return confirmOnboardingPortfolio(input, context);
     case "onboarding.confirm_step":
@@ -1122,6 +1145,301 @@ function isArtifactKind(value: string | undefined): value is ConversationArtifac
   return value === "report" || value === "chart" || value === "data" || value === "document";
 }
 
+type PortfolioHoldingChange = {
+  code: string;
+  name: string;
+  weight?: number | null;
+  cost?: number | null;
+  shares?: number | null;
+  notes?: string;
+};
+
+type PortfolioWatchlistAction = {
+  code: string;
+  action: "keep" | "remove";
+};
+
+type PlannedPortfolioChanges = {
+  expectedLastConfirmedAt: string | null;
+  current: PortfolioYaml;
+  next: PortfolioYaml;
+  removedHoldings: PortfolioHolding[];
+  upsertedHoldings: PortfolioHolding[];
+  removedWatchlist: PortfolioWatchItem[];
+  keptWatchlistCodes: string[];
+  allocation: {
+    complete: boolean;
+    holdingWeightPercent: number | null;
+    cashRatioPercent: number | null;
+    totalPercent: number | null;
+  };
+};
+
+async function planPortfolioChanges(
+  input: Record<string, unknown>,
+  context: ServiceToolContext
+): Promise<PlannedPortfolioChanges> {
+  if (!Object.prototype.hasOwnProperty.call(input, "expectedLastConfirmedAt")) {
+    throw new Error("expectedLastConfirmedAt is required; read the current portfolio before drafting changes");
+  }
+  const expectedLastConfirmedAt = input.expectedLastConfirmedAt === null
+    ? null
+    : stringInput(input.expectedLastConfirmedAt);
+  if (input.expectedLastConfirmedAt !== null && !expectedLastConfirmedAt) {
+    throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
+  }
+  if (expectedLastConfirmedAt && Number.isNaN(Date.parse(expectedLastConfirmedAt))) {
+    throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
+  }
+
+  const store = new WorkspaceStore(context.userId);
+  const current = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
+  const currentRevision = current.last_confirmed_at ?? null;
+  if (currentRevision !== expectedLastConfirmedAt) {
+    throw new Error(`portfolio state changed; expected revision ${expectedLastConfirmedAt ?? "null"}, current revision ${currentRevision ?? "null"}`);
+  }
+
+  const removeHoldingCodes = [...new Set(normalizeCodes(input.removeHoldingCodes))];
+  if (removeHoldingCodes.some((code) => !/^\d{6}$/.test(code))) {
+    throw new Error("removeHoldingCodes must contain six-digit stock codes");
+  }
+  const upsertHoldings = normalizeRecordList(input.upsertHoldings, "upsertHoldings")
+    .map(normalizePortfolioHoldingChange);
+  const watchlistActions = normalizeRecordList(input.watchlistActions, "watchlistActions")
+    .map(normalizePortfolioWatchlistAction);
+  const hasCashRatio = Object.prototype.hasOwnProperty.call(input, "cashRatioPercent");
+  const cashRatioPercent = hasCashRatio ? finiteNumber(input.cashRatioPercent, "cashRatioPercent", 0, 100) : undefined;
+
+  if (!removeHoldingCodes.length && !upsertHoldings.length && !watchlistActions.length && !hasCashRatio) {
+    throw new Error("portfolio change set is empty");
+  }
+  const upsertCodes = new Set(upsertHoldings.map((item) => item.code));
+  const duplicateUpserts = upsertHoldings.filter((item, index) => upsertHoldings.findIndex((other) => other.code === item.code) !== index);
+  if (duplicateUpserts.length) throw new Error(`upsertHoldings contains duplicate codes: ${[...new Set(duplicateUpserts.map((item) => item.code))].join(",")}`);
+  const contradictoryCodes = removeHoldingCodes.filter((code) => upsertCodes.has(code));
+  if (contradictoryCodes.length) throw new Error(`cannot remove and upsert the same holding: ${contradictoryCodes.join(",")}`);
+
+  const holdings = [...(current.holdings ?? [])];
+  const removedHoldings: PortfolioHolding[] = [];
+  for (const code of removeHoldingCodes) {
+    const index = holdings.findIndex((holding) => holding.code === code && holding.status !== "closed" && !holding.sell_date);
+    if (index < 0) throw new Error(`active holding not found: ${code}`);
+    removedHoldings.push(...holdings.splice(index, 1));
+  }
+
+  const upsertedHoldings: PortfolioHolding[] = [];
+  for (const change of upsertHoldings) {
+    const index = holdings.findIndex((holding) => holding.code === change.code);
+    const existing = index >= 0 ? holdings[index] : undefined;
+    const next: PortfolioHolding = {
+      ...existing,
+      code: change.code,
+      name: change.name,
+      status: "open",
+      sell_date: null,
+      sell_price: null,
+      ...(Object.prototype.hasOwnProperty.call(change, "weight") ? { weight: change.weight } : {}),
+      ...(Object.prototype.hasOwnProperty.call(change, "cost") ? { cost: change.cost } : {}),
+      ...(Object.prototype.hasOwnProperty.call(change, "shares") ? { shares: change.shares } : {}),
+      ...(change.notes !== undefined ? { notes: change.notes } : {}),
+    };
+    if (index >= 0) holdings[index] = next;
+    else holdings.push(next);
+    upsertedHoldings.push(next);
+  }
+
+  const watchlist = [...(current.watchlist ?? [])];
+  const actionByCode = new Map<string, "keep" | "remove">();
+  for (const action of watchlistActions) {
+    if (actionByCode.has(action.code)) throw new Error(`watchlistActions contains duplicate code: ${action.code}`);
+    actionByCode.set(action.code, action.action);
+  }
+  for (const holding of upsertHoldings) {
+    if (watchlist.some((item) => item.code === holding.code) && !actionByCode.has(holding.code)) {
+      throw new Error(`watchlist action is required when a watched stock becomes a holding: ${holding.code}`);
+    }
+  }
+  const removedWatchlist: PortfolioWatchItem[] = [];
+  const keptWatchlistCodes: string[] = [];
+  for (const [code, action] of actionByCode) {
+    const index = watchlist.findIndex((item) => item.code === code);
+    if (index < 0) throw new Error(`watchlist item not found: ${code}`);
+    if (action === "remove") removedWatchlist.push(...watchlist.splice(index, 1));
+    else keptWatchlistCodes.push(code);
+  }
+
+  const currentCash = isRecord(current.cash) ? current.cash : {};
+  const nextCash = hasCashRatio ? updatePortfolioCashRatio(currentCash, cashRatioPercent!) : current.cash;
+  const next: PortfolioYaml = {
+    ...current,
+    cash: nextCash,
+    holdings,
+    watchlist,
+    accounts: Array.isArray(current.accounts) ? current.accounts : [],
+  };
+  const weights = holdings.map((holding) => holding.weight);
+  const knownWeights = weights.filter((weight): weight is number => typeof weight === "number" && Number.isFinite(weight));
+  const allHoldingWeightsKnown = knownWeights.length === weights.length;
+  const finalCashRatio: number | null = hasCashRatio ? (cashRatioPercent ?? null) : portfolioCashRatio(current.cash);
+  const holdingWeightPercent = allHoldingWeightsKnown
+    ? knownWeights.reduce((sum, weight) => sum + weight, 0)
+    : null;
+  const complete = allHoldingWeightsKnown && finalCashRatio !== null;
+  const totalPercent = complete ? holdingWeightPercent! + finalCashRatio! : null;
+  if (complete && Math.abs(totalPercent! - 100) > 0.01) {
+    throw new Error(`portfolio allocation must total 100%; holdings=${holdingWeightPercent}, cash=${finalCashRatio}, total=${totalPercent}. Provide an explicit cashRatioPercent or correct holding weights`);
+  }
+
+  return {
+    expectedLastConfirmedAt,
+    current,
+    next,
+    removedHoldings,
+    upsertedHoldings,
+    removedWatchlist,
+    keptWatchlistCodes,
+    allocation: {
+      complete,
+      holdingWeightPercent,
+      cashRatioPercent: finalCashRatio,
+      totalPercent,
+    },
+  };
+}
+
+async function applyPortfolioChanges(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const confirmation = await prepareBoundConfirmation(input, context, "portfolio.apply_changes");
+  const store = new WorkspaceStore(context.userId);
+  const existing = await store.readPortfolio();
+  const confirmationId = stringInput(input?.confirmationId)!;
+  if (existing?.last_confirmation_id === confirmationId) {
+    await confirmation.consume();
+    return portfolioChangeResult(context, existing, [], [], [], []);
+  }
+
+  const plan = await planPortfolioChanges(input ?? {}, context);
+  const now = new Date().toISOString();
+  const saved: PortfolioYaml = {
+    ...plan.next,
+    last_confirmed_at: now,
+    last_confirmed_by: "user",
+    last_confirmation_id: confirmationId,
+  };
+  await store.writePortfolio(saved);
+  await store.appendChangeLog({
+    ts: now,
+    source: "mcp",
+    type: "portfolio_changed",
+    summary: stringInput(input?.summary) || "用户确认更新持仓组合",
+    details: {
+      confirmation_id: confirmationId,
+      removed_holding_codes: plan.removedHoldings.map((item) => item.code),
+      upserted_holding_codes: plan.upsertedHoldings.map((item) => item.code),
+      removed_watchlist_codes: plan.removedWatchlist.map((item) => item.code),
+      kept_watchlist_codes: plan.keptWatchlistCodes,
+      cash_ratio_percent: plan.allocation.cashRatioPercent,
+    },
+  });
+  await confirmation.consume();
+  await audit(context, {
+    operation: "portfolio.apply_changes",
+    resourceType: "portfolio",
+    resourceId: context.instanceId,
+    requestBody: input,
+    resultSummary: `removedHoldings=${plan.removedHoldings.length}; upsertedHoldings=${plan.upsertedHoldings.length}; removedWatchlist=${plan.removedWatchlist.length}; totalPercent=${plan.allocation.totalPercent ?? "unknown"}`,
+  });
+  return portfolioChangeResult(
+    context,
+    saved,
+    plan.removedHoldings,
+    plan.upsertedHoldings,
+    plan.removedWatchlist,
+    plan.keptWatchlistCodes
+  );
+}
+
+function portfolioChangeResult(
+  context: ServiceToolContext,
+  portfolio: PortfolioYaml,
+  removedHoldings: PortfolioHolding[],
+  upsertedHoldings: PortfolioHolding[],
+  removedWatchlist: PortfolioWatchItem[],
+  keptWatchlistCodes: string[]
+) {
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    revision: portfolio.last_confirmed_at ?? null,
+    holdings: portfolio.holdings ?? [],
+    watchlist: portfolio.watchlist ?? [],
+    cash: portfolio.cash ?? null,
+    applied: {
+      removedHoldingCodes: removedHoldings.map((item) => item.code),
+      upsertedHoldingCodes: upsertedHoldings.map((item) => item.code),
+      removedWatchlistCodes: removedWatchlist.map((item) => item.code),
+      keptWatchlistCodes,
+    },
+  };
+}
+
+function normalizePortfolioHoldingChange(input: Record<string, unknown>): PortfolioHoldingChange {
+  const code = stringInput(input.code);
+  const name = stringInput(input.name);
+  if (!code || !/^\d{6}$/.test(code)) throw new Error("upsertHoldings[].code must be a six-digit stock code");
+  if (!name) throw new Error(`upsertHoldings name is required for ${code}`);
+  const result: PortfolioHoldingChange = { code, name };
+  if (Object.prototype.hasOwnProperty.call(input, "weight")) result.weight = nullableFiniteNumber(input.weight, `weight for ${code}`, 0, 100);
+  if (Object.prototype.hasOwnProperty.call(input, "cost")) result.cost = nullableFiniteNumber(input.cost, `cost for ${code}`, 0);
+  if (Object.prototype.hasOwnProperty.call(input, "shares")) result.shares = nullableFiniteNumber(input.shares, `shares for ${code}`, 0);
+  if (Object.prototype.hasOwnProperty.call(input, "notes")) result.notes = stringInput(input.notes) ?? "";
+  return result;
+}
+
+function normalizePortfolioWatchlistAction(input: Record<string, unknown>): PortfolioWatchlistAction {
+  const code = stringInput(input.code);
+  if (!code || !/^\d{6}$/.test(code)) throw new Error("watchlistActions[].code must be a six-digit stock code");
+  if (input.action !== "keep" && input.action !== "remove") throw new Error(`watchlist action must be keep or remove for ${code}`);
+  return { code, action: input.action };
+}
+
+function finiteNumber(value: unknown, field: string, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY) {
+  if (value === null || value === undefined || value === "") {
+    throw new Error(`${field} must be a number between ${min} and ${max}`);
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < min || number > max) {
+    throw new Error(`${field} must be a number between ${min} and ${max}`);
+  }
+  return number;
+}
+
+function nullableFiniteNumber(value: unknown, field: string, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY) {
+  return value === null ? null : finiteNumber(value, field, min, max);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function portfolioCashRatio(cash: unknown): number | null {
+  if (!isRecord(cash)) return null;
+  const ratio = Number(cash.ratio_percent);
+  return Number.isFinite(ratio) ? ratio : null;
+}
+
+function updatePortfolioCashRatio(cash: Record<string, unknown>, ratioPercent: number) {
+  const notes = typeof cash.notes === "string" ? cash.notes : undefined;
+  const synchronizedNotes = notes && /现金.*?\d+(?:\.\d+)?\s*%/.test(notes)
+    ? notes.replace(/(现金.*?)(\d+(?:\.\d+)?)(\s*%)/, `$1${ratioPercent}$3`)
+    : notes;
+  return {
+    ...cash,
+    ratio_percent: ratioPercent,
+    ...(synchronizedNotes !== undefined ? { notes: synchronizedNotes } : {}),
+  };
+}
+
 function normalizeCodes(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.map((item) => String(item).trim()).filter(Boolean);
@@ -1154,6 +1472,7 @@ function isExplicitWatchSetupSkipText(value: string) {
 }
 
 const CONFIRMED_WRITE_OPERATIONS = new Set([
+  "portfolio.apply_changes",
   "onboarding.confirm_portfolio",
   "onboarding.confirm_step",
   "watchlist.add",
@@ -1168,7 +1487,7 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
   const payload = asRecord(input?.payload);
   if (!operation || !CONFIRMED_WRITE_OPERATIONS.has(operation)) throw new Error("operation is not confirmable");
   if (!context.conversationId) throw new Error("conversationId is required for confirmation");
-  validateConfirmationDraft(operation, payload);
+  const preview = await validateConfirmationDraft(operation, payload, context);
   const target = confirmationTarget(operation, payload, context);
   const pending = await createSandboxConfirmation(mcpSandboxContext(context, `mcp-request:${Date.now()}`), target);
   await audit(context, {
@@ -1185,10 +1504,15 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
     confirmationId: pending.id,
     operation,
     expiresAt: pending.expiresAt,
+    ...(preview ? { preview } : {}),
   };
 }
 
-function validateConfirmationDraft(operation: string, payload: Record<string, unknown>) {
+async function validateConfirmationDraft(
+  operation: string,
+  payload: Record<string, unknown>,
+  context: ServiceToolContext
+) {
   if (operation === "onboarding.confirm_step") {
     const step = stringInput(payload.step);
     if (!isSharedOnboardingStep(step)) throw new Error(`非法 onboarding step: ${String(step ?? "")}`);
@@ -1206,6 +1530,10 @@ function validateConfirmationDraft(operation: string, payload: Record<string, un
       throw new Error(`持仓和观察仓写入前必须补齐 6 位证券代码: ${JSON.stringify(missingCodes)}`);
     }
   }
+  if (operation === "portfolio.apply_changes") {
+    return planPortfolioChanges(payload, context);
+  }
+  return undefined;
 }
 
 async function prepareBoundConfirmation(
@@ -1238,6 +1566,7 @@ async function prepareBoundConfirmation(
 
 function confirmationTarget(operation: string, payload: Record<string, unknown>, context: ServiceToolContext) {
   const resourceByOperation: Record<string, string> = {
+    "portfolio.apply_changes": "portfolio",
     "onboarding.confirm_portfolio": "onboarding_portfolio",
     "onboarding.confirm_step": "onboarding_step",
     "watchlist.add": "watchlist",
@@ -1248,14 +1577,26 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
   };
   const resourceType = resourceByOperation[operation];
   if (!resourceType) throw new Error("operation is not confirmable");
-  const resourceId = operation === "onboarding.confirm_portfolio"
+  const resourceId = operation === "portfolio.apply_changes"
+    ? context.instanceId
+    : operation === "onboarding.confirm_portfolio"
     ? context.instanceId
     : operation === "onboarding.confirm_step"
       ? stringInput(payload.step)
       : operation.startsWith("plans.")
         ? stringInput(payload.stockCode ?? payload.code)
         : undefined;
-  return { operation, resourceType, resourceId, requestBody: payload };
+  return {
+    operation,
+    resourceType,
+    resourceId,
+    requestBody: operation === "portfolio.apply_changes" ? stripPortfolioConfirmationMetadata(payload) : payload,
+  };
+}
+
+function stripPortfolioConfirmationMetadata(payload: Record<string, unknown>) {
+  const { summary: _summary, ...boundPayload } = payload;
+  return boundPayload;
 }
 
 function mcpSandboxContext(context: ServiceToolContext, tokenId: string): SandboxContext {

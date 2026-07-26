@@ -28,6 +28,8 @@ After that, use the task-based map below instead of reading every file.
 - Workspace artifacts carry user-specific investment state; table-level exceptions are defined in [table-ownership.md](./table-ownership.md).
 - Platform is an internal administration surface. Owners may perform authorized administration; Partners receive read-only, anonymized operating and quality views without customer investment content or raw conversations.
 - User portal is a separate cloud entrance, not a Platform rewrite. The local connector and `conversation_sessions` / `conversation_messages` remain the source of truth.
+- The Portal workspace browser is read-only and uses `workspace.file.list/get`. It shows Markdown, HTML and images; images use the lightbox, while Markdown/HTML use deduplicated right-rail tabs. Browser-side edit/delete is prohibited.
+- Fixed public IP plus HTTP is the production Portal compatibility baseline. Do not require HTTPS or secure-context-only browser APIs.
 - Local reliable data service comes first, AI external search second, explicit data gap last. Do not invent missing market facts.
 - Historical docs in [archive/](./archive/) are archaeology unless linked from this README or another current source-of-truth doc.
 - `main` is the only maintained integration and production-release baseline. Volcano snapshots, frozen tags, and reconciliation branches are read-only evidence; normal releases come from a clean worktree at a reviewed `main` commit and never replace production runtime data.
@@ -75,9 +77,10 @@ For scheduled-task or push-delivery operations, use the project-only skill `.cod
 
 | Document | Use It For |
 | --- | --- |
-| [user-portal-design.md](./user-portal-design.md) | Cloud user portal and relay design; local invest-agent remains runtime |
-| [user-portal-goal-and-acceptance.md](./user-portal-goal-and-acceptance.md) | First delivery goal, acceptance criteria, and loop validation contract |
-| [user-portal-protocol.md](./user-portal-protocol.md) | Relay protocol and local connector contract, including mock scenarios |
+| [user-portal.md](./user-portal.md) | Current ownership, workspace browser, interaction, HTTP and deployment contract |
+| [user-portal-protocol.md](./user-portal-protocol.md) | Relay protocol and current workspace file commands; retired sections are explicitly marked |
+
+Initial Portal design, completed work packages and acceptance records are under `archive/portal/2026-07/` and are not implementation inputs.
 
 ### Platform Administration
 

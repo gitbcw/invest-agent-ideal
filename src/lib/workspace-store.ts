@@ -25,6 +25,12 @@ export interface PortfolioHolding {
   code: string;
   asset_type?: string;
   market?: string;
+  account?: string | null;
+  currency?: string;
+  cost?: number | null;
+  shares?: number | null;
+  market_value?: number | null;
+  weight?: number | null;
   buy_date?: string | null;
   cost_price?: number | null;
   sell_price?: number | null;
@@ -69,6 +75,7 @@ export interface PortfolioYaml {
   accounts?: unknown[];
   last_confirmed_at?: string | null;
   last_confirmed_by?: string | null;
+  last_confirmation_id?: string | null;
 }
 
 export interface StrategyYaml {

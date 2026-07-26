@@ -155,7 +155,7 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 - `invest-agent-service-tools` 在 `session/new` 时由 `src/acp/stdio-agent.ts` 挂到 Codex ACP 会话。
 - 读取工具：`market.snapshot`、`market.quote`、`market.kline`、`market.fundamentals`、`market.indices`、`market.capital_flow`、`market.sector_theme`、`market.stock_info`、`market.resolve`、`market.calendar`、`market.health`、`research.news_search`、`research.web_search`、`research.web_read`、`portfolio.read`、`watchlist.read`、`plans.read`、`watch_rules.catalog/list/validate/dry_run`。`research.news_search` 是财经新闻二级证据；`research.web_search` 和 `research.web_read` 是长尾公开证据发现与受控正文读取能力，搜索摘要不能替代结构化行情、正式财报或公告，页面读取拒绝内网和非文本内容。
 - 确认工具：`confirmations.pending`、`confirmations.request`；前者读取当前会话待确认项，后者在询问用户前登记精确写入草案。
-- 确认写入工具：`onboarding.confirm_portfolio`、`onboarding.confirm_step`、`watchlist.add`、`plans.set`、`plans.watch_conditions`、`method_changes.propose`、`watch_rules.create`。用户下一轮明确确认后，调用时必须同时带服务端签发的 `confirmationId` 和 `confirmedByUser: true`；确认绑定 scope、operation、payload，且只能消费一次。
+- 确认写入工具：`portfolio.apply_changes`、`onboarding.confirm_portfolio`、`onboarding.confirm_step`、`watchlist.add`、`plans.set`、`plans.watch_conditions`、`method_changes.propose`、`watch_rules.create`。`portfolio.apply_changes` 用一份确认单表达完整的持仓增删/更新、观察仓去留和现金比例变更，并绑定 `portfolio.read` 返回的 revision；已知权重和现金比例时合计必须为 100%。用户下一轮明确确认后，调用时必须同时带服务端签发的 `confirmationId` 和 `confirmedByUser: true`；确认绑定 scope、operation、实际变更 payload（审计摘要不参与绑定），且只能消费一次。
 - `onboarding.complete_watch_setup` 是流程收口工具：用户明确跳过首次规则，或本会话内所有指定规则已分别确认创建并有成功审计后，直接完成 onboarding，不再要求“确认完成”。
 - `reviews.save` 允许 scheduled daily-review 由 Agent 主动发布完整 Markdown `content`、独立微信 `pushBrief` 和可选 `decisionRecords` / `sourceEvents`，是当前唯一不要求交互式 confirmation record 的写入例外。服务层只负责忠实保存、索引和审计，不再把 Agent 最终微信回复自动当作完整报告。删除、关闭、主动推送、强制调度暂不开放为 MCP 写工具。
 - 生产/部署 smoke：`npm run smoke:mcp-service-tools`，会验证 stdio MCP 协议、工具列表、行情快照和 watch-rule 校验。
@@ -239,11 +239,13 @@ Dashboard 退役后,投资数据修改只能通过用户对话 + MCP 确认流�
 | `npm run portal:connector` | 启动本地 connector；本地模式连接本机 Portal Relay，生产由显式 URL 决定 |
 | `npm run smoke:portal-conversation-log` | 权威对话日志 / portal 本地接口烟测 |
 
+Portal workspace 浏览通过 connector 的 `workspace.file.list/get`，不是浏览器直接访问运行时文件系统。列表只展示 Markdown、HTML 和图片；图片（含 SVG）走 Lightbox，Markdown/HTML 走右侧标签。带 `workspacePath` 的对话 artifact 才会展开目录并定位，conversation-only 文件不改变目录状态。网页端没有编辑、移动、重命名或删除能力。当前完整契约见 `docs/user-portal.md` 和 `docs/user-portal-protocol.md`。
+
 相关环境变量：`PORTAL_LOCAL_ONLY`、`PORTAL_RELAY_URL`、`PORTAL_CONNECTOR_TOKEN`、`PORTAL_USER_ID`、`PORTAL_INSTANCE_ID`、`PORTAL_ASSISTANT_ID`、`PORTAL_PROJECT_ID`、`PORTAL_CONNECTOR_ID`、`PORTAL_CONNECTOR_DISPLAY_NAME`、`PORTAL_CONNECTOR_REFRESH_MS`。
 
 ## Portal 文件生命周期运维
 
-用户上传附件保留 7 天（服务端 `conversation_attachments.expires_at` 权威），AI 正式 artifact `<=1 MiB` 落精选目录即永久（`durable_library`），其余 AI 临时产物 7 天；用户删除的永久库文件进 30 天隐藏回收区（`.trash/artifacts/`）。首次生产真实清理必须经过备份 + dry-run + 明确确认。完整策略见 `docs/portal-file-retention-and-library-governance-work-package.md`。
+用户上传附件保留 7 天（服务端 `conversation_attachments.expires_at` 权威），AI 正式 artifact `<=1 MiB` 可标记为永久（`durable_library`），其余 AI 临时产物 7 天；历史删除流程可把永久 artifact 移入 30 天隐藏回收区（`.trash/artifacts/`）。当前 Portal workspace 浏览器不暴露网页删除入口，只允许查看和下载。首次生产真实清理仍必须经过备份 + dry-run + 明确确认；当前 Portal 契约见 `docs/user-portal.md`，历史生命周期工作包已归档到 `docs/archive/portal/2026-07/`。
 
 | 命令 | 说明 |
 |------|------|

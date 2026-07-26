@@ -131,7 +131,7 @@ Skills 应负责 workspace ACP 后端如何使用这些能力：
 
 用户门户是独立云端入口，不是 Platform 的重写。本仓库只负责本地运行时侧：`/api/portal/*` 权威对话日志 API、`npm run portal:connector`、workspace ACP 执行、SQLite 权威数据、微信、scheduler 和确定性 API。
 
-`conversation_sessions` 和 `conversation_messages` 是服务层拥有的 SQLite 表，是用户可见对话历史的本地可信来源。云端门户可以为了用户体验保留完整镜像，但聊天必须通过 connector 路由，不能读取本地文件、workspace 状态，也不能暴露 Platform 管理命令。
+`conversation_sessions` 和 `conversation_messages` 是服务层拥有的 SQLite 表，是用户可见对话历史的本地可信来源。云端门户可以为了用户体验保留完整镜像，但聊天必须通过 connector 路由，不能直接访问本地文件系统或任意 workspace 状态，也不能暴露 Platform 管理命令。唯一的 workspace 文件入口是服务层受控的 `workspace.file.list/get` 只读协议：只返回当前用户 scope 下允许展示的 Markdown、HTML 和图片，拒绝路径遍历、符号链接、敏感/运行目录和浏览器端编辑、移动、重命名或删除。
 
 ## 策略预案起草（硬约束）
 

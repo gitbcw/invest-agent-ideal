@@ -119,6 +119,7 @@ try {
       "onboarding.draft.accept_step",
       "onboarding.draft.enqueue_commit",
       "onboarding.draft.commit_status",
+      "portfolio.apply_changes",
       "plans.set",
       "reviews.save",
       "watch_rules.create",
