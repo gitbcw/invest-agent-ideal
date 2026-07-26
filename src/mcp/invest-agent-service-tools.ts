@@ -149,6 +149,39 @@ async function main() {
 
   registerJsonTool(
     { server, callServiceTool, context },
+    "research.news_search",
+    "Search public financial news by keyword when structured service data or stock-specific evidence is insufficient. Returns publisher, publication time, link, fetch time, evidence level, and warnings. Treat results as secondary evidence: never use them to invent missing quotes, financial statement fields, or confirmed corporate facts.",
+    {
+      query: z.string().min(1).max(120),
+      days: z.number().int().min(1).max(90).optional(),
+      limit: z.number().int().min(1).max(10).optional(),
+    }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "research.web_search",
+    "Search the public web for source discovery when named market-data and finance-news tools do not cover the question. Returns ranked titles, snippets, URLs, provider, fetch time, and warnings. Prefer opening relevant results with research.web_read. For stable, low-risk taxonomy or terminology facts, several independent and version-consistent results may support a qualified cross-source conclusion when pages are unavailable, but identify them as search-index evidence and never present one snippet as primary confirmation. Dynamic market data, financial figures and corporate disclosures still require structured or page-level evidence. Start with at most 3 complementary searches and stop as soon as one complete high-quality source or two consistent independent sources cover the answer. Only when core fields or a complete requested list remain missing may you continue with necessary complementary searches; keep total search and distinct-page reads within the answer's evidence budget and reuse non-empty warning-free results instead of rephrasing the same query.",
+    {
+      query: z.string().min(1).max(120),
+      limit: z.number().int().min(1).max(10).optional(),
+    },
+    { openWorldHint: true }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "research.web_read",
+    "Read and sanitize a public HTTP(S) page selected from research evidence. The service rejects local/private addresses, revalidates redirects, limits response type, size and time, removes scripts/navigation, and returns text with the final URL and fetch time. Client-rendered pages can return page_text_unavailable; TLS trust failures return tls_certificate_untrusted. It cannot download arbitrary files or access internal services. If the evidence budget is exhausted or selected pages remain unreadable, stop and report the unverified fact and candidate URLs rather than continuing to search.",
+    {
+      url: z.string().url().max(2048),
+      maxCharacters: z.number().int().min(2000).max(50000).optional(),
+    },
+    { openWorldHint: true }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
     "market.resolve",
     "Resolve an A-share company name or alias to candidate stock codes. This is for identity resolution, not investment evidence.",
     { keyword: z.string().min(1) }

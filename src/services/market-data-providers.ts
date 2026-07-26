@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 
-export type MarketDataProvider = "tencent" | "sina" | "eastmoney" | "tushare" | "tdx" | "service";
+export type MarketDataProvider = "tencent" | "sina" | "eastmoney" | "tushare" | "tdx" | "web" | "service";
 export type MarketDataConfidence = "high" | "medium" | "low";
 export type EvidenceLevel = "primary_fact" | "secondary_evidence" | "signal" | "operational";
 
@@ -34,6 +34,10 @@ export type ProviderName =
   | "service_calendar_cn_ashare"
   | "eastmoney_sector_theme"
   | "eastmoney_stock_news"
+  | "eastmoney_finance_search"
+  | "sogou_web_search"
+  | "searxng_web_search"
+  | "public_web_page"
   | "eastmoney_stock_reports"
   | "cninfo_announcements"
   | "eastmoney_flow"
@@ -61,6 +65,8 @@ export interface ProviderMeta {
     | "trading_calendar"
     | "sector_theme"
     | "news"
+    | "web_search"
+    | "web_page"
     | "research_report"
     | "announcement"
     | "fundamentals";
@@ -165,6 +171,42 @@ const PROVIDERS: Record<ProviderName, ProviderMeta> = {
     evidenceLevel: "secondary_evidence",
     usageBoundary: "新闻只能作为线索,重大事项需公告或监管来源确认。",
     category: "news",
+  },
+  eastmoney_finance_search: {
+    name: "eastmoney_finance_search",
+    runtimeProvider: "eastmoney",
+    endpoint: "search-api-web.eastmoney.com/search/jsonp",
+    confidence: "medium",
+    evidenceLevel: "secondary_evidence",
+    usageBoundary: "用于公开财经新闻和事件线索检索；标题与摘要不是公告或专业数据，重要事实必须继续核验。",
+    category: "news",
+  },
+  sogou_web_search: {
+    name: "sogou_web_search",
+    runtimeProvider: "web",
+    endpoint: "www.sogou.com/web",
+    confidence: "low",
+    evidenceLevel: "secondary_evidence",
+    usageBoundary: "通用网页搜索用于发现来源；搜索摘要不是事实，必须打开原文核验。生产可通过配置切换到自建 SearXNG。",
+    category: "web_search",
+  },
+  searxng_web_search: {
+    name: "searxng_web_search",
+    runtimeProvider: "web",
+    endpoint: "configured SearXNG JSON endpoint",
+    confidence: "medium",
+    evidenceLevel: "secondary_evidence",
+    usageBoundary: "聚合搜索结果用于发现来源；搜索摘要不是事实，必须打开原文核验。",
+    category: "web_search",
+  },
+  public_web_page: {
+    name: "public_web_page",
+    runtimeProvider: "web",
+    endpoint: "validated public HTTP(S) page",
+    confidence: "medium",
+    evidenceLevel: "secondary_evidence",
+    usageBoundary: "清洗后的公开页面正文用于证据核验；来源权威性仍需由 Agent 判断，不能替代正式披露。",
+    category: "web_page",
   },
   eastmoney_stock_reports: {
     name: "eastmoney_stock_reports",

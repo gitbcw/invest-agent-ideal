@@ -16,7 +16,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { eq } from "drizzle-orm";
@@ -173,6 +173,7 @@ export function buildInvestAgentMcpServers(
   env: NodeJS.ProcessEnv = process.env,
 ): AcpMcpServer[] {
   if (backendId !== "codex") return [];
+  if (env.ACP_EVAL_DISABLE_ALL_MCP === "true") return [];
 
   const projectRoot = path.resolve(env.INVEST_AGENT_PROJECT_ROOT || process.cwd());
   const resolveFromProject = (value: string) => path.resolve(projectRoot, value);
@@ -180,13 +181,20 @@ export function buildInvestAgentMcpServers(
   const instanceId =
     userContext?.instanceId || env.INVEST_AGENT_MCP_INSTANCE_ID || defaultInstanceIdForUser(userId);
   const workspacePath = path.resolve(userContext?.workspacePath || cwd);
+  const evaluationAllowedTools = (env.ACP_EVAL_MCP_ALLOWED_TOOLS || "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const scopedAllowedTools = userContext?.mcpAllowedTools?.length
+    ? userContext.mcpAllowedTools
+    : evaluationAllowedTools;
   const runtimeEnv: Array<{ name: string; value: string }> = [
     { name: "INVEST_AGENT_MCP_USER_ID", value: userId },
     { name: "INVEST_AGENT_MCP_INSTANCE_ID", value: instanceId },
     { name: "INVEST_AGENT_MCP_WORKSPACE_PATH", value: workspacePath },
     { name: "INVEST_AGENT_MCP_CONVERSATION_ID", value: userContext?.conversationId || "" },
-    ...(userContext?.mcpAllowedTools?.length
-      ? [{ name: "INVEST_AGENT_MCP_ALLOWED_TOOLS", value: userContext.mcpAllowedTools.join(",") }]
+    ...(scopedAllowedTools.length
+      ? [{ name: "INVEST_AGENT_MCP_ALLOWED_TOOLS", value: scopedAllowedTools.join(",") }]
       : []),
     { name: "INVEST_AGENT_PROJECT_ROOT", value: projectRoot },
     { name: "DB_PATH", value: resolveFromProject(env.DB_PATH || config.db.path) },
@@ -210,6 +218,16 @@ export function buildInvestAgentMcpServers(
       name: "INVEST_AGENT_SANDBOX_SECRET_FILE",
       value: resolveFromProject(env.INVEST_AGENT_SANDBOX_SECRET_FILE),
     });
+  }
+  for (const name of [
+    "TUSHARE_TOKEN",
+    "TDX_MCP_API_KEY",
+    "TDX_MCP_URL",
+    "TDX_MCP_FUNDAMENTALS_TOOL",
+    "EXTERNAL_WEB_SEARCH_SEARXNG_URL",
+  ]) {
+    const value = env[name]?.trim();
+    if (value) runtimeEnv.push({ name, value });
   }
 
   return [
@@ -794,11 +812,27 @@ export async function ensureCodexRuntimeForWorkspace(workspacePath: string): Pro
 
 async function ensureCodexHome(codexHome: string): Promise<void> {
   mkdirSync(codexHome, { recursive: true });
-  for (const file of ["config.toml", "mcp.json"]) {
+  const evaluationIsolation = process.env.ACP_EVAL_DISABLE_ALL_MCP === "true" || process.env.ACP_EVAL_DISABLE_INHERITED_MCP === "true";
+  // config.toml can define both model providers and MCP servers. Evaluation
+  // needs the former, but must remove the latter rather than fall back to a
+  // different default provider.
+  const inheritedConfigFiles = evaluationIsolation
+    ? ["config.toml"]
+    : ["config.toml", "mcp.json"];
+  for (const file of inheritedConfigFiles) {
     const source = path.join(config.codex.sourceHome, file);
     const target = path.join(codexHome, file);
     if (!existsSync(source)) continue;
     try {
+      if (evaluationIsolation && file === "config.toml") {
+        const filtered = stripCodexMcpConfigForEvaluation(readFileSync(source, "utf8"));
+        const current = existsSync(target) ? readFileSync(target, "utf8") : undefined;
+        if (current !== filtered) {
+          try { rmSync(target, { force: true }); } catch { /* target missing */ }
+          writeFileSync(target, filtered, "utf8");
+        }
+        continue;
+      }
       let needReplace = true;
       try {
         const stat = lstatSync(target);
@@ -831,6 +865,17 @@ async function ensureCodexHome(codexHome: string): Promise<void> {
       logger.warn(`Codex auth copy failed: ${(error as Error).message}`);
     }
   }
+}
+
+export function stripCodexMcpConfigForEvaluation(source: string): string {
+  let inMcpSection = false;
+  const retained: string[] = [];
+  for (const line of source.split(/\r?\n/)) {
+    const section = /^\s*\[{1,2}([^\]\r\n]+)\]{1,2}\s*$/.exec(line)?.[1]?.trim();
+    if (section) inMcpSection = section === "mcp_servers" || section.startsWith("mcp_servers.");
+    if (!inMcpSection) retained.push(line);
+  }
+  return retained.join("\n");
 }
 
 // ─── 注册中心 ───────────────────────────────────────────────────────

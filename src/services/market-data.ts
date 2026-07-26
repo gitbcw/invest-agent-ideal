@@ -85,7 +85,17 @@ export interface MarketKlineResult {
   period: MarketKlinePeriod;
   count: number;
   items: StockKline[] | MarketMinuteKline[];
+  priceConvention: MarketKlinePriceConvention;
   source: MarketSourceMeta;
+}
+
+export interface MarketKlinePriceConvention {
+  unit: "CNY_per_share";
+  adjustment: "forward_adjusted" | "unadjusted" | "unknown";
+  displayDecimals: number;
+  roundingMode: "half_up";
+  comparisonTolerance: number;
+  valuePolicy: "preserve_provider_precision";
 }
 
 export type MarketCapitalFlow = CapitalFlow & {
@@ -558,6 +568,7 @@ export async function marketKline(
       period,
       count,
       items,
+      priceConvention: klinePriceConvention(items, "unadjusted"),
       source: sourceMeta(provider, {
         referenceUrl: providerReferenceUrl(provider, { code, count }),
         marketTime: items[items.length - 1]?.time,
@@ -571,6 +582,7 @@ export async function marketKline(
   let items: StockKline[] = [];
   const warnings: string[] = [];
   let sourceProvider: ProviderName = provider;
+  let sourceReferenceCount = count;
   try {
     items = await withSourceEvent(provider, userId, () =>
       getKline(code, count, input.startDate, input.endDate),
@@ -580,11 +592,23 @@ export async function marketKline(
   }
   if (items.length === 0) {
     try {
-      const fallbackItems = await withSourceEvent("sina_kline_d", userId, () => getSinaKline(code, count));
-      if (fallbackItems.length > 0) {
-        items = fallbackItems;
+      const fallbackCount = input.startDate || input.endDate ? 500 : count;
+      const fallbackItems = await withSourceEvent("sina_kline_d", userId, () => getSinaKline(code, fallbackCount));
+      const matchingFallbackItems = filterKlineDateRange(
+        fallbackItems,
+        input.startDate,
+        input.endDate,
+      ).slice(-count);
+      if (fallbackItems.length > 0 && matchingFallbackItems.length === 0 && (input.startDate || input.endDate)) {
+        warnings.push(
+          `fallback_date_range_unavailable:sina_kline_d:${normalizeKlineDate(input.startDate) || "-"}:${normalizeKlineDate(input.endDate) || "-"}`,
+        );
+      }
+      if (matchingFallbackItems.length > 0) {
+        items = matchingFallbackItems;
         sourceProvider = "sina_kline_d";
-        warnings.push(`fallback_used:sina_kline_d:${fallbackItems.length}`);
+        sourceReferenceCount = fallbackCount;
+        warnings.push(`fallback_used:sina_kline_d:${matchingFallbackItems.length}`);
       }
     } catch (error) {
       warnings.push(`fallback_failed:sina_kline_d:${(error as Error).message}`);
@@ -596,10 +620,14 @@ export async function marketKline(
     period,
     count,
     items,
+    priceConvention: klinePriceConvention(
+      items,
+      sourceProvider === "tencent_kline_d" ? "forward_adjusted" : "unknown",
+    ),
     source: sourceMeta(sourceProvider, {
       referenceUrl: providerReferenceUrl(sourceProvider, {
         code,
-        count,
+        count: sourceReferenceCount,
         startDate: input.startDate,
         endDate: input.endDate,
       }),
@@ -608,6 +636,53 @@ export async function marketKline(
       warnings,
     }),
   };
+}
+
+function filterKlineDateRange(
+  items: StockKline[],
+  startDate?: string,
+  endDate?: string,
+): StockKline[] {
+  const start = normalizeKlineDate(startDate);
+  const end = normalizeKlineDate(endDate);
+  return items.filter((item) => (!start || item.date >= start) && (!end || item.date <= end));
+}
+
+function normalizeKlineDate(value?: string): string {
+  const digits = value?.replace(/-/g, "") || "";
+  if (!/^\d{8}$/.test(digits)) return "";
+  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+}
+
+function klinePriceConvention(
+  items: StockKline[] | MarketMinuteKline[],
+  adjustment: MarketKlinePriceConvention["adjustment"],
+): MarketKlinePriceConvention {
+  const observedDecimals = items.reduce((maximum, item) => Math.max(
+    maximum,
+    decimalPlaces(item.open),
+    decimalPlaces(item.close),
+    decimalPlaces(item.high),
+    decimalPlaces(item.low),
+  ), 0);
+  const displayDecimals = Math.max(2, observedDecimals);
+  return {
+    unit: "CNY_per_share",
+    adjustment,
+    displayDecimals,
+    roundingMode: "half_up",
+    comparisonTolerance: 0.5 * (10 ** -displayDecimals),
+    valuePolicy: "preserve_provider_precision",
+  };
+}
+
+function decimalPlaces(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  const text = String(value).toLowerCase();
+  const [coefficient, exponentText] = text.split("e");
+  const coefficientDecimals = coefficient.split(".")[1]?.length ?? 0;
+  const exponent = Number(exponentText ?? 0);
+  return Math.max(0, coefficientDecimals - exponent);
 }
 
 export async function marketIndices(

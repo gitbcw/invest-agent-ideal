@@ -36,6 +36,7 @@ set below.
 | Resource | Transport / actual upstream | Coverage relevant to us | Evidence | Current disposition |
 | --- | --- | --- | --- | --- |
 | Existing market facade | Direct service adapters to Tencent, Sina, Eastmoney, CNInfo and internal calendar | A-share quote, daily/5m K-line, indices, sector/theme, capital flow, announcements/news/report summaries | Production audit: 264 successful `market.*` calls during 2026-07-11 to 2026-07-25; local fallback smoke passes | Current primary; retain and improve its gaps |
+| Public finance-news search | Direct service adapter to Eastmoney keyword search | Public financial-news titles, snippets, publishers, publication times and article links for companies, industries and market themes | Live service and ACP probes returned current results with source metadata; typed empty/error warnings are covered by contract tests | Available to ACP as `research.news_search`; secondary-evidence fallback only, never a substitute for quotes, filings or structured financial statements |
 | TDX MCP | Official remote MCP, API-key authenticated, natural-language query tool | A/HK/fund/index quote, selected fundamentals, board/industry, fund flow and screening claims | Read-only probe passed for A-share quote and PE/PB/ROE/revenue/net-income fields; announcement/report query returned only quote fields | Service adapter is available behind `TDX_MCP_API_KEY`, restricted to one fixed structured fundamentals prompt. ACP can only use the normalized `market.fundamentals` service tool; it cannot discover or call TDX MCP directly. Production use remains subject to terms and acceptance. |
 | Tushare Pro | Direct API; also wrapped by several MCP projects | A-share statements, daily basic, calendar, funds, macro, selected minute/flow datasets | Direct caller-token probe passed `trade_cal`, `daily`, and `daily_basic`; the same token was denied `fina_indicator`, `income`, and `disclosure_date` on 2026-07-25 | Service adapter is available behind `TUSHARE_TOKEN` for `daily`, `daily_basic`, and `trade_cal`. ACP can receive normalized fields only through `market.fundamentals`; the tested tier cannot fill the financial-statement or disclosure gap. |
 | `buuzzy/tushare_MCP` | Python local/self-hosted MCP on `tinyshare` over Tushare | 30+ documented stock, financial and fund tools | Static review found no CI workflow, an unpinned `tinyshare` dependency, persistent Token storage under the user home directory, and default HTTP binding to all interfaces | Do not test with customer credentials or use as a provider of record; it is only an implementation/reference candidate |
@@ -112,6 +113,11 @@ Before a provider becomes part of the service facade, all are required:
 - Existing Tencent/Sina/Eastmoney/CNInfo behavior remains the market facade's
   primary path. These adapters are intentionally not quote or K-line fallbacks
   until their production terms and acceptance cases are complete.
+- `research.news_search` provides a service-controlled public finance-news
+  fallback for company, industry and market-theme questions. It returns
+  publisher, publication time, article link, fetch time, evidence level and
+  typed warnings, and records both source telemetry and scoped MCP audit. It
+  does not fill missing quote, valuation or financial-statement fields.
 
 ## Evaluation Order
 

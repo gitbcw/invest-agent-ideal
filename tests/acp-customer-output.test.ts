@@ -4,6 +4,7 @@ import { ResponseCollector } from "../src/acp/stdio-agent.js";
 import { isAcpDiagnosticText, sanitizeCustomerText } from "../src/lib/customer-output.js";
 
 const metadataWarning = "Model metadata for `gpt-5.6-terra` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.";
+const goalUpdate = "Goal updated (active): Process the user's onboarding portfolio confirmation and continue to the next onboarding step.";
 
 function update(sessionUpdate: string, text?: string) {
   return {
@@ -41,6 +42,17 @@ describe("ACP customer reply diagnostics", () => {
     collector.handleUpdate(update("usage_update") as never);
 
     assert.equal(collector.toText(), "");
+  });
+
+  test("does not expose ACP goal lifecycle events as customer text", () => {
+    const collector = new ResponseCollector();
+    collector.handleUpdate(update("agent_message_chunk", "已加入初始配置草稿。") as never);
+    collector.handleUpdate(update("usage_update") as never);
+    collector.handleUpdate(update("agent_message_chunk", goalUpdate) as never);
+
+    assert.equal(collector.toText(), "已加入初始配置草稿。");
+    assert.equal(isAcpDiagnosticText(goalUpdate), true);
+    assert.equal(sanitizeCustomerText(`已加入初始配置草稿。\n${goalUpdate}`), "已加入初始配置草稿。");
   });
 
   test("removes diagnostic lines accidentally mixed into customer text", () => {

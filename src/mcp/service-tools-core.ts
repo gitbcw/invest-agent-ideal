@@ -24,6 +24,7 @@ import {
   type MarketKlinePeriod,
 } from "../services/market-data.js";
 import { integratedFundamentals } from "../services/external-market-providers.js";
+import { readPublicWebPage, searchPublicFinanceNews, searchPublicWeb } from "../services/external-evidence-search.js";
 import { resolveStockRefs } from "../services/stock-resolver.js";
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
@@ -68,12 +69,16 @@ export async function callServiceTool(
   try {
     return await dispatchServiceTool(name, input, context);
   } catch (error) {
-    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish") {
+    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read") {
       await audit(context, {
         operation: name,
         resourceType: "service_tool",
-        resourceId: stringInput(input?.step ?? input?.stockCode ?? input?.code),
-        requestBody: input,
+        resourceId: name === "research.web_read"
+          ? redactUrlForAudit(stringInput(input?.url))
+          : stringInput(input?.step ?? input?.stockCode ?? input?.code),
+        requestBody: name === "research.web_read"
+          ? { url: redactUrlForAudit(stringInput(input?.url)), maxCharacters: input?.maxCharacters }
+          : input,
         resultSummary: error instanceof Error ? error.message : String(error),
         status: "error",
       }).catch(() => undefined);
@@ -153,7 +158,7 @@ async function dispatchServiceTool(
         resourceType: "market_data",
         resourceId: code,
         requestBody: { code, period, count: input?.count, startDate: input?.startDate, endDate: input?.endDate },
-        resultSummary: `period=${result.period}; count=${result.items.length}; warnings=${result.source.warnings.length}`,
+        resultSummary: `period=${result.period}; count=${result.items.length}; adjustment=${result.priceConvention.adjustment}; displayDecimals=${result.priceConvention.displayDecimals}; tolerance=${result.priceConvention.comparisonTolerance}; warnings=${result.source.warnings.length}`,
       });
       return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), result };
     }
@@ -244,6 +249,49 @@ async function dispatchServiceTool(
         resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
       });
       return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
+    }
+    case "research.news_search": {
+      const query = stringInput(input?.query);
+      if (!query) throw new Error("query is required");
+      const days = clampInteger(input?.days, 1, 90, 14);
+      const limit = clampInteger(input?.limit, 1, 10, 8);
+      const result = await searchPublicFinanceNews({ query, days, limit, userId: context.userId });
+      await audit(context, {
+        operation: "research.news_search",
+        resourceType: "external_evidence",
+        requestBody: { query, days, limit },
+        resultSummary: `count=${result.items.length}; warnings=${result.source.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
+    }
+    case "research.web_search": {
+      const query = stringInput(input?.query);
+      if (!query) throw new Error("query is required");
+      const limit = clampInteger(input?.limit, 1, 10, 8);
+      const result = await searchPublicWeb({ query, limit, userId: context.userId });
+      await audit(context, {
+        operation: "research.web_search",
+        resourceType: "external_evidence",
+        requestBody: { query, limit },
+        resultSummary: `provider=${result.source.provider}; count=${result.items.length}; warnings=${result.source.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
+    }
+    case "research.web_read": {
+      const url = stringInput(input?.url);
+      if (!url) throw new Error("url is required");
+      const maxCharacters = clampInteger(input?.maxCharacters, 2_000, 50_000, 20_000);
+      const result = await readPublicWebPage({ url, maxCharacters, userId: context.userId });
+      await audit(context, {
+        operation: "research.web_read",
+        resourceType: "external_evidence",
+        resourceId: redactUrlForAudit(result.page?.url || result.requestedUrl),
+        requestBody: { url: redactUrlForAudit(url), maxCharacters },
+        resultSummary: result.page
+          ? `contentType=${result.page.contentType}; characters=${result.page.text.length}; warnings=${result.source.warnings.length}`
+          : `page_unavailable; warnings=${result.source.warnings.length}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
     }
     case "market.resolve": {
       const keyword = stringInput(input?.keyword);
@@ -1309,6 +1357,19 @@ async function audit(context: ServiceToolContext, input: {
 
 function stringInput(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function redactUrlForAudit(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    for (const key of [...url.searchParams.keys()]) {
+      if (/token|key|secret|signature|sig|auth|credential/i.test(key)) url.searchParams.set(key, "[redacted]");
+    }
+    return url.toString();
+  } catch {
+    return "[invalid-url]";
+  }
 }
 
 function normalizeStockInputs(value: unknown): Array<{ code: string; name?: string }> {

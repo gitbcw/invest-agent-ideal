@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { buildInvestAgentMcpServers } from "../src/acp/stdio-agent.js";
+import { buildInvestAgentMcpServers, stripCodexMcpConfigForEvaluation } from "../src/acp/stdio-agent.js";
+
+test("evaluation config preserves model routing but strips inherited MCP servers", () => {
+  const filtered = stripCodexMcpConfigForEvaluation(`model = "gpt-5.6-sol"
+[model_providers.codex-ai]
+base_url = "http://provider.example.test/v1"
+[mcp_servers.browser]
+command = "browser-mcp"
+[mcp_servers.browser.env]
+TOKEN = "secret"
+[features]
+js_repl = false
+`);
+
+  assert.match(filtered, /model = "gpt-5\.6-sol"/);
+  assert.match(filtered, /\[model_providers\.codex-ai\]/);
+  assert.match(filtered, /\[features\]/);
+  assert.doesNotMatch(filtered, /mcp_servers|browser-mcp|TOKEN/);
+});
 
 test("Codex MCP child receives the scoped service runtime locations", () => {
   const projectRoot = path.resolve("/tmp/invest-agent-mcp-env-test");
@@ -29,6 +47,10 @@ test("Codex MCP child receives the scoped service runtime locations", () => {
       REVIEWS_ROOT: "reviews/user-a",
       INVEST_AGENT_SANDBOX_SECRET: secret,
       INVEST_AGENT_SANDBOX_SECRET_FILE: "runtime/.sandbox-secret",
+      TUSHARE_TOKEN: "tushare-test-token",
+      TDX_MCP_API_KEY: "tdx-test-key",
+      TDX_MCP_URL: "https://mcp.example.test/mcp",
+      TDX_MCP_FUNDAMENTALS_TOOL: "tdx_test_fundamentals",
     },
   );
 
@@ -49,10 +71,29 @@ test("Codex MCP child receives the scoped service runtime locations", () => {
     REVIEWS_ROOT: path.join(projectRoot, "reviews", "user-a"),
     INVEST_AGENT_SANDBOX_SECRET: secret,
     INVEST_AGENT_SANDBOX_SECRET_FILE: path.join(projectRoot, "runtime", ".sandbox-secret"),
+    TUSHARE_TOKEN: "tushare-test-token",
+    TDX_MCP_API_KEY: "tdx-test-key",
+    TDX_MCP_URL: "https://mcp.example.test/mcp",
+    TDX_MCP_FUNDAMENTALS_TOOL: "tdx_test_fundamentals",
   });
   assert.equal(JSON.stringify({ userId: "user-a", instanceId: "invest-agent-user-a" }).includes(secret), false);
 });
 
 test("non-Codex ACP backends do not receive the service MCP server", () => {
   assert.deepEqual(buildInvestAgentMcpServers("hermes", "/tmp/workspace"), []);
+});
+
+test("explicit ACP network-only evaluation mode receives no service MCP server", () => {
+  assert.deepEqual(buildInvestAgentMcpServers("codex", "/tmp/workspace", undefined, {
+    ...process.env,
+    ACP_EVAL_DISABLE_ALL_MCP: "true",
+  }), []);
+});
+
+test("evaluation mode can expose only general web evidence tools", () => {
+  const [server] = buildInvestAgentMcpServers("codex", "/tmp/workspace", undefined, {
+    ...process.env,
+    ACP_EVAL_MCP_ALLOWED_TOOLS: "research.web_search,research.web_read",
+  });
+  assert.equal(server?.env?.find((entry) => entry.name === "INVEST_AGENT_MCP_ALLOWED_TOOLS")?.value, "research.web_search,research.web_read");
 });

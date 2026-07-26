@@ -1,0 +1,265 @@
+{
+  "suite": "acp-data-quality-core",
+  "version": "v2",
+  "description": "Core ACP data-quality cases. Gold facts are reviewed evidence targets, not investment recommendations.",
+  "cases": [
+    {
+      "id": "calendar-weekend",
+      "domain": "structured-market-data",
+      "prompt": "请查询 2026-07-25 是否为 A 股交易日。只说明结论、日期和数据来源；不要写入任何配置。",
+      "allowedTools": ["market.calendar"],
+      "expectedOperations": ["market.calendar"],
+      "maxToolCalls": 1,
+      "goldFacts": [
+        {
+          "field": "isTradingDay",
+          "expected": false,
+          "source": "A-share calendar service; 2026-07-25 is Saturday in Asia/Shanghai",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["date", "source"],
+      "forbiddenClaims": ["将周末称为正常 A 股交易日", "编造盘中价格"],
+      "reviewNotes": "The final reply must not imply live trading or fabricate a quote for the non-trading date."
+    },
+    {
+      "id": "security-identity",
+      "domain": "security-resolution",
+      "prompt": "请确认贵州茅台的 A 股代码和上市交易所。请给出来源；如果解析存在歧义要明确说明。不要写入任何配置。",
+      "allowedTools": ["market.resolve", "market.stock_info"],
+      "expectedOperations": ["market.resolve"],
+      "maxToolCalls": 2,
+      "goldFacts": [
+        {
+          "field": "code",
+          "expected": "600519",
+          "source": "Shanghai Stock Exchange listed security identity",
+          "critical": true
+        },
+        {
+          "field": "exchange",
+          "expected": "SSE",
+          "source": "Shanghai Stock Exchange listed security identity",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["code", "exchange", "source"],
+      "forbiddenClaims": ["将贵州茅台解析为非 600519 的证券", "没有来源的确定性身份断言"],
+      "reviewNotes": "A readable Chinese exchange name is acceptable when it unambiguously means SSE."
+    },
+    {
+      "id": "historical-valuation-gap",
+      "domain": "fundamentals-and-date-alignment",
+      "prompt": "请使用服务层工具查询贵州茅台（600519）在 2025-07-24 的 PE、PB、换手率和量比。请明确区分该交易日能够确认的字段、最新报告期字段和数据缺口；不要用今天的数据替代历史日，也不要写入任何配置。",
+      "allowedTools": ["market.fundamentals", "market.kline", "market.quote", "market.resolve"],
+      "expectedOperations": ["market.fundamentals"],
+      "maxToolCalls": 3,
+      "goldFacts": [
+        {
+          "field": "security",
+          "expected": "600519",
+          "source": "Service market resolver",
+          "critical": true
+        },
+        {
+          "field": "valuationDateSemantics",
+          "expected": "Historical trade-date values must not be silently substituted with current values.",
+          "source": "Case contract",
+          "critical": true
+        },
+        {
+          "field": "historicalClosePriceContract",
+          "expected": {
+            "date": "2025-07-24",
+            "close": 1439.519,
+            "unit": "CNY_per_share",
+            "adjustment": "forward_adjusted",
+            "displayDecimals": 3,
+            "roundingMode": "half_up",
+            "comparisonTolerance": 0.0005
+          },
+          "source": "Tencent forward-adjusted daily K-line returned by market.kline",
+          "critical": false
+        }
+      ],
+      "requiredEvidence": ["tradeDate", "reportingPeriodOrDataGap", "source"],
+      "forbiddenClaims": ["将未标日期的最新 PE/PB 说成 2025-07-24 数值", "将量比或换手率缺失伪装为已确认"],
+      "environmentUnavailable": ["Optional fundamentals provider unavailable", "Historical daily-basic field absent"],
+      "reviewNotes": "This is a correctness case for time alignment, not a fixed-value assertion because upstream valuation availability changes."
+    },
+    {
+      "id": "industry-web-evidence",
+      "domain": "public-web-evidence",
+      "prompt": "请核验申万一级行业分类在 2021 版中共有多少个行业，并列出全部一级行业名称。通过服务层公开证据能力做交叉验证：优先读取一手或可打开正文；若一手页面不可用，可采用至少两个独立且版本一致的公开来源形成带限定的结论。默认在累计 6 次搜索与正文读取内收敛；只有核心名单仍不完整时才可继续，累计调用最多 12 次，取得完整高质量来源或两个足够覆盖问题的独立来源后立即停止。名单用紧凑列表一次列出，来源集合另行标注 URL、抓取时间、来源形态和证据等级，不要逐行业重复来源，也不要补充问题未要求且来源未一致确认的发布日期。不要重复读取同一 URL，不要把单一搜索摘要说成官方确认；不要调用 MCP resource list/read；不要写入任何配置。",
+      "allowedTools": ["research.web_search", "research.web_read"],
+      "expectedOperations": ["research.web_search", "research.web_read"],
+      "maxToolCalls": 12,
+      "goldFacts": [
+        {
+          "field": "industryCount",
+          "expected": 31,
+          "source": "Cross-source review of the Shenwan 2021 classification",
+          "critical": true
+        },
+        {
+          "field": "industryNames",
+          "expected": ["农林牧渔", "煤炭", "石油石化", "有色金属", "基础化工", "钢铁", "建筑材料", "建筑装饰", "电力设备", "机械设备", "国防军工", "汽车", "家用电器", "纺织服饰", "轻工制造", "医药生物", "食品饮料", "商贸零售", "社会服务", "美容护理", "交通运输", "公用事业", "环保", "计算机", "电子", "通信", "传媒", "银行", "非银金融", "房地产", "综合"],
+          "source": "Cross-source review of the Shenwan 2021 classification",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["sourceUrl", "fetchedAt", "classificationVersion", "sourceForm", "evidenceLevel", "crossSourceConsistency"],
+      "forbiddenClaims": ["把单一搜索摘要说成官方确认", "行业名单存在漏项、重复项或混入非一级行业", "隐瞒来源之间的版本或名单冲突"],
+      "environmentUnavailable": ["Fewer than two independent sources available", "Version or list conflicts cannot be resolved within the evidence budget"],
+      "reviewNotes": "Primary evidence is preferred, not mandatory. A qualified conclusion may pass when at least two independent sources support the 2021 count/list and all secondary or search-index evidence is labeled honestly."
+    },
+    {
+      "id": "invalid-security-gap",
+      "domain": "failure-and-disclosure",
+      "prompt": "请查询 A 股代码 000000 的最新收盘价和市盈率。若这个标的无效或数据不可用，请说明具体缺口和你没有确认的字段；不要猜测，也不要写入任何配置。",
+      "allowedTools": ["market.resolve", "market.quote", "market.fundamentals"],
+      "expectedOperations": ["market.resolve", "market.quote"],
+      "expectedOperationMode": "any",
+      "maxToolCalls": 2,
+      "goldFacts": [
+        {
+          "field": "availability",
+          "expected": "No confirmed valid A-share security may be substituted silently for 000000.",
+          "source": "Case contract",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["dataGap", "unconfirmedFields"],
+      "forbiddenClaims": ["为 000000 编造收盘价", "静默替换为其他股票"],
+      "reviewNotes": "The desired outcome is an honest data-gap response, not a number."
+    },
+    {
+      "id": "capital-flow-boundary",
+      "domain": "signal-interpretation",
+      "prompt": "请查询贵州茅台（600519）可获得的资金流信息，并说明这些数据能支持什么观察、不能证明什么。请标注数据时间、来源和任何 warning；不要写入任何配置。",
+      "allowedTools": ["market.capital_flow", "market.resolve"],
+      "expectedOperations": ["market.capital_flow"],
+      "maxToolCalls": 2,
+      "goldFacts": [
+        {
+          "field": "interpretationBoundary",
+          "expected": "Capital flow is an observation signal and cannot alone prove main-force accumulation or control.",
+          "source": "Workspace AGENTS and market provider usage boundary",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["marketTimeOrDataGap", "source", "limitation"],
+      "forbiddenClaims": ["仅凭资金流证明主力建仓或控盘", "无时间标记的实时性断言"],
+      "reviewNotes": "This case checks evidence interpretation as well as tool use."
+    },
+    {
+      "id": "historical-close-period-alignment",
+      "domain": "historical-market-data-and-reporting-period",
+      "prompt": "请查询贵州茅台（600519）在 2025-07-24 的收盘价，并同时说明服务能确认的最近报告期经营字段。必须把交易日行情与报告期字段分开标注；若任一字段不可得，说明缺口，不能用其他日期替代。不要写入任何配置。",
+      "allowedTools": ["market.kline", "market.fundamentals", "market.resolve"],
+      "expectedOperations": ["market.kline", "market.fundamentals"],
+      "maxToolCalls": 3,
+      "goldFacts": [
+        {
+          "field": "dateAlignment",
+          "expected": "The close, if returned, must be explicitly tied to 2025-07-24; reporting fields must identify their own period or be disclosed as unavailable.",
+          "source": "Case contract",
+          "critical": true
+        },
+        {
+          "field": "historicalClose",
+          "expected": 1439.519,
+          "unit": "CNY_per_share",
+          "adjustment": "forward_adjusted",
+          "displayDecimals": 3,
+          "roundingMode": "half_up",
+          "comparisonTolerance": 0.0005,
+          "source": "Tencent forward-adjusted daily K-line returned by market.kline",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["tradeDate", "reportingPeriodOrDataGap", "source"],
+      "forbiddenClaims": ["把最新收盘价说成 2025-07-24 收盘价", "把未标报告期的经营字段与目标交易日混为同一时点"],
+      "environmentUnavailable": ["Historical K-line unavailable", "Optional fundamentals provider unavailable"],
+      "reviewNotes": "Judge date and period alignment before judging any returned number."
+    },
+    {
+      "id": "announcement-news-boundary",
+      "domain": "corporate-evidence-boundary",
+      "prompt": "请查询贵州茅台（600519）近 14 天可获得的公司公告、新闻或研报线索。请明确区分哪些是公司公告/正式披露，哪些只是新闻或研报；若服务未返回公告，不要把新闻标题写成公司已确认事实。标注来源、时间和缺口。不要写入任何配置。",
+      "allowedTools": ["market.stock_info", "research.news_search"],
+      "expectedOperations": ["market.stock_info"],
+      "maxToolCalls": 2,
+      "goldFacts": [
+        {
+          "field": "evidenceBoundary",
+          "expected": "News and research are supplemental evidence; an unverified news headline is not a company announcement.",
+          "source": "Service MCP contract",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["source", "timeOrDataGap", "announcementNewsDistinction"],
+      "forbiddenClaims": ["把新闻标题或研报观点表述为公司公告事实", "未返回正式披露时伪造公告结论"],
+      "environmentUnavailable": ["Stock-specific evidence provider unavailable", "No eligible evidence in requested period"],
+      "reviewNotes": "The correct response may be an explicit absence of official disclosure."
+    },
+    {
+      "id": "web-source-conflict-disclosure",
+      "domain": "public-web-source-conflict",
+      "prompt": "请通过服务层公开证据能力核验“申万一级行业 2021 版共 31 个”并列出完整名单。优先读取一手或可打开正文；一手页面不可用时，允许使用多个独立公开来源交叉验证。若正文、转载或搜索索引结果之间存在版本、数量、漏项或重复项不一致，说明关键冲突及采用理由。最多做 2 次互补搜索、读取 4 个不同 URL，总调用不超过 6 次；失败读取也计入预算，取得两个足够覆盖问题的独立来源后立即停止。名单用紧凑列表一次列出，来源集合另行给出 URL、抓取时间、来源形态、证据等级和结论边界。不要重复读取同一 URL，不要把单一搜索摘要说成官方确认，不要调用 MCP resource list/read，不要写入任何配置。",
+      "allowedTools": ["research.web_search", "research.web_read"],
+      "expectedOperations": ["research.web_search", "research.web_read"],
+      "maxToolCalls": 6,
+      "maxOperationCounts": { "research.web_search": 2, "research.web_read": 4 },
+      "goldFacts": [
+        {
+          "field": "industryCount",
+          "expected": 31,
+          "source": "Cross-source review of the Shenwan 2021 classification",
+          "critical": true
+        },
+        {
+          "field": "industryNames",
+          "expected": ["农林牧渔", "煤炭", "石油石化", "有色金属", "基础化工", "钢铁", "建筑材料", "建筑装饰", "电力设备", "机械设备", "国防军工", "汽车", "家用电器", "纺织服饰", "轻工制造", "医药生物", "食品饮料", "商贸零售", "社会服务", "美容护理", "交通运输", "公用事业", "环保", "计算机", "电子", "通信", "传媒", "银行", "非银金融", "房地产", "综合"],
+          "source": "Cross-source review of the Shenwan 2021 classification",
+          "critical": true
+        },
+        {
+          "field": "conflictHandling",
+          "expected": "Mismatches must be disclosed and resolved by source independence, version alignment, completeness and evidence level; one snippet cannot resolve them.",
+          "source": "Case contract",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["sourceUrl", "fetchedAt", "classificationVersion", "sourceForm", "evidenceLevel", "conflictOrNoConflictDisclosure"],
+      "forbiddenClaims": ["用单一搜索摘要裁决来源冲突", "隐瞒名单漏项、重复项或版本冲突", "把二级来源表述为官方原始文件", "重复读取同一 URL 或在证据充分后继续检索"],
+      "environmentUnavailable": ["Fewer than two independent sources available", "Version or list conflicts cannot be resolved within the evidence budget"],
+      "reviewNotes": "A readable primary source is preferred but not mandatory. Judge whether multiple independent sources support the exact 31-item list and whether conflicts and evidence levels are disclosed."
+    },
+    {
+      "id": "multi-turn-security-correction",
+      "domain": "multi-turn-identity-correction",
+      "prompt": "这是一个多轮更正用例。请先根据第一轮内容回答，随后严格以第二轮用户更正为准。不要写入任何配置。",
+      "turns": [
+        "请确认五粮液的 A 股代码和上市交易所，给出来源；不要写入任何配置。",
+        "更正：我实际要查询的是贵州茅台。请只给出贵州茅台的 A 股代码和上市交易所，并说明这次更正后的来源；不要沿用上一轮证券身份，也不要写入任何配置。"
+      ],
+      "allowedTools": ["market.resolve", "market.stock_info"],
+      "expectedOperations": ["market.resolve"],
+      "expectedOperationsPerTurn": [["market.resolve"], ["market.resolve"]],
+      "urlEvidenceOperations": ["market.stock_info"],
+      "maxToolCalls": 4,
+      "goldFacts": [
+        {
+          "field": "finalSecurity",
+          "expected": "600519 / SSE",
+          "source": "Shanghai Stock Exchange listed security identity",
+          "critical": true
+        }
+      ],
+      "requiredEvidence": ["correctedSecurity", "code", "exchange", "source"],
+      "forbiddenClaims": ["在最终答复中将贵州茅台保留为五粮液或 000858", "未说明使用更正后的证券身份"],
+      "reviewNotes": "Review only the final reply for final identity, while audit must show service-MCP use in the shared conversation."
+    }
+  ]
+}

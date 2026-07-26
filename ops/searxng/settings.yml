@@ -1,0 +1,41 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - 360search
+      - baidu
+      - bing
+
+general:
+  instance_name: "Invest Agent Search"
+  debug: false
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "zh-CN"
+  formats:
+    - html
+    - json
+
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+valkey:
+  url: false
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 10.0
+
+engines:
+  - name: 360search
+    disabled: false
+  - name: baidu
+    disabled: false
+  - name: bing
+    disabled: false
+    base_url: https://cn.bing.com

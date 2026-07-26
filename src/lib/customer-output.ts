@@ -24,10 +24,14 @@ const ACP_DIAGNOSTIC_LINE_PATTERNS = [
   /^Model metadata for `[^`]+` not found\. Defaulting to fallback metadata; this can degrade performance and cause issues\.$/i,
   /^Unknown model .+ is used\. This will use fallback model metadata\.$/i,
   /^Model personality requested but model_messages is missing, falling back to base instructions\..*$/i,
+  /^Goal updated \((?:active|paused|complete)\): .+$/i,
+  /^Goal (?:cleared|paused|resumed)\.?$/i,
 ];
 
 const ACP_DIAGNOSTIC_INLINE_PATTERNS = [
   /Model metadata for `[^`]+` not found\. Defaulting to fallback metadata; this can degrade performance and cause issues\.?/gi,
+  /Goal updated \((?:active|paused|complete)\): [^\n]+/gi,
+  /Goal (?:cleared|paused|resumed)\.?/gi,
 ];
 
 export function isAcpDiagnosticText(text: string) {

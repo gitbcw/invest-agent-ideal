@@ -1,0 +1,17 @@
+services:
+  searxng:
+    image: ghcr.io/searxng/searxng@sha256:3bc6ae0e872ecd4b003e97e9cb58ec0fb56b02d46ad97ea67e2fa4ff2e8ff759
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
+    environment:
+      SEARXNG_SECRET: "${SEARXNG_SECRET:?run through scripts/searxng-sidecar.sh}"
+      SEARXNG_BASE_URL: "http://127.0.0.1:${SEARXNG_PORT:-8888}/"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s

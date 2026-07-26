@@ -16,6 +16,7 @@ import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 
 const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
   Number(process.env.WEIXIN_DIRECT_ACP_TIMEOUT_MS) || 600_000;
+const ACP_EVALUATION_CASE_TIMEOUT_MS = Number(process.env.ACP_EVAL_CASE_TIMEOUT_MS) || 0;
 
 export interface AcpAgent {
   agentId: string;
@@ -86,7 +87,11 @@ export function createAgent(): AcpAgent {
           conversationId,
           text: promptContext.promptText,
           messageId: randomUUID(),
-          timeoutMs: userChannel === "weixin-mobile" ? WEIXIN_DIRECT_ACP_TIMEOUT_MS : undefined,
+          timeoutMs: userChannel === "weixin-mobile"
+            ? WEIXIN_DIRECT_ACP_TIMEOUT_MS
+            : ACP_EVALUATION_CASE_TIMEOUT_MS > 0
+              ? ACP_EVALUATION_CASE_TIMEOUT_MS
+              : undefined,
           cwd: resolveAcpWorkspaceCwd(userContext),
           userContext,
         });

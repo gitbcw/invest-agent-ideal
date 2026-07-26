@@ -74,6 +74,19 @@ Workspace 默认根目录**不是**仓库内的 `./data/workspaces`。当前默�
 
 微信桥接状态默认保存在本项目 `./.state/openclaw-weixin/`，也可通过 `INVEST_AGENT_WEIXIN_STATE_DIR` 覆盖。不要让本项目和全局 Claude Code 微信桥接共用同一个 `~/.openclaw` 登录态目录。
 
+### 本地通用网页搜索
+
+`research.web_search` 可使用本地 SearXNG sidecar 聚合公开搜索结果。它只监听 `127.0.0.1:8888`，不应暴露到公网；随机 secret 保存在被 Git 忽略的 `data/.searxng-secret`。启动后在运行时 `.env` 中设置 `EXTERNAL_WEB_SEARCH_SEARXNG_URL=http://127.0.0.1:8888/search`，未设置时仍使用低置信度搜狗结果页。
+
+```bash
+npm run searxng:up       # 拉起并等待健康检查
+npm run searxng:health   # 检查 /healthz
+npm run searxng:logs     # 查看 sidecar 日志
+npm run searxng:down     # 停止并删除容器
+```
+
+镜像固定为官方 GHCR digest，配置在 `ops/searxng/`。sidecar 只是来源发现层，不能把聚合摘要当作权威事实；Agent 仍需读取原文并交叉核验。
+
 ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有显式设置 `ACP_SIMPLE_MODEL_ENABLED=true` 时才允许模型路由器选择 `CODEX_SIMPLE_MODEL`；否则聊天、onboarding 和定时 ACP 任务都走 `CODEX_COMPLEX_MODEL`。sandbox token 生产环境应显式配置 `INVEST_AGENT_SANDBOX_SECRET`；本地开发若未配置，会使用 `data/.sandbox-secret` 作为持久 secret，避免服务进程和评测进程验签不一致。
 
 > **运行时语义纠正(2026-06-30)**：当前默认使用 Codex ACP 作为 workspace 后端承接。Hermes 仅保留为兼容/实验 backend；历史 `codex_acp_traces` 表名仅作为兼容存储保留。
@@ -140,7 +153,7 @@ ACP 默认使用 `complex` 模型档位。`simple` 档位暂时关闭，只有�
 
 **Codex 服务层 MCP 工具：**
 - `invest-agent-service-tools` 在 `session/new` 时由 `src/acp/stdio-agent.ts` 挂到 Codex ACP 会话。
-- 读取工具：`market.snapshot`、`market.quote`、`market.kline`、`market.fundamentals`、`market.indices`、`market.capital_flow`、`market.sector_theme`、`market.stock_info`、`market.resolve`、`market.calendar`、`market.health`、`portfolio.read`、`watchlist.read`、`plans.read`、`watch_rules.catalog/list/validate/dry_run`。
+- 读取工具：`market.snapshot`、`market.quote`、`market.kline`、`market.fundamentals`、`market.indices`、`market.capital_flow`、`market.sector_theme`、`market.stock_info`、`market.resolve`、`market.calendar`、`market.health`、`research.news_search`、`research.web_search`、`research.web_read`、`portfolio.read`、`watchlist.read`、`plans.read`、`watch_rules.catalog/list/validate/dry_run`。`research.news_search` 是财经新闻二级证据；`research.web_search` 和 `research.web_read` 是长尾公开证据发现与受控正文读取能力，搜索摘要不能替代结构化行情、正式财报或公告，页面读取拒绝内网和非文本内容。
 - 确认工具：`confirmations.pending`、`confirmations.request`；前者读取当前会话待确认项，后者在询问用户前登记精确写入草案。
 - 确认写入工具：`onboarding.confirm_portfolio`、`onboarding.confirm_step`、`watchlist.add`、`plans.set`、`plans.watch_conditions`、`method_changes.propose`、`watch_rules.create`。用户下一轮明确确认后，调用时必须同时带服务端签发的 `confirmationId` 和 `confirmedByUser: true`；确认绑定 scope、operation、payload，且只能消费一次。
 - `onboarding.complete_watch_setup` 是流程收口工具：用户明确跳过首次规则，或本会话内所有指定规则已分别确认创建并有成功审计后，直接完成 onboarding，不再要求“确认完成”。
