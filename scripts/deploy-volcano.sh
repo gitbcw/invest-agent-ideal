@@ -27,6 +27,7 @@ rsync -avz --delete-delay \
   --exclude='.deploy' \
   --exclude='/.codex' \
   --exclude='.claude' \
+  --exclude='.zcode' \
   --exclude='.hermes' \
   --exclude='.tmp' \
   --exclude='.state' \

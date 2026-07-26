@@ -237,6 +237,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
           kind: result.descriptor.kind,
           previewMode: result.descriptor.previewMode,
           createdAt: result.descriptor.createdAt,
+          workspacePath: isWorkspaceBrowsableArtifact(result.descriptor.previewMode) ? result.descriptor.relativePath : undefined,
         }));
       } catch (error) {
         const reason = error instanceof ConversationArtifactError ? error.code : (error as Error).message;
@@ -319,6 +320,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         previewMode: record.previewMode,
         createdAt: record.createdAt,
         checksum: record.checksum,
+        workspacePath: isWorkspaceBrowsableArtifact(record.previewMode) ? record.relativePath : undefined,
       }));
     }
     case TYPES.ARTIFACT_EVENT: {
@@ -398,6 +400,10 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
     default:
       return finish(fail(message.type, message.requestId, "INVALID_REQUEST", `unsupported command: ${message.type}`));
   }
+}
+
+function isWorkspaceBrowsableArtifact(previewMode: string): boolean {
+  return previewMode === "markdown" || previewMode === "html" || previewMode === "image";
 }
 
 function scopeFromEnv(): ConnectorScope {

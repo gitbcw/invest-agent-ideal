@@ -13,7 +13,7 @@ import {
   type IncomingPortalAttachment,
   type StoredAttachment,
 } from "../lib/attachment-store.js";
-import { findArtifactsForMessage, findArtifactsForTurn, type ConversationArtifact } from "./conversation-artifacts.js";
+import { findArtifactsForMessage, findArtifactsForTurn, type ConversationArtifactRecord } from "./conversation-artifacts.js";
 import { markTurnStart, markTurnEnd } from "./conversation-turns.js";
 import { registerAttachment, ATTACHMENT_RETENTION_MS } from "./file-retention.js";
 
@@ -481,7 +481,12 @@ export function getConversation(input: {
     ORDER BY created_at ASC, rowid ASC
     LIMIT ? OFFSET ?
   `).all(input.conversationId, scope.userId, scope.instanceId, limit + 1, offset) as any[];
-  const messages = rows.slice(0, limit).map(rowToMessage);
+  const messages = enrichArtifactWorkspacePaths({
+    messages: rows.slice(0, limit).map(rowToMessage),
+    conversationId: input.conversationId,
+    userId: scope.userId,
+    instanceId: scope.instanceId,
+  });
   return {
     conversationId: session.conversationId,
     title: session.title,
@@ -671,7 +676,7 @@ async function chatViaConversationLogOnce(input: {
 
 function withArtifactMetadata(
   message: ConversationMessageRecord,
-  artifacts: ConversationArtifact[] | undefined,
+  artifacts: ConversationArtifactRecord[] | undefined,
 ): ConversationMessageRecord {
   if (!artifacts || artifacts.length === 0) return message;
   const baseMetadata = (message.metadata ?? {}) as Record<string, unknown>;
@@ -681,7 +686,7 @@ function withArtifactMetadata(
   };
 }
 
-function toPublicArtifactDescriptor(artifact: ConversationArtifact) {
+function toPublicArtifactDescriptor(artifact: ConversationArtifactRecord) {
   return {
     artifactId: artifact.artifactId,
     title: artifact.title,
@@ -692,7 +697,55 @@ function toPublicArtifactDescriptor(artifact: ConversationArtifact) {
     previewMode: artifact.previewMode,
     createdAt: artifact.createdAt,
     checksum: artifact.checksum,
+    workspacePath: browsableArtifactWorkspacePath(artifact),
   };
+}
+
+function enrichArtifactWorkspacePaths(input: {
+  messages: ConversationMessageRecord[];
+  conversationId: string;
+  userId: string;
+  instanceId: string;
+}): ConversationMessageRecord[] {
+  const rows = sqlite.prepare(`
+    SELECT artifact_id AS artifactId, relative_path AS relativePath, preview_mode AS previewMode
+    FROM conversation_artifacts
+    WHERE conversation_id = ? AND user_id = ? AND instance_id = ?
+  `).all(input.conversationId, input.userId, input.instanceId) as Array<{
+    artifactId: string;
+    relativePath: string;
+    previewMode: string;
+  }>;
+  const paths = new Map(
+    rows.flatMap((row) => isWorkspaceBrowsablePreviewMode(row.previewMode)
+      ? [[row.artifactId, row.relativePath] as const]
+      : []),
+  );
+  if (paths.size === 0) return input.messages;
+  return input.messages.map((message) => {
+    const artifacts = message.metadata?.artifacts;
+    if (!Array.isArray(artifacts)) return message;
+    let changed = false;
+    const enriched = artifacts.map((artifact) => {
+      if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return artifact;
+      const record = artifact as Record<string, unknown>;
+      const workspacePath = typeof record.artifactId === "string" ? paths.get(record.artifactId) : undefined;
+      if (!workspacePath || record.workspacePath === workspacePath) return artifact;
+      changed = true;
+      return { ...record, workspacePath };
+    });
+    return changed
+      ? { ...message, metadata: { ...message.metadata, artifacts: enriched } }
+      : message;
+  });
+}
+
+function browsableArtifactWorkspacePath(artifact: ConversationArtifactRecord): string | undefined {
+  return isWorkspaceBrowsablePreviewMode(artifact.previewMode) ? artifact.relativePath : undefined;
+}
+
+function isWorkspaceBrowsablePreviewMode(previewMode: string): boolean {
+  return previewMode === "markdown" || previewMode === "html" || previewMode === "image";
 }
 
 /**
@@ -723,7 +776,7 @@ function attachArtifactsToAssistantMessage(input: {
   userId: string;
   instanceId: string;
   turnId: string;
-}): ConversationArtifact[] | undefined {
+}): ConversationArtifactRecord[] | undefined {
   // Bind artifacts by their explicit `turn_id`, not by `message_id IS NULL`.
   // The turnId was recorded on each artifact row at publish time (see
   // `publishConversationArtifact`) and is the same requestId that was
@@ -763,6 +816,7 @@ function attachArtifactsToAssistantMessage(input: {
     previewMode: record.previewMode,
     createdAt: record.createdAt,
     checksum: record.checksum,
+    workspacePath: browsableArtifactWorkspacePath(record),
   }));
   if (descriptors.length === 0) return undefined;
   const existing = sqlite

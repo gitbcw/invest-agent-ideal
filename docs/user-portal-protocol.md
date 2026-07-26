@@ -249,6 +249,12 @@ interface ConversationGetResult {
 }
 ```
 
+When an artifact is backed by a Portal-browsable workspace file, its public
+descriptor includes an optional `workspacePath`. The value is relative to the
+bound user workspace and never an absolute server path. Portal uses it to
+reuse an existing preview tab and reveal the matching read-only tree item.
+Descriptors without this field remain valid conversation-only artifacts.
+
 ## Chat Request
 
 浏览器发消息后，Portal 生成 `conversation.chat` command 给 connector。

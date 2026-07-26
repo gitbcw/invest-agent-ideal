@@ -92,6 +92,45 @@ test("publishes and reads a valid mg-shaped markdown report", async () => {
   assert.equal(Buffer.from(read.payload.base64, "base64").toString("utf8"), VALID_MG_MARKDOWN);
 });
 
+test("conversation reads enrich historical artifact metadata with a browsable workspace path", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const relativePath = "reports/daily/historical-path.md";
+  await writeFile(path.join(workspaceUserA, relativePath), "# Historical artifact\n");
+  const record = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath,
+    scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "conv-historical-path" },
+  });
+  const { appendConversationMessage, getConversation } = await import("../src/services/conversation-log.js");
+  appendConversationMessage({
+    scope: { userId: "user-a", instanceId: "user-a", assistantId: "user-a", projectId: "invest-agent" },
+    conversationId: "conv-historical-path",
+    channel: "web",
+    role: "assistant",
+    content: "历史报告",
+    metadata: {
+      artifacts: [{
+        artifactId: record.artifactId,
+        title: record.title,
+        fileName: record.fileName,
+        mimeType: record.mimeType,
+        sizeBytes: record.sizeBytes,
+        kind: record.kind,
+        previewMode: record.previewMode,
+        createdAt: record.createdAt,
+      }],
+    },
+  });
+  const conversation = getConversation({
+    userId: "user-a",
+    instanceId: "user-a",
+    conversationId: "conv-historical-path",
+  });
+  const artifacts = conversation.messages[0]?.metadata?.artifacts as Array<Record<string, unknown>>;
+  assert.equal(artifacts[0]?.workspacePath, relativePath);
+});
+
 test("publishes and reads a valid flow SVG artifact, preserving original bytes", async () => {
   const { workspaceUserA, mod } = await getCtx();
   const target = path.join(workspaceUserA, "reports", "metrics", "flow.svg");
