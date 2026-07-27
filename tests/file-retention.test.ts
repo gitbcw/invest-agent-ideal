@@ -54,7 +54,7 @@ async function setupFixture(): Promise<Fixture> {
   initDb();
   const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
   const workspaceUser = resolveWorkspacePath("user-ret");
-  for (const sub of ["reports/daily", "reports/weekly", "reports/monthly", "reports/company", "reports/metrics", "reports/memory", "reports/alerts", "attachments"]) {
+  for (const sub of ["reports/daily", "reports/weekly", "reports/monthly", "reports/company", "reports/html", "reports/metrics", "reports/memory", "reports/alerts", "attachments"]) {
     await mkdir(path.join(workspaceUser, sub), { recursive: true });
   }
   const artifactMod = await import("../src/services/conversation-artifacts.js");
@@ -77,7 +77,7 @@ async function publishMarkdown(fixture: Fixture, relativePath: string, content: 
 async function publishMarkdownAs(fixture: Fixture, userId: string, relativePath: string, content: string, source: "artifacts.publish" | "reviews.save" | "workspace_backfill" = "artifacts.publish") {
   const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
   const workspaceUser = resolveWorkspacePath(userId);
-  for (const sub of ["reports/daily", "reports/weekly", "reports/monthly", "reports/company", "reports/metrics", "reports/memory"]) {
+  for (const sub of ["reports/daily", "reports/weekly", "reports/monthly", "reports/company", "reports/html", "reports/metrics", "reports/memory"]) {
     await mkdir(path.join(workspaceUser, sub), { recursive: true });
   }
   const full = path.join(workspaceUser, relativePath);
@@ -318,6 +318,15 @@ test("classifyArtifactRetention promotes 1,048,576-byte files to durable and 1,0
     mimeType: "text/markdown",
   });
   assert.equal(outside?.retentionClass, "transient_generated");
+  const webpage = classifyArtifactRetention({
+    source: "artifacts.publish",
+    relativePath: "reports/html/2026-07-25-portfolio-risk.html",
+    sizeBytes: 10,
+    mimeType: "text/html",
+  });
+  assert.equal(webpage?.retentionClass, "durable_library");
+  assert.equal(webpage?.visibility, "library");
+  assert.equal(webpage?.expiresAt, null);
 });
 
 test("published daily review is classified durable_library and has no expiresAt", async () => {
@@ -591,11 +600,13 @@ test("workspace backfill registers curated reports once and is idempotent on re-
     await mkdir(path.join(ws, "reports/daily"), { recursive: true });
     await mkdir(path.join(ws, "reports/weekly"), { recursive: true });
     await mkdir(path.join(ws, "reports/company"), { recursive: true });
+    await mkdir(path.join(ws, "reports/html"), { recursive: true });
     await mkdir(path.join(ws, "reports/metrics"), { recursive: true });
     await mkdir(path.join(ws, "reports/alerts"), { recursive: true });
     await writeFile(path.join(ws, "reports/daily/2026-07-20.md"), "# daily");
     await writeFile(path.join(ws, "reports/weekly/2026-W29.md"), "# weekly");
     await writeFile(path.join(ws, "reports/company/600519.md"), "# company");
+    await writeFile(path.join(ws, "reports/html/2026-07-25-portfolio-risk.html"), "<!doctype html><html><body>risk</body></html>");
     await writeFile(path.join(ws, "reports/metrics/zZlkp.md"), "# metrics");
     // Excluded: alerts dir is not curated.
     await writeFile(path.join(ws, "reports/alerts/noise.md"), "# alert");
@@ -615,7 +626,7 @@ test("workspace backfill registers curated reports once and is idempotent on re-
       .run("msg-seed-backfill", "conv-seed-backfill", user, "invest-agent", user, user, "web", "user", "seed", "sent", now);
 
     const first = await fixture.backfillMod.backfillCuratedWorkspaceReports({});
-    assert.ok(first.registered >= 4, `expected >=4 registered, got ${first.registered}`);
+    assert.ok(first.registered >= 5, `expected >=5 registered, got ${first.registered}`);
     assert.ok(first.excludedOversize >= 1);
     assert.ok(first.excludedMime >= 1);
     // alerts/ is outside the curated dir list so it is never even scanned.
@@ -626,7 +637,9 @@ test("workspace backfill registers curated reports once and is idempotent on re-
     assert.ok(paths.has("daily/2026-07-20.md"));
     assert.ok(paths.has("weekly/2026-W29.md"));
     assert.ok(paths.has("company/600519.md"));
+    assert.ok(paths.has("html/2026-07-25-portfolio-risk.html"));
     assert.ok(paths.has("metrics/zZlkp.md"));
+    assert.equal(lib.items.find((item) => item.displayPath === "html/2026-07-25-portfolio-risk.html")?.category, "html");
     // And the excluded files are absent.
     assert.ok(!paths.has("alerts/noise.md"));
     assert.ok(!paths.has("daily/big.md"));
@@ -634,12 +647,12 @@ test("workspace backfill registers curated reports once and is idempotent on re-
     const backfillAudit = fixture.sqlite.prepare(
       `SELECT COUNT(*) AS count FROM file_lifecycle_events WHERE user_id = ? AND event = 'artifact.backfill.registered'`,
     ).get(user) as { count: number };
-    assert.ok(backfillAudit.count >= 4);
+    assert.ok(backfillAudit.count >= 5);
 
     // Re-running does not register duplicates.
     const second = await fixture.backfillMod.backfillCuratedWorkspaceReports({});
     assert.equal(second.registered, 0);
-    assert.ok(second.alreadyIndexed >= 4);
+    assert.ok(second.alreadyIndexed >= 5);
   } finally {
   }
 });

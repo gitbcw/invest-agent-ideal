@@ -100,7 +100,7 @@ Artifact publication tool:
 
 - `artifacts.publish`
 
-`artifacts.publish` registers an already-created file under the scoped workspace `reports/` directory and returns a first-class artifact descriptor for Portal message metadata. It rejects absolute paths, parent traversal, escaping symlinks, unsupported or forged MIME content, oversized files, unsafe SVG, and cross-scope reads. It does not create or edit the report file and cannot select another user scope.
+`artifacts.publish` registers an already-created file under the scoped workspace `reports/` directory and returns a first-class artifact descriptor for Portal message metadata. An explicitly requested standalone webpage report uses `reports/html/<timestamp>-<slug>.html` and must be published in the same Agent turn; semantic daily, weekly, monthly and company reports keep their existing directories even when rendered as HTML. The Agent must not claim that a report is available unless publication succeeds. The tool rejects absolute paths, parent traversal, escaping symlinks, unsupported or forged MIME content, oversized files, unsafe SVG, and cross-scope reads. It does not create or edit the report file and cannot select another user scope.
 
 ## Verification
 

@@ -36,6 +36,7 @@ reports:
   weekly: "reports/weekly"
   monthly: "reports/monthly"
   company: "reports/company"
+  html: "reports/html"
   alerts: "reports/alerts"
   metrics: "reports/metrics"
 

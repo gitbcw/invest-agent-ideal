@@ -466,9 +466,9 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "artifacts.publish",
-    "Register an already-existing workspace file (under reports/) as a first-class artifact and return its descriptor. Use this only when the user explicitly requests a file, report, download, or saved workspace output. Do not use it for a Portal request to draw, explain, visualize, diagram, or chart something: those are handled by the Portal's inline SVG response protocol, not an artifact. Image artifacts (SVG/PNG/JPEG/WebP) published during the current turn render inline inside the Portal conversation message; Markdown and HTML artifacts open in the Portal side-panel preview instead. Never accept absolute paths or paths outside the user's reports directory.",
+    "Register an already-existing workspace file (under reports/) as a first-class artifact and return its descriptor. Use this only when the user explicitly requests a file, report, download, or saved workspace output. For an explicitly requested standalone webpage report, write a static self-contained HTML file under reports/html/ and call artifacts.publish in the same turn; do not claim that the report is available unless this tool returns successfully. Existing semantic reports may remain under reports/daily, reports/weekly, reports/monthly, or reports/company even when their format is HTML. Do not use it for a Portal request to draw, explain, visualize, diagram, or chart something: those are handled by the Portal's inline SVG response protocol, not an artifact. Image artifacts (SVG/PNG/JPEG/WebP) published during the current turn render inline inside the Portal conversation message; Markdown and HTML artifacts open in the Portal side-panel preview instead. Never accept absolute paths or paths outside the user's reports directory.",
     {
-      relativePath: z.string().min(1).describe("Workspace-relative path that begins with reports/, e.g. reports/daily/2026-07-24.md."),
+      relativePath: z.string().min(1).describe("Workspace-relative path that begins with reports/, e.g. reports/daily/2026-07-24.md or reports/html/2026-07-24-portfolio-risk.html."),
       kind: z.enum(["report", "chart", "data", "document"]).optional(),
       title: z.string().max(200).optional(),
     },

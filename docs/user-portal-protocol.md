@@ -409,7 +409,7 @@ interface ArtifactLibraryListResult {
 - `userId` / `instanceId` 由 connector 从已注册 session scope 注入，payload 不接受浏览器提交；payload 只允许 `cursor` 和 `limit` 两个字段，任何其他字段（尤其是 path / glob / 目录遍历类参数）都返回 `INVALID_REQUEST` 确定错误，不做静默忽略。
 - `limit` 默认 200，超过 500 时 clamp 到 500，不报错；非数字由 connector 拒绝（`INVALID_REQUEST`）。
 - cursor 不透明（base64url 编码的 keyset 位置），排序固定为 `updated_at DESC, artifact_id DESC`，保证翻页无重复、无漏项；无法解码或形状不符的 cursor 返回 `fail`，`error.code = "ARTIFACT_INVALID_CURSOR"`，`retryable = false`。
-- 精选准入由 Runtime 服务层权威执行：`source ∈ {artifacts.publish, reviews.save, workspace_backfill}`（排除 `legacy_path`）、retention 标签为 `visibility='library' AND retention_class='durable_library'`（backfill 完成前 NULL 列按旧规则放行）、路径在固定精选目录（`reports/{daily,weekly,monthly,company,metrics,memory}`）或正式 `artifacts.publish` 下、文件大小 `<= 1 MiB`、文件当前存在、是普通文件、realpath 仍在真实 reports 根内（防 symlink 逃逸）。Portal 不自行判断文件资格，也不让模型主观决定"重要性"。
+- 精选准入由 Runtime 服务层权威执行：`source ∈ {artifacts.publish, reviews.save, workspace_backfill}`（排除 `legacy_path`）、retention 标签为 `visibility='library' AND retention_class='durable_library'`（backfill 完成前 NULL 列按旧规则放行）、路径在固定精选目录（`reports/{daily,weekly,monthly,company,html,metrics,memory}`）或正式 `artifacts.publish` 下、文件大小 `<= 1 MiB`、文件当前存在、是普通文件、realpath 仍在真实 reports 根内（防 symlink 逃逸）。Portal 不自行判断文件资格，也不让模型主观决定"重要性"。
 - Markdown/HTML 在 `openRoute="document"` 走右侧多标签文档区；`image/*` 在 `openRoute="image"` 走 Lightbox，不进文档标签；PDF/TXT/JSON/CSV 在 `openRoute="download"` 仅提供下载，首版不新增预览器。
 - 同一 `displayPath` 多条发布记录只返回最新有效版本；最新记录不合格时回退到同路径最近一个仍有效的正式版本，但绝不回退到 legacy 或已被 tombstone（用户删除）的来源；同路径全部失效则该路径不出现。
 - 返回项是严格白名单描述符：不含 absolute path、`userId`、`instanceId`、`conversationId`、`projectId`、内部 `scope` 或 `source`，列表阶段不读取文件正文。`displayPath` 仅用于构造虚拟树展示，不能当作读取路径回传。

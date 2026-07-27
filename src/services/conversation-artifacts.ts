@@ -108,6 +108,7 @@ export const CURATED_LIBRARY_DIRECTORIES = [
   "reports/weekly",
   "reports/monthly",
   "reports/company",
+  "reports/html",
   "reports/metrics",
   "reports/memory",
 ] as const;
@@ -680,6 +681,7 @@ export type ArtifactLibraryCategory =
   | "weekly"
   | "monthly"
   | "company"
+  | "html"
   | "metrics"
   | "memory"
   | "other";

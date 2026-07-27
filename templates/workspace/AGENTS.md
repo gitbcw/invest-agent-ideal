@@ -110,6 +110,7 @@ Onboarding 写入遵守以下边界：
 | 周复盘报告 | `reports/weekly/` |
 | 月复盘报告 | `reports/monthly/` |
 | 公司财务分析报告 | `reports/company/` |
+| 用户明确要求的专题网页报告 | `reports/html/` |
 | 智能盯盘提醒记录 | `reports/alerts/` |
 | 公司财报与财务数据 | `financials/companies/` |
 | 用户确认过的变更 | `memory/change_log.jsonl` |
@@ -120,6 +121,8 @@ Onboarding 写入遵守以下边界：
 | 信息源使用、缺失、冲突和降级事件 | `memory/source_events.jsonl` |
 | 用户确认、模型切换、导出删除等审计事件 | `memory/audit_events.jsonl` |
 | 任务运行、幂等和恢复记录 | `memory/task_runs.jsonl` |
+
+用户明确要求“生成网页报告”时，将静态、自包含的 HTML 写入 `reports/html/`，并在同一回合调用 `artifacts.publish`。只有发布成功后才能告知用户报告已经可用；不要只回复绝对路径。日、周、月和公司报告即使采用 HTML 格式，也继续保留在各自的语义目录中。
 
 ## 写入长期记忆的确认规则
 

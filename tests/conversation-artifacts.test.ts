@@ -45,6 +45,7 @@ async function setupSharedFixture(): Promise<TestContext> {
   const workspaceUserA = path.join(workspaceRoot, "user-a");
   const workspaceUserB = path.join(workspaceRoot, "user-b");
   await mkdir(path.join(workspaceUserA, "reports", "daily"), { recursive: true });
+  await mkdir(path.join(workspaceUserA, "reports", "html"), { recursive: true });
   await mkdir(path.join(workspaceUserA, "reports", "metrics"), { recursive: true });
   await mkdir(path.join(workspaceUserB, "reports", "daily"), { recursive: true });
   process.env.WORKSPACE_ROOT = workspaceRoot;
@@ -629,17 +630,21 @@ const MALICIOUS_HTML = `<!DOCTYPE html>
 
 test("publishes and reads a safe HTML document with html preview mode and stable checksum", async () => {
   const { workspaceUserA, mod } = await getCtx();
-  const target = path.join(workspaceUserA, "reports", "daily", "2026-07-24.html");
+  const relativePath = "reports/html/2026-07-24-portfolio-risk.html";
+  const target = path.join(workspaceUserA, relativePath);
   await writeFile(target, VALID_HTML);
   const record = await mod.publishConversationArtifact({
     userId: "user-a",
     instanceId: "user-a",
-    relativePath: "reports/daily/2026-07-24.html",
+    relativePath,
     scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "conv-html" },
   });
   assert.equal(record.mimeType, "text/html");
   assert.equal(record.previewMode, "html");
   assert.equal(record.kind, "report");
+  assert.equal(record.retentionClass, "durable_library");
+  assert.equal(record.visibility, "library");
+  assert.equal(record.expiresAt, null);
   assert.equal(record.checksum && record.checksum.length, 64);
   const read = await mod.readConversationArtifactPayload({
     artifactId: record.artifactId,
@@ -652,6 +657,8 @@ test("publishes and reads a safe HTML document with html preview mode and stable
   assert.equal(read.payload.checksum, record.checksum);
   const { createHash } = await import("node:crypto");
   assert.equal(record.checksum, createHash("sha256").update(Buffer.from(VALID_HTML, "utf8")).digest("hex"));
+  const library = await mod.listCuratedArtifactLibrary({ userId: "user-a", instanceId: "user-a" });
+  assert.equal(library.items.find((item) => item.artifactId === record.artifactId)?.category, "html");
 });
 
 test("maps .htm files to text/html with html preview mode", async () => {

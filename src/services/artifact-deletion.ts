@@ -538,6 +538,7 @@ function categoryForImpactNotes(relativePath: string): string {
   if (normalized.startsWith("reports/weekly/") || normalized === "reports/weekly") return "weekly";
   if (normalized.startsWith("reports/monthly/") || normalized === "reports/monthly") return "monthly";
   if (normalized.startsWith("reports/company/") || normalized === "reports/company") return "company";
+  if (normalized.startsWith("reports/html/") || normalized === "reports/html") return "html";
   if (normalized.startsWith("reports/metrics/") || normalized === "reports/metrics") return "metrics";
   if (normalized.startsWith("reports/memory/") || normalized === "reports/memory") return "memory";
   return "other";
