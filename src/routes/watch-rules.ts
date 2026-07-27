@@ -10,6 +10,8 @@ import {
   updateWatchRule,
   validateWatchRule,
 } from "../services/watch-rules.js";
+import { mutationResourceKeysForOperation } from "../services/mutation-resource-keys.js";
+import { withResourceMutationLock } from "../services/resource-mutation-lock.js";
 
 export function registerWatchRuleRoutes(app: FastifyInstance) {
   const safe = (handler: (request: any, reply: any) => Promise<any>) =>
@@ -46,12 +48,16 @@ export function registerWatchRuleRoutes(app: FastifyInstance) {
   app.post<{ Body: Record<string, unknown> }>("/api/watch-rules", safe(async (request, reply) => {
     const userId = userIdFromRequest(request);
     const instanceId = instanceIdFromRequest(request, userId);
-    const rule = await createWatchRule({
-      ...(request.body as any),
-      userId,
-      instanceId,
-      source: { kind: "platform_api" },
-    });
+    const rule = await withResourceMutationLock(
+      { userId, instanceId },
+      mutationResourceKeysForOperation("watch_rules.create", request.body),
+      () => createWatchRule({
+        ...(request.body as any),
+        userId,
+        instanceId,
+        source: { kind: "platform_api" },
+      }),
+    );
     return reply.status(201).send({ ok: true, userId, instanceId, rule });
   }));
 
@@ -60,10 +66,14 @@ export function registerWatchRuleRoutes(app: FastifyInstance) {
     if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
     const userId = userIdFromRequest(request);
     const instanceId = instanceIdFromRequest(request, userId);
-    const rule = await updateWatchRule(id, {
-      ...(request.body as any),
-      source: { kind: "platform_api" },
-    }, userId, instanceId);
+    const rule = await withResourceMutationLock(
+      { userId, instanceId },
+      mutationResourceKeysForOperation("watch_rules.update", request.body),
+      () => updateWatchRule(id, {
+        ...(request.body as any),
+        source: { kind: "platform_api" },
+      }, userId, instanceId),
+    );
     return { ok: true, userId, instanceId, rule };
   }));
 
@@ -72,7 +82,11 @@ export function registerWatchRuleRoutes(app: FastifyInstance) {
     if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
     const userId = userIdFromRequest(request);
     const instanceId = instanceIdFromRequest(request, userId);
-    const removed = await deleteWatchRule(id, userId, instanceId);
+    const removed = await withResourceMutationLock(
+      { userId, instanceId },
+      mutationResourceKeysForOperation("watch_rules.delete", undefined),
+      () => deleteWatchRule(id, userId, instanceId),
+    );
     if (!removed) return reply.status(404).send({ ok: false, error: "规则不存在" });
     return { ok: true, userId, instanceId };
   }));

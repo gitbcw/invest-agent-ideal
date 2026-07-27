@@ -25,6 +25,7 @@ import {
   readWorkspaceFile,
   WorkspaceFileError,
 } from "../services/workspace-files.js";
+import { ConcurrentTaskLimiter, portalConcurrentTaskLimit } from "./concurrent-task-limiter.js";
 
 const PROTOCOL_VERSION = "2026-07-04";
 const TYPES = {
@@ -449,6 +450,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
   let activeRequests = 0;
+  const taskLimiter = new ConcurrentTaskLimiter(portalConcurrentTaskLimit());
   let lastInboundAt = Date.now();
 
   const cleanupSocket = () => {
@@ -559,30 +561,42 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
           }
           return;
         }
+        const isChatTask = message.type === TYPES.CONVERSATION_CHAT;
+        if (isChatTask && !taskLimiter.tryAcquire()) {
+          send(socket, fail(
+            message.type,
+            message.requestId,
+            "CONCURRENT_TASK_LIMIT",
+            `当前已有 ${taskLimiter.limit} 个任务正在处理中，请等待其中一个完成后再试。`,
+            true,
+          ));
+          return;
+        }
         activeRequests += 1;
-      try {
-        send(socket, await handleCommand(scope, message));
-      } catch (error) {
-        logger.error(`Portal connector command failed assistant=${scope.assistantId}:`, error);
-        if (error instanceof AttachmentStoreError) {
-          send(socket, fail(message.type, message.requestId, "INVALID_REQUEST", error.message, false));
-          return;
-        }
-        if (error instanceof WorkspaceReportAssetError) {
-          send(socket, fail(message.type, message.requestId, error.code, error.message, false));
-          return;
-        }
-        if (error instanceof AttachmentRetentionError) {
-          send(socket, fail(message.type, message.requestId, error.code, error.message, false));
-          return;
-        }
-        if (error instanceof ConversationArtifactError) {
-          send(socket, fail(message.type, message.requestId, error.code, error.message, false));
-          return;
-        }
-        send(socket, fail(message.type, message.requestId, "ACP_FAILED", (error as Error).message, true));
-      } finally {
+        try {
+          send(socket, await handleCommand(scope, message));
+        } catch (error) {
+          logger.error(`Portal connector command failed assistant=${scope.assistantId}:`, error);
+          if (error instanceof AttachmentStoreError) {
+            send(socket, fail(message.type, message.requestId, "INVALID_REQUEST", error.message, false));
+            return;
+          }
+          if (error instanceof WorkspaceReportAssetError) {
+            send(socket, fail(message.type, message.requestId, error.code, error.message, false));
+            return;
+          }
+          if (error instanceof AttachmentRetentionError) {
+            send(socket, fail(message.type, message.requestId, error.code, error.message, false));
+            return;
+          }
+          if (error instanceof ConversationArtifactError) {
+            send(socket, fail(message.type, message.requestId, error.code, error.message, false));
+            return;
+          }
+          send(socket, fail(message.type, message.requestId, "ACP_FAILED", (error as Error).message, true));
+        } finally {
           activeRequests = Math.max(0, activeRequests - 1);
+          if (isChatTask) taskLimiter.release();
         }
       })();
     });

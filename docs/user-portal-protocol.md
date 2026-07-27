@@ -83,6 +83,7 @@ interface PortalError {
     | "CONVERSATION_NOT_FOUND"
     | "INVALID_REQUEST"
     | "TIMEOUT"
+    | "CONCURRENT_TASK_LIMIT"
     | "ACP_FAILED"
     | "INTERNAL_ERROR"
     // artifact lifecycle (file-retention governance)
@@ -182,6 +183,14 @@ interface ConnectorHeartbeatPayload {
 ```
 
 Relay 如果超过 2 个 heartbeat interval 未收到心跳，应标记 connector offline。
+
+### Concurrent conversation tasks
+
+One assistant connector admits at most three active `conversation.chat` requests
+at once by default. The runtime enforces the limit with
+`PORTAL_MAX_CONCURRENT_TASKS_PER_ASSISTANT` (valid range: 1-10; default: 3).
+A fourth request returns retryable `CONCURRENT_TASK_LIMIT` and is not silently
+queued. Turns within one `conversationId` remain serialized.
 
 ## Conversation List
 

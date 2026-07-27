@@ -7,6 +7,22 @@ REMOTE_DIR="${REMOTE_DIR:-~/invest-agent}"
 PORT="${PORT:-22655}"
 LOCAL_TUNNEL_PORT="${LOCAL_TUNNEL_PORT:-22648}"
 RUN_SMOKE="${RUN_SMOKE:-false}"
+RELEASE_ID="${RELEASE_ID:-}"
+RELEASE_COMMIT="${RELEASE_COMMIT:-}"
+RELEASE_OPERATION="${RELEASE_OPERATION:-deploy}"
+
+if [[ -n "${RELEASE_ID}" ]] && [[ ! "${RELEASE_ID}" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]]; then
+  echo "[deploy] ERROR: invalid RELEASE_ID" >&2
+  exit 2
+fi
+if [[ -n "${RELEASE_COMMIT}" ]] && [[ ! "${RELEASE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "[deploy] ERROR: invalid RELEASE_COMMIT" >&2
+  exit 2
+fi
+if [[ ! "${RELEASE_OPERATION}" =~ ^(deploy|rollback)$ ]]; then
+  echo "[deploy] ERROR: invalid RELEASE_OPERATION" >&2
+  exit 2
+fi
 
 echo "[deploy] sync to ${DEPLOY_USER}@${HOST}:${REMOTE_DIR}"
 # Remove source files retired by the release after transfer while keeping all
@@ -46,7 +62,7 @@ rsync -avz --delete-delay \
   ./ "${DEPLOY_USER}@${HOST}:${REMOTE_DIR}"
 
 echo "[deploy] remote install/build"
-ssh "${DEPLOY_USER}@${HOST}" "REMOTE_DIR='${REMOTE_DIR}' RUN_SMOKE='${RUN_SMOKE}' bash" <<'EOF'
+ssh "${DEPLOY_USER}@${HOST}" "REMOTE_DIR='${REMOTE_DIR}' RUN_SMOKE='${RUN_SMOKE}' RELEASE_ID='${RELEASE_ID}' RELEASE_COMMIT='${RELEASE_COMMIT}' RELEASE_OPERATION='${RELEASE_OPERATION}' bash" <<'EOF'
 set -euo pipefail
 cd "${REMOTE_DIR/#\~/$HOME}"
 
@@ -81,10 +97,18 @@ pm2 list
 EOF
 
 echo "[deploy] verify"
-ssh "${DEPLOY_USER}@${HOST}" "PORT='${PORT}' bash" <<'EOF'
+ssh "${DEPLOY_USER}@${HOST}" "PORT='${PORT}' REMOTE_DIR='${REMOTE_DIR}' RELEASE_ID='${RELEASE_ID}' RELEASE_COMMIT='${RELEASE_COMMIT}' RELEASE_OPERATION='${RELEASE_OPERATION}' bash" <<'EOF'
 set -euo pipefail
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   if curl -fsS "http://127.0.0.1:${PORT}/health"; then
+    if [ -n "${RELEASE_ID:-}" ]; then
+      cd "${REMOTE_DIR/#\~/$HOME}"
+      mkdir -p .deploy
+      printf '{"releaseId":"%s","commit":"%s","operation":"%s","installedAt":"%s"}\n' \
+        "${RELEASE_ID}" "${RELEASE_COMMIT}" "${RELEASE_OPERATION}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        > .deploy/release.json
+      chmod 600 .deploy/release.json
+    fi
     exit 0
   fi
   sleep 2

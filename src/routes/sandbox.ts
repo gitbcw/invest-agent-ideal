@@ -23,6 +23,8 @@ import {
   normalizeOnboardingState as normalizeSharedOnboardingState,
   OnboardingContractError,
 } from "../services/onboarding.js";
+import { mutationResourceKeysForOperation } from "../services/mutation-resource-keys.js";
+import { withResourceMutationLock } from "../services/resource-mutation-lock.js";
 
 function normalizeWatchlistReason(reason: string) {
   return reason.replace(/观察池/g, "自选池").trim();
@@ -223,6 +225,18 @@ function sandboxSafe(toolId: ToolId | ToolId[], handler: (ctx: ReturnType<typeof
       return sandboxError(reply, error);
     }
   };
+}
+
+function sandboxMutationSafe(
+  toolId: ToolId | ToolId[],
+  operation: string,
+  handler: (ctx: ReturnType<typeof sandboxContextFromRequest>, request: any, reply: any) => Promise<any>,
+  extraPermissions: SandboxPermission[] = [],
+) {
+  return sandboxSafe(toolId, async (ctx, request, reply) => {
+    const resourceKeys = mutationResourceKeysForOperation(operation, request.body);
+    return withResourceMutationLock(ctx, resourceKeys, () => handler(ctx, request, reply));
+  }, extraPermissions);
 }
 
 async function audit(ctx: ReturnType<typeof sandboxContextFromRequest>, input: {
@@ -1127,7 +1141,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       summary?: string;
       notes?: string;
     };
-  }>("/api/sandbox/onboarding/confirm-portfolio", sandboxSafe(["invest.onboarding.write", "invest.portfolio.write"], async (ctx, request, reply) => {
+  }>("/api/sandbox/onboarding/confirm-portfolio", sandboxMutationSafe(["invest.onboarding.write", "invest.portfolio.write"], "onboarding.confirm_portfolio", async (ctx, request, reply) => {
     const holdingInputs = normalizeOnboardingAssetList(request.body?.holdings);
     const watchInputs = normalizeOnboardingAssetList(request.body?.watchlist);
     if (!holdingInputs.length && !watchInputs.length) {
@@ -1273,7 +1287,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       watchPolicy?: Record<string, unknown>;
       complete?: boolean;
     };
-  }>("/api/sandbox/onboarding/confirm-step", sandboxSafe("invest.onboarding.write", async (ctx, request, reply) => {
+  }>("/api/sandbox/onboarding/confirm-step", sandboxMutationSafe("invest.onboarding.write", "onboarding.confirm_step", async (ctx, request, reply) => {
     const step = request.body?.step;
     if (!isSharedOnboardingStep(step)) {
       return reply.status(400).send({ ok: false, error: `非法 onboarding step: ${String(step ?? "")}` });
@@ -1345,7 +1359,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       notes?: string;
       confirmationId?: string;
     };
-  }>("/api/sandbox/profiles/investment", sandboxSafe("invest.profile.write", async (ctx, request, reply) => {
+  }>("/api/sandbox/profiles/investment", sandboxMutationSafe("invest.profile.write", "profiles.investment.set", async (ctx, request, reply) => {
     if (await requireConfirmation(ctx, request, reply, "profiles.investment.set", "investment_profile", ctx.instanceId)) return;
     const now = new Date().toISOString();
     const ignoredFields: string[] = [];
@@ -1448,7 +1462,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       notes?: string;
       confirmationId?: string;
     };
-  }>("/api/sandbox/profiles/methodology", sandboxSafe("invest.profile.write", async (ctx, request, reply) => {
+  }>("/api/sandbox/profiles/methodology", sandboxMutationSafe("invest.profile.write", "profiles.methodology.set", async (ctx, request, reply) => {
     if (await requireConfirmation(ctx, request, reply, "profiles.methodology.set", "methodology_profile", ctx.instanceId)) return;
     const now = new Date().toISOString();
     const ignoredFields: string[] = [];
@@ -1517,7 +1531,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       reason?: string;
       affectedResource?: string;
     };
-  }>("/api/sandbox/method-changes/propose", sandboxSafe("invest.profile.write", async (ctx, request, reply) => {
+  }>("/api/sandbox/method-changes/propose", sandboxMutationSafe("invest.profile.write", "method_changes.propose", async (ctx, request, reply) => {
     const proposedChange = request.body?.proposedChange?.trim();
     const reason = request.body?.reason?.trim();
     if (!proposedChange || !reason) return reply.status(400).send({ ok: false, error: "缺少 proposedChange 或 reason" });
@@ -1540,7 +1554,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, candidate: created };
   }));
 
-  app.post<{ Body: { id?: string | number; status?: "confirmed" | "rejected"; decisionNote?: string; confirmationId?: string } }>("/api/sandbox/method-changes/decide", sandboxSafe("invest.profile.write", async (ctx, request, reply) => {
+  app.post<{ Body: { id?: string | number; status?: "confirmed" | "rejected"; decisionNote?: string; confirmationId?: string } }>("/api/sandbox/method-changes/decide", sandboxMutationSafe("invest.profile.write", "method_changes.decide", async (ctx, request, reply) => {
     const { id, status, decisionNote } = request.body ?? {};
     if (!id || !status || !["confirmed", "rejected"].includes(status)) return reply.status(400).send({ ok: false, error: "缺少有效 id 或 status" });
     if (await requireConfirmation(ctx, request, reply, "method_changes.decide", "method_change_candidate", String(id))) return;
@@ -1562,7 +1576,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, message: `方法变更候选已${status === "confirmed" ? "确认" : "拒绝"}` };
   }));
 
-  app.post<{ Body: { name?: string; code?: string; reason?: string; userId?: string } }>("/api/sandbox/watchlist/add", sandboxSafe("invest.watchlist.write", async (ctx, request, reply) => {
+  app.post<{ Body: { name?: string; code?: string; reason?: string; userId?: string } }>("/api/sandbox/watchlist/add", sandboxMutationSafe("invest.watchlist.write", "watchlist.add", async (ctx, request, reply) => {
     const { name, code, reason } = request.body ?? {};
     if (!name && !code) return reply.status(400).send({ ok: false, error: "请输入股票名称或代码" });
     const { codes, unresolved } = await resolveStockRefs([{ code, name }]);
@@ -1590,7 +1604,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, message: `已添加 ${stockName}(${stockCode}) 到自选池` };
   }));
 
-  app.post<{ Body: { code: string; userId?: string; confirmationId?: string } }>("/api/sandbox/watchlist/remove", sandboxSafe("invest.watchlist.write", async (ctx, request, reply) => {
+  app.post<{ Body: { code: string; userId?: string; confirmationId?: string } }>("/api/sandbox/watchlist/remove", sandboxMutationSafe("invest.watchlist.write", "watchlist.remove", async (ctx, request, reply) => {
     const { code } = request.body ?? {};
     if (!code) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
     const existing = await watchlistBackend.find(ctx.userId, ctx.instanceId, code);
@@ -1607,7 +1621,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, message: `已移除 ${existing.name}(${code})` };
   }));
 
-  app.post<{ Body: { stockCode: string; stockName?: string; support?: number; resistance?: number; targetPrice?: number; stopLoss?: number; notes?: string; watchConditions?: PlanWatchConditionInput[]; linkedAlertRuleIds?: number[]; planType?: string; strategyKey?: string | null; userId?: string } }>("/api/sandbox/plans/set", sandboxSafe("invest.plan.write", async (ctx, request, reply) => {
+  app.post<{ Body: { stockCode: string; stockName?: string; support?: number; resistance?: number; targetPrice?: number; stopLoss?: number; notes?: string; watchConditions?: PlanWatchConditionInput[]; linkedAlertRuleIds?: number[]; planType?: string; strategyKey?: string | null; userId?: string } }>("/api/sandbox/plans/set", sandboxMutationSafe("invest.plan.write", "plans.set", async (ctx, request, reply) => {
     const { stockCode, stockName, support, resistance, targetPrice, stopLoss, notes, watchConditions, linkedAlertRuleIds, planType, strategyKey } = request.body ?? {};
     if (!stockCode) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
     const quoteResult = await marketQuote([stockCode], ctx.userId);
@@ -1636,7 +1650,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, message: `${name}(${stockCode}) 预案已${existing ? "更新" : "创建"}` };
   }));
 
-  app.post<{ Body: { stockCode: string; stockName?: string; conditions: PlanWatchConditionInput[]; userId?: string } }>("/api/sandbox/plans/watch-conditions", sandboxSafe("invest.plan.write", async (ctx, request, reply) => {
+  app.post<{ Body: { stockCode: string; stockName?: string; conditions: PlanWatchConditionInput[]; userId?: string } }>("/api/sandbox/plans/watch-conditions", sandboxMutationSafe("invest.plan.write", "plans.watch_conditions", async (ctx, request, reply) => {
     const { stockCode, stockName, conditions } = request.body ?? {};
     if (!stockCode) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
     if (!Array.isArray(conditions)) return reply.status(400).send({ ok: false, error: "conditions 必须是数组" });
@@ -1651,7 +1665,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, message: `${result.stockName}(${result.stockCode}) 已更新 ${result.conditionCount} 个观察条件`, ...result };
   }));
 
-  app.post<{ Body: { stockCode: string; userId?: string; confirmationId?: string } }>("/api/sandbox/plans/remove", sandboxSafe("invest.plan.write", async (ctx, request, reply) => {
+  app.post<{ Body: { stockCode: string; userId?: string; confirmationId?: string } }>("/api/sandbox/plans/remove", sandboxMutationSafe("invest.plan.write", "plans.remove", async (ctx, request, reply) => {
     const { stockCode } = request.body ?? {};
     if (!stockCode) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
     const existing = await planBackend.find(ctx.userId, ctx.instanceId, stockCode);
@@ -1676,7 +1690,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, strategies: list };
   }));
 
-  app.post<{ Body: { key?: string; name?: string; applicability?: string; body?: string; enabled?: boolean; userId?: string } }>("/api/sandbox/strategies/set", sandboxSafe("invest.strategy.write", async (ctx, request, reply) => {
+  app.post<{ Body: { key?: string; name?: string; applicability?: string; body?: string; enabled?: boolean; userId?: string } }>("/api/sandbox/strategies/set", sandboxMutationSafe("invest.strategy.write", "strategies.set", async (ctx, request, reply) => {
     const { key, name, applicability, body, enabled } = request.body ?? {};
     if (!key) return reply.status(400).send({ ok: false, error: "缺少策略 key" });
     if (!name) return reply.status(400).send({ ok: false, error: "缺少策略 name" });
@@ -1694,7 +1708,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, message: `策略 [${key}] ${name} 已${existing ? "更新" : "新增"}` };
   }));
 
-  app.post<{ Body: { key?: string; userId?: string; confirmationId?: string } }>("/api/sandbox/strategies/remove", sandboxSafe("invest.strategy.write", async (ctx, request, reply) => {
+  app.post<{ Body: { key?: string; userId?: string; confirmationId?: string } }>("/api/sandbox/strategies/remove", sandboxMutationSafe("invest.strategy.write", "strategies.remove", async (ctx, request, reply) => {
     const { key } = request.body ?? {};
     if (!key) return reply.status(400).send({ ok: false, error: "缺少策略 key" });
     const store = new WorkspaceStore(ctx.userId);
@@ -1730,7 +1744,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, monthKey: context.monthKey, monthStart: context.monthStart, monthEnd: context.monthEnd, context };
   }));
 
-  app.post<{ Body: { date?: string; content?: string; summary?: string; context?: unknown; userId?: string } }>("/api/sandbox/reviews/save", sandboxSafe("invest.review.write", async (ctx, request, reply) => {
+  app.post<{ Body: { date?: string; content?: string; summary?: string; context?: unknown; userId?: string } }>("/api/sandbox/reviews/save", sandboxMutationSafe("invest.review.write", "reviews.save", async (ctx, request, reply) => {
     const { date, content, summary, context } = request.body ?? {};
     if (!content?.trim()) return reply.status(400).send({ ok: false, error: "缺少复盘内容" });
     const saved = await saveSkillDailyReview({ userId: ctx.userId, instanceId: ctx.instanceId, date, content, summary, context });
@@ -1744,7 +1758,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, ...saved };
   }));
 
-  app.post<{ Body: { date?: string; force?: boolean; userId?: string } }>("/api/sandbox/reviews/daily", sandboxSafe("invest.review.write", async (ctx, request) => {
+  app.post<{ Body: { date?: string; force?: boolean; userId?: string } }>("/api/sandbox/reviews/daily", sandboxMutationSafe("invest.review.write", "reviews.daily", async (ctx, request) => {
     const { date, force } = request.body ?? {};
     const content = await generateDailyReview({ force: force ?? true, targetDate: date, userId: ctx.userId, instanceId: ctx.instanceId });
     return { ok: true, userId: ctx.userId, date: date ?? new Date().toISOString().slice(0, 10), content, summary: content.slice(0, 1200) };
@@ -1951,7 +1965,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, validation };
   }));
 
-  app.post<{ Body: Record<string, unknown> }>("/api/sandbox/watch-rules", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
+  app.post<{ Body: Record<string, unknown> }>("/api/sandbox/watch-rules", sandboxMutationSafe("invest.alert.write", "watch_rules.create", async (ctx, request, reply) => {
     const rule = await createWatchRule({
       ...(request.body as any),
       userId: ctx.userId,
@@ -1968,7 +1982,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return reply.status(201).send({ ok: true, userId: ctx.userId, instanceId: ctx.instanceId, rule });
   }));
 
-  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/sandbox/watch-rules/:id", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/sandbox/watch-rules/:id", sandboxMutationSafe("invest.alert.write", "watch_rules.update", async (ctx, request, reply) => {
     const id = Number(request.params.id);
     if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
     const rule = await updateWatchRule(id, {
@@ -1985,7 +1999,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, rule };
   }));
 
-  app.delete<{ Params: { id: string }; Body: { confirmationId?: string } }>("/api/sandbox/watch-rules/:id", sandboxSafe("invest.alert.write", async (ctx, request, reply) => {
+  app.delete<{ Params: { id: string }; Body: { confirmationId?: string } }>("/api/sandbox/watch-rules/:id", sandboxMutationSafe("invest.alert.write", "watch_rules.delete", async (ctx, request, reply) => {
     const id = Number(request.params.id);
     if (!Number.isInteger(id) || id <= 0) return reply.status(400).send({ ok: false, error: "非法规则 id" });
     if (await requireConfirmation(ctx, request, reply, "watch_rules.remove", "watch_rule", String(id))) return;

@@ -81,6 +81,23 @@ curl http://127.0.0.1:22648/health
 
 ## 3. 两种发布模式
 
+### 3.0 发布快照与标准入口
+
+T-194 阶段 2 起，正式发布不再直接从调用者当前目录运行底层部署脚本。先从干净 `main` 创建包含 Git 系统版本和 `111`、`dyk`、`mg` 脱敏 Workspace 副本的发布快照，再从快照的临时干净目录发布：
+
+```bash
+npm run release:snapshot -- create
+npm run release:deploy -- <release-id>
+```
+
+完成本手册第 8 节验收并保存证据后，才允许把版本标为 known-good：
+
+```bash
+npm run release:snapshot -- accept <release-id> --confirm=mark-known-good-v1
+```
+
+底层 `scripts/deploy-volcano.sh` 继续负责代码同步、构建、PM2 和健康检查，但正式发布与代码回退应由上述包装器调用。包装器会校验不可变 manifest、Git bundle、源归档和 Workspace 内容摘要；生产 `.deploy/release.json` 只记录 release ID、commit、操作类型和时间，不包含秘密。
+
 ### 3.1 普通代码发布
 
 适用于服务代码、提示词、Workspace 模板、Skill、测试和编译运行时变化。只能使用：
@@ -222,14 +239,35 @@ npm run workspace:adopt-template -- \
 
 ### 代码回滚
 
-1. 选择前一个已知正常的 `main` 提交或发布 worktree。
-2. 通过普通代码发布脚本重新部署该提交。
+1. 选择前一个已验收的 known-good 发布快照。
+2. 使用精确确认短语触发代码回退。脚本先只读备份当前三个真实 Workspace，再从目标快照的临时干净目录走普通代码发布：
+
+```bash
+npm run release:rollback -- <release-id> --confirm=rollback-code-v1
+```
+
 3. 不回滚或覆盖数据库、Workspace、reviews、`.state` 和 `.env`。
 4. 重新执行健康、MCP、微信 listener 和只读 ACP 单点验收。
 
 ### Workspace 回滚
 
-代码回滚不会自动回滚用户已经明确采用的模板文件。根据对应备份目录 `manifest.json` 恢复原文件，保留采用记录和审计证据，再重跑预检。
+代码回滚不会自动回滚用户文件。需要处理 Workspace 时，先生成当前状态与目标发布快照的只读差异库存，由 Codex 在两个脱敏快照上生成逐文件 `proposal.json` 和候选文件：
+
+```bash
+npm run release:workspace-rollback -- plan <release-id>
+npm run release:workspace-rollback -- validate <run-id>
+```
+
+人工审阅并逐项批准后，才允许执行生产应用：
+
+```bash
+npm run release:workspace-rollback -- apply <run-id> \
+  --approval=<absolute-approval-json> \
+  --confirm=apply-approved-workspace-files-v1 \
+  --target=production
+```
+
+应用器会重新核对生产输入 hash，在 Workspace 外保存原文件，逐文件原子替换并重新运行预检。未批准、发生漂移、hash 不匹配、符号链接或越权路径都会拒绝。执行后仍需做针对性的只读 ACP 单点验收。完整审计契约见 `docs/version-snapshot-and-assisted-rollback-plan.md`。
 
 ### 数据恢复
 

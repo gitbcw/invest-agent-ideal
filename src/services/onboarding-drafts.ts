@@ -9,6 +9,8 @@ import { applyOnboardingDraftCommit, finalizeOnboardingDraftCommit, isOnboarding
 import { WorkspaceStore, type OnboardingStepKey } from "../lib/workspace-store.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
+import { mutationResourceKeysForOperation } from "./mutation-resource-keys.js";
+import { withResourceMutationLock } from "./resource-mutation-lock.js";
 
 export type DraftStepKey = Exclude<OnboardingStepKey, "welcome">;
 export type DraftStatus = "collecting" | "ready_to_commit" | "queued" | "applying" | "completed" | "failed_retryable" | "cancelled";
@@ -369,17 +371,19 @@ export async function processOnboardingDraftCommits(options: { limit?: number } 
 async function commitDraft(id: string) {
   const row = (await db.select().from(onboardingDrafts).where(eq(onboardingDrafts.id, id)).limit(1))[0];
   if (!row) throw new Error("onboarding draft not found");
-  const snapshot = parseSnapshot(row.commitSnapshotJson);
-  if (!snapshot || !isReady(snapshot.steps)) throw new Error("frozen onboarding draft is incomplete");
-  const stepPayloads = Object.fromEntries(Object.entries(snapshot.steps).map(([key, value]) => [key, value?.payload ?? {}])) as Partial<Record<OnboardingStepKey, Record<string, unknown>>>;
-  const store = new WorkspaceStore(row.userId);
-  const finalState = await applyOnboardingDraftCommit({ store, steps: stepPayloads });
-  await commitDraftRules(row, snapshot);
-  await finalizeOnboardingDraftCommit({
-    store,
-    state: finalState,
-    commitKey: row.commitKey ?? `${row.id}:${snapshot.revision}`,
-    steps: Object.keys(stepPayloads),
+  await withResourceMutationLock(row, mutationResourceKeysForOperation("onboarding.draft.commit", undefined), async () => {
+    const snapshot = parseSnapshot(row.commitSnapshotJson);
+    if (!snapshot || !isReady(snapshot.steps)) throw new Error("frozen onboarding draft is incomplete");
+    const stepPayloads = Object.fromEntries(Object.entries(snapshot.steps).map(([key, value]) => [key, value?.payload ?? {}])) as Partial<Record<OnboardingStepKey, Record<string, unknown>>>;
+    const store = new WorkspaceStore(row.userId);
+    const finalState = await applyOnboardingDraftCommit({ store, steps: stepPayloads });
+    await commitDraftRules(row, snapshot);
+    await finalizeOnboardingDraftCommit({
+      store,
+      state: finalState,
+      commitKey: row.commitKey ?? `${row.id}:${snapshot.revision}`,
+      steps: Object.keys(stepPayloads),
+    });
   });
   const completedAt = nowIso();
   await db.update(onboardingDrafts).set({ status: "completed", completedAt, lastError: null, updatedAt: completedAt }).where(eq(onboardingDrafts.id, row.id));

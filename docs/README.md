@@ -60,6 +60,8 @@ After that, use the task-based map below instead of reading every file.
 | [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
 | [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
 | [workspace-compatibility.md](./workspace-compatibility.md) | Read-only preflight, managed-asset ownership, backup, migration and rollback contract for existing user Workspaces |
+| [version-snapshot-and-assisted-rollback-plan.md](./version-snapshot-and-assisted-rollback-plan.md) | Release snapshot, known-good retention, standard deploy/code rollback, and audited AI-assisted Workspace recovery |
+| [t194-maintenance-window-handoff.md](./t194-maintenance-window-handoff.md) | Evening production demonstration, evidence capture, human gate, and Personal OS completion handoff for T-194 |
 
 ### Watch Runtime And Scheduler
 
@@ -96,6 +98,7 @@ Initial Portal design, completed work packages and acceptance records are under 
 | [data-source-policy-decision.md](./data-source-policy-decision.md) | Accepted data-source policy and cost posture |
 | [data-provider-cost-evaluation.md](./data-provider-cost-evaluation.md) | Provider cost bands and build-vs-buy decision support |
 | [market-data-resource-inventory.md](./market-data-resource-inventory.md) | Active provider/resource ledger, evidence status, and promotion acceptance set |
+| [custom-formula-historical-screening-research.md](./custom-formula-historical-screening-research.md) | User-defined formula, point-in-time A-share screening requirements, evidence, scope, and phased delivery boundary |
 
 ### Operations
 

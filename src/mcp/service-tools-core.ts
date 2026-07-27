@@ -50,6 +50,8 @@ import {
   upsertOnboardingDraftStep,
   type DraftStepKey,
 } from "../services/onboarding-drafts.js";
+import { mutationResourceKeysForOperation } from "../services/mutation-resource-keys.js";
+import { withResourceMutationLock } from "../services/resource-mutation-lock.js";
 
 export interface ServiceToolContext {
   userId: string;
@@ -73,7 +75,10 @@ export async function callServiceTool(
   context: ServiceToolContext
 ): Promise<unknown> {
   try {
-    return await dispatchServiceTool(name, input, context);
+    const resourceKeys = mutationResourceKeysForOperation(name, input);
+    return resourceKeys.length > 0
+      ? await withResourceMutationLock(context, resourceKeys, () => dispatchServiceTool(name, input, context))
+      : await dispatchServiceTool(name, input, context);
   } catch (error) {
     if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read") {
       await audit(context, {
