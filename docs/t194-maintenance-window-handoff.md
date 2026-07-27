@@ -35,6 +35,8 @@ Personal OS 任务：`T-194`，当前状态应为 `doing`。
 - 除 T-194 外，还存在 conversation history、resource mutation consistency、Portal concurrency 等其他任务的修改和未跟踪文件。
 - 不得 `git reset --hard`、`git checkout -- .`、整仓 `git add -A`、擅自 stash 或删除这些修改。
 
+> **执行时状态更新(2026-07-27 晚间维护窗口)**:上述隔离前提已失效。另一会话已把 T-194 全部文件与 resource mutation/Portal concurrency 任务一并提交为 `b43402e`(main HEAD),并已于 13:12 UTC 发布到生产、13:22 UTC accept 为 known-good(release `20260727T131243Z-b43402e9`)。工作树已干净。原第 5 节两提交方案不再适用,实际执行按下方「执行适配记录」进行。
+
 T-194 主要文件：
 
 ```text
@@ -106,6 +108,8 @@ wc -c "$HOME/Library/Logs/com.invest-agent.volcano-workspace-backup.err"
 
 ## 5. Git 收敛方案
 
+> **本节已被执行适配取代(2026-07-27 晚间)**:T-194 机制已包含在 `b43402e` 中并已在生产运行,无法再形成"机制提交 A + 文档提交 B"。实际执行见本节末尾「执行适配记录」。
+
 ### 5.1 为什么分成两个提交
 
 真实回退演示需要两个不同的可发布版本：
@@ -167,6 +171,17 @@ RELEASE_B_COMMIT=<提交 B 完整 SHA>
 ```
 
 如果无法形成这两个精确提交，停止。不要用临时演示代码或修改业务逻辑制造版本差异。
+
+### 5.4 执行适配记录(2026-07-27 晚间维护窗口,用户已确认)
+
+由于 T-194 已随 `b43402e` 提交并发布,经用户当场确认,本次演示采用以下适配版本定义:
+
+- **版本 A** = 既有 known-good release `20260727T131243Z-b43402e9`(commit `b43402e9e20cba64eb505d8c4d287cd62d6c682a`,当前生产运行版本)。不再重新创建。
+- **版本 B** = 在 `b43402e` 之上仅新增本文档状态更新与适配记录的纯文档提交,无业务逻辑变化,与原方案中"版本 B 只有文档变化"的风险画像一致。
+
+适配后的演示序列:发布 B -> 第 8 节验收 -> 从 B 回退到 A(计时,目标 10 分钟内)-> 第 8 节完整验收 -> Workspace 只读 `plan` 对比 -> 重新发布 B 恢复最新 `main` -> 第 8 节验收 -> accept B 为 known-good。原 7.1 节"先发布 A"不再必要(A 已在生产运行且已验收)。
+
+遗留事项(不在本次演示范围内):`b43402e` 将 T-194 与 resource mutation/Portal concurrency 改动打包在同一提交,且已被发布接受,提交粒度纪律问题应单独复盘,不影响本次回退机制演示的有效性。
 
 ## 6. 使用临时干净 clone
 
