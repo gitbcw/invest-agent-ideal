@@ -58,6 +58,13 @@ export function beijingDateKey(date = new Date()): string {
   return `${bj.getFullYear()}-${String(bj.getMonth() + 1).padStart(2, "0")}-${String(bj.getDate()).padStart(2, "0")}`;
 }
 
+export function resolveCalendarQueryInstant(dateKey?: string, now = new Date()): Date {
+  if (!dateKey || dateKey === beijingDateKey(now)) {
+    return new Date(now.getTime());
+  }
+  return new Date(`${dateKey}T00:00:00+08:00`);
+}
+
 export function isAshareTradingDay(date = new Date()): boolean {
   const bj = beijingNow(date);
   const day = bj.getDay();

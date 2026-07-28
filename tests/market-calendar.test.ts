@@ -1,6 +1,12 @@
 import { describe, test } from "node:test";
 import * as assert from "node:assert/strict";
-import { ashareCalendarReport, beijingDateKey, isAshareTradingDay, isAshareTradingTime } from "../src/lib/market-calendar.js";
+import {
+  ashareCalendarReport,
+  beijingDateKey,
+  isAshareTradingDay,
+  isAshareTradingTime,
+  resolveCalendarQueryInstant,
+} from "../src/lib/market-calendar.js";
 
 const bj = (iso: string) => new Date(iso);
 
@@ -40,6 +46,19 @@ describe("A-share market calendar", () => {
     assert.equal(isAshareTradingTime(bj("2026-06-24T03:31:00.000Z")), false);
     assert.equal(isAshareTradingTime(bj("2026-06-24T05:00:00.000Z")), true);
     assert.equal(isAshareTradingTime(bj("2026-06-24T07:01:00.000Z")), false);
+  });
+
+  test("uses the current instant when an explicit date is today in Beijing", () => {
+    const now = bj("2026-07-28T13:25:00.000Z");
+    const resolved = resolveCalendarQueryInstant("2026-07-28", now);
+    assert.equal(resolved.toISOString(), now.toISOString());
+    assert.equal(ashareCalendarReport(resolved).session, "post_market");
+  });
+
+  test("keeps historical date queries anchored to that date", () => {
+    const now = bj("2026-07-28T13:25:00.000Z");
+    const resolved = resolveCalendarQueryInstant("2026-07-27", now);
+    assert.equal(beijingDateKey(resolved), "2026-07-27");
   });
 
   test("reports previous and next trading days", () => {

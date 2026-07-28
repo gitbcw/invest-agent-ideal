@@ -126,7 +126,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "market.calendar",
-    "Read the A-share trading-day and market-session report for a Beijing date.",
+    "Read the A-share trading-day and market-session report for a Beijing date. When omitted or set to today's Beijing date, the session reflects the current Beijing time.",
     { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }
   );
 

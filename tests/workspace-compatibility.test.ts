@@ -15,6 +15,7 @@ import {
 } from "../src/lib/workspace-compatibility.js";
 
 const templatePath = path.resolve("templates/workspace");
+const agentsAsset = "AGENTS.md";
 const managedDailySkill = ".codex/skills/daily-portfolio-review/SKILL.md";
 
 test("optional template catalog covers every seeded Codex Skill asset", async () => {
@@ -27,6 +28,7 @@ test("optional template catalog covers every seeded Codex Skill asset", async ()
     .slice()
     .sort();
   assert.deepEqual(catalogSkills, skillFiles);
+  assert.equal(WORKSPACE_OPTIONAL_TEMPLATE_ASSETS.includes(agentsAsset), true);
 });
 
 test("workspace compatibility preserves user-evolved template skills by default", async () => {
@@ -142,6 +144,35 @@ test("workspace template adoption replaces only explicitly approved assets with 
     assert.equal(await readFile(path.join(backupRoot, "adopt-run", "111", managedDailySkill), "utf8"), customizedSkill);
     assert.equal(await readFile(portfolioPath, "utf8"), originalPortfolio);
     assert.equal(existsSync(path.join(workspacePath, ".invest-agent/workspace-template-adoption.json")), true);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("workspace template adoption can explicitly replace AGENTS.md with backup", async () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-workspace-agents-adopt-"));
+  const workspacePath = path.join(tempRoot, "workspaces", "mg");
+  const backupRoot = path.join(tempRoot, "backups");
+  const agentsPath = path.join(workspacePath, agentsAsset);
+  const previousAgents = "# Previous standard workspace instructions\n";
+  try {
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    await cp(templatePath, workspacePath, { recursive: true });
+    await writeFile(agentsPath, previousAgents, "utf8");
+
+    const result = await adoptWorkspaceTemplateAssets({
+      workspacePath,
+      templatePath,
+      backupRoot,
+      confirmation: WORKSPACE_TEMPLATE_ADOPTION_CONFIRMATION,
+      relativePaths: [agentsAsset],
+      runId: "agents-adopt-run",
+    });
+
+    assert.equal(result.changed, true);
+    assert.deepEqual(result.changes.map((change) => change.relativePath), [agentsAsset]);
+    assert.equal(await readFile(agentsPath, "utf8"), await readFile(path.join(templatePath, agentsAsset), "utf8"));
+    assert.equal(await readFile(path.join(backupRoot, "agents-adopt-run", "mg", agentsAsset), "utf8"), previousAgents);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

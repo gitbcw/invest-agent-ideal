@@ -20,6 +20,7 @@ export const WORKSPACE_MANAGED_ASSETS = [] as const;
  * difference is an available update, not a migration requirement.
  */
 export const WORKSPACE_OPTIONAL_TEMPLATE_ASSETS = [
+  "AGENTS.md",
   ".codex/skills/service-capability-policy/SKILL.md",
   ".codex/skills/conversation-recovery/SKILL.md",
   ".codex/skills/capability-extension/SKILL.md",

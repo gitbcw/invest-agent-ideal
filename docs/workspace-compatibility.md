@@ -13,9 +13,9 @@
 `src/lib/workspace-compatibility.ts` 将文件分成两类：
 
 - `WORKSPACE_MANAGED_ASSETS`：不可由用户定制的系统元数据；当前为空，不包含任何 Skill。
-- `WORKSPACE_OPTIONAL_TEMPLATE_ASSETS`：模板提供的标准 Skill 和协议参考；预检只报告更新，不自动应用。
+- `WORKSPACE_OPTIONAL_TEMPLATE_ASSETS`：模板提供的 `AGENTS.md`、标准 Skill 和协议参考；预检只报告更新，不自动应用。
 
-以下资产始终由用户或实例拥有：
+以下资产始终由用户或实例拥有；其中登记为可选模板资产的文件，也只能在负责人逐文件确认后采用标准版本：
 
 - `AGENTS.md`。
 - 所有 `.codex/skills/`，包括最初从标准模板复制的 Skill。

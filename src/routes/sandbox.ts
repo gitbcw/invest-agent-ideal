@@ -14,6 +14,7 @@ import { buildDailyReviewContext, buildMonthlyReviewContext, buildWeeklyReviewCo
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, listPendingSandboxConfirmations } from "../lib/sandbox-confirmation.js";
+import { resolveCalendarQueryInstant } from "../lib/market-calendar.js";
 import { enqueuePushJob, getPushJob, processDuePushJobs, type PushBackend } from "../services/push-queue.js";
 import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
 import { marketCalendar, marketCapitalFlow, marketHealth, marketIndices, marketKline, marketQuote, marketResolve, marketSectorTheme, marketSnapshot, marketStockInfo, type MarketKlinePeriod } from "../services/market-data.js";
@@ -1887,7 +1888,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   }));
 
   app.get<{ Querystring: { date?: string } }>("/api/sandbox/market/calendar", sandboxSafe("invest.market.read", async (ctx, request) => {
-    const date = request.query.date ? new Date(`${request.query.date}T00:00:00+08:00`) : new Date();
+    const date = resolveCalendarQueryInstant(request.query.date);
     const result = await marketCalendar(date, ctx.userId);
     await audit(ctx, {
       operation: "market.calendar",

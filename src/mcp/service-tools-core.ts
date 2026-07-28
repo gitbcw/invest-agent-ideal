@@ -6,6 +6,7 @@ import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-bac
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
+import { resolveCalendarQueryInstant } from "../lib/market-calendar.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId } from "../lib/user-context.js";
 import {
   WorkspaceStore,
@@ -223,7 +224,7 @@ async function dispatchServiceTool(
     }
     case "market.calendar": {
       const dateInput = stringInput(input?.date);
-      const date = dateInput ? new Date(`${dateInput}T00:00:00+08:00`) : new Date();
+      const date = resolveCalendarQueryInstant(dateInput || undefined);
       if (Number.isNaN(date.getTime())) throw new Error("date must use YYYY-MM-DD");
       const result = await marketCalendar(date, context.userId);
       await audit(context, {
