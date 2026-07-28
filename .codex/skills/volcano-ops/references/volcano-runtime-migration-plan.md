@@ -344,7 +344,7 @@ curl -fsS http://127.0.0.1:22655/health
 
 - `scripts/package-volcano-runtime.sh` 会要求 `CONFIRM_PRODUCTION_STOPPED=true`，防止误打热快照。
 - `scripts/apply-volcano-runtime.sh` 要求目标目录、包 SHA256 和明确确认短语全部匹配；随后先备份服务器现有 `data/invest-agent.db`、`reviews/` 和 `workspaces/` 到 `/home/claude/invest-agent-data/migration-backups/<timestamp>`，并验证包内及备份数据库完整性后才覆盖。
-- `scripts/apply-volcano-runtime.sh` 会在解包后统一修正 workspace 内 `.codex/config.toml` / `mcp.json`，指向服务器 `/home/claude/.codex`，避免把本机 `/Users/combo/.codex/...` 断链带到生产。
+- `scripts/apply-volcano-runtime.sh` 会在解包后统一修正 workspace 内的 Codex `config.toml` / `mcp.json` 链接，指向服务器 `/home/claude/.codex`，避免把本机路径断链带到生产。
 - 不迁移 `.state` 微信登录态，正式切主时服务器重新扫码。
 
 ### 替代：服务器从空数据启动
