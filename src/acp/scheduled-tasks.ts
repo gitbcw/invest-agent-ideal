@@ -246,15 +246,7 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
       instanceId: userContext.instanceId,
     });
     const promptContext = await buildAcpPromptContext({
-      userText: [
-        "【后台任务：日复盘】",
-        "你正在当前用户 Workspace 中执行自动日复盘。",
-        "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 daily-review skill；研究方法、工具选择、报告结构和详略由你决定。",
-        "发布是本任务唯一完成路径：完成研究后必须调用 reviews.save，content 放完整 Markdown，pushBrief 放独立的微信简报；重要观点和数据质量事件可分别放入 decisionRecords、sourceEvents。",
-        "不要把未保存的复盘草稿、摘要或自然语言最终回复当作完成。若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。",
-        "仅在 reviews.save 返回成功后，才可给出最终回复；最终回复必须逐字使用该次成功保存的 pushBrief，不要再次输出完整报告，也不要提到工具、内部路径或执行过程。",
-        "事实需要有依据；关键数据缺失、过期或冲突时明确说明，不编造精确数据。不要承诺收益。",
-      ].join("\n"),
+      userText: buildDailyReviewTaskPrompt(),
       reviewContext,
       allowReviewPublication: true,
       userContext,
@@ -302,6 +294,19 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
   const content = await runStructuredReviewPrompt(userContext, "monthly", context);
   await writeWorkspaceReview(userContext.userId, "monthly", context.monthKey, content);
   return sanitizeWeixinCustomerText(buildScheduledReviewPush("月复盘", content));
+}
+
+export function buildDailyReviewTaskPrompt() {
+  return [
+    "【后台任务：日复盘】",
+    "你正在当前用户 Workspace 中执行自动日复盘。",
+    "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 daily-review skill；研究方法、工具选择、报告结构和详略由你决定。",
+    "发布是本任务唯一完成路径：完成研究后必须调用 reviews.save，content 放完整 Markdown，pushBrief 放独立的微信简报；重要观点和数据质量事件可分别放入 decisionRecords、sourceEvents。",
+    "pushBrief 会直接作为微信消息发送给用户，必须使用适合微信阅读且可由微信渲染的简洁 Markdown；使用 `**重点**` 和清晰分段，并按内容需要使用列表或短标题，不要写成无格式的连续纯文本。",
+    "不要把未保存的复盘草稿、摘要或自然语言最终回复当作完成。若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。",
+    "仅在 reviews.save 返回成功后，才可给出最终回复；最终回复必须逐字使用该次成功保存的 pushBrief，不要再次输出完整报告，也不要提到工具、内部路径或执行过程。",
+    "事实需要有依据；关键数据缺失、过期或冲突时明确说明，不编造精确数据。不要承诺收益。",
+  ].join("\n");
 }
 
 async function buildScheduledUserContext(scope: ScheduledScope, taskName: string): Promise<UserContext> {

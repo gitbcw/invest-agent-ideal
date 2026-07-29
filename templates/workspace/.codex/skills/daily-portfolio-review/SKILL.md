@@ -37,6 +37,7 @@ The WeChat brief is the user's primary notification and must stand on its own fo
 - Include the key portfolio or watchlist facts, the most important inference, and whether a prior tracked view was supported, weakened, or still unverified.
 - Include the next validation signal or invalidation condition, plus the most relevant data cutoff/source-quality caveat.
 - Mention only material positions, risks, and levels. Do not pad the brief with a full holding table or repeat the complete report.
+- Write the brief as concise Markdown that WeChat can render. Use `**bold**` for decision labels or key conclusions, keep clear paragraph breaks, and add lists or short headings when they improve scanning; do not return an unformatted wall of text.
 - End with `回复“查看完整复盘”获取完整报告。` when the full report contains material detail that is not included in the brief.
 
 When the user explicitly asks to generate a review, that request authorizes saving this report; use the tool's user-request confirmation field and do not add a redundant confirmation round.
