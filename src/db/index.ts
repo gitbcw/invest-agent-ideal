@@ -486,6 +486,12 @@ export function initDb() {
       channel TEXT NOT NULL DEFAULT 'weixin-mobile',
       backend TEXT NOT NULL DEFAULT 'hermes',
       source TEXT NOT NULL DEFAULT 'scheduler',
+      idempotency_key TEXT,
+      message_kind TEXT,
+      expires_at TEXT,
+      origin_task_key TEXT,
+      retry_policy TEXT,
+      terminal_reason TEXT,
       message TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
       attempts INTEGER NOT NULL DEFAULT 0,
@@ -530,6 +536,13 @@ export function initDb() {
       finished_at TEXT,
       error_message TEXT,
       push_job_id TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 1,
+      next_retry_at TEXT,
+      lease_expires_at TEXT,
+      expires_at TEXT,
+      error_class TEXT,
+      artifact_ref TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -772,11 +785,23 @@ export function initDb() {
   ensureColumn("push_jobs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("push_jobs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("push_jobs", "idempotency_key", "TEXT");
+  ensureColumn("push_jobs", "message_kind", "TEXT");
+  ensureColumn("push_jobs", "expires_at", "TEXT");
+  ensureColumn("push_jobs", "origin_task_key", "TEXT");
+  ensureColumn("push_jobs", "retry_policy", "TEXT");
+  ensureColumn("push_jobs", "terminal_reason", "TEXT");
   ensureColumn("weixin_delivery_attempts", "external_account_id", "TEXT");
   ensureColumn("market_watch_snapshots", "trading_date", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("scheduled_task_runs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("scheduled_task_runs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("scheduled_task_runs", "push_job_id", "TEXT");
+  ensureColumn("scheduled_task_runs", "attempts", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("scheduled_task_runs", "max_attempts", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("scheduled_task_runs", "next_retry_at", "TEXT");
+  ensureColumn("scheduled_task_runs", "lease_expires_at", "TEXT");
+  ensureColumn("scheduled_task_runs", "expires_at", "TEXT");
+  ensureColumn("scheduled_task_runs", "error_class", "TEXT");
+  ensureColumn("scheduled_task_runs", "artifact_ref", "TEXT");
   ensureColumn("indicator_results", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("indicator_results", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("stock_plans", "watch_conditions", "TEXT");
@@ -855,12 +880,14 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_push_jobs_user_time ON push_jobs(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_instance_status ON push_jobs(instance_id, status, next_retry_at);
     CREATE INDEX IF NOT EXISTS idx_push_jobs_backend_status ON push_jobs(backend, status, next_retry_at);
+    CREATE INDEX IF NOT EXISTS idx_push_jobs_expiry_due ON push_jobs(status, expires_at, next_retry_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_push_jobs_idempotency_key ON push_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_weixin_delivery_attempts_scope_time ON weixin_delivery_attempts(instance_id, user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_market_watch_snapshots_scope_time ON market_watch_snapshots(user_id, instance_id, captured_at);
     CREATE INDEX IF NOT EXISTS idx_weixin_delivery_attempts_reason_time ON weixin_delivery_attempts(reason, created_at);
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_scope_time ON scheduled_task_runs(instance_id, user_id, task_type, scheduled_for);
     CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_status ON scheduled_task_runs(status, scheduled_for);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_retry_due ON scheduled_task_runs(status, next_retry_at, lease_expires_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_scope_message ON conversation_artifacts(user_id, instance_id, conversation_id, message_id);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_turn ON conversation_artifacts(user_id, instance_id, conversation_id, turn_id);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_assistant ON conversation_artifacts(assistant_id, created_at);

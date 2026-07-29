@@ -24,10 +24,17 @@ Help the user build a trackable observation pool. This skill must not output "to
 1. Understand the user's style, market scope, risk preference, and current holdings.
 2. Build candidate drafts only within the user's stated scope and ability circle.
 3. For each candidate, record source reason, style fit, missing data, risk flags, and waiting conditions.
-4. For candidates already named by the user, prefer service-layer market APIs with the current sandbox token: `GET /api/sandbox/market/quote`, `GET /api/sandbox/market/kline`, and `GET /api/sandbox/market/resolve`. Use returned source/confidence/warnings as fact boundaries.
+4. For candidates already named by the user, use the narrowest currently exposed named MCP read capability. Treat returned source, time, confidence, warnings, and missing fields as fact boundaries.
 5. Scan financial, valuation, governance, liquidity, theme-overheat, and style-mismatch risks.
 6. Define buy-waiting zones as price, valuation, event, or financial validation conditions.
 7. Ask for confirmation before writing to `config/observation_pool.yaml`.
+
+## Coverage Rules
+
+- Keep a candidate's source scope, data time, and missing fields with the result.
+- If a full-market screen is unavailable, still return researched candidates or a representative direction when evidence supports them; call it a candidate set, not a market-wide ranking.
+- Rank only within the actually covered universe. Do not claim an unexecuted screen, unavailable proprietary factor, or incomplete constituent list was complete.
+- Missing valuation, financial, or liquidity fields narrow the relevant risk conclusion but do not erase evidence from the other dimensions.
 
 ## Style Rules
 

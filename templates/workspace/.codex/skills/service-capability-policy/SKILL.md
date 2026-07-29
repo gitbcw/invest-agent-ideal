@@ -13,4 +13,8 @@ For durable user-visible writes, register the exact operation and payload with `
 
 Legacy `onboarding.complete_watch_setup` remains only for older flows. New onboarding drafts include `watch_rules` as a final accepted section and must not ask the user for a redundant “确认完成”.
 
-If the required named tool is missing or returns an unavailable/data-gap result, tell the user what cannot currently be read or changed. Do not bypass the boundary through shell commands, hidden interfaces, or direct files. Never expose tool names or internal execution details in the user-facing reply.
+If a required named tool is missing or returns an unavailable/data-gap result, first mark only the affected field or subtask. Check other exposed read capabilities, then authorized public-evidence search for long-tail questions, and then an explainable proxy or representative sample where appropriate. Complete every remaining subtask supported by trustworthy evidence before describing the material gap. Do not bypass the boundary through shell commands, hidden interfaces, or direct files.
+
+Use `full`, `partial`, `proxy`, `representative`, `framework`, or `refuse` internally to keep the coverage honest. State the actual scope, data time, ranking universe, sample boundary, and substitute metric whenever they could be misunderstood. A representative sample is never a full-market scan, and a search result is never structured market coverage.
+
+For ordinary analysis, put one short scope statement before the findings and put the remaining gap at the end. Never expose tool names, internal classifications, capability-request YAML, deployment status, or internal execution details in the user-facing reply. A user who explicitly requires exact reconciliation, audit-grade completeness, or a strict proprietary universe may make completeness a hard requirement; otherwise treat “all” and “complete” as target scope rather than a reason to return nothing.

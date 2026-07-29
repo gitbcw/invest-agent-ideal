@@ -21,7 +21,10 @@ if (process.env.CODEX_COMPLEX_MODEL !== EXPECTED_MODEL) {
 }
 
 const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
-assert.equal(fixture.suite, "acp-data-quality-core");
+assert.ok(
+  ["acp-data-quality-core", "acp-best-effort-answering"].includes(fixture.suite),
+  `unsupported ACP evaluation suite: ${fixture.suite}`,
+);
 assert.ok(Array.isArray(fixture.cases) && fixture.cases.length > 0, "fixture must contain cases");
 const selectedCases = caseArg
   ? fixture.cases.filter((definition) => definition.id === caseArg.slice("--case=".length))

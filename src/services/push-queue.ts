@@ -19,6 +19,10 @@ export interface PushJobInput {
   backend?: PushBackend;
   source?: string;
   idempotencyKey?: string;
+  messageKind?: string;
+  expiresAt?: string;
+  originTaskKey?: string;
+  retryPolicy?: string;
   message: string;
   maxAttempts?: number;
 }
@@ -60,6 +64,11 @@ export async function enqueuePushJob(input: PushJobInput) {
     backend: input.backend || "codex",
     source: input.source || "scheduler",
     idempotencyKey: input.idempotencyKey,
+    messageKind: input.messageKind,
+    expiresAt: input.expiresAt,
+    originTaskKey: input.originTaskKey,
+    retryPolicy: input.retryPolicy,
+    terminalReason: null,
     message: input.channel === undefined || input.channel === "weixin-mobile"
       ? sanitizeWeixinCustomerText(input.message)
       : input.message,
@@ -107,12 +116,19 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
   let retried = 0;
   let dead = 0;
   let awaitingUser = 0;
+  let expired = 0;
 
   for (const job of due) {
     // A job can be observed by the immediate enqueue drain and the interval worker at once.
     // Only the worker that successfully acquires this lease may call the external channel.
     const claimed = await claimDuePushJob(job.id, now);
     if (!claimed) continue;
+
+    if (isExpired(job.expiresAt, now)) {
+      await markExpired(job.id, "expired_before_delivery", now);
+      expired += 1;
+      continue;
+    }
 
     if (
       DEFERABLE_SOURCES.has(job.source) &&
@@ -159,13 +175,21 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
         sent += 1;
         continue;
       }
-      if (result.reason === "context_expired" && DEFERABLE_SOURCES.has(job.source)) {
+      if (isWaitingExternal(result.reason) && DEFERABLE_SOURCES.has(job.source)) {
         await markAwaitingUser(job.id, attempts, result.errorMessage || result.reason);
         awaitingUser += 1;
         continue;
       }
-      const outcome = await markFailed(job.id, attempts, job.maxAttempts, result.errorMessage || result.reason);
+      const outcome = await markFailed({
+        id: job.id,
+        attempts,
+        maxAttempts: job.maxAttempts,
+        expiresAt: job.expiresAt,
+        errorClass: classifyDeliveryFailure(result.reason),
+        errorMessage: result.errorMessage || result.reason,
+      });
       if (outcome === "dead") dead += 1;
+      else if (outcome === "expired") expired += 1;
       else retried += 1;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -176,16 +200,24 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
         source: job.source,
         result: { ok: false, reason: "wechat_api_error", errorMessage },
       });
-      const outcome = await markFailed(job.id, attempts, job.maxAttempts, errorMessage);
+      const outcome = await markFailed({
+        id: job.id,
+        attempts,
+        maxAttempts: job.maxAttempts,
+        expiresAt: job.expiresAt,
+        errorClass: "unknown",
+        errorMessage,
+      });
       if (outcome === "dead") dead += 1;
+      else if (outcome === "expired") expired += 1;
       else retried += 1;
     }
   }
 
   if (due.length > 0) {
-    logger.info(`推送队列处理完成 due=${due.length} sent=${sent} retry=${retried} awaitingUser=${awaitingUser} dead=${dead}`);
+    logger.info(`推送队列处理完成 due=${due.length} sent=${sent} retry=${retried} awaitingUser=${awaitingUser} expired=${expired} dead=${dead}`);
   }
-  return { due: due.length, sent, retried, awaitingUser, dead };
+  return { due: due.length, sent, retried, awaitingUser, expired, dead };
 }
 
 async function claimDuePushJob(id: string, now: Date): Promise<boolean> {
@@ -220,23 +252,57 @@ async function deferJob(id: string, delayMs: number, reason: string) {
     .where(eq(pushJobs.id, id));
 }
 
-async function markFailed(id: string, attempts: number, maxAttempts: number, errorMessage: string) {
+type DeliveryErrorClass = "transient" | "permanent" | "unknown";
+
+function classifyDeliveryFailure(reason: WeixinDeliveryResult["reason"]): DeliveryErrorClass {
+  if (reason === "no_connected_account") return "permanent";
+  return reason === "wechat_api_error" ? "transient" : "unknown";
+}
+
+function isWaitingExternal(reason: WeixinDeliveryResult["reason"]): boolean {
+  return ["context_expired", "session_expired", "no_recent_conversation", "account_mismatch"].includes(reason);
+}
+
+function isExpired(expiresAt: string | null, now: Date): boolean {
+  return Boolean(expiresAt && Date.parse(expiresAt) <= now.getTime());
+}
+
+async function markExpired(id: string, reason: string, now = new Date()) {
+  const nowIso = now.toISOString();
+  await db
+    .update(pushJobs)
+    .set({ status: "expired", terminalReason: reason, nextRetryAt: nowIso, updatedAt: nowIso })
+    .where(eq(pushJobs.id, id));
+}
+
+async function markFailed(input: {
+  id: string;
+  attempts: number;
+  maxAttempts: number;
+  expiresAt: string | null;
+  errorClass: DeliveryErrorClass;
+  errorMessage: string;
+}): Promise<"retry" | "dead" | "expired"> {
   const now = Date.now();
-  const dead = attempts >= maxAttempts;
-  const delay = RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)];
+  const dead = input.errorClass === "permanent" || input.attempts >= input.maxAttempts;
+  const delay = RETRY_DELAYS_MS[Math.min(input.attempts - 1, RETRY_DELAYS_MS.length - 1)];
   const nextRetryAt = new Date(now + delay).toISOString();
+  const expired = input.expiresAt !== null && Date.parse(input.expiresAt) <= Date.parse(nextRetryAt);
+  const status = expired ? "expired" : dead ? "dead" : "retry";
+  const terminalReason = expired ? "expired_before_next_delivery_retry" : dead ? input.errorClass === "permanent" ? "permanent_error" : "max_attempts" : null;
   await db
     .update(pushJobs)
     .set({
-      status: dead ? "dead" : "retry",
-      attempts,
-      nextRetryAt,
+      status,
+      attempts: input.attempts,
+      nextRetryAt: expired ? input.expiresAt as string : nextRetryAt,
       lastAttemptAt: new Date(now).toISOString(),
-      lastError: errorMessage.slice(0, 1200),
+      lastError: input.errorMessage.slice(0, 1200),
+      terminalReason,
       updatedAt: new Date(now).toISOString(),
     })
-    .where(eq(pushJobs.id, id));
-  return dead ? "dead" : "retry";
+    .where(eq(pushJobs.id, input.id));
+  return expired ? "expired" : dead ? "dead" : "retry";
 }
 
 async function markAwaitingUser(id: string, attempts: number, errorMessage: string) {

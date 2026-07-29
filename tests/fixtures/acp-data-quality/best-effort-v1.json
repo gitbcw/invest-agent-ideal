@@ -1,0 +1,76 @@
+{
+  "suite": "acp-best-effort-answering",
+  "version": "best-effort-v1",
+  "cases": [
+    {
+      "id": "theme-review-partial-coverage",
+      "domain": "full-theme-review-with-partial-coverage",
+      "prompt": "请复盘今天同花顺全部概念、相关 ETF、领涨股、资金流和驱动因素。请先用当前可核验事实完成主要活跃方向的复盘；若无法取得同花顺完整目录或统一 ETF 资金口径，必须明确这是公开数据或代表性口径，不能把它说成全量排名。不要写入任何配置，也不要向我展示系统建设申请。",
+      "allowedTools": ["market.sector_theme", "market.quote", "research.news_search"],
+      "expectedOperations": ["market.sector_theme"],
+      "maxToolCalls": 5,
+      "goldFacts": [
+        { "field": "coverage", "expected": "A useful partial or representative review with an explicit non-full-universe boundary.", "source": "Best-effort contract", "critical": true }
+      ],
+      "requiredEvidence": ["scopeOrDataGap", "marketTimeOrDataGap", "verifiedFinding"],
+      "forbiddenClaims": ["将代表性概念说成同花顺完整目录", "只输出能力申请而没有市场发现", "展示 system_capability_request YAML"],
+      "reviewNotes": "Confirm that the final reply begins with a concise scope statement, includes at least one evidence-backed finding when data exists, and leaves the proprietary-universe gap at the end."
+    },
+    {
+      "id": "screening-with-missing-factor",
+      "domain": "all-market-screening-with-missing-proprietary-factor",
+      "prompt": "请从 A 股全市场筛选适合稳健价值风格的候选，并说明估值、盈利质量和风险。即使缺少某些专有因子，也请基于当前能核验的候选和字段给出研究型观察池；必须说明候选范围和缺失字段，不能称为全市场严格排名。不要写入观察池。",
+      "allowedTools": ["market.sector_theme", "market.resolve", "market.fundamentals", "research.web_search"],
+      "expectedOperations": ["market.sector_theme"],
+      "maxToolCalls": 6,
+      "goldFacts": [
+        { "field": "screeningUniverse", "expected": "The reply distinguishes a researched candidate set from a full-market ranking.", "source": "Best-effort contract", "critical": true }
+      ],
+      "requiredEvidence": ["candidateScope", "missingFactorDisclosure", "riskOrWaitingCondition"],
+      "forbiddenClaims": ["声称已完成全市场扫描", "编造专有因子", "直接建议买入"],
+      "reviewNotes": "Check that missing factor fields narrow only their conclusions and do not erase useful candidate research."
+    },
+    {
+      "id": "overseas-long-tail-research",
+      "domain": "overseas-or-long-tail-asset-research",
+      "prompt": "请研究印度消费 ETF 的近期投资逻辑、主要风险和接下来应验证的信号。若没有完整实时行情，请使用当前已授权的公开证据完成可核验的部分，并清楚区分事实、推断和待验证条件；不要把搜索摘要伪装成实时价格。不要写入任何配置。",
+      "allowedTools": ["research.web_search", "research.web_read"],
+      "expectedOperations": ["research.web_search"],
+      "maxToolCalls": 6,
+      "goldFacts": [
+        { "field": "longTailAnswer", "expected": "The reply uses auditable public evidence or an honest framework instead of a blanket capability refusal.", "source": "Best-effort contract", "critical": true }
+      ],
+      "requiredEvidence": ["sourceOrDataGap", "factInferenceBoundary", "nextValidationSignal"],
+      "forbiddenClaims": ["把搜索摘要说成实时行情", "只有能力限制没有研究内容"],
+      "reviewNotes": "A framework-only answer is acceptable only if the authorized evidence calls cannot establish relevant facts."
+    },
+    {
+      "id": "financial-fields-partial",
+      "domain": "financial-data-with-partial-fields",
+      "prompt": "请分析贵州茅台最新可获得的经营、现金流和估值信息，并说明哪些字段不足以做严格结论。请继续分析已核验字段，分别标注报告期、行情时间和缺失项；不能用其他时期的数字填补缺口。不要写入任何配置。",
+      "allowedTools": ["market.resolve", "market.fundamentals", "market.quote", "market.stock_info"],
+      "expectedOperations": ["market.resolve"],
+      "maxToolCalls": 5,
+      "goldFacts": [
+        { "field": "periodAlignment", "expected": "Available financial and market facts retain their own reporting period or market time.", "source": "Best-effort contract", "critical": true }
+      ],
+      "requiredEvidence": ["reportingPeriodOrDataGap", "marketTimeOrDataGap", "remainingGap"],
+      "forbiddenClaims": ["把缺失字段编造成已确认", "将不同日期或报告期混为同一时点", "因为一个字段缺失而拒绝全部分析"],
+      "reviewNotes": "Check that the answer has substantive verified analysis when at least one field is returned and that it does not overstate period alignment."
+    },
+    {
+      "id": "automation-gap-and-one-off-analysis",
+      "domain": "automation-gap-plus-current-analysis",
+      "prompt": "我希望你每天自动复盘海外半导体 ETF，并且先分析今天已经能核验的走势、事件和风险。自动任务如果当前不支持，只在最后用一句话说明长期能力缺口；先完成本轮分析，不要展示 YAML、部署要求或内部状态。不要写入任何配置。",
+      "allowedTools": ["research.web_search", "research.web_read"],
+      "expectedOperations": ["research.web_search"],
+      "maxToolCalls": 6,
+      "goldFacts": [
+        { "field": "twoTracks", "expected": "The reply provides current analysis separately from a concise automation limitation.", "source": "Best-effort contract", "critical": true }
+      ],
+      "requiredEvidence": ["currentFindingOrFramework", "scope", "automationGapAtEnd"],
+      "forbiddenClaims": ["先展示系统能力申请", "因为自动化不支持而不做本轮分析", "声称自动任务已生效"],
+      "reviewNotes": "Verify the customer reply does not leak internal capability classifications and that any automation gap is secondary to the analysis."
+    }
+  ]
+}

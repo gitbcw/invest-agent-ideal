@@ -25,6 +25,7 @@ import { dirname, join } from "node:path";
 import { runScheduledReviewTask } from "../acp/scheduled-tasks.js";
 import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/scheduled-task-runs.js";
 import { formatUnknownError } from "../lib/errors.js";
+import { resolveScheduledMessageExpiry, scheduledMessageIdempotencyKey, type ScheduledMessageKind } from "../services/scheduled-message-policy.js";
 
 const PUSH_TIME_KEY = "review_push_time";
 const DEFAULT_HOUR = 21;
@@ -269,8 +270,25 @@ export async function triggerReviewNow(
       await finishScheduledTaskRun(taskKey, { status: "skipped" });
       return { taskKey, skipped: true };
     }
+    const messageKind = `${kind}_review` as ScheduledMessageKind;
+    const delivery = resolveScheduledMessageExpiry(messageKind, now);
     const pushResult = text
-      ? await pushFn(text, { userId: scope.userId, projectId, instanceId: scope.instanceId })
+      ? await pushFn(text, {
+        userId: scope.userId,
+        projectId,
+        instanceId: scope.instanceId,
+        messageKind,
+        expiresAt: delivery.expiresAt,
+        originTaskKey: taskKey,
+        retryPolicy: delivery.retryPolicy,
+        idempotencyKey: scheduledMessageIdempotencyKey({
+          instanceId: scope.instanceId,
+          userId: scope.userId,
+          kind: messageKind,
+          businessPeriod: dateKey,
+        }),
+        maxAttempts: delivery.maxAttempts,
+      })
       : undefined;
     const pushJobId = typeof pushResult === "string" ? pushResult : undefined;
     await finishScheduledTaskRun(taskKey, { status: "success", pushJobId });

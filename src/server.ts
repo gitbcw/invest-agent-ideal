@@ -117,13 +117,19 @@ export async function createServer() {
   if (!isOfflineMode()) startPushQueueWorker();
 
   // 注册推送回调：调度器产出的提醒进入可靠推送队列
-  registerPush(async (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => {
+  registerPush(async (message, options) => {
     const job = await enqueuePushJob({
       userId: options?.userId,
       backend: config.acp.backend,
       projectId: options?.projectId,
       instanceId: options?.instanceId,
       source: "scheduler",
+      messageKind: options?.messageKind,
+      expiresAt: options?.expiresAt,
+      originTaskKey: options?.originTaskKey,
+      retryPolicy: options?.retryPolicy,
+      idempotencyKey: options?.idempotencyKey,
+      maxAttempts: options?.maxAttempts,
       message,
     });
     logger.info(`提醒已进入推送队列 job=${job.id} user=${job.userId} backend=${job.backend}`);

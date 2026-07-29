@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, like, or } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, like, lte, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { channelIdentities, pushJobs, weixinDeliveryAttempts } from "../db/schema.js";
 
@@ -91,6 +91,18 @@ export async function getWeixinDeliveryHealth(userId: string, instanceId: string
 }
 
 export async function listPendingWeixinDeliveries(userId: string, instanceId: string, limit = 5): Promise<PendingWeixinDelivery[]> {
+  const now = new Date().toISOString();
+  // Awaiting-user jobs are not selected by the delivery worker. Expire them here
+  // before a newly restored conversation can offer stale reports for recovery.
+  await db
+    .update(pushJobs)
+    .set({ status: "expired", terminalReason: "expired_while_awaiting_user", updatedAt: now })
+    .where(and(
+      eq(pushJobs.userId, userId),
+      eq(pushJobs.instanceId, instanceId),
+      inArray(pushJobs.status, ["awaiting_user", "dead"]),
+      lte(pushJobs.expiresAt, now),
+    ));
   const rows = await db
     .select({
       id: pushJobs.id,
@@ -107,6 +119,7 @@ export async function listPendingWeixinDeliveries(userId: string, instanceId: st
         eq(pushJobs.status, "awaiting_user"),
         and(eq(pushJobs.status, "dead"), like(pushJobs.lastError, "%ret=-2%")),
       ),
+      or(isNull(pushJobs.expiresAt), gt(pushJobs.expiresAt, now)),
     ))
     .orderBy(desc(pushJobs.createdAt))
     .limit(Math.max(1, Math.min(limit, 10)));

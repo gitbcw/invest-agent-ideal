@@ -39,6 +39,12 @@ Evaluate whether a company still fits the user's investment strategy and whether
 10. Save the report to `reports/company/YYYY-MM-DD-<code>-<name>.md`.
 11. If the analysis suggests changing strategy or role, ask for user confirmation before modifying memory or config.
 
+## Coverage Rules
+
+- Deliver the verified financial, disclosure, peer, governance, or industry sections even when other sections are unavailable.
+- Label a peer comparison with its actual peer set and reporting periods. A partial peer set is not an industry-wide ranking.
+- When official financial reports are unavailable, retain any independently verified context as limited evidence and separate it from the unresolved financial conclusion.
+
 ## Report Structure
 
 ```markdown

@@ -37,9 +37,9 @@
 | `pending_sandbox_confirmations` | 待确认的沙箱操作 | 跨进程状态(微信消息 ↔ 沙箱执行) |
 | `onboarding_drafts` | Onboarding 草稿、确认版本与异步提交快照 | 草稿期不能写 Workspace；需要跨会话确认绑定、后台提交领取、失败恢复和通知去重 |
 | `conversation_tasks` | 旧会话任务草案表 | 保留作考古；conversation-task 草案系统已于 2026-06-23 删除 |
-| `push_jobs` | 微信推送队列、过期会话下的待补送内容 | 系统调度器职责；`awaiting_user` 等状态等待用户重新发起微信会话 |
+| `push_jobs` | 微信推送队列、过期会话下的待补送内容 | 系统调度器职责；`message_kind`、`expires_at`、`origin_task_key`、受控 `retry_policy` 与 `terminal_reason` 是服务层权威状态；`awaiting_user` 等状态等待用户重新发起微信会话 |
 | `weixin_delivery_attempts` | 微信投递尝试、会话活性和手动探测证据 | 需要跨进程保留“距最近入站多久仍可投递”的可审计样本 |
-| `scheduled_task_runs` | 定时任务运行记录 | scheduler claim / 去重 / 状态审计,用于复盘与巡检任务运行观测 |
+| `scheduled_task_runs` | 定时任务运行记录 | scheduler claim / 去重 / 状态审计；生成重试预算、租约、有效期、错误类别与稳定产物引用属于服务层，不写入 Workspace |
 | `indicator_definitions` | 指标定义库(系统级) | 平台元数据,owner=system |
 | `alert_rules` | stage2 watch-rule 规则实例(用户配置 + 调度器高频读) | 运行时规则巡检只执行 `relation_to_plan=stage2_watch_rule` 的规则实例;需要 SQL 索引;watch.yaml 的 `exception_rules` 是协议层文本,不作为机器规则源 |
 | `alert_events` | 已触发提醒事件 | 系统调度器写入(`alert-check.ts`),数据量大(每交易日数百条),cooldown 去重查询需要 SQL 索引;用户 feedback 字段补丁通过 UPDATE 完成,迁移到 jsonl 需 read-modify-write 大文件(WP4.10 决策保留) |

@@ -14,6 +14,7 @@ Use `service-capability-policy`. Do not call localhost HTTP, shell fallbacks, sa
 3. Record the data cutoff, source confidence, warnings, conflicts, and missing evidence. Never invent exact prices or events.
 4. Separate facts, inference, action, required user confirmation, validation signals, and invalidation signals.
 5. Connect any action suggestion to the user's confirmed strategy, plans, rules, position state, and risk discipline. Do not promise returns or imply automatic trading.
+6. When one market dimension is missing, continue the review with the other verified dimensions. Identify the affected conclusion, data cutoff, and coverage boundary; do not turn a partial portfolio or market picture into a blanket no-answer.
 
 The report structure and length should follow the actual day rather than a fixed word count. It must still make the three decisions easy to find: whether action is needed, whether attention is needed, and whether user confirmation is needed.
 

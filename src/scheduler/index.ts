@@ -12,8 +12,19 @@ import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/sched
 import { formatUnknownError } from "../lib/errors.js";
 import { formatAlerts, runAlertCheck } from "./alert-check.js";
 import { processOnboardingDraftCommits } from "../services/onboarding-drafts.js";
+import type { ScheduledMessageKind } from "../services/scheduled-message-policy.js";
 
-export type PushCallback = (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => Promise<void | boolean | string>;
+export type PushCallback = (message: string, options?: {
+  userId?: string;
+  projectId?: string;
+  instanceId?: string;
+  messageKind?: ScheduledMessageKind;
+  expiresAt?: string;
+  originTaskKey?: string;
+  retryPolicy?: string;
+  idempotencyKey?: string;
+  maxAttempts?: number;
+}) => Promise<void | boolean | string>;
 
 const INTERVAL_SETTINGS_KEY = "alert_check_interval_minutes";
 const DEFAULT_INTERVAL_MINUTES = 5;
