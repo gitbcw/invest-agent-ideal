@@ -14,6 +14,8 @@ test("workspace file browser lists user project files but excludes secrets and r
   await writeFile(path.join(workspace, "AGENTS.md"), "rules\n");
   await writeFile(path.join(workspace, "analysis.py"), "print('ok')\n");
   await writeFile(path.join(workspace, "settings.toml"), "mode = \"test\"\n");
+  await writeFile(path.join(workspace, "config.yaml"), "mode: test\n");
+  await writeFile(path.join(workspace, "config.yml"), "enabled: true\n");
   await writeFile(path.join(workspace, "Makefile"), "all:\n\t@echo ok\n");
   await writeFile(path.join(workspace, "preview.html"), "<h1>Preview</h1>\n");
   await writeFile(path.join(workspace, "chart.png"), "png fixture\n");
@@ -32,12 +34,16 @@ test("workspace file browser lists user project files but excludes secrets and r
     const { listWorkspaceFiles, readWorkspaceFile, WorkspaceFileError } = await import("../src/services/workspace-files.js");
     const result = await listWorkspaceFiles({ userId: "files-user" });
     const paths = result.items.map((item) => item.relativePath);
-    assert.deepEqual(paths, ["AGENTS.md", "chart.png", "preview.html", "reports/daily/today.md"]);
+    assert.deepEqual(paths, ["AGENTS.md", "chart.png", "config.yaml", "config.yml", "preview.html", "reports/daily/today.md"]);
     assert.equal(result.items.find((item) => item.relativePath === "preview.html")?.previewMode, "html");
     assert.equal(result.items.find((item) => item.relativePath === "chart.png")?.previewMode, "image");
+    assert.equal(result.items.find((item) => item.relativePath === "config.yaml")?.mimeType, "application/yaml");
+    assert.equal(result.items.find((item) => item.relativePath === "config.yaml")?.previewMode, "text");
     const file = await readWorkspaceFile({ userId: "files-user", relativePath: "reports/daily/today.md" });
     assert.equal(Buffer.from(file.base64, "base64").toString(), "report\n");
     assert.equal(file.checksum.length, 64);
+    const yamlFile = await readWorkspaceFile({ userId: "files-user", relativePath: "config.yml" });
+    assert.equal(Buffer.from(yamlFile.base64, "base64").toString(), "enabled: true\n");
     await assert.rejects(
       () => readWorkspaceFile({ userId: "files-user", relativePath: "../outside.txt" }),
       (error: unknown) => error instanceof WorkspaceFileError && error.code === "WORKSPACE_FILE_INVALID_PATH",

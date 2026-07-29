@@ -151,7 +151,7 @@ export async function readWorkspaceFile(input: { userId: string; relativePath: s
   }
 
   const item = describeFile(relativePath, fileStat.size, fileStat.mtime.toISOString());
-  if (!isBrowsablePreviewMode(item.previewMode)) {
+  if (!isBrowsableWorkspaceFile(item)) {
     throw new WorkspaceFileError("WORKSPACE_FILE_FORBIDDEN", relativePath);
   }
   const bytes = await readFile(realTargetPath);
@@ -176,7 +176,7 @@ async function walk(rootPath: string, relativeDirectory: string, items: Workspac
     if (!entry.isFile()) continue;
     const fileStat = await lstat(path.join(rootPath, relativePath));
     const item = describeFile(relativePath, fileStat.size, fileStat.mtime.toISOString());
-    if (!isBrowsablePreviewMode(item.previewMode)) continue;
+    if (!isBrowsableWorkspaceFile(item)) continue;
     items.push(item);
     if (items.length > MAX_LISTED_FILES) {
       throw new WorkspaceFileError("WORKSPACE_FILE_LIMIT_EXCEEDED", String(MAX_LISTED_FILES));
@@ -211,8 +211,13 @@ function previewModeFor(mimeType: string): WorkspaceFilePreviewMode {
   return "unsupported";
 }
 
-function isBrowsablePreviewMode(mode: WorkspaceFilePreviewMode): boolean {
-  return mode === "markdown" || mode === "html" || mode === "image";
+function isBrowsableWorkspaceFile(item: WorkspaceFileItem): boolean {
+  // YAML is workspace configuration, so expose it only through the existing
+  // escaped plain-text preview. Other source/text formats remain excluded.
+  return item.previewMode === "markdown"
+    || item.previewMode === "html"
+    || item.previewMode === "image"
+    || item.mimeType === "application/yaml";
 }
 
 function normalizeRelativePath(value: string): string {
