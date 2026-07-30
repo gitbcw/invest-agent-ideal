@@ -1162,8 +1162,8 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     }
     const currentPassword = String(request.body?.currentPassword || "");
     const newPassword = String(request.body?.newPassword || "");
-    if (newPassword.length < 12 || newPassword.length > 256) {
-      return reply.status(400).send({ ok: false, error: "new password must be 12-256 characters" });
+    if (newPassword.length < 8 || newPassword.length > 256) {
+      return reply.status(400).send({ ok: false, error: "new password must be 8-256 characters" });
     }
     const rows = await db.select().from(platformUsers).where(eq(platformUsers.id, context.userId)).limit(1);
     const user = rows[0];

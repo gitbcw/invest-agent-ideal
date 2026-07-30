@@ -161,12 +161,12 @@ if(!authenticated){
         const card=document.querySelector('.login-card');
         // 注意：.login-card 本身是 <form id="loginForm">，HTML 禁止 form 嵌套，
         // 故改密卡片用 <div> 而非 <form>，按钮绑定 click 而非 submit。
-        card.innerHTML='<div class="eyebrow">INVEST AGENT PLATFORM</div><div class="brand">首次登录需要改密</div><p class="help">请设置一个至少 12 位的新密码，完成后才能进入运营看板。</p><div id="passwordForm"><div class="field"><label for="currentPassword">当前密码</label><input id="currentPassword" type="password" autocomplete="current-password" required /></div><div class="field"><label for="newPassword">新密码</label><input id="newPassword" type="password" autocomplete="new-password" minlength="12" required /></div><div id="passwordError" class="login-error"></div><button class="btn btn-primary" id="passwordSubmit" type="button">更新密码</button></div>';
+        card.innerHTML='<div class="eyebrow">INVEST AGENT PLATFORM</div><div class="brand">首次登录需要改密</div><p class="help">请设置一个至少 8 位的新密码，完成后才能进入运营看板。</p><div id="passwordForm"><div class="field"><label for="currentPassword">当前密码</label><input id="currentPassword" type="password" autocomplete="current-password" required /></div><div class="field"><label for="newPassword">新密码</label><input id="newPassword" type="password" autocomplete="new-password" minlength="8" required /></div><div id="passwordError" class="login-error"></div><button class="btn btn-primary" id="passwordSubmit" type="button">更新密码</button></div>';
         document.getElementById('passwordSubmit').addEventListener('click',async()=>{
           const pe_err=document.getElementById('passwordError');pe_err.style.display='none';
           const pe_btn=document.getElementById('passwordSubmit');pe_btn.disabled=true;
           const newPw=document.getElementById('newPassword').value;
-          if(newPw.length<12){pe_err.textContent='新密码至少需要 12 位';pe_err.style.display='block';pe_btn.disabled=false;return;}
+          if(newPw.length<8){pe_err.textContent='新密码至少需要 8 位';pe_err.style.display='block';pe_btn.disabled=false;return;}
           try{await json('/api/platform/auth/password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({currentPassword:document.getElementById('currentPassword').value,newPassword:newPw})});window.location.reload();}
           catch(pf){pe_err.textContent=pf.message||'密码更新失败';pe_err.style.display='block';pe_btn.disabled=false;}
         });
