@@ -47,7 +47,7 @@ try {
   assert.equal(sessionAllowed.statusCode, 200);
   const remotePlatform = await app.inject({ method: "GET", url: "/platform", remoteAddress: "203.0.113.10" });
   assert.equal(remotePlatform.statusCode, 401);
-  assert.equal(remotePlatform.body.includes("经营看板登录"), true);
+  assert.equal(remotePlatform.body.includes("运营看板登录"), true);
   assert.equal(remotePlatform.body.includes("用户助手"), false);
   assert.equal(remotePlatform.body.includes("日志审计"), false);
   const remoteSession = await app.inject({ method: "GET", url: "/api/platform/instances", headers: { cookie: sessionCookie }, remoteAddress: "203.0.113.10" });

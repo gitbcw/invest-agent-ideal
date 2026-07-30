@@ -948,13 +948,19 @@ function ensurePlatformAuthSeed() {
   const now = new Date().toISOString();
   if (!hasMigration("platform_auth_v1")) markMigration("platform_auth_v1");
   const ownerPermissions = JSON.stringify(["*"]);
-  const partnerPermissions = JSON.stringify(["overview.read", "customers.read", "quality.read", "operations.read"]);
+  const partnerPermissions = JSON.stringify(["overview.read", "customers.read", "quality.read", "operations.read", "cost.read"]);
   sqlite
     .prepare(
       "INSERT OR IGNORE INTO platform_roles (id, name, permissions_json, created_at, updated_at) " +
       "VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)"
     )
     .run("owner", "Owner", ownerPermissions, now, now, "partner", "Partner", partnerPermissions, now, now);
+  // v2: 升级既有 partner 角色权限（加入 cost.read，供成本总览只读）。
+  if (!hasMigration("platform_partner_cost_read_v2")) {
+    markMigration("platform_partner_cost_read_v2");
+    sqlite.prepare("UPDATE platform_roles SET permissions_json=?, updated_at=? WHERE id='partner'")
+      .run(partnerPermissions, now);
+  }
 
   const existingUser = sqlite.prepare("SELECT id FROM platform_users LIMIT 1").get() as { id?: string } | undefined;
   if (existingUser?.id) return;

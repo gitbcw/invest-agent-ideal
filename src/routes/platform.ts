@@ -1162,8 +1162,8 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     }
     const currentPassword = String(request.body?.currentPassword || "");
     const newPassword = String(request.body?.newPassword || "");
-    if (newPassword.length < 12 || newPassword.length > 256) {
-      return reply.status(400).send({ ok: false, error: "new password must be 12-256 characters" });
+    if (newPassword.length < 8 || newPassword.length > 256) {
+      return reply.status(400).send({ ok: false, error: "new password must be 8-256 characters" });
     }
     const rows = await db.select().from(platformUsers).where(eq(platformUsers.id, context.userId)).limit(1);
     const user = rows[0];
@@ -1410,6 +1410,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
           reply.header("set-cookie", platformSessionCookie(session.id, session.maxAgeSeconds));
         }
         return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+          role: "owner",
           portalPublicUrl: config.portal.publicUrl,
         }));
       }
@@ -1417,13 +1418,14 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     }
     const context = await getPlatformAuthContext(request);
     if (context?.authType === "account" && context.role === "partner") {
-      return reply.type("text/html; charset=utf-8").send(renderPartnerPlatformPage({ authenticated: true }));
+      return reply.type("text/html; charset=utf-8").send(renderPlatformPage({ role: "partner" }));
     }
     if (context?.authType === "account" && context.role === "owner" && context.mustChangePassword) {
       return reply.type("text/html; charset=utf-8").send(renderPartnerPlatformPage());
     }
     if (context?.authType === "account" && context.role === "owner") {
       return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+        role: "owner",
         portalPublicUrl: config.portal.publicUrl,
       }));
     }
@@ -1433,6 +1435,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
         reply.header("set-cookie", platformSessionCookie(session.id, session.maxAgeSeconds));
       }
       return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+        role: "owner",
         portalPublicUrl: config.portal.publicUrl,
       }));
     }
@@ -1515,6 +1518,24 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       days,
       groupBy: codexGroupBy,
     });
+    // Partner 脱敏：按客户拆分时把明文 instanceId 桶替换为 cus_xxx 标识，
+    // 并隐藏 userId 维度（partner 不应按用户拆分）。保护脱敏边界。
+    const authRole = (request as any).platformAuth?.role;
+    if (authRole === "partner") {
+      const maskedGroups = (codexUsage.groups || []).map((group: any) => {
+        if (codexGroupBy === "instance" && group.bucket) {
+          const customerKey = partnerCustomerKey(group.bucket);
+          return { ...group, bucket: customerKey, customerLabel: partnerCustomerLabel(customerKey) };
+        }
+        return group;
+      });
+      return {
+        ok: true,
+        updatedAt: new Date().toISOString(),
+        filters: { userId: "", instanceId: "", days, groupBy: codexGroupBy === "user" ? "instance" : groupBy },
+        codexUsage: { ...codexUsage, groups: maskedGroups },
+      };
+    }
     return {
       ok: true,
       updatedAt: new Date().toISOString(),

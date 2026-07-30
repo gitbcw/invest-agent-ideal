@@ -29,7 +29,7 @@ const rollbackSource = [
   "const login = await app.inject({ method: 'POST', url: '/api/platform/auth/login', payload: { username: 'owner', password: 'migration-password-123456' } });",
   "const page = await app.inject({ method: 'GET', url: '/platform', remoteAddress: '203.0.113.10' });",
   "await app.close();",
-  "console.log(JSON.stringify({ oldRoute: oldRoute.statusCode, newRoute: newRoute.statusCode, login: login.statusCode, page: page.statusCode, pageHasLoginShell: page.body.includes('经营看板登录') }));",
+  "console.log(JSON.stringify({ oldRoute: oldRoute.statusCode, newRoute: newRoute.statusCode, login: login.statusCode, page: page.statusCode, pageHasLoginShell: page.body.includes('运营看板登录') }));",
 ].join("");
 
 try {
