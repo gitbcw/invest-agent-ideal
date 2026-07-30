@@ -15,12 +15,11 @@ Use this skill when the task changes deterministic service capabilities rather t
 
 ## Read First
 
-- `AGENTS.md` for service/skill boundary and runtime red lines.
-- `CLAUDE.md` for current API inventory and key files.
-- `docs/system-overview.md` for ownership boundaries.
+- Read the affected route, service, MCP registration, and its nearest test first.
 - `docs/service-tools-mcp.md` when adding or changing MCP service tools.
+- `docs/system-overview.md` when the service/workspace ownership boundary is unclear.
 - `docs/23-multi-user-sandbox-design.md` when permissions, sandbox token, audit, or workspace isolation are involved.
-- `docs/user-portal-protocol.md` when changing portal connector protocol.
+- Read only the affected section of `docs/user-portal-protocol.md` when changing the portal connector protocol.
 
 ## Implementation Workflow
 
@@ -31,10 +30,10 @@ Use this skill when the task changes deterministic service capabilities rather t
    - routes under `src/routes/*` for HTTP surfaces;
    - services under `src/services/*` or `src/lib/*` for shared deterministic logic;
    - MCP tools under `src/mcp/*` when Codex ACP needs stable tool access;
-   - scripts under `scripts/*` for smoke/contract validation.
+   - `node:test` for deterministic module behavior and scripts under `scripts/*` only for process or service-boundary validation.
 5. Update workspace prompts or skills only if the caller needs new usage instructions.
-6. Add or update a smoke/contract test for the API path.
-7. Run `npm run build` and the smallest relevant smoke.
+6. Add or update a contract test for the API path.
+7. Run `npm test`, `npm run build`, and the smallest relevant boundary smoke when needed.
 8. Update current docs only when the API becomes a durable contract.
 
 ## API Checklist
@@ -51,13 +50,13 @@ Use this skill when the task changes deterministic service capabilities rather t
 Choose by changed surface:
 
 ```bash
+npm test
 npm run build
 npm run smoke:mcp-service-tools
 npm run smoke:onboarding-confirm-step
 npm run smoke:portal-conversation-log
 npm run smoke:portal-attachment
 npm run smoke:stage2-watch-rules
-npm run smoke:customer-output
 ```
 
 If the API changes user-visible behavior, inspect the smallest real interaction and its audit evidence with `invest-eval`; only add deterministic contracts for stable service behavior.

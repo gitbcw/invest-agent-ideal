@@ -89,16 +89,21 @@ test("lock coordinates separate MCP-style processes", async (t) => withLockRoot(
     child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`lock child failed: ${code}; stderr: ${childStderr}`)));
     child.once("error", reject);
   });
+  let childLockTimeout: ReturnType<typeof setTimeout> | undefined;
   const childLocked = new Promise<void>((resolve, reject) => {
     child.stdout.once("data", (chunk) => String(chunk).includes("locked") && resolve());
     child.once("error", reject);
-    setTimeout(() => reject(new Error(`lock child did not report acquisition in time; stderr: ${childStderr}`)), 20_000);
+    childLockTimeout = setTimeout(() => reject(new Error(`lock child did not report acquisition in time; stderr: ${childStderr}`)), 20_000);
   });
   t.after(() => { child.kill("SIGKILL"); });
-  await Promise.race([
-    childLocked,
-    childExit.then(() => { throw new Error(`lock child exited before acquiring the lock; stderr: ${childStderr}`); }),
-  ]);
+  try {
+    await Promise.race([
+      childLocked,
+      childExit.then(() => { throw new Error(`lock child exited before acquiring the lock; stderr: ${childStderr}`); }),
+    ]);
+  } finally {
+    if (childLockTimeout) clearTimeout(childLockTimeout);
+  }
 
   let parentEntered = false;
   const parent = withResourceMutationLock(scope, "portfolio", async () => { parentEntered = true; }, { lockRoot, timeoutMs: 10_000 });

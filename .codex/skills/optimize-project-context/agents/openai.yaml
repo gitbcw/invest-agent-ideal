@@ -1,0 +1,7 @@
+interface:
+  display_name: "项目上下文整理"
+  short_description: "按需诊断项目上下文负担、定位根因并制定分阶段精简整理计划"
+  default_prompt: "使用 $optimize-project-context 诊断当前项目上下文，并在确认根因后制定精简计划。"
+
+policy:
+  allow_implicit_invocation: false

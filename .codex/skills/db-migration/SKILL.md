@@ -16,9 +16,9 @@ Use this skill for SQLite schema changes, data backfills, and persistence owners
 
 ## Read First
 
-- `CLAUDE.md` database section for current DB facts and commands.
 - `docs/table-ownership.md` for service/workspace/discard ownership.
-- `docs/system-overview.md` for runtime ownership.
+- Read the affected `src/db/schema.ts`, migration path, and nearest persistence test.
+- `docs/system-overview.md` when service/workspace runtime ownership remains unclear after table ownership review.
 - `docs/23-multi-user-sandbox-design.md` if sandbox audit, permissions, or workspace isolation are involved.
 - `.codex/skills/volcano-ops/references/volcano-runtime-migration-plan.md` before production DB migration or rollback.
 

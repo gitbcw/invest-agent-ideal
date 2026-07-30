@@ -2,39 +2,7 @@
 
 This directory keeps current, agent-useful knowledge small and navigable. Historical plans, experiments, test records, migration notes, and superseded decisions live in [archive/](./archive/) and should not guide new implementation unless a current document explicitly points there.
 
-## Read These First
-
-If you only have 10 minutes, read these three:
-
-| Order | Document | Use It For |
-| --- | --- | --- |
-| 1 | [../AGENTS.md](../AGENTS.md) | Operating principles, product red lines, investment-output discipline, and strategy-plan confirmation gates |
-| 2 | [../CLAUDE.md](../CLAUDE.md) | Commands, runtime details, key files, APIs, database notes, and local service operations |
-| 3 | [system-overview.md](./system-overview.md) | One-page architecture map: WeChat/web -> workspace ACP -> MCP service tools -> deterministic core |
-
-After that, use the task-based map below instead of reading every file.
-
-## Current Consensus
-
-- Invest Agent is a WeChat-first investment assistant where one user maps to one assistant and one workspace. `instanceId` remains an internal compatibility/isolation key.
-- Normal WeChat messages go directly through the workspace-scoped ACP backend, normally Codex, with only minimal channel context.
-- Do not restore service-level triage, fast-lane classification, onboarding short-circuiting, review intent detection, or context-packet wrapping for normal WeChat messages.
-- The service owns deterministic execution: SQLite, market data, Platform APIs, WeChat bridge, scheduler, alert push, sandbox, audit, confirmations, portal connector, and canonical conversation log.
-- Skills and workspace AGENTS.md own investment judgment workflows: review structure, screening reasoning, evidence rules, cautious language, and confirmation discipline.
-- Codex ACP is the default runtime backend. Hermes remains compatibility/experimental only.
-- ACP model tier defaults to `complex`. `simple` tier is opt-in via `ACP_SIMPLE_MODEL_ENABLED=true` after stability debugging.
-- Codex ACP sessions get the service-owned `invest-agent-service-tools` stdio MCP server. It is the only deterministic service capability surface exposed to workspace Agents; HTTP remains for non-Agent adapters.
-- Onboarding uses service-owned drafts: each confirmed step remains a draft until the final frozen snapshot is asynchronously validated and applied to the workspace.
-- Workspace artifacts carry user-specific investment state; table-level exceptions are defined in [table-ownership.md](./table-ownership.md).
-- Platform is an internal administration surface. Owners may perform authorized administration; Partners receive read-only, anonymized operating and quality views without customer investment content or raw conversations.
-- User portal is a separate cloud entrance, not a Platform rewrite. The local connector and `conversation_sessions` / `conversation_messages` remain the source of truth.
-- The Portal workspace browser is read-only and uses `workspace.file.list/get`. It shows Markdown, HTML and images; images use the lightbox, while Markdown/HTML use deduplicated right-rail tabs. Browser-side edit/delete is prohibited.
-- Fixed public IP plus HTTP is the production Portal compatibility baseline. Do not require HTTPS or secure-context-only browser APIs.
-- Local reliable data service comes first, AI external search second, explicit data gap last. Do not invent missing market facts.
-- Historical docs in [archive/](./archive/) are archaeology unless linked from this README or another current source-of-truth doc.
-- `main` is the only maintained integration and production-release baseline. Volcano snapshots, frozen tags, and reconciliation branches are read-only evidence; normal releases come from a clean worktree at a reviewed `main` commit and never replace production runtime data.
-
-## Read By Task
+## Read By Domain
 
 ### Product And Investment Method
 
@@ -42,8 +10,9 @@ After that, use the task-based map below instead of reading every file.
 | --- | --- |
 | [02-investment-methodology.md](./02-investment-methodology.md) | User investment methodology reference |
 | [04-core-workflows.md](./04-core-workflows.md) | Core loops across monitoring, alerts, reviews, screening, and feedback |
+| [best-effort-answering-design.md](./best-effort-answering-design.md) | Evidence-bounded best-effort answering, graceful degradation, capability-gap handling, and rollout acceptance |
 | [investment-model-design.md](./investment-model-design.md) | Investment model as user-facing configuration center |
-| [trading-strategy-design.md](./trading-strategy-design.md) | Trading strategy entity, strategy-to-plan flow, and two-gate confirmation |
+| [trading-strategy-design.md](./trading-strategy-design.md) | Implemented strategy entity and plan linkage, two-gate confirmation, and explicit unimplemented workflow boundary |
 | [personas/README.md](./personas/README.md) | Persona index |
 | [personas/lao-zhang.md](./personas/lao-zhang.md) | User empathy and product judgment aid |
 
@@ -55,21 +24,20 @@ After that, use the task-based map below instead of reading every file.
 | [service-tools-mcp.md](./service-tools-mcp.md) | Codex ACP service-tools MCP contract, tool list, and smoke verification |
 | [table-ownership.md](./table-ownership.md) | SQLite table ownership: service / workspace / discard |
 | [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md) | Sandbox token, permission, audit, and isolation model |
-| [composite-indicator-system.md](./composite-indicator-system.md) | L1 operators / L2 signals / L3a rule tree / L3b sandbox script architecture |
+| [composite-indicator-system.md](./composite-indicator-system.md) | Implemented L1, L3a and L3b indicator contracts, acknowledgement gate, and runtime red lines |
 | [market-data-service-design.md](./market-data-service-design.md) | Market data facade, MCP tool contract, and non-Agent HTTP adapter |
 | [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
 | [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
 | [workspace-compatibility.md](./workspace-compatibility.md) | Read-only preflight, managed-asset ownership, backup, migration and rollback contract for existing user Workspaces |
 | [version-snapshot-and-assisted-rollback-plan.md](./version-snapshot-and-assisted-rollback-plan.md) | Release snapshot, known-good retention, standard deploy/code rollback, and audited AI-assisted Workspace recovery |
-| [t194-maintenance-window-handoff.md](./t194-maintenance-window-handoff.md) | Evening production demonstration, evidence capture, human gate, and Personal OS completion handoff for T-194 |
+| [t194-maintenance-window-handoff.md](./t194-maintenance-window-handoff.md) | Current T-194 release/rollback demonstration, evidence capture, human gate, and Personal OS completion handoff |
 
 ### Watch Runtime And Scheduler
 
 | Document | Use It For |
 | --- | --- |
 | [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md) | Current watch runtime source: scheduler, market-watch, rule catalog/API, independent rule-alert-check |
-| [watch-runtime-design-note.md](./watch-runtime-design-note.md) | Background note; useful context, but partly superseded by API-first stage 2 direction |
-| [watch-runtime-stage1-implementation-brief.md](./watch-runtime-stage1-implementation-brief.md) | Implementation/acceptance support for stage 1; not the primary watch design entry |
+| [scheduled-message-retry-and-expiry-plan.md](./scheduled-message-retry-and-expiry-plan.md) | Implementation plan for generation retry, delivery retry, message expiry, idempotency, and recovery without stale-message disturbance |
 
 For scheduled-task or push-delivery operations, use the project-only skill `.codex/skills/scheduler-push-debug`.
 
@@ -80,7 +48,7 @@ For scheduled-task or push-delivery operations, use the project-only skill `.cod
 | Document | Use It For |
 | --- | --- |
 | [user-portal.md](./user-portal.md) | Current ownership, workspace browser, interaction, HTTP and deployment contract |
-| [user-portal-protocol.md](./user-portal-protocol.md) | Relay protocol and current workspace file commands; retired sections are explicitly marked |
+| [user-portal-protocol.md](./user-portal-protocol.md) | Exact current relay envelope, commands, payloads, scope rules, attachments, artifacts, and workspace file protocol |
 
 Initial Portal design, completed work packages and acceptance records are under `archive/portal/2026-07/` and are not implementation inputs.
 
@@ -88,8 +56,7 @@ Initial Portal design, completed work packages and acceptance records are under 
 
 | Document | Use It For |
 | --- | --- |
-| [platform-partner-admin-design.md](./platform-partner-admin-design.md) | Internal Platform roles, Partner data boundary, authentication posture, and rollout constraints |
-| [platform-partner-admin-phase1-implementation.md](./platform-partner-admin-phase1-implementation.md) | Phase 1 implementation scope and verification surface |
+| [platform-partner-admin-design.md](./platform-partner-admin-design.md) | Implemented Owner/Partner roles, authentication, Partner allowlist APIs, page boundary, and deployment limitation |
 
 ### Data Sources
 
@@ -97,6 +64,7 @@ Initial Portal design, completed work packages and acceptance records are under 
 | --- | --- |
 | [data-source-policy-decision.md](./data-source-policy-decision.md) | Accepted data-source policy and cost posture |
 | [data-provider-cost-evaluation.md](./data-provider-cost-evaluation.md) | Provider cost bands and build-vs-buy decision support |
+| [doubao-search-integration-plan.md](./doubao-search-integration-plan.md) | Proposed Doubao Search Custom primary / SearXNG fallback implementation plan |
 | [market-data-resource-inventory.md](./market-data-resource-inventory.md) | Active provider/resource ledger, evidence status, and promotion acceptance set |
 | [custom-formula-historical-screening-research.md](./custom-formula-historical-screening-research.md) | User-defined formula, point-in-time A-share screening requirements, evidence, scope, and phased delivery boundary |
 
@@ -149,7 +117,7 @@ Avoid [archive/](./archive/) for current implementation. It contains:
 - detailed experiments;
 - previous runtime, platform, and triage directions.
 
-Archive material can explain how a decision emerged, but the current decision must live in `AGENTS.md`, `CLAUDE.md`, this README, or one of the current source-of-truth documents above.
+Archive material can explain how a decision emerged, but the current decision must live in `AGENTS.md`, this README, or one of the current source-of-truth documents above.
 
 ## Keep Or Archive Rule
 

@@ -19,7 +19,7 @@ Use this skill when the symptom is “it should have pushed/replied/run, but did
 - `references/stage1-runbook.md` for manual scheduler/push acceptance and DB inspection.
 - `docs/watch-runtime-phased-implementation.md` for current watch runtime behavior and rule inspection ownership.
 - `docs/quality/test-system-health-review.md` when turning the incident into a deterministic regression contract.
-- `CLAUDE.md` for commands, table names, scripts, and API entry points.
+- Read the affected scheduler, delivery, or connector code only after the triage evidence identifies the failing stage.
 
 ## Fast Triage
 
@@ -92,12 +92,10 @@ limit 50;
 Use the smallest command that matches the changed or suspected area:
 
 ```bash
+npm test
 npm run build
 npm run smoke:stage1-scheduler
 npm run smoke:stage2-watch-rules
-npm run smoke:review-push-summary
-npm run smoke:weixin-complex-ack
-npm run smoke:customer-output
 ```
 
 For local controlled triggering, use the testing scheduler API described in `references/stage1-runbook.md` and verify DB rows afterward.

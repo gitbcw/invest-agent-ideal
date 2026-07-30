@@ -59,7 +59,7 @@
 - 服务入口：`src/index.ts` 启动 HTTP、ACP、scheduler、portal connector。
 - HTTP 监听：`src/server.ts` 当前固定 `host: "0.0.0.0"`，因此如果服务器安全组开放 `22655`，Platform 会被公网访问到。
 - PM2 配置：`ecosystem.config.js` 已存在，但 env 只覆盖了 `PORT`、`WEIXIN_AUTO_START`、`INVEST_AGENT_WEIXIN_STATE_DIR`。
-- 火山云脚本：`scripts/deploy-volcano.sh` 已存在，默认 `claude@118.145.115.197:~/invest-agent`，会 rsync 代码、`npm install`、`npm run build`、`npm run smoke`、PM2 restart/start。
+- 火山云脚本：`scripts/deploy-volcano.sh` 已存在，默认 `claude@118.145.115.197:~/invest-agent`，会 rsync 代码、`npm install`、`npm run build`、PM2 restart/start；显式设置 `RUN_SMOKE=true` 时额外运行 `npm test`。
 - 当前本机默认运行时路径：
   - `DB_PATH=./data/invest-agent.db`
   - `RUNTIME_DATA_ROOT=./data`
@@ -361,7 +361,7 @@ curl -fsS http://127.0.0.1:22655/health
 - [x] `src/server.ts` 使用配置监听，而不是硬编码 `0.0.0.0`。
 - [x] `.env.example` 增加服务器相关变量示例：`HOST`、`WORKSPACE_ROOT`、`RUNTIME_DATA_ROOT`、`WORKSPACE_TEMPLATE_PATH`。
 - [x] `ecosystem.config.js` 生产默认 `HOST=127.0.0.1`。
-- [x] `scripts/deploy-volcano.sh` 默认只 build，不默认跑全量 `npm run smoke`；可用 `RUN_SMOKE=true` 显式开启；部署完成提示 SSH tunnel 到本机 `22648`。
+- [x] `scripts/deploy-volcano.sh` 默认只 build，不默认跑测试；可用 `RUN_SMOKE=true` 显式运行 `npm test`；部署完成提示 SSH tunnel 到本机 `22648`。
 - [x] 新增 `scripts/package-volcano-runtime.sh` 和 `scripts/apply-volcano-runtime.sh`，用于 Phase 2 可重复打包/解包生产运行时数据。
 
 验收：

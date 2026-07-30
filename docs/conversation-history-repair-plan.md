@@ -1,7 +1,7 @@
 # 对话历史修复计划
 
 > 来源：T-187《对话记录历史规则核验》  
-> 依据：`docs/conversation-history-rule-audit-report.md`  
+> 依据：`docs/archive/conversation-history-rule-audit-report.md`
 > 计划日期：2026-07-27  
 > 状态：待执行
 
@@ -172,7 +172,7 @@ Portal contract 测试至少覆盖：
 - 阶段 A：Portal 与必要 Runtime contract 改动、单元/contract/browser 验收记录、生产只读复核报告。
 - 阶段 B：schema migration、preflight/dry-run 工具、备份与回滚记录、生产迁移验收报告。
 - 阶段 C：微信可见会话边界设计文档；未确认前不提交实现。
-- 完成后更新当前 `docs/user-portal.md`、`docs/user-portal-protocol.md` 和必要的 `CLAUDE.md`；阶段性执行记录验收后移入 `docs/archive/portal/`。
+- 完成后更新当前 `docs/user-portal.md`、`docs/user-portal-protocol.md` 和必要的项目 Skill；阶段性执行记录验收后移入 `docs/archive/portal/`。
 
 ## 9. 风险与控制
 

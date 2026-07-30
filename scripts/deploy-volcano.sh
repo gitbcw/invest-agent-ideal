@@ -81,7 +81,7 @@ done
 npm install
 npm run build
 if [ "${RUN_SMOKE:-false}" = "true" ]; then
-  npm run smoke
+  npm test
 fi
 
 mkdir -p logs data reviews .state

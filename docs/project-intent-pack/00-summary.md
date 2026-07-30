@@ -16,6 +16,6 @@
 
 confidence: high
 evidence:
-  - "CLAUDE.md"
+  - "docs/system-overview.md"
   - "docs/README.md"
   - "docs/04-core-workflows.md"

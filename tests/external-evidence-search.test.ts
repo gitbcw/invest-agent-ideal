@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readPublicWebPage, searchPublicFinanceNews, searchPublicWeb } from "../src/services/external-evidence-search.js";
+import { readPublicWebPage, resetDoubaoQpsWindowForTests, searchPublicFinanceNews, searchPublicWeb } from "../src/services/external-evidence-search.js";
+
+// Doubao tests inject DOUBAO_SEARCH_API_KEY per-process. Tests reset the QPS
+// window before each case so the process-local limiter does not cross-contaminate.
+function doubaoEnabledEnv(value = "test-doubao-key"): NodeJS.ProcessEnv {
+  return { ...process.env, DOUBAO_SEARCH_API_KEY: value, DOUBAO_SEARCH_ENABLED: "true" };
+}
 
 test("public finance-news search returns normalized, dated and linked evidence", async () => {
   const payload = {
@@ -204,4 +210,238 @@ test("public web reader rejects private and local destinations before fetch", as
     /UNSAFE_URL/,
   );
   assert.equal(fetchCalled, false);
+});
+
+test("Doubao primary search constructs the request and normalizes results", async () => {
+  resetDoubaoQpsWindowForTests();
+  let captured: { url: string; method: string; auth?: string; ctype?: string; body?: string } | null = null;
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    const headers = init?.headers;
+    const headerGet = (key: string): string | undefined => {
+      if (headers instanceof Headers) return headers.get(key) ?? undefined;
+      if (headers && typeof headers === "object") {
+        const record = headers as Record<string, string>;
+        return record[key] ?? undefined;
+      }
+      return undefined;
+    };
+    captured = {
+      url: String(input),
+      method: String(init?.method ?? "GET"),
+      auth: headerGet("Authorization"),
+      ctype: headerGet("Content-Type"),
+      body: typeof init?.body === "string" ? init.body : undefined,
+    };
+    return new Response(JSON.stringify({
+      ResponseMetadata: { RequestId: "req-1" },
+      Result: {
+        WebResults: [
+          { Title: "<em>贵州茅台</em>经营数据", Url: "https://finance.example.test/article/1", Summary: "公司披露季度经营信息", Snippet: "fallback snippet", SortId: 2 },
+          { Title: "无效链接", Url: "javascript:alert(1)", Summary: "ignored", SortId: 3 },
+          { Title: "缺少Summary时回退Snippet", Url: "https://finance.example.test/article/2", Snippet: "snippet content", SortId: 5 },
+        ],
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const result = await searchPublicWeb(
+    { query: "贵州茅台 经营数据", limit: 5, userId: "doubao-search-test" },
+    {
+      fetchImpl,
+      env: { ...process.env, DOUBAO_SEARCH_API_KEY: "test-doubao-key", DOUBAO_SEARCH_ENABLED: "true" } as NodeJS.ProcessEnv,
+      now: new Date("2026-07-26T00:00:00.000Z"),
+    },
+  );
+
+  assert.ok(captured);
+  assert.equal(captured!.url, "https://open.feedcoopapi.com/search_api/web_search");
+  assert.equal(captured!.method, "POST");
+  assert.equal(captured!.auth, "Bearer test-doubao-key");
+  assert.equal(captured!.ctype, "application/json");
+  const parsedBody = JSON.parse(captured!.body ?? "{}");
+  assert.equal(parsedBody.SearchType, "web");
+  assert.equal(parsedBody.Count, 5);
+  assert.deepEqual(parsedBody.Filter, { NeedUrl: true, NeedContent: false });
+  assert.equal(parsedBody.Query, "贵州茅台 经营数据");
+
+  assert.equal(result.source.provider, "doubao_web_search");
+  assert.equal(result.source.evidenceLevel, "secondary_evidence");
+  assert.deepEqual(result.source.warnings, []);
+  assert.deepEqual(result.items, [
+    { title: "贵州茅台 经营数据", snippet: "公司披露季度经营信息", url: "https://finance.example.test/article/1", rank: 2 },
+    { title: "缺少Summary时回退Snippet", snippet: "snippet content", url: "https://finance.example.test/article/2", rank: 5 },
+  ]);
+});
+
+test("Doubao truncates the query to the provider 100-character maximum", async () => {
+  resetDoubaoQpsWindowForTests();
+  let capturedBody: string | undefined;
+  const fetchImpl = async (_input: string | URL | Request, init?: RequestInit) => {
+    capturedBody = typeof init?.body === "string" ? init.body : undefined;
+    return new Response(JSON.stringify({
+      ResponseMetadata: { RequestId: "req-1" },
+      Result: { WebResults: [{ Title: "ok", Url: "https://example.test/a", Summary: "s", SortId: 1 }] },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const longQuery = "A".repeat(150);
+  await searchPublicWeb(
+    { query: longQuery, limit: 1, userId: "doubao-truncate-test" },
+    {
+      fetchImpl,
+      env: { ...process.env, DOUBAO_SEARCH_API_KEY: "test-doubao-key" } as NodeJS.ProcessEnv,
+    },
+  );
+  const parsedBody = JSON.parse(capturedBody ?? "{}");
+  assert.equal(parsedBody.Query.length, 100);
+});
+
+test("Doubao falls back to SearXNG on a provider business error inside an HTTP 200 response", async () => {
+  resetDoubaoQpsWindowForTests();
+  let doubaoCalled = false;
+  let searxngCalled = false;
+  const fetchImpl = async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("feedcoopapi.com")) {
+      doubaoCalled = true;
+      return new Response(JSON.stringify({
+        ResponseMetadata: { Error: { Code: "10403", Message: "no permission" } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    searxngCalled = true;
+    return new Response(JSON.stringify({
+      results: [{ title: "SearXNG result", content: "fallback snippet", url: "https://finance.example.test/article/9" }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const result = await searchPublicWeb(
+    { query: "测试主题", limit: 3, userId: "doubao-fallback-test" },
+    {
+      fetchImpl,
+      searxngUrl: "http://127.0.0.1:8888/search",
+      env: { ...process.env, DOUBAO_SEARCH_API_KEY: "test-doubao-key" } as NodeJS.ProcessEnv,
+    },
+  );
+
+  assert.equal(doubaoCalled, true);
+  assert.equal(searxngCalled, true);
+  assert.equal(result.source.provider, "searxng_web_search");
+  assert.ok(result.source.warnings.some((w) => w.startsWith("provider_failed:doubao_web_search:")));
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0]?.title, "SearXNG result");
+});
+
+test("Doubao falls back to SearXNG on timeout/429/5xx with a preserved primary-failure warning", async () => {
+  resetDoubaoQpsWindowForTests();
+  const fetchImpl = async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("feedcoopapi.com")) {
+      return new Response(JSON.stringify({ error: "rate limited" }), { status: 429 });
+    }
+    return new Response(JSON.stringify({
+      results: [{ title: "SearXNG result", content: "fallback", url: "https://finance.example.test/article/9" }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const result = await searchPublicWeb(
+    { query: "测试主题", limit: 3, userId: "doubao-429-test" },
+    {
+      fetchImpl,
+      searxngUrl: "http://127.0.0.1:8888/search",
+      env: { ...process.env, DOUBAO_SEARCH_API_KEY: "test-doubao-key" } as NodeJS.ProcessEnv,
+    },
+  );
+
+  assert.equal(result.source.provider, "searxng_web_search");
+  assert.ok(result.source.warnings.includes("provider_failed:doubao_web_search:http_429"));
+  assert.equal(result.items.length, 1);
+});
+
+test("Doubao falls back to SearXNG when it returns zero results or only invalid URLs", async () => {
+  resetDoubaoQpsWindowForTests();
+  const fetchImpl = async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("feedcoopapi.com")) {
+      return new Response(JSON.stringify({
+        ResponseMetadata: { RequestId: "req-1" },
+        Result: { WebResults: [{ Title: "only bad url", Url: "javascript:alert(1)", Summary: "s", SortId: 1 }] },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(JSON.stringify({
+      results: [{ title: "SearXNG result", content: "fallback", url: "https://finance.example.test/article/9" }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const result = await searchPublicWeb(
+    { query: "测试主题", limit: 3, userId: "doubao-no-usable-test" },
+    {
+      fetchImpl,
+      searxngUrl: "http://127.0.0.1:8888/search",
+      env: { ...process.env, DOUBAO_SEARCH_API_KEY: "test-doubao-key" } as NodeJS.ProcessEnv,
+    },
+  );
+
+  assert.equal(result.source.provider, "searxng_web_search");
+  assert.ok(result.source.warnings.includes("primary_provider_no_usable_results:doubao_web_search"));
+  assert.equal(result.items.length, 1);
+});
+
+test("Doubao is skipped when disabled or unconfigured, falling back directly to SearXNG", async () => {
+  resetDoubaoQpsWindowForTests();
+  let doubaoCalled = false;
+  const fetchImpl = async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("feedcoopapi.com")) {
+      doubaoCalled = true;
+      return new Response("{}", { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      results: [{ title: "SearXNG result", content: "fallback", url: "https://finance.example.test/article/9" }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const result = await searchPublicWeb(
+    { query: "测试主题", limit: 3, userId: "doubao-disabled-test" },
+    {
+      fetchImpl,
+      searxngUrl: "http://127.0.0.1:8888/search",
+      env: { ...process.env, DOUBAO_SEARCH_API_KEY: "test-doubao-key", DOUBAO_SEARCH_ENABLED: "false" } as NodeJS.ProcessEnv,
+    },
+  );
+
+  assert.equal(doubaoCalled, false);
+  assert.equal(result.source.provider, "searxng_web_search");
+  assert.deepEqual(result.source.warnings, []);
+  assert.equal(result.items.length, 1);
+});
+
+test("both providers unavailable returns no items and stable, non-secret warnings", async () => {
+  resetDoubaoQpsWindowForTests();
+  const fetchImpl = async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("feedcoopapi.com")) {
+      return new Response(JSON.stringify({
+        ResponseMetadata: { Error: { Code: "10500", Message: "internal" } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("unavailable", { status: 503 });
+  };
+  const result = await searchPublicWeb(
+    { query: "测试主题", limit: 3, userId: "doubao-both-fail-test" },
+    {
+      fetchImpl,
+      searxngUrl: "http://127.0.0.1:8888/search",
+      env: { ...process.env, DOUBAO_SEARCH_API_KEY: "test-doubao-key" } as NodeJS.ProcessEnv,
+    },
+  );
+
+  assert.deepEqual(result.items, []);
+  assert.ok(result.source.warnings.some((w) => w.startsWith("provider_failed:doubao_web_search:")));
+  assert.ok(result.source.warnings.some((w) => w.startsWith("provider_failed:searxng_web_search:")));
+  // Warnings must not leak the API key.
+  assert.ok(result.source.warnings.every((w) => !w.includes("test-doubao-key")));
+});
+
+test("provider registry accepts and emits doubao_web_search metadata", async () => {
+  const { getProvider } = await import("../src/services/market-data-providers.js");
+  const meta = getProvider("doubao_web_search");
+  assert.equal(meta.runtimeProvider, "web");
+  assert.equal(meta.confidence, "medium");
+  assert.equal(meta.evidenceLevel, "secondary_evidence");
+  assert.equal(meta.category, "web_search");
+  assert.match(meta.usageBoundary, /来源发现/);
 });

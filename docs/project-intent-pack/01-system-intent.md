@@ -26,7 +26,7 @@ system_intent:
     - "不把历史实现细节当作未来架构约束"
   confidence: high
   evidence:
-    - "CLAUDE.md"
+    - "docs/system-overview.md"
     - "docs/README.md"
     - "docs/04-core-workflows.md"
 ```

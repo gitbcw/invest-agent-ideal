@@ -24,3 +24,36 @@ test("market_watch.snapshot is scoped to the MCP user and instance", async () =>
     assert.equal((await callServiceTool("market_watch.snapshot", {}, { userId: "user-a", instanceId: "instance-b" }) as any).result, null);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("market watch delta accepts legacy snapshots without newer collections", async () => {
+  const { buildMarketWatchDelta } = await import("../src/services/market-watch-snapshot.js");
+  const current = {
+    ok: true as const,
+    userId: "snapshot-compatibility-test",
+    instanceId: "snapshot-compatibility-instance",
+    updatedAt: "2026-07-23T01:30:00.000Z",
+    holdings: [],
+    watchlist: [],
+    plans: [{ stockCode: "600000", stockName: "fixture", support: 10 }],
+    indices: [],
+    warnings: [],
+  };
+  const legacySnapshot = {
+    ...current,
+    updatedAt: "2026-07-23T01:00:00.000Z",
+    plans: undefined,
+    indices: undefined,
+    warnings: undefined,
+  };
+
+  const delta = buildMarketWatchDelta(
+    current,
+    legacySnapshot as Parameters<typeof buildMarketWatchDelta>[1],
+    "09:30",
+  );
+  assert.equal(delta.previousWindowKey, "09:30");
+  assert.equal(delta.materiallyChanged, true);
+  assert.deepEqual(delta.stockChanges.map((item) => [item.code, item.state]), [["600000", "added"]]);
+  assert.deepEqual(delta.indexChanges, []);
+  assert.equal(delta.warningsChanged, false);
+});

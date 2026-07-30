@@ -37,11 +37,9 @@ npm run verify
 
 ## Read Next
 
-- [AGENTS.md](./AGENTS.md): product principles, safety boundaries, and Agent operating rules.
-- [CLAUDE.md](./CLAUDE.md): commands, runtime details, APIs, database notes, and local operations.
-- [docs/README.md](./docs/README.md): task-based documentation map.
-- [docs/system-overview.md](./docs/system-overview.md): compact architecture and ownership map.
-- [docs/service-tools-mcp.md](./docs/service-tools-mcp.md): workspace Agent service capability contract.
+- [AGENTS.md](./AGENTS.md): development Agent global red lines and task-start rules.
+- [docs/README.md](./docs/README.md): task-based context map with must-read material and verification.
+- [docs/system-overview.md](./docs/system-overview.md): current architecture and ownership map.
 
 ## Product Boundary
 

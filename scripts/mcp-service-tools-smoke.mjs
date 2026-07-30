@@ -176,6 +176,5 @@ try {
   }
 } finally {
   sqlite?.close();
-  await rm(path.join(process.cwd(), "reviews", reviewUserId), { recursive: true, force: true });
   await rm(tempRoot, { recursive: true, force: true });
 }

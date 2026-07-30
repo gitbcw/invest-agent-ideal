@@ -37,6 +37,7 @@ export type ProviderName =
   | "eastmoney_finance_search"
   | "sogou_web_search"
   | "searxng_web_search"
+  | "doubao_web_search"
   | "public_web_page"
   | "eastmoney_stock_reports"
   | "cninfo_announcements"
@@ -197,6 +198,15 @@ const PROVIDERS: Record<ProviderName, ProviderMeta> = {
     confidence: "medium",
     evidenceLevel: "secondary_evidence",
     usageBoundary: "聚合搜索结果用于发现来源；搜索摘要不是事实，必须打开原文核验。",
+    category: "web_search",
+  },
+  doubao_web_search: {
+    name: "doubao_web_search",
+    runtimeProvider: "web",
+    endpoint: "open.feedcoopapi.com/search_api/web_search",
+    confidence: "medium",
+    evidenceLevel: "secondary_evidence",
+    usageBoundary: "豆包搜索 Custom 仅用于来源发现；返回的标题、摘要、相关度或正文内容都不能替代原文核验、公告、监管披露或结构化专业数据。",
     category: "web_search",
   },
   public_web_page: {

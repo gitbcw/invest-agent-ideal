@@ -30,8 +30,7 @@ If the requested change could be handled either as a code release or a runtime m
 ## Read First
 
 - `references/server-deployment.md` for current deployment shape, env, PM2/process ops, checks, and known limits.
-- `references/volcano-runtime-migration-plan.md` for Volcano topology, migration phases, cutover, and rollback.
-- `CLAUDE.md` for current commands, runtime boundaries, API notes, and database/workspace paths.
+- `references/volcano-runtime-migration-plan.md` only before explicit runtime-data migration, recovery, or rollback that touches data.
 
 Only read detailed sections needed for the task. Do not load archive docs unless a current doc points to them.
 
@@ -41,18 +40,23 @@ Local build and optional runtime-data scripts:
 
 ```bash
 npm run build
+npm run release:snapshot -- create
+npm run release:deploy -- <releaseId>
+npm run release:rollback -- <releaseId> --confirm=rollback-code-v1
+npm run release:workspace-rollback -- plan <releaseId>
 npm run volcano:package-runtime
 npm run volcano:configure-portal
 ```
 
 `volcano:package-runtime` and `volcano:apply-runtime` are **not** part of normal code deployment. `volcano:apply-runtime` replaces the runtime database and Workspaces; run it only under the explicit migration rule above, after computing the package SHA256 and explicitly setting `CONFIRM_RUNTIME_APPLY=replace-runtime-and-data`, `EXPECTED_REMOTE_APP_DIR`, and `EXPECTED_PACKAGE_SHA256`.
 
+The `release:*` commands are the snapshot/deploy/rollback workflow for a normal code release. They preserve production runtime data; use the deployment reference for authorization gates and exact acceptance steps.
+
 Production smoke and health commands to consider after deploy:
 
 ```bash
 npm run smoke:mcp-service-tools
 npm run smoke:stage1-scheduler
-npm run smoke:weixin-complex-ack
 npm run smoke:portal-conversation-log
 curl http://127.0.0.1:<PORT>/health
 ```

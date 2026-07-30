@@ -106,7 +106,7 @@ There are two different runtime lines:
 
 Rule inspection does not read legacy `alerts` rows, does not mean "intraday touched high", and does not imply close-confirmation semantics. It evaluates the facts available at the scheduler tick, records audit/event state, and pushes according to priority and cooldown. If `market-watch` and `rule-alert-check` hit in the same scheduler tick, rule inspection still records events but suppresses the separate rule push to avoid duplicate WeChat noise.
 
-The current watch runtime source is [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md). Stage 1 brief and runbook are implementation/acceptance support, not the primary design entry.
+The current watch runtime source is [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md). Historical stage briefs and design notes are archived and are not current implementation inputs.
 
 ## Portal Boundary
 
@@ -136,7 +136,7 @@ The cloud portal may mirror conversation history for UX, but it must not become 
 
 Portal file lifecycle is service-owned and deterministic. User uploads (Portal/WeChat images and documents) keep bytes for 7 days via the authoritative `conversation_attachments.expires_at` column, then only metadata remains. AI artifacts published to the curated library (`reports/{daily,weekly,monthly,company,html,metrics,memory}`) are promoted to permanent `durable_library` when `<= 1 MiB`; oversized formal artifacts and non-curated files are 7-day `transient_generated`. The model never decides importance — the service layer does, from source/path/size/MIME. Raw `memory/*.jsonl`, `financials/companies/**`, `config/**`, Skills, audit/task/alerts and the full Workspace filesystem are never exposed to the Portal.
 
-The daily attachment-cleanup and 30-day trash-purge jobs run through the scheduler with `scheduled_task_runs` locks. The first real production cleanup is gated behind `FILE_RETENTION_CLEANUP_ENABLED=true` plus a backup + dry-run + explicit operator confirmation. See the `retention:*` commands in `CLAUDE.md`; the original implementation work package is archived under `docs/archive/portal/2026-07/`.
+The daily attachment-cleanup and 30-day trash-purge jobs run through the scheduler with `scheduled_task_runs` locks. The first real production cleanup is gated behind `FILE_RETENTION_CLEANUP_ENABLED=true` plus a backup + dry-run + explicit operator confirmation. See `package.json` for `retention:*` commands; the original implementation work package is archived under `docs/archive/portal/2026-07/`.
 
 ## Platform Boundary
 
@@ -152,9 +152,9 @@ The accepted decision is [data-source-policy-decision.md](./data-source-policy-d
 
 ## Read Next
 
-- New contributor: [../AGENTS.md](../AGENTS.md), [../CLAUDE.md](../CLAUDE.md), then this file.
+- New contributor: [../AGENTS.md](../AGENTS.md), then choose a task channel in [README.md](./README.md).
 - Runtime work: [watch-runtime-phased-implementation.md](./watch-runtime-phased-implementation.md), [table-ownership.md](./table-ownership.md), [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md).
 - Portal current contract: [user-portal.md](./user-portal.md). Exact connector schemas: [user-portal-protocol.md](./user-portal-protocol.md). Initial design and acceptance documents are archived and provide historical context only.
-- Platform work: [platform-partner-admin-design.md](./platform-partner-admin-design.md), [platform-partner-admin-phase1-implementation.md](./platform-partner-admin-phase1-implementation.md).
+- Platform work: [platform-partner-admin-design.md](./platform-partner-admin-design.md).
 - Onboarding work: [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md), [service-tools-mcp.md](./service-tools-mcp.md).
 - Investment workflow work: [investment-model-design.md](./investment-model-design.md), [trading-strategy-design.md](./trading-strategy-design.md), [04-core-workflows.md](./04-core-workflows.md).

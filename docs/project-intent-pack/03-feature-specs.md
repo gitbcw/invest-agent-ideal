@@ -16,7 +16,7 @@ feature_specs:
     anti_requirements:
       - "不得恢复 fast-lane / onboarding / review-intent 之类服务层分类"
     evidence:
-      - source: "CLAUDE.md"
+      - source: "docs/system-overview.md"
         type: doc
       - source: "docs/README.md"
         type: doc

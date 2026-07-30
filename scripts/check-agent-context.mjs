@@ -5,11 +5,10 @@ import path from "node:path";
 
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
-const markdownFiles = ["AGENTS.md", "CLAUDE.md", ...walk("docs"), ...walk(".codex/skills")]
+const markdownFiles = ["AGENTS.md", ...walk("docs"), ...walk(".codex/skills")]
   .filter((file) => file.endsWith(".md") && !file.startsWith("docs/archive/") && !file.includes("/.system/"));
 const contractFiles = new Set([
   "AGENTS.md",
-  "CLAUDE.md",
   "docs/README.md",
   "docs/system-overview.md",
   "docs/service-tools-mcp.md",

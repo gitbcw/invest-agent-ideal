@@ -159,10 +159,14 @@ function compact(value: string, max: number) {
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return Promise.race([
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const raced = Promise.race([
     promise,
     new Promise<T>((_, reject) => {
-      setTimeout(() => reject(new Error(`route judge timeout ${timeoutMs}ms`)), timeoutMs);
+      timer = setTimeout(() => reject(new Error(`route judge timeout ${timeoutMs}ms`)), timeoutMs);
     }),
   ]);
+  return raced.finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
