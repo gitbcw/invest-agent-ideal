@@ -4,18 +4,18 @@ import { toRulePriceFact, type RulePriceFact } from "../src/services/rule-price-
 import { dryRunWatchRule, type WatchRuleRecord } from "../src/services/watch-rules.js";
 
 /**
- * WP5: 窄价格事实接口测试。
+ * WP5/F4: 窄价格事实接口测试。
  *
- * getRulePrices 内部调真实 quote (需网络),这里用导出的纯函数 toRulePriceFact
- * 覆盖映射逻辑; evaluatePriceCrossFromFact 通过 dryRunWatchRule(rule, fact) 注入测试。
+ * F4: toRulePriceFact 现在接收 StockQuote + provider 参数（脱离 marketDataReadCapability）。
+ * getRulePrices 直接组合 getQuote + getSinaQuote（需网络），这里用导出的纯函数
+ * toRulePriceFact 覆盖映射逻辑; evaluatePriceCrossFromFact 通过 dryRunWatchRule(rule, fact) 注入测试。
  */
 
-function makeQuote(overrides: Record<string, unknown> = {}) {
+function makeQuote(overrides: Partial<{ price: number | null; time: string }> = {}) {
   return {
-    price: 100.5,
-    time: "2026-07-30 15:00:00",
-    tradingStatus: { status: "normal", reasons: [] },
-    source: { provider: "tencent_quote", marketTime: "2026-07-30 15:00:00" },
+    code: "600519", name: "贵州茅台", price: 100.5, yesterdayClose: 99, open: 99.5,
+    volume: 1000, amount: 100, high: 101, low: 99, change: 1.5, changePercent: 1.5,
+    turnoverRate: 0.1, time: "2026-07-30 15:00:00",
     ...overrides,
   };
 }
@@ -35,10 +35,10 @@ function makeRule(overrides: Partial<WatchRuleRecord> = {}): WatchRuleRecord {
   } as WatchRuleRecord;
 }
 
-// ─── toRulePriceFact 纯映射逻辑 ──────────────────────────────────
+// ─── toRulePriceFact 纯映射逻辑 (F4: StockQuote + provider) ─────
 
 test("usable quote maps to usable fact with provider", () => {
-  const fact = toRulePriceFact("600519", makeQuote());
+  const fact = toRulePriceFact("600519", makeQuote() as any, "tencent_quote");
   assert.equal(fact.code, "600519");
   assert.equal(fact.price, 100.5);
   assert.equal(fact.usable, true);
@@ -55,34 +55,31 @@ test("null quote maps to missing fact", () => {
 });
 
 test("NaN price maps to invalid_price", () => {
-  const fact = toRulePriceFact("600519", makeQuote({ price: NaN }));
+  const fact = toRulePriceFact("600519", makeQuote({ price: NaN }) as any, "tencent_quote");
   assert.equal(fact.usable, false);
   assert.equal(fact.failureCode, "invalid_price");
 });
 
 test("Infinity price maps to invalid_price", () => {
-  const fact = toRulePriceFact("600519", makeQuote({ price: Infinity }));
+  const fact = toRulePriceFact("600519", makeQuote({ price: Infinity }) as any, "tencent_quote");
   assert.equal(fact.usable, false);
   assert.equal(fact.failureCode, "invalid_price");
 });
 
 test("null price maps to invalid_price", () => {
-  const fact = toRulePriceFact("600519", makeQuote({ price: null }));
+  const fact = toRulePriceFact("600519", makeQuote({ price: null }) as any, "tencent_quote");
   assert.equal(fact.usable, false);
   assert.equal(fact.failureCode, "invalid_price");
 });
 
-test("stale tradingStatus maps to not usable", () => {
-  for (const status of ["stale", "invalid", "unknown"]) {
-    const fact = toRulePriceFact("600519", makeQuote({ tradingStatus: { status } }));
-    assert.equal(fact.usable, false, `${status} should be unusable`);
-    assert.equal(fact.failureCode, "stale");
-    assert.equal(fact.price, 100.5); // price 仍在,只是不可用
-  }
+test("zero or negative price maps to invalid_price (F4)", () => {
+  const fact = toRulePriceFact("600519", makeQuote({ price: 0 }) as any, "tencent_quote");
+  assert.equal(fact.usable, false);
+  assert.equal(fact.failureCode, "invalid_price");
 });
 
 test("sina fallback provider is preserved", () => {
-  const fact = toRulePriceFact("600519", makeQuote({ source: { provider: "sina_quote", marketTime: "t" } }));
+  const fact = toRulePriceFact("600519", makeQuote() as any, "sina_quote");
   assert.equal(fact.provider, "sina_quote");
   assert.equal(fact.usable, true);
 });
@@ -156,16 +153,47 @@ test("sina fallback provider adds fallback warning in facts", async () => {
   assert.deepEqual(result.facts.warnings, ["fallback_provider:sina_quote"]);
 });
 
-// ─── 非价格规则不受影响 ──────────────────────────────────────────
+// ─── F4: 解耦验证 ───────────────────────────────────────────────
 
-test("non-price rules ignore the priceFact parameter", async () => {
-  // macd_cross 不应使用 priceFact; 它走 kline 路径 (会触网,这里只验证不被 fact 干扰)
-  // 用一个不存在的 ruleType 确保不会触网: 直接验证 dryRunWatchRule 签名接受 fact
-  const rule = makeRule({ ruleType: "ma_cross" as WatchRuleRecord["ruleType"] });
-  const fact: RulePriceFact = { code: "600519", price: 105, asOf: "t", usable: true, provider: "tencent_quote" };
-  // ma_cross 不在 price_cross 分支,会走顶部 quote 取价 (触网)。
-  // 这里只验证函数签名兼容,不实际执行 (会触网)。
-  assert.equal(typeof dryRunWatchRule, "function");
-  assert.equal(rule.ruleType, "ma_cross");
-  void fact; // 非价格规则忽略 fact
+import { readFileSync } from "node:fs";
+import { validateWatchRule } from "../src/services/watch-rules.js";
+
+test("F4: rule-price-facts does not import marketDataReadCapability", () => {
+  const source = readFileSync("src/services/rule-price-facts.ts", "utf8");
+  const importLines = source.split("\n").filter((l) => l.trim().startsWith("import"));
+  assert.ok(
+    !importLines.some((l) => l.includes("marketDataReadCapability")),
+    "rule-price-facts must not import marketDataReadCapability",
+  );
+  assert.ok(source.includes("getQuote"), "rule-price-facts uses getQuote (tencent) directly");
+  assert.ok(source.includes("getSinaQuote"), "rule-price-facts uses getSinaQuote (fallback) directly");
+});
+
+test("F4: rule-price-facts has TTL cache", () => {
+  const source = readFileSync("src/services/rule-price-facts.ts", "utf8");
+  assert.ok(source.includes("CACHE_TTL_MS"), "TTL cache constant exists");
+});
+
+test("F4: validateWatchRule rejects non-6-digit stock codes", async () => {
+  const bad = await validateWatchRule({
+    userId: "test", instanceId: "test", stockCode: "sh600519",
+    ruleType: "price_cross", targetScope: "manual", params: { operator: ">=", value: 100 },
+  });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.errors.some((e) => e.includes("6 位数字")), `should reject sh-prefixed code: ${bad.errors}`);
+
+  const bad2 = await validateWatchRule({
+    userId: "test", instanceId: "test", stockCode: "123",
+    ruleType: "price_cross", targetScope: "manual", params: { operator: ">=", value: 100 },
+  });
+  assert.equal(bad2.ok, false);
+  assert.ok(bad2.errors.some((e) => e.includes("6 位数字")));
+});
+
+test("F4: validateWatchRule accepts clean 6-digit codes", async () => {
+  const ok = await validateWatchRule({
+    userId: "test", instanceId: "test", stockCode: "600519",
+    ruleType: "price_cross", targetScope: "manual", params: { operator: ">=", value: 100 },
+  });
+  assert.equal(ok.ok, true, "clean 6-digit code should be accepted");
 });

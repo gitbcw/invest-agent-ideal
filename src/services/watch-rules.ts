@@ -288,6 +288,10 @@ export async function validateWatchRule(input: ValidateWatchRuleInput): Promise<
   const instanceId = (input.instanceId ?? DEFAULT_INSTANCE_ID).trim();
   const stockCode = String(input.stockCode ?? "").trim();
   const stockName = String(input.stockName ?? input.stockCode ?? "").trim();
+  // F4: 规范代码验证 —— 必须是纯 6 位数字（不含 sh/sz 前缀）
+  if (stockCode && !/^\d{6}$/.test(stockCode)) {
+    errors.push("stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀");
+  }
   const ruleType = input.ruleType as WatchRuleType | undefined;
   const catalog = ruleType ? getWatchRuleCatalogItem(ruleType) : null;
   const targetScope = normalizeTargetScope(input.targetScope);
