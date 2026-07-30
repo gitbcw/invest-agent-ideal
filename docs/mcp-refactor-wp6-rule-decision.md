@@ -14,6 +14,18 @@
 
 退役方式：软退役（catalog 标 deprecated + validateWatchRule 拒绝新建），代码保留留待 WP8 彻底清理。生产零启用（见第四节），退役无存量负担。
 
+### F3 决策复核确认（独立验收 follow-up，用户再次明确授权 2026-07-30）
+
+独立验收（`mcp-registry-and-agent-tooling-refactor-plan_acceptance_review.md` Finding [P1]）指出删除八类规则的提交缺少本次验收可核对的外部决策引用。用户在 follow-up 任务审查时**再次明确授权**：
+
+> "这部分规则先退役吧……只保留前面说的那个价格。那个价格规则并不在这八类之中。"
+
+确认结论：
+- 决策方向不变：8 类全部退役，只保留 `price_cross`。
+- WP6（软退役）+ WP8（求值代码删除）两个提交保留。
+- 存量处理策略保持 no-delete-first：不查询/修改生产规则数据，不以"生产当前为 0 行"替代产品授权。
+- 代码行为与明确决策逐项一致：`WatchRuleType` 只含 `price_cross`；catalog 只含 `price_cross`；`validateWatchRule` 拒绝任何非 `price_cross` 类型。
+
 ## 一、8 类规则全景
 
 | 规则 | status | 用户可见入口 | 数据需求 | 求值 LOC | 维护风险 |

@@ -569,5 +569,3 @@ function ruleTypeCondition(ruleType: WatchRuleType) {
   if (ruleType === "price_cross") return "watch_rule.price_cross";
   return "watch_rule.unknown";
 }
-
-
