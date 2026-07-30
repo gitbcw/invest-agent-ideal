@@ -26,7 +26,8 @@ import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 import { isAcpDiagnosticText } from "../lib/customer-output.js";
 import type { AcpModelTier } from "./model-router.js";
-import { defaultInstanceIdForUser, type UserContext } from "../lib/user-context.js";
+import { type UserContext } from "../lib/user-context.js";
+import { resolveSessionMcpServers } from "./mcp-session-manifest.js";
 
 const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
 const ACP_DEBUG_PREVIEW_CHARS = Number(process.env.ACP_DEBUG_PREVIEW_CHARS) || 120;
@@ -100,6 +101,20 @@ type AcpMcpServer = {
   env: Array<{ name: string; value: string }>;
 };
 
+/**
+ * 从 conversationId / scope 推断本次会话的任务类型,用于 MCP 注册表按 sessionKind
+ * 过滤注册项。scheduled 会话的 conversationId 以 "scheduler:" 开头;eval 脚本
+ * 通过 ACP_EVAL_* env 表达隔离;其余按交互会话处理。
+ */
+function inferTaskType(userContext?: UserContext, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.ACP_EVAL_DISABLE_ALL_MCP === "true" || env.ACP_EVAL_MCP_ALLOWED_TOOLS) {
+    return "evaluation";
+  }
+  const conversationId = userContext?.conversationId || "";
+  if (conversationId.startsWith("scheduler:")) return "scheduled-read";
+  return "interactive";
+}
+
 export interface AcpBackendStatus {
   id: AcpBackendId;
   label: string;
@@ -165,6 +180,10 @@ const SETTINGS_KEY = "acp_backend";
  * Build the service-owned MCP process configuration for a workspace-scoped
  * Codex session. Codex ACP treats this env list as explicit, so every
  * location that determines service state must travel with the trusted scope.
+ *
+ * WP1: 该函数现为薄 wrapper,实际装配由配置型 MCP 注册表 + 会话 manifest
+ * 解析负责 (mcp-registry.ts / mcp-session-manifest.ts)。签名与输出契约保持
+ * 不变,确保零行为回归;WP2 起可通过注册表接入外部只读 MCP。
  */
 export function buildInvestAgentMcpServers(
   backendId: AcpBackendId,
@@ -172,72 +191,16 @@ export function buildInvestAgentMcpServers(
   userContext?: UserContext,
   env: NodeJS.ProcessEnv = process.env,
 ): AcpMcpServer[] {
-  if (backendId !== "codex") return [];
-  if (env.ACP_EVAL_DISABLE_ALL_MCP === "true") return [];
-
-  const projectRoot = path.resolve(env.INVEST_AGENT_PROJECT_ROOT || process.cwd());
-  const resolveFromProject = (value: string) => path.resolve(projectRoot, value);
-  const userId = userContext?.userId || env.INVEST_AGENT_MCP_USER_ID || "primary";
-  const instanceId =
-    userContext?.instanceId || env.INVEST_AGENT_MCP_INSTANCE_ID || defaultInstanceIdForUser(userId);
-  const workspacePath = path.resolve(userContext?.workspacePath || cwd);
-  const evaluationAllowedTools = (env.ACP_EVAL_MCP_ALLOWED_TOOLS || "")
-    .split(",")
-    .map((name) => name.trim())
-    .filter(Boolean);
-  const scopedAllowedTools = userContext?.mcpAllowedTools?.length
-    ? userContext.mcpAllowedTools
-    : evaluationAllowedTools;
-  const runtimeEnv: Array<{ name: string; value: string }> = [
-    { name: "INVEST_AGENT_MCP_USER_ID", value: userId },
-    { name: "INVEST_AGENT_MCP_INSTANCE_ID", value: instanceId },
-    { name: "INVEST_AGENT_MCP_WORKSPACE_PATH", value: workspacePath },
-    { name: "INVEST_AGENT_MCP_CONVERSATION_ID", value: userContext?.conversationId || "" },
-    ...(scopedAllowedTools.length
-      ? [{ name: "INVEST_AGENT_MCP_ALLOWED_TOOLS", value: scopedAllowedTools.join(",") }]
-      : []),
-    { name: "INVEST_AGENT_PROJECT_ROOT", value: projectRoot },
-    { name: "DB_PATH", value: resolveFromProject(env.DB_PATH || config.db.path) },
-    { name: "WORKSPACE_ROOT", value: resolveFromProject(env.WORKSPACE_ROOT || config.workspace.root) },
-    {
-      name: "WORKSPACE_TEMPLATE_PATH",
-      value: resolveFromProject(env.WORKSPACE_TEMPLATE_PATH || config.workspace.templatePath),
-    },
-    { name: "WORKSPACE_BACKEND", value: env.WORKSPACE_BACKEND || "workspace" },
-    { name: "RUNTIME_DATA_ROOT", value: resolveFromProject(env.RUNTIME_DATA_ROOT || config.runtimeData.root) },
-    { name: "REVIEWS_ROOT", value: resolveFromProject(env.REVIEWS_ROOT || path.join(projectRoot, "reviews")) },
-  ];
-
-  // Credentials are deliberately passed only to the child process. This
-  // configuration is never logged or included in customer-visible output.
-  if (env.INVEST_AGENT_SANDBOX_SECRET) {
-    runtimeEnv.push({ name: "INVEST_AGENT_SANDBOX_SECRET", value: env.INVEST_AGENT_SANDBOX_SECRET });
-  }
-  if (env.INVEST_AGENT_SANDBOX_SECRET_FILE) {
-    runtimeEnv.push({
-      name: "INVEST_AGENT_SANDBOX_SECRET_FILE",
-      value: resolveFromProject(env.INVEST_AGENT_SANDBOX_SECRET_FILE),
-    });
-  }
-  for (const name of [
-    "TUSHARE_TOKEN",
-    "TDX_MCP_API_KEY",
-    "TDX_MCP_URL",
-    "TDX_MCP_FUNDAMENTALS_TOOL",
-    "EXTERNAL_WEB_SEARCH_SEARXNG_URL",
-  ]) {
-    const value = env[name]?.trim();
-    if (value) runtimeEnv.push({ name, value });
-  }
-
-  return [
-    {
-      name: "invest-agent-service-tools",
-      command: process.execPath,
-      args: [path.join(projectRoot, "dist/mcp/invest-agent-service-tools.js")],
-      env: runtimeEnv,
-    },
-  ];
+  const taskType = inferTaskType(userContext, env);
+  const { servers } = resolveSessionMcpServers({
+    backendId,
+    cwd,
+    userContext,
+    env,
+    taskType,
+    sessionId: userContext?.conversationId || "",
+  });
+  return servers;
 }
 
 // ─── 通用 stdio ACP agent ──────────────────────────────────────────
