@@ -19,7 +19,7 @@ export type WatchRuleType =
   | "volume_ratio"
   | "near_plan_level";
 export type WatchRulePriority = "P0" | "P1" | "P2";
-export type WatchRuleStatus = "active" | "beta";
+export type WatchRuleStatus = "active" | "beta" | "deprecated";
 export type WatchRuleTargetScope = "holding" | "watchlist" | "plan" | "manual";
 export type WatchRuleDirection = "break_above" | "break_below";
 export type WatchRuleMacdDirection = "golden_cross" | "death_cross";
@@ -185,7 +185,7 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
   {
     key: "ma_cross",
     label: "均线突破/跌破",
-    status: "active",
+    status: "deprecated",
     description: "当最新收盘价对指定均线发生上破或下破时触发。",
     targetScopes: ["holding", "watchlist", "manual"],
     paramsSchema: {
@@ -208,7 +208,7 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
   {
     key: "macd_cross",
     label: "MACD 金叉/死叉",
-    status: "active",
+    status: "deprecated",
     description: "当日线 MACD 的 DIF 与 DEA 发生金叉或死叉时触发。",
     targetScopes: ["holding", "watchlist", "manual"],
     paramsSchema: {
@@ -230,7 +230,7 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
   {
     key: "kdj_cross",
     label: "KDJ 金叉/死叉",
-    status: "active",
+    status: "deprecated",
     description: "当日线 KDJ 的 K 与 D 发生金叉或死叉时触发，可配合超卖/超买阈值过滤。",
     targetScopes: ["holding", "watchlist", "manual"],
     paramsSchema: {
@@ -253,7 +253,7 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
   {
     key: "rsi_threshold",
     label: "RSI 阈值",
-    status: "active",
+    status: "deprecated",
     description: "当日线 RSI 高于或低于指定阈值时触发。",
     targetScopes: ["holding", "watchlist", "manual"],
     paramsSchema: {
@@ -277,7 +277,7 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
   {
     key: "boll_break",
     label: "布林带突破",
-    status: "active",
+    status: "deprecated",
     description: "当日线收盘价突破布林带上轨或下轨时触发。",
     targetScopes: ["holding", "watchlist", "manual"],
     paramsSchema: {
@@ -301,7 +301,7 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
   {
     key: "wr_threshold",
     label: "WR 威廉指标阈值",
-    status: "active",
+    status: "deprecated",
     description: "当日线 WR 高于或低于指定阈值时触发。",
     targetScopes: ["holding", "watchlist", "manual"],
     paramsSchema: {
@@ -325,7 +325,7 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
   {
     key: "volume_ratio",
     label: "成交量放大/缩小",
-    status: "active",
+    status: "deprecated",
     description: "当日成交量相对过去 N 日均量达到指定倍数时触发。",
     targetScopes: ["holding", "watchlist", "manual"],
     paramsSchema: {
@@ -349,7 +349,7 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
   {
     key: "near_plan_level",
     label: "接近预案关键价位",
-    status: "beta",
+    status: "deprecated",
     description: "当价格接近支撑、压力、目标或止损位时触发。",
     targetScopes: ["plan", "manual"],
     paramsSchema: {
@@ -527,6 +527,10 @@ export async function validateWatchRule(input: ValidateWatchRuleInput): Promise<
 
   const params = input.params ?? {};
   if (catalog) {
+    // WP6: 退役的规则禁止新建 (存量保留,生产零启用无影响;彻底删除留 WP8)
+    if (catalog.status === "deprecated") {
+      errors.push(`规则 ${catalog.key} 已退役，不再支持新建。后续将通过外部量化选股工具实现。`);
+    }
     if (!catalog.targetScopes.includes(targetScope as WatchRuleTargetScope)) {
       errors.push(`规则 ${catalog.key} 不支持 targetScope=${targetScope}`);
     }
