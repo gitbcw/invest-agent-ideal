@@ -13,10 +13,13 @@ async function loadCostPanel(){
   if(root)root.innerHTML='<div class="empty">正在加载成本统计...</div>';
   try{
     const base=new URLSearchParams();base.set('days',days);
-    // Partner 只取全平台总览（不带 instanceId/userId，不按客户拆）。
+    // Partner：总览 + 按客户脱敏拆分（cus_xxx，不暴露 instanceId）。
     if(IS_PARTNER){
-      const platform=await platformJson('/api/platform/audit/usage?'+base.toString());
-      COST={platform,scoped:platform,byInstance:null};
+      const [platform,byInstance]=await Promise.all([
+        platformJson('/api/platform/audit/usage?'+base.toString()),
+        platformJson('/api/platform/audit/usage?'+withParam(base,'groupBy','instance')),
+      ]);
+      COST={platform,scoped:platform,byInstance};
     }else{
       const selectedCostInstance=costInstanceById(selectedCostInstanceId);
       const userId=selectedCostInstance?.owner?.id||'';
@@ -43,9 +46,9 @@ function renderCostPanel(){
   const costScopeHint=document.getElementById('costScopeHint');
   if(costScopeHint)costScopeHint.textContent='最近 '+(filters.days||30)+' 天 · Codex 原生日志 · '+fmtRate(PRICING_RATES.input)+'/输出'+fmtRate(PRICING_RATES.output);
   if(IS_PARTNER){
-    // Partner：强制总览，无 Tab、无按客户拆分。
+    // Partner：总览大盘 + 按客户脱敏拆分（cus_xxx，可摊销成本）。
     COST_TAB='overview';
-    root.innerHTML=renderCostToolbar()+renderCostOverviewView(platform,scoped);
+    root.innerHTML=renderCostToolbar()+renderCostOverviewView(platform,scoped)+'<div class="section"><h3>按客户费用分摊</h3>'+renderPartnerCostByCustomer(COST.byInstance?.codexUsage?.groups||[])+'</div>';
     return;
   }
   const selectedAssistant=costInstanceById(filters.instanceId||selectedCostInstanceId);
@@ -80,4 +83,14 @@ function renderCodexAssistantTable(rows){if(!rows.length)return '<div class="emp
 function renderCodexUsageSummary(totals){return [stat(fmtNumber(totals.totalTokens),'Codex 总 Token'),stat(fmtNumber(totals.inputTokens),'输入 Token'),stat(fmtNumber(totals.outputTokens),'输出 Token'),stat(fmtNumber(totals.thoughtTokens),'推理 Token'),stat(fmtNumber(totals.cachedReadTokens),'缓存读取')].join('');}
 function renderCodexUsageSource(totals){return '<div class="cost-source">'+badge('token_count events '+fmtNumber(totals.calls||0),'ok')+badge('来源 模型会话日志','info')+badge('不区分对话/推送','warn')+'</div>';}
 function renderCodexUsageTable(rows,firstLabel){if(!rows.length)return '<div class="empty">暂无 Codex 原生日志用量</div>';return '<div style="overflow:auto"><table class="cost-table"><thead><tr><th>'+esc(firstLabel)+'</th><th>事件数</th><th>总 Token</th><th>输入</th><th>输出</th><th>推理</th><th>缓存读取</th><th>费用</th></tr></thead><tbody>'+rows.map((row)=>'<tr><td class="mono">'+esc(row.bucket||'-')+'</td><td>'+esc(fmtNumber(row.calls))+'</td><td>'+esc(fmtNumber(row.totalTokens))+'</td><td>'+esc(fmtNumber(row.inputTokens))+'</td><td>'+esc(fmtNumber(row.outputTokens))+'</td><td>'+esc(fmtNumber(row.thoughtTokens))+'</td><td>'+esc(fmtNumber(row.cachedReadTokens))+'</td><td class="tnum"><strong>'+fmtCost(totalCost(row))+'</strong></td></tr>').join('')+'</tbody></table></div>';}
+// Partner 专属：按客户脱敏的费用分摊表（cus_xxx 标识，无明文 instanceId/用户）。
+function renderPartnerCostByCustomer(rows){
+  if(!rows.length)return '<div class="empty">暂无按客户的费用分摊数据</div>';
+  const totalTokensAll=rows.reduce((s,r)=>s+Number(r.totalTokens||0),0);
+  return '<div style="overflow:auto"><table class="cost-table"><thead><tr><th>客户</th><th>总 Token</th><th>输入</th><th>输出</th><th>缓存读取</th><th>费用</th><th>占比</th></tr></thead><tbody>'+
+    rows.map((row)=>{
+      const pct=totalTokensAll>0?(Number(row.totalTokens||0)/totalTokensAll*100).toFixed(1)+'%':'-';
+      return '<tr><td><strong>'+esc(row.customerLabel||row.bucket||'-')+'</strong><div class="mono">'+esc(row.bucket||'-')+'</div></td><td>'+esc(fmtNumber(row.totalTokens))+'</td><td>'+esc(fmtNumber(row.inputTokens))+'</td><td>'+esc(fmtNumber(row.outputTokens))+'</td><td>'+esc(fmtNumber(row.cachedReadTokens))+'</td><td class="tnum"><strong>'+fmtCost(totalCost(row))+'</strong></td><td class="tnum">'+pct+'</td></tr>';
+    }).join('')+'</tbody></table></div>';
+}
 `;

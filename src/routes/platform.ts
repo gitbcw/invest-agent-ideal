@@ -1518,6 +1518,24 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       days,
       groupBy: codexGroupBy,
     });
+    // Partner 脱敏：按客户拆分时把明文 instanceId 桶替换为 cus_xxx 标识，
+    // 并隐藏 userId 维度（partner 不应按用户拆分）。保护脱敏边界。
+    const authRole = (request as any).platformAuth?.role;
+    if (authRole === "partner") {
+      const maskedGroups = (codexUsage.groups || []).map((group: any) => {
+        if (codexGroupBy === "instance" && group.bucket) {
+          const customerKey = partnerCustomerKey(group.bucket);
+          return { ...group, bucket: customerKey, customerLabel: partnerCustomerLabel(customerKey) };
+        }
+        return group;
+      });
+      return {
+        ok: true,
+        updatedAt: new Date().toISOString(),
+        filters: { userId: "", instanceId: "", days, groupBy: codexGroupBy === "user" ? "instance" : groupBy },
+        codexUsage: { ...codexUsage, groups: maskedGroups },
+      };
+    }
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
