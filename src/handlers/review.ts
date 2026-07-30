@@ -11,6 +11,7 @@ import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { portfolioBackend, watchlistBackend, planBackend, isWorkspaceBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
+import { periodicReviewBackend, type PeriodicReviewKind } from "../lib/periodic-review-backend.js";
 import { reviewViewpointBackend } from "../lib/review-viewpoint-backend.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
@@ -1211,6 +1212,40 @@ export async function saveSkillDailyReview(input: {
   await syncReviewViewpoints(userId, instanceId, date, input.content);
   logger.info(`skill 日复盘已保存: ${filePath}`);
   return { date, filePath };
+}
+
+/**
+ * F2: 周/月复盘受控保存（统一 reviews.save 契约）。
+ * 写 workspace reports/<kind>/<reportKey>.md + periodicReviewBackend upsert（带 publication metadata）。
+ */
+export async function saveSkillPeriodicReview(input: {
+  userId?: string;
+  instanceId?: string;
+  kind: PeriodicReviewKind;
+  reportKey: string;
+  content: string;
+  summary?: string;
+  context?: unknown;
+}): Promise<{ kind: PeriodicReviewKind; reportKey: string; filePath: string }> {
+  const userId = input.userId ?? DEFAULT_USER_ID;
+  const instanceId = input.instanceId ?? DEFAULT_INSTANCE_ID;
+  await mirrorReviewToWorkspace(userId, input.kind, input.reportKey, input.content);
+  const generatedAt = new Date().toISOString();
+  await periodicReviewBackend.upsert(userId, instanceId, {
+    kind: input.kind,
+    reportKey: input.reportKey,
+    generatedAt,
+    summary: input.summary ?? null,
+    content: input.content,
+    data: {
+      source: "skill",
+      savedAt: generatedAt,
+      context: input.context ?? null,
+    },
+  });
+  const filePath = join(resolveWorkspacePath(userId), "reports", input.kind, `${input.reportKey}.md`);
+  logger.info(`skill ${input.kind}复盘已保存: ${filePath}`);
+  return { kind: input.kind, reportKey: input.reportKey, filePath };
 }
 
 /** 生成日复盘 */

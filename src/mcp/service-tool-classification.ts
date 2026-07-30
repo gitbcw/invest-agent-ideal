@@ -100,8 +100,8 @@ export const FINAL_ACTION_TOOLS: string[] = Object.entries(SERVICE_TOOL_CLASSIFI
 const SCHEDULED_FINAL_ACTIONS: Record<string, string[]> = {
   "scheduled-market-watch": [],
   "scheduled-daily-review": ["reviews.save"],
-  "scheduled-weekly-review": [],
-  "scheduled-monthly-review": [],
+  "scheduled-weekly-review": ["reviews.save"],
+  "scheduled-monthly-review": ["reviews.save"],
 };
 
 /**

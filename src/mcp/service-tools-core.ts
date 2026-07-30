@@ -15,7 +15,7 @@ import {
   type PortfolioWatchItem,
   type PortfolioYaml,
 } from "../lib/workspace-store.js";
-import { saveSkillDailyReview } from "../handlers/review.js";
+import { saveSkillDailyReview, saveSkillPeriodicReview } from "../handlers/review.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
 import {
   marketDataReadCapability,
@@ -1004,34 +1004,60 @@ async function proposeMethodChange(input: Record<string, unknown> | undefined, c
 }
 
 async function saveReview(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  const scheduledCompletion = context.conversationId?.startsWith("scheduler:daily-review:") === true;
+  // F2: scheduledCompletion 扩展为 daily/weekly/monthly 三前缀
+  const convId = context.conversationId ?? "";
+  const scheduledCompletion =
+    convId.startsWith("scheduler:daily-review:") ||
+    convId.startsWith("scheduler:weekly-review:") ||
+    convId.startsWith("scheduler:monthly-review:");
   if (!scheduledCompletion) requireConfirmed(input);
   const content = stringInput(input?.content);
   if (!content) throw new Error("缺少复盘内容");
   const pushBrief = stringInput(input?.pushBrief) || stringInput(input?.summary);
-  if (scheduledCompletion && !pushBrief) throw new Error("scheduled daily review requires pushBrief");
+  if (scheduledCompletion && !pushBrief) throw new Error("scheduled review requires pushBrief");
   const decisionRecords = normalizeRecordList(input?.decisionRecords, "decisionRecords");
   const sourceEvents = normalizeRecordList(input?.sourceEvents, "sourceEvents");
-  const saved = await saveSkillDailyReview({
-    userId: context.userId,
-    instanceId: context.instanceId,
-    date: stringInput(input?.date),
-    content,
-    summary: pushBrief,
-    context: {
-      ...asRecord(input?.context),
-      publication: {
-        conversationId: context.conversationId ?? null,
-        scheduled: scheduledCompletion,
-      },
-    },
-  });
+  const kind = (stringInput(input?.kind) || "daily") as "daily" | "weekly" | "monthly";
+  const publicationMeta = {
+    ...asRecord(input?.context),
+    publication: { conversationId: context.conversationId ?? null, scheduled: scheduledCompletion },
+  };
+
+  // F2: 按 kind 分派。daily 走 saveSkillDailyReview（不变）；weekly/monthly 走 saveSkillPeriodicReview
+  let saved: { date?: string; kind?: string; reportKey?: string; filePath: string };
+  if (kind === "weekly" || kind === "monthly") {
+    const reportKey = stringInput(input?.reportKey);
+    if (!reportKey) throw new Error(`reviews.save requires reportKey for kind=${kind}`);
+    const result = await saveSkillPeriodicReview({
+      userId: context.userId,
+      instanceId: context.instanceId,
+      kind,
+      reportKey,
+      content,
+      summary: pushBrief,
+      context: publicationMeta,
+    });
+    saved = { kind: result.kind, reportKey: result.reportKey, filePath: result.filePath };
+  } else {
+    const result = await saveSkillDailyReview({
+      userId: context.userId,
+      instanceId: context.instanceId,
+      date: stringInput(input?.date),
+      content,
+      summary: pushBrief,
+      context: publicationMeta,
+    });
+    saved = { date: result.date, filePath: result.filePath };
+  }
+
+  const resourceId = saved.date ?? saved.reportKey ?? "unknown";
+  const resourceType = kind === "daily" ? "daily_review" : `${kind}_review`;
   const store = new WorkspaceStore(context.userId);
   const publishedAt = new Date().toISOString();
   for (const [index, record] of decisionRecords.entries()) {
     await store.appendDecision({
       ...record,
-      source_review_date: saved.date,
+      source_review_date: resourceId,
       source_review_conversation_id: context.conversationId ?? null,
       recorded_at: record.recorded_at ?? publishedAt,
       record_index: index,
@@ -1040,7 +1066,7 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
   for (const [index, record] of sourceEvents.entries()) {
     await store.appendSourceEvent({
       ...record,
-      source_review_date: saved.date,
+      source_review_date: resourceId,
       source_review_conversation_id: context.conversationId ?? null,
       recorded_at: record.recorded_at ?? publishedAt,
       record_index: index,
@@ -1048,10 +1074,12 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
   }
   await audit(context, {
     operation: "reviews.save",
-    resourceType: "daily_review",
-    resourceId: saved.date,
+    resourceType,
+    resourceId,
     requestBody: {
+      kind,
       date: input?.date,
+      reportKey: input?.reportKey,
       hasContent: true,
       hasPushBrief: Boolean(pushBrief),
       hasContext: Boolean(input?.context),
@@ -1059,35 +1087,32 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
       sourceEventCount: sourceEvents.length,
       scheduledCompletion,
     },
-    resultSummary: `saved daily review ${saved.date}; decisions=${decisionRecords.length}; sourceEvents=${sourceEvents.length}`,
+    resultSummary: `saved ${kind} review ${resourceId}; decisions=${decisionRecords.length}; sourceEvents=${sourceEvents.length}`,
   });
   let artifact: ConversationArtifact | undefined;
   try {
+    const reportPath = kind === "daily"
+      ? `reports/daily/${saved.date}.md`
+      : `reports/${kind}/${saved.reportKey}.md`;
     const published = await publishConversationArtifact({
       userId: context.userId,
       instanceId: context.instanceId,
-      relativePath: `reports/daily/${saved.date}.md`,
+      relativePath: reportPath,
       kind: "report",
-      title: `每日复盘 ${saved.date}`,
+      title: kind === "daily" ? `每日复盘 ${saved.date}` : `${kind === "weekly" ? "周" : "月"}复盘 ${saved.reportKey}`,
       scope: {
         projectId: context.projectId || DEFAULT_PROJECT_ID,
-        assistantId: context.conversationId?.startsWith("scheduler:daily-review:")
-          ? context.instanceId
-          : context.instanceId,
+        assistantId: context.instanceId,
         conversationId: context.conversationId ?? null,
         source: "reviews.save",
       },
     });
     artifact = published;
   } catch (error) {
-    // Artifact registration is a structural convenience for the Portal viewer.
-    // If the file has not been mirrored into the workspace yet (for example a
-    // workspace that has not been initialised), fall back silently rather than
-    // failing the whole review publish.
     await audit(context, {
       operation: "reviews.save",
-      resourceType: "daily_review",
-      resourceId: saved.date,
+      resourceType,
+      resourceId,
       requestBody: { artifactPublish: "failed" },
       resultSummary: `artifact publish skipped: ${(error as Error).message}`,
       status: "error",

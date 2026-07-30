@@ -76,12 +76,13 @@ test("daily-review grant = reads + reviews.save", () => {
   }
 });
 
-test("weekly/monthly grant = reads only (F1; F2 will add final-action)", () => {
+test("weekly/monthly grant = reads + reviews.save (F2 controlled save)", () => {
   for (const taskType of ["scheduled-weekly-review", "scheduled-monthly-review"]) {
     const grant = resolveScheduledServiceGrant(taskType);
-    assert.ok(!grant.includes("reviews.save"), `${taskType} should not have reviews.save yet`);
+    assert.ok(grant.includes("reviews.save"), `${taskType} should have reviews.save`);
+    // 仍不含 other-write
     for (const tool of grant) {
-      assert.equal(classifyServiceTool(tool), "read", `${taskType} grant has non-read: ${tool}`);
+      assert.notEqual(classifyServiceTool(tool), "other-write", `${taskType} grant has other-write: ${tool}`);
     }
   }
 });

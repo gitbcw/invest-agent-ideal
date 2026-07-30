@@ -15,6 +15,7 @@ import { readSchedules } from "../lib/schedules-loader.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
+import { periodicReviewBackend } from "../lib/periodic-review-backend.js";
 import { captureMarketWatchSnapshot } from "../services/market-watch-snapshot.js";
 import { db } from "../db/index.js";
 import { sandboxAuditLogs } from "../db/schema.js";
@@ -353,10 +354,14 @@ async function runScheduledDailyReview(userContext: UserContext): Promise<string
 
 /**
  * 周复盘: WP4 新路径不预聚合注入 context; flag=true 时走旧编排。
- * 完成条件保留 writeWorkspaceReview (reviews.save 完成校验另立任务)。
+ * F2: 新路径改为受控保存——Agent 调 reviews.save(kind/reportKey)，服务回读校验四元组。
  */
 async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekly" | "monthly"): Promise<string | null> {
   const legacy = isLegacyReviewOrch();
+  const reportKey = kind === "weekly"
+    ? `${weekRangeForDate().weekStart}_weekly`
+    : monthRangeForDate().monthKey;
+
   if (legacy) {
     if (kind === "weekly") {
       const context = await buildWeeklyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
@@ -370,13 +375,27 @@ async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekl
     return sanitizeWeixinCustomerText(buildScheduledReviewPush("月复盘", content));
   }
 
-  // WP4 新路径: 不预聚合 context, 开放研究交还 ACP
-  const content = await runStructuredReviewPrompt(userContext, kind, null);
-  const reportKey = kind === "weekly"
-    ? `${weekRangeForDate().weekStart}_weekly`
-    : monthRangeForDate().monthKey;
-  await writeWorkspaceReview(userContext.userId, kind, reportKey, content);
-  return sanitizeWeixinCustomerText(buildScheduledReviewPush(kind === "weekly" ? "周复盘" : "月复盘", content));
+  // F2 新路径: 受控保存。prompt 要求 Agent 调 reviews.save(kind/reportKey)，
+  // 服务回读 periodicReviewBackend 校验四元组（publicationAt/convId/scheduled/pushBrief）。
+  const publicationStartedAt = Date.now();
+  await runStructuredReviewPrompt(userContext, kind, null, reportKey);
+  const published = await periodicReviewBackend.get(userContext.userId, userContext.instanceId!, kind, reportKey);
+  const publishedAt = published?.generatedAt ? Date.parse(published.generatedAt) : Number.NaN;
+  const publication = published?.data && typeof published.data === "object"
+    ? (published.data as any).context?.publication
+    : null;
+  if (
+    !published
+    || !Number.isFinite(publishedAt)
+    || publishedAt < publicationStartedAt - 1_000
+    || publication?.conversationId !== userContext.conversationId
+    || publication?.scheduled !== true
+  ) {
+    throw new Error(`scheduled ${kind} review did not publish artifact for ${reportKey}`);
+  }
+  const pushBrief = sanitizeWeixinCustomerText(published.summary || "").trim();
+  if (!pushBrief) throw new Error(`scheduled ${kind} review did not return push brief for ${reportKey}`);
+  return pushBrief;
 }
 
 export function buildDailyReviewTaskPrompt() {
@@ -408,18 +427,28 @@ async function buildScheduledUserContext(scope: ScheduledScope, taskName: string
   };
 }
 
-async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly" | "monthly", context: unknown) {
+async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly" | "monthly", context: unknown, reportKey?: string) {
   const label = kind === "weekly" ? "周复盘" : "月复盘";
   const promptLines = [
     `【后台任务：${label}】`,
     "你正在当前用户 Workspace 中执行自动复盘生成。",
-    "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
     "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 review/market 相关 skills。",
-    "结构和详略由 Workspace 规则决定；不要在服务层任务中自行压缩成固定字数摘要。",
-    "只输出给用户看的微信复盘正文，不要输出执行过程、工具调用过程或内部路径。",
+    "研究方法、工具选择、报告结构和详略由你决定。",
     "数据来源只写可读来源摘要，禁止展示原始 URL、endpoint 或接口路径；完整来源链接只保存在网页/Markdown artifact/Audit。",
     "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
   ];
+  // WP4: 新路径 (context=null) 不注入预聚合数据,开放研究交还 ACP
+  if (context) {
+    promptLines.push(`复盘上下文 JSON：${JSON.stringify(context)}`);
+  }
+  // F2: reviews.save 是唯一完成路径（受控保存）
+  if (reportKey) {
+    promptLines.push(
+      `发布是本任务唯一完成路径：完成研究后必须调用 reviews.save，kind 传 "${kind}"，reportKey 传 "${reportKey}"，content 放完整 Markdown，pushBrief 放独立的微信简报。`,
+      "pushBrief 会直接作为微信消息发送给用户，必须使用适合微信阅读且可由微信渲染的简洁 Markdown。",
+      "若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。仅在 reviews.save 返回成功后，才可给出最终回复，且最终回复必须逐字使用该次成功保存的 pushBrief。",
+    );
+  }
   // WP4: 新路径 (context=null) 不注入预聚合数据,开放研究交还 ACP
   if (context) {
     promptLines.push(`复盘上下文 JSON：${JSON.stringify(context)}`);

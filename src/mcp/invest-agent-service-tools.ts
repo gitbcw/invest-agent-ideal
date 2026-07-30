@@ -449,10 +449,12 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "reviews.save",
-    "Publish an Agent-authored daily review. Preserve the full Markdown as the report, store an independent WeChat push brief, and optionally append Agent-authored decision/source records. Scheduled daily reviews do not need interactive confirmation; manual durable saves require confirmedByUser=true. The reply includes an `artifact` descriptor whose `artifactId` should be embedded in the assistant reply metadata so the Portal can render it inline.",
+    "Publish an Agent-authored review (daily/weekly/monthly). Preserve the full Markdown as the report, store an independent WeChat push brief, and optionally append Agent-authored decision/source records. Scheduled reviews do not need interactive confirmation; manual durable saves require confirmedByUser=true. For weekly/monthly, pass kind and reportKey. The reply includes an `artifact` descriptor whose `artifactId` should be embedded in the assistant reply metadata so the Portal can render it inline.",
     {
       confirmedByUser: z.literal(true).optional(),
       date: z.string().optional(),
+      kind: z.enum(["daily", "weekly", "monthly"]).optional(),
+      reportKey: z.string().optional(),
       content: z.string(),
       pushBrief: z.string().optional(),
       summary: z.string().optional(),
