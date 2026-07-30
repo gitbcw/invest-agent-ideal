@@ -41,7 +41,7 @@ function ensureDir() {
   if (!existsSync(REVIEWS_DIR)) mkdirSync(REVIEWS_DIR, { recursive: true });
 }
 
-function localDateString(date = new Date()): string {
+export function localDateString(date = new Date()): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -57,7 +57,7 @@ function isReviewStockCode(code: unknown): code is string {
   return /^(?:sh|sz)?\d{6}(?:\.(?:sh|sz))?$/i.test(String(code || "").trim());
 }
 
-function weekRangeForDate(date?: string): { weekStart: string; weekEnd: string } {
+export function weekRangeForDate(date?: string): { weekStart: string; weekEnd: string } {
   const baseDate = date ? parseDateString(date) : new Date();
   const weekStart = new Date(baseDate);
   const day = baseDate.getDay() || 7;
@@ -68,7 +68,7 @@ function weekRangeForDate(date?: string): { weekStart: string; weekEnd: string }
   };
 }
 
-function monthRangeForDate(date?: string): { monthStart: string; monthEnd: string; monthKey: string } {
+export function monthRangeForDate(date?: string): { monthStart: string; monthEnd: string; monthKey: string } {
   const baseDate = date ? parseDateString(date) : new Date();
   const monthStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
   return {

@@ -23,10 +23,28 @@ import {
   buildDailyReviewContext,
   buildMonthlyReviewContext,
   buildWeeklyReviewContext,
+  localDateString,
+  weekRangeForDate,
+  monthRangeForDate,
 } from "../handlers/review.js";
 
 const SCHEDULED_ACP_TIMEOUT_MS =
   Number(process.env.SCHEDULED_ACP_TIMEOUT_MS) || 600_000;
+
+/**
+ * WP4: 预编排 feature flag。
+ *
+ * 新路径 (flag=false, 默认) 把开放研究完全交还 ACP 与 Workspace Skills：
+ * market-watch 不约束工具/不预抓取/不审计纠偏/不兜底；review 不预聚合注入/不禁工具。
+ * flag=true 保留旧编排,可灰度回切。flag 读取统一用 `=== "true"`,与 ACP_EVAL_* 一致。
+ */
+export function isLegacyMarketWatchOrch(): boolean {
+  return process.env.SCHEDULED_MARKET_WATCH_LEGACY_ORCH === "true";
+}
+
+export function isLegacyReviewOrch(): boolean {
+  return process.env.SCHEDULED_REVIEW_LEGACY_ORCH === "true";
+}
 
 export interface ScheduledScope {
   userId: string;
@@ -157,11 +175,43 @@ export async function runScheduledReviewPublicationProbe(
 }
 
 export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
+  const pushMode = await resolveMarketWatchPushMode(scope.userId);
+
+  if (isLegacyMarketWatchOrch()) {
+    return runLegacyMarketWatchTask(scope, pushMode);
+  }
+
+  // WP4 新路径: 开放研究完全交还 ACP。不约束工具 (ACP 自由选任意已启用只读 MCP)、
+  // 不预抓取 snapshot、不审计纠偏、不矛盾检测、不兜底。只处理精确 NO_PUSH 或可投递正文。
+  const userContext = await buildScheduledUserContext(scope, "market-watch");
+  const promptContext = await buildAcpPromptContext({
+    userText: buildMarketWatchTaskPrompt(userContext, pushMode),
+    userContext,
+  });
+  const reply = await runAcpTask({
+    userContext,
+    promptText: promptContext.promptText,
+    conversationId: userContext.conversationId!,
+    messageId: randomUUID(),
+    mode: "scheduled-market-watch",
+    sandboxTokenId: promptContext.sandboxContext.tokenId,
+    sandboxPermissions: promptContext.sandboxContext.permissions,
+  });
+  const cleaned = sanitizeScheduledReply(reply);
+  // NO_PUSH 一律 return null (无兜底简报); 空正文也 return null
+  if (!cleaned || cleaned === "NO_PUSH") return null;
+  return cleaned;
+}
+
+/**
+ * 旧 market-watch 编排 (flag=true 时): snapshot 预抓取 + 具名行情审计 + 纠偏重跑
+ * + 文本/快照矛盾检测 + 固定简报模式兜底。保留用于灰度回切。
+ */
+async function runLegacyMarketWatchTask(scope: ScheduledScope, pushMode: MarketWatchPushMode): Promise<string | null> {
   const userContext = {
     ...await buildScheduledUserContext(scope, "market-watch"),
     mcpAllowedTools: MARKET_WATCH_ALLOWED_TOOLS,
   };
-  const pushMode = await resolveMarketWatchPushMode(userContext.userId);
   const windowKey = new Date().toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
   const captured = await captureMarketWatchSnapshot({ userId: userContext.userId, projectId: userContext.projectId || DEFAULT_PROJECT_ID, instanceId: userContext.instanceId || DEFAULT_INSTANCE_ID, windowKey });
   const promptContext = await buildAcpPromptContext({
@@ -240,60 +290,91 @@ export async function runScheduledReviewTask(scope: ScheduledScope, kind: Schedu
   const userContext = await buildScheduledUserContext(scope, `${kind}-review`);
 
   if (kind === "daily") {
-    const publicationStartedAt = Date.now();
-    const reviewContext = await buildDailyReviewContext({
-      userId: userContext.userId,
-      instanceId: userContext.instanceId,
-    });
-    const promptContext = await buildAcpPromptContext({
-      userText: buildDailyReviewTaskPrompt(),
-      reviewContext,
-      allowReviewPublication: true,
-      userContext,
-    });
-    await runAcpTask({
-      userContext,
-      promptText: promptContext.promptText,
-      conversationId: userContext.conversationId!,
-      messageId: randomUUID(),
-      mode: "scheduled-daily-review",
-      reviewContextSummary: promptContext.reviewContextSummary,
-      sandboxTokenId: promptContext.sandboxContext.tokenId,
-      sandboxPermissions: promptContext.sandboxContext.permissions,
-    });
-    // The Agent's final text is not authoritative: only reviews.save is the
-    // durable publication contract. This also prevents a mismatched draft
-    // reply from being delivered after a successful save.
-    const published = await dailyPlanBackend.get(userContext.userId, userContext.instanceId!, reviewContext.date);
-    const publishedAt = published?.generatedAt ? Date.parse(published.generatedAt) : Number.NaN;
-    const publication = published?.data && typeof published.data === "object"
-      ? (published.data as any).context?.publication
-      : null;
-    if (
-      !published
-      || !Number.isFinite(publishedAt)
-      || publishedAt < publicationStartedAt - 1_000
-      || publication?.conversationId !== userContext.conversationId
-      || publication?.scheduled !== true
-    ) {
-      throw new Error(`scheduled daily review did not publish artifact for ${reviewContext.date}`);
-    }
-    const pushBrief = sanitizeWeixinCustomerText(published.summary || "").trim();
-    if (!pushBrief) throw new Error(`scheduled daily review did not return push brief for ${reviewContext.date}`);
-    return pushBrief;
+    return runScheduledDailyReview(userContext);
   }
 
   if (kind === "weekly") {
-    const context = await buildWeeklyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
-    const content = await runStructuredReviewPrompt(userContext, "weekly", context);
-    await writeWorkspaceReview(userContext.userId, "weekly", `${context.weekStart}_weekly`, content);
-    return sanitizeWeixinCustomerText(buildScheduledReviewPush("周复盘", content));
+    return runScheduledPeriodicReview(userContext, "weekly");
   }
 
-  const context = await buildMonthlyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
-  const content = await runStructuredReviewPrompt(userContext, "monthly", context);
-  await writeWorkspaceReview(userContext.userId, "monthly", context.monthKey, content);
-  return sanitizeWeixinCustomerText(buildScheduledReviewPush("月复盘", content));
+  return runScheduledPeriodicReview(userContext, "monthly");
+}
+
+/**
+ * 日复盘: reviews.save 是唯一完成路径,回读校验四元组 (publicationAt/convId/scheduled/pushBrief)。
+ * WP4 新路径不预聚合注入、不禁工具; flag=true 时走旧编排 (buildDailyReviewContext + 禁工具 prompt)。
+ */
+async function runScheduledDailyReview(userContext: UserContext): Promise<string | null> {
+  const publicationStartedAt = Date.now();
+  const legacy = isLegacyReviewOrch();
+  const reviewContext = legacy
+    ? await buildDailyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId })
+    : null;
+  const reviewDate = reviewContext?.date ?? localDateString();
+
+  const promptContext = await buildAcpPromptContext({
+    userText: buildDailyReviewTaskPrompt(),
+    ...(legacy ? { reviewContext, allowReviewPublication: true } : {}),
+    userContext,
+  });
+  await runAcpTask({
+    userContext,
+    promptText: promptContext.promptText,
+    conversationId: userContext.conversationId!,
+    messageId: randomUUID(),
+    mode: "scheduled-daily-review",
+    reviewContextSummary: promptContext.reviewContextSummary,
+    sandboxTokenId: promptContext.sandboxContext.tokenId,
+    sandboxPermissions: promptContext.sandboxContext.permissions,
+  });
+  // The Agent's final text is not authoritative: only reviews.save is the
+  // durable publication contract. This also prevents a mismatched draft
+  // reply from being delivered after a successful save.
+  const published = await dailyPlanBackend.get(userContext.userId, userContext.instanceId!, reviewDate);
+  const publishedAt = published?.generatedAt ? Date.parse(published.generatedAt) : Number.NaN;
+  const publication = published?.data && typeof published.data === "object"
+    ? (published.data as any).context?.publication
+    : null;
+  if (
+    !published
+    || !Number.isFinite(publishedAt)
+    || publishedAt < publicationStartedAt - 1_000
+    || publication?.conversationId !== userContext.conversationId
+    || publication?.scheduled !== true
+  ) {
+    throw new Error(`scheduled daily review did not publish artifact for ${reviewDate}`);
+  }
+  const pushBrief = sanitizeWeixinCustomerText(published.summary || "").trim();
+  if (!pushBrief) throw new Error(`scheduled daily review did not return push brief for ${reviewDate}`);
+  return pushBrief;
+}
+
+/**
+ * 周复盘: WP4 新路径不预聚合注入 context; flag=true 时走旧编排。
+ * 完成条件保留 writeWorkspaceReview (reviews.save 完成校验另立任务)。
+ */
+async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekly" | "monthly"): Promise<string | null> {
+  const legacy = isLegacyReviewOrch();
+  if (legacy) {
+    if (kind === "weekly") {
+      const context = await buildWeeklyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
+      const content = await runStructuredReviewPrompt(userContext, "weekly", context);
+      await writeWorkspaceReview(userContext.userId, "weekly", `${context.weekStart}_weekly`, content);
+      return sanitizeWeixinCustomerText(buildScheduledReviewPush("周复盘", content));
+    }
+    const context = await buildMonthlyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
+    const content = await runStructuredReviewPrompt(userContext, "monthly", context);
+    await writeWorkspaceReview(userContext.userId, "monthly", context.monthKey, content);
+    return sanitizeWeixinCustomerText(buildScheduledReviewPush("月复盘", content));
+  }
+
+  // WP4 新路径: 不预聚合 context, 开放研究交还 ACP
+  const content = await runStructuredReviewPrompt(userContext, kind, null);
+  const reportKey = kind === "weekly"
+    ? `${weekRangeForDate().weekStart}_weekly`
+    : monthRangeForDate().monthKey;
+  await writeWorkspaceReview(userContext.userId, kind, reportKey, content);
+  return sanitizeWeixinCustomerText(buildScheduledReviewPush(kind === "weekly" ? "周复盘" : "月复盘", content));
 }
 
 export function buildDailyReviewTaskPrompt() {
@@ -327,18 +408,22 @@ async function buildScheduledUserContext(scope: ScheduledScope, taskName: string
 
 async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly" | "monthly", context: unknown) {
   const label = kind === "weekly" ? "周复盘" : "月复盘";
+  const promptLines = [
+    `【后台任务：${label}】`,
+    "你正在当前用户 Workspace 中执行自动复盘生成。",
+    "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
+    "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 review/market 相关 skills。",
+    "结构和详略由 Workspace 规则决定；不要在服务层任务中自行压缩成固定字数摘要。",
+    "只输出给用户看的微信复盘正文，不要输出执行过程、工具调用过程或内部路径。",
+    "数据来源只写可读来源摘要，禁止展示原始 URL、endpoint 或接口路径；完整来源链接只保存在网页/Markdown artifact/Audit。",
+    "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
+  ];
+  // WP4: 新路径 (context=null) 不注入预聚合数据,开放研究交还 ACP
+  if (context) {
+    promptLines.push(`复盘上下文 JSON：${JSON.stringify(context)}`);
+  }
   const promptContext = await buildAcpPromptContext({
-    userText: [
-      `【后台任务：${label}】`,
-      "你正在当前用户 Workspace 中执行自动复盘生成。",
-      "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
-      "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 review/market 相关 skills。",
-      "结构和详略由 Workspace 规则决定；不要在服务层任务中自行压缩成固定字数摘要。",
-      "只输出给用户看的微信复盘正文，不要输出执行过程、工具调用过程或内部路径。",
-      "数据来源只写可读来源摘要，禁止展示原始 URL、endpoint 或接口路径；完整来源链接只保存在网页/Markdown artifact/Audit。",
-      "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
-      `复盘上下文 JSON：${JSON.stringify(context)}`,
-    ].join("\n"),
+    userText: promptLines.join("\n"),
     userContext,
   });
   const reply = await runAcpTask({
