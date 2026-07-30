@@ -16,8 +16,8 @@ const loadOverview=async()=>{
   finishUpdated(data);
   const m=data.metrics||{};
   const cards=[['customersTotal','客户总数'],['activeCustomers7d','近 7 日活跃'],['onboardingCompleted','已完成初始配置'],['conversationCountToday','今日对话',true]].map(([k,label,signal])=>statCard(m[k],label,signal?{signal:true}:null)).join('');
-  const signals=[['conversationSuccessRateToday','对话成功率',pct],['responseP50MsToday','响应 P50',formatMs],['responseP95MsToday','响应 P95',formatMs],['reviewCoverageToday','今日复盘覆盖率',pct],['pushDeliveryRateToday','推送送达率',pct],['qualityExceptionCountToday','质量异常',formatNum]];
-  const signalList=signals.map(([k,label,fmt])=>'<div class="metric-row"><span>'+label+'</span><strong>'+fmt(m[k])+'</strong></div>').join('');
+  const signals=[['conversationSuccessRateToday','对话成功率',pct,'今日对话中成功完成的比例，反映服务稳定性'],['responseP50MsToday','响应 P50',formatMs,'一半的对话响应快于此值，代表典型响应速度'],['responseP95MsToday','响应 P95',formatMs,'95% 的对话响应快于此值，反映最慢的尾部延迟'],['reviewCoverageToday','今日复盘覆盖率',pct,'今日已生成复盘的客户占比'],['pushDeliveryRateToday','推送送达率',pct,'今日推送成功送达的比例'],['qualityExceptionCountToday','质量异常',formatNum,'近7日累计的超时、错误、重复确认次数']];
+  const signalList=signals.map(([k,label,fmt,hint])=>'<div class="metric-row"><span title="'+escape(hint||'')+'">'+label+'</span><strong>'+fmt(m[k])+'</strong></div>').join('');
   // 需要关注：排序条（按 affectedCustomers 降序）。口径不变（取现有 exceptions[] 字段）。
   const exceptions=(data.exceptions||[]).slice().sort((a,b)=>(b.affectedCustomers||0)-(a.affectedCustomers||0));
   const total=exceptions.reduce((s,x)=>s+(x.affectedCustomers||0),0);
