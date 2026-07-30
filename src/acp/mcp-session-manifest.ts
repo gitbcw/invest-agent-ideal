@@ -111,6 +111,25 @@ function resolveAllowedTools(
 }
 
 /**
+ * 计算会话 allowlist 的稳定指纹 (WP3)。
+ *
+ * sessionKey 必须纳入 allowlist,否则同一 conversation 不同 allowlist 会复用 session,
+ * 导致权限泄漏 (全量 session 被只读阶段复用)。指纹 = 排序去重后的 allowlist 短 hash;
+ * 无 allowlist (全量) 返回空串,使无 allowlist 的会话仍可互相复用。
+ *
+ * 用 sha256 前 8 位,与 configFingerprint 风格一致。
+ */
+export function computeAllowlistFingerprint(
+  userContext: UserContext | undefined,
+  env: NodeJS.ProcessEnv,
+): string {
+  const tools = resolveAllowedTools(userContext, env);
+  if (tools.length === 0) return "";
+  const normalized = [...new Set(tools)].sort().join(",");
+  return createHash("sha256").update(normalized).digest("hex").slice(0, 8);
+}
+
+/**
  * 解析 service-scoped server 的完整 env 数组。
  * 逻辑与原 buildInvestAgentMcpServers :191-231 完全一致,保证零行为回归。
  */

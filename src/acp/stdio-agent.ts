@@ -27,7 +27,7 @@ import { config } from "../lib/config.js";
 import { isAcpDiagnosticText } from "../lib/customer-output.js";
 import type { AcpModelTier } from "./model-router.js";
 import { type UserContext } from "../lib/user-context.js";
-import { resolveSessionMcpServers } from "./mcp-session-manifest.js";
+import { computeAllowlistFingerprint, resolveSessionMcpServers } from "./mcp-session-manifest.js";
 
 const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
 const ACP_DEBUG_PREVIEW_CHARS = Number(process.env.ACP_DEBUG_PREVIEW_CHARS) || 120;
@@ -499,7 +499,12 @@ export class StdioAcpAgent {
     }
     this.activeConversations.add(params.conversationId);
     const conn = await this.ensureReady();
-    const sessionKey = params.cwd ? `${params.conversationId}::${params.cwd}` : params.conversationId;
+    // WP3: sessionKey 必须纳入 allowlist 指纹,否则同一 conversation 不同 allowlist 会复用
+    // session,导致权限泄漏 (全量 session 被只读阶段复用)。无 allowlist (全量) 时指纹为空串。
+    const allowlistFp = computeAllowlistFingerprint(params.userContext, process.env);
+    const sessionKey = [params.conversationId, params.cwd, allowlistFp]
+      .filter((part) => part !== undefined && part !== "")
+      .join("::");
     const sessionId = await this.getOrCreateSession(sessionKey, conn, params.cwd, params.userContext);
     const prompt = [{ type: "text" as const, text: params.text }];
     const collector = new ResponseCollector();
