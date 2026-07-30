@@ -20,6 +20,8 @@ import type { AcpBackendId } from "./stdio-agent.js";
 import {
   getMcpRegistry,
   resolveRuntimePlaceholders,
+  isExternalStdioHealthy,
+  resolveExternalServer,
   type McpRegistry,
   type McpServerRegistration,
   type McpSessionKind,
@@ -231,28 +233,49 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
       continue;
     }
 
-    const resolved = resolveRuntimePlaceholders(reg, { projectRoot, execPath: process.execPath });
-    if (resolved.transport.kind !== "stdio") continue;
+    // service-scoped: 复用 WP1 的 scope 解析
+    if (reg.trustClass === "service-scoped") {
+      const resolved = resolveRuntimePlaceholders(reg, { projectRoot, execPath: process.execPath, env });
+      if (resolved.transport.kind !== "stdio") continue;
+      servers.push({
+        name: resolved.id,
+        command: resolved.transport.command,
+        args: resolved.transport.args,
+        env: resolveServiceScopeEnv(identity, env, projectRoot),
+      });
+      manifestServers.push({
+        id: resolved.id,
+        transportKind: resolved.transport.kind,
+        version: resolved.versionPolicy?.expected,
+        configFingerprint: computeConfigFingerprint(resolved, identity),
+      });
+      continue;
+    }
 
-    const serverEnv =
-      reg.trustClass === "service-scoped"
-        ? resolveServiceScopeEnv(identity, env, projectRoot)
-        : // external-readonly: WP2 才会有,WP1 不产出
-          [];
-
-    servers.push({
-      name: resolved.id,
-      command: resolved.transport.command,
-      args: resolved.transport.args,
-      env: serverEnv,
-    });
-
-    manifestServers.push({
-      id: resolved.id,
-      transportKind: resolved.transport.kind,
-      version: resolved.versionPolicy?.expected,
-      configFingerprint: computeConfigFingerprint(resolved, identity),
-    });
+    // external-readonly (WP2): 健康检查 + 外部 env 解析
+    if (reg.trustClass === "external-readonly") {
+      if (!isExternalStdioHealthy(reg, env)) {
+        // 外部 MCP 不健康时会话明确缺少该服务器,不阻断 service-scoped MCP 启动
+        logger.warn(
+          `MCP server ${reg.id} is not healthy (missing required env MDT_PROJECT_DIR/MDT_UV_BIN); skipping`,
+        );
+        continue;
+      }
+      const external = resolveExternalServer(reg, env);
+      if (!external) continue;
+      servers.push({
+        name: reg.id,
+        command: external.command,
+        args: external.args,
+        env: external.env,
+      });
+      manifestServers.push({
+        id: reg.id,
+        transportKind: "stdio",
+        version: reg.versionPolicy?.expected,
+        configFingerprint: computeConfigFingerprint(reg, identity),
+      });
+    }
   }
 
   const manifest: AcpMcpSessionManifest = {

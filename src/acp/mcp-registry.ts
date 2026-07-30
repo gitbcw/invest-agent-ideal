@@ -16,6 +16,7 @@
 
 import path from "node:path";
 import { logger } from "../lib/logger.js";
+import { buildExternalRegistrations } from "./external-mcp-registrations.js";
 
 // ─── 注册模型 ──────────────────────────────────────────────────────
 
@@ -197,8 +198,27 @@ export class McpRegistry {
 let globalRegistry: McpRegistry | undefined;
 
 export function getMcpRegistry(): McpRegistry {
-  if (!globalRegistry) globalRegistry = new McpRegistry();
+  if (!globalRegistry) {
+    globalRegistry = new McpRegistry();
+    // WP2: 受 env 开关控制接入外部只读 MCP。默认关闭,保证零行为回归。
+    if (process.env.INVEST_AGENT_MCP_EXTERNAL_ENABLED === "true") {
+      registerExternalMcpServers(globalRegistry);
+    }
+  }
   return globalRegistry;
+}
+
+/**
+ * 把外部只读 MCP 注册项接入注册表并启用。
+ * 幂等:已注册的 id 跳过。受 env 开关 INVEST_AGENT_MCP_EXTERNAL_ENABLED 控制。
+ */
+export function registerExternalMcpServers(registry: McpRegistry): void {
+  // 延迟导入避免循环依赖
+  for (const reg of buildExternalRegistrations()) {
+    if (registry.getRegistration(reg.id)) continue;
+    registry.register(reg);
+    registry.setEnabled(reg.id, true);
+  }
 }
 
 export function createMcpRegistry(builtins?: McpServerRegistration[]): McpRegistry {
@@ -210,21 +230,81 @@ export function resetMcpRegistryForTest(): void {
   globalRegistry = undefined;
 }
 
-/** 运行时把注册项中的 `<runtime:*>` 占位符解析成实际路径。 */
+/**
+ * 运行时把注册项中的 `<runtime:*>` 占位符解析成实际路径/命令。
+ * service-scoped 用 exec-path/dist-mcp-path;external 用 mdt-uv-bin/mdt-run-args。
+ */
 export function resolveRuntimePlaceholders(
   reg: McpServerRegistration,
-  ctx: { projectRoot: string; execPath: string },
+  ctx: { projectRoot: string; execPath: string; env?: NodeJS.ProcessEnv },
 ): McpServerRegistration {
   if (reg.transport.kind !== "stdio") return reg;
+  const env = ctx.env || process.env;
   return {
     ...reg,
     transport: {
       ...reg.transport,
-      command: reg.transport.command.replace("<runtime:exec-path>", ctx.execPath),
+      command: reg.transport.command
+        .replace("<runtime:exec-path>", ctx.execPath)
+        .replace("<runtime:mdt-uv-bin>", env.MDT_UV_BIN || ""),
       args: reg.transport.args.map((arg) =>
-        arg.replace("<runtime:dist-mcp-path>", path.join(ctx.projectRoot, "dist/mcp/invest-agent-service-tools.js")),
+        arg
+          .replace(
+            "<runtime:dist-mcp-path>",
+            path.join(ctx.projectRoot, "dist/mcp/invest-agent-service-tools.js"),
+          )
+          .replace(
+            "<runtime:mdt-run-args>",
+            JSON.stringify(["run", "--project", env.MDT_PROJECT_DIR || "", "mdt-mcp"]),
+          ),
       ),
     },
+  };
+}
+
+/**
+ * external-readonly server 缺少必需 env 引用时,会话应明确缺少该服务器 (fail closed)。
+ * 返回 null 表示健康检查未通过;返回 string[] 表示占位符是否需要展开。
+ */
+export function isExternalStdioHealthy(reg: McpServerRegistration, env: NodeJS.ProcessEnv): boolean {
+  if (reg.trustClass !== "external-readonly" || reg.transport.kind !== "stdio") return true;
+  // market-data-tool 需要这两个才能 spawn: uv 路径 + 项目目录
+  return Boolean(env.MDT_UV_BIN && env.MDT_PROJECT_DIR);
+}
+
+/**
+ * 解析 external-readonly server 的 env:只含它声明的、且在 env 中存在的引用。
+ * 绝不注入 service scope env (WP1 校验已禁止声明,这里双保险过滤)。
+ * mdt-run-args 占位符展开成多个 args (而非单个 JSON 字符串)。
+ */
+export function resolveExternalServer(
+  reg: McpServerRegistration,
+  env: NodeJS.ProcessEnv,
+): { command: string; args: string[]; env: Array<{ name: string; value: string }> } | null {
+  if (reg.transport.kind !== "stdio") return null;
+  if (!isExternalStdioHealthy(reg, env)) return null;
+
+  // mdt-run-args 展开为实际子进程参数
+  let args: string[];
+  if (reg.transport.args.length === 1 && reg.transport.args[0] === "<runtime:mdt-run-args>") {
+    args = ["run", "--project", env.MDT_PROJECT_DIR || "", "mdt-mcp"];
+  } else {
+    args = [...reg.transport.args];
+  }
+
+  const serverEnv: Array<{ name: string; value: string }> = [];
+  for (const ref of reg.transport.envRefs || []) {
+    if (FORBIDDEN_EXTERNAL_REFS.has(ref)) continue; // 双保险:安全边界
+    const value = env[ref];
+    if (value !== undefined && value !== "") {
+      serverEnv.push({ name: ref, value });
+    }
+  }
+
+  return {
+    command: reg.transport.command === "<runtime:mdt-uv-bin>" ? env.MDT_UV_BIN || "" : reg.transport.command,
+    args,
+    env: serverEnv,
   };
 }
 

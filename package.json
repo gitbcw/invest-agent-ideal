@@ -70,6 +70,7 @@
     "backup:workspaces:smoke": "bash scripts/volcano-workspace-backup-smoke.sh",
     "release:snapshot": "node scripts/release-snapshot.mjs",
     "release:snapshot:smoke": "node scripts/release-snapshot-smoke.mjs",
+    "probe:market-data-tool": "node scripts/mcp-market-data-tool-probe.mjs",
     "release:deploy": "node scripts/release-deploy.mjs deploy",
     "release:rollback": "node scripts/release-deploy.mjs rollback",
     "release:workspace-rollback": "node scripts/workspace-rollback.mjs",
