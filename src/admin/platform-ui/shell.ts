@@ -46,7 +46,7 @@ export const SHARED_HELPERS_JS = `
 const json=async(url,options)=>{const res=await fetch(url,{credentials:'same-origin',...options});const body=await res.json().catch(()=>({}));if(!res.ok)throw new Error(body.error||'请求失败');return body;};
 const escape=(v)=>String(v??'-').replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pct=(v)=>v==null?'-':(Number(v)*100).toFixed(1)+'%';
-const formatMs=(v)=>v==null?'-':v+' ms';
+const formatMs=(v)=>{if(v==null)return '-';const n=Number(v);if(!Number.isFinite(n))return '-';if(n<1000)return n+' 毫秒';const s=n/1000;if(s<60)return s.toFixed(1)+' 秒';const m=Math.floor(s/60);const rs=Math.round(s%60);return rs>0?m+' 分 '+rs+' 秒':m+' 分钟';};
 const formatNum=(v)=>v==null?'-':v;
 const STATUS_TEXT={ok:'正常',attention:'需关注',blocked:'异常',completed:'已完成',drafting:'配置中',committing:'提交中',not_started:'未开始',exception:'异常',active:'运行中',inactive:'未启用',sent:'已送达',awaiting_user:'待用户',delivery_failed:'送达失败',session_expired:'会话失效',wechat_delivery_error:'微信异常',timeout:'超时',observed:'观测中',degraded:'降级',partial:'部分可用',healthy:'健康',watch:'关注',critical:'异常'};
 const STATUS_CLS={ok:'ok',attention:'warn',blocked:'danger',completed:'ok',drafting:'info',committing:'info',not_started:'gray',exception:'danger',active:'ok',inactive:'gray',sent:'ok',awaiting_user:'warn',delivery_failed:'danger',session_expired:'danger',wechat_delivery_error:'danger',timeout:'warn',observed:'gray',degraded:'warn',partial:'warn',healthy:'ok',watch:'warn',critical:'danger'};
