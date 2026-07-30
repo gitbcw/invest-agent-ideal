@@ -1,8 +1,18 @@
 # MCP 注册与 Agent 工具架构重构 — WP9 验收记录
 
-> 状态：Accepted。WP0-WP9 全部完成。
+> 状态：**Accepted（F1-F5 验收修复全部完成，F6 重新验收通过）**。
 >
-> 本文件是重构计划 WP9 的独立验收记录，对照计划逐条验收各 WP 的产物、验证结果和遗留事项。
+> 本文件是重构计划 WP9 的独立验收记录。初版（a422a75）被独立验收发现 P1/P2 缺口（标 Pass 的遗留项、暴露写工具、weekly/monthly 无受控保存、价格事实未真正解耦、工具冲突未验收、publication smoke 非自包含）。F1-F5 逐项修复后，F6 重新验收。
+
+## F1-F5 验收修复摘要
+
+| 修复项 | 验收缺口 | 修复 commit | 状态 |
+| --- | --- | --- | --- |
+| F1 | 定时会话暴露全部 43 服务工具（含无关写工具） | `898b805` | ✅ 4 类 scheduled session 只暴露 scope reads + final-action |
+| F2 | weekly/monthly 无受控保存/回读校验 | `f77b606` | ✅ reviews.save 加 kind/reportKey + periodicReviewBackend 回读校验 |
+| F3 | 8 类规则退役缺可核对用户授权 | `ed6e203` | ✅ 用户再次明确授权 + 决策记录 |
+| F4 | getRulePrices 仍导入完整 marketDataReadCapability | `ca6bc71` | ✅ 直接组合 getQuote+getSinaQuote + 5s TTL + 代码规范校验 |
+| F5 | 工具冲突未验收 + 真实 ACP 证据不可复核 | `7e0c33a` | ✅ 冲突检测探针（fail closed）+ 真实 e2e probe（两 server 共存） |
 
 ## 一、全链验证结果
 
@@ -88,24 +98,29 @@
 - `market-data-tool`（外部只读 MCP，默认关闭）：15 个工具，动态发现
 - sessionKey 含 allowlist 指纹（WP3 权限隔离修复）
 
-### Scheduler 运行面（WP4）
+### Scheduler 运行面（WP4 + F1/F2）
 - 只触发和交付，不预编排（`SCHEDULED_*_LEGACY_ORCH` flag 默认关闭）
 - market-watch 新路径：ACP 自由选数，NO_PUSH → null（无兜底）
-- daily-review：reviews.save 回读四元组完成条件保留
+- daily/weekly/monthly：均以 reviews.save 受控保存为唯一完成路径（F2 回读校验四元组）
+- F1 最小权限：scheduled session 只暴露 scope reads + 该任务 final-action
 
-### 规则事实面（WP5/WP6/WP7/WP8）
-- price_cross：唯一活跃规则，`getRulePrices` 窄事实接口（tick 级批量）
+### 规则事实面（WP5/WP6/WP7/WP8 + F4）
+- price_cross：唯一活跃规则，`getRulePrices` 窄事实接口（F4 直接组合 provider，脱离 marketDataReadCapability，5s TTL）
 - 8 类非价格规则：退役（求值代码已删，catalog 不含，禁止新建）
 - snapshot：写入冻结，历史保留，读取 deprecated
 
+### MCP 控制面（WP1 + F5）
+- 配置型注册表 + 会话 manifest + F1 taskType grant
+- F5 工具冲突检测探针（fail closed，codex-acp 平面命名空间）
+
 ### 保留兼容层（WP8 审计结论）
 - sandbox market HTTP 路由（10 个）：零内部消费者，无外部反证，保留
-- marketDataReadCapability：过渡兼容层，多个 service 路径在用
+- marketDataReadCapability：过渡兼容层，多个 service 路径在用（F4 后 rule-price-facts 不再用）
 - Platform source-quality/telemetry：真实 UI 消费
 
 ## 四、遗留事项与后续任务
 
-1. **weekly/monthly reviews.save 完成校验**（WP4 未完成项）：当前完成条件是 writeWorkspaceReview，计划要求与 daily 对齐（reviews.save 回读）。另立任务。
+1. ~~**weekly/monthly reviews.save 完成校验**~~：**已完成（F2）**。weekly/monthly 现在走 reviews.save + periodicReviewBackend 回读校验。
 2. **snapshot 表物理删除**：需显式生产授权（备份 + 观察窗口 + 消费者清零确认）。移交运维/DB 负责人。
 3. **market-data-tool 生产启用**：当前默认关闭（`INVEST_AGENT_MCP_EXTERNAL_ENABLED`）。启用前需评估 codex-acp 生产环境 spawn 外部 stdio MCP 的稳定性。
 4. **indicator-based screening 外部工具对接**：WP6 退役的 8 类规则未来通过外部量化选股/筛选工具实现，到点调接口判断。需在该工具开接口并对接。
