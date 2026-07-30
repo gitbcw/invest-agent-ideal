@@ -108,12 +108,15 @@ try {
     }
   }
 
+  // Partner 现可读成本总览（v2 契约：仅大盘，不按客户拆），单独验证 200。
+  const costRead = await app.inject({ method: "GET", url: "/api/platform/audit/usage", remoteAddress: "203.0.113.10", headers: { cookie: partnerCookie } });
+  assert.equal(costRead.statusCode, 200, "partner should read cost overview");
+
   const partnerDeniedRequests = [
     { method: "GET", url: "/api/platform/audit?userId=primary" },
     { method: "GET", url: "/api/platform/instances?userId=primary" },
     { method: "GET", url: "/api/platform/instances/invest-agent-primary/investment-state" },
     { method: "GET", url: "/api/platform/rule-alerts" },
-    { method: "GET", url: "/api/platform/audit/usage" },
     { method: "POST", url: "/api/platform/instances", payload: { userId: "attacker", displayName: "attacker" } },
     { method: "GET", url: "/api/platform/source-quality" },
     { method: "POST", url: "/api/platform/instances/invest-agent-primary/portal/credential" },

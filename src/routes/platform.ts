@@ -1410,6 +1410,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
           reply.header("set-cookie", platformSessionCookie(session.id, session.maxAgeSeconds));
         }
         return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+          role: "owner",
           portalPublicUrl: config.portal.publicUrl,
         }));
       }
@@ -1417,13 +1418,14 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     }
     const context = await getPlatformAuthContext(request);
     if (context?.authType === "account" && context.role === "partner") {
-      return reply.type("text/html; charset=utf-8").send(renderPartnerPlatformPage({ authenticated: true }));
+      return reply.type("text/html; charset=utf-8").send(renderPlatformPage({ role: "partner" }));
     }
     if (context?.authType === "account" && context.role === "owner" && context.mustChangePassword) {
       return reply.type("text/html; charset=utf-8").send(renderPartnerPlatformPage());
     }
     if (context?.authType === "account" && context.role === "owner") {
       return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+        role: "owner",
         portalPublicUrl: config.portal.publicUrl,
       }));
     }
@@ -1433,6 +1435,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
         reply.header("set-cookie", platformSessionCookie(session.id, session.maxAgeSeconds));
       }
       return reply.type("text/html; charset=utf-8").send(renderPlatformPage({
+        role: "owner",
         portalPublicUrl: config.portal.publicUrl,
       }));
     }
