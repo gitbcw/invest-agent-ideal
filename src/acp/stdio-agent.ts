@@ -28,11 +28,79 @@ import { isAcpDiagnosticText } from "../lib/customer-output.js";
 import type { AcpModelTier } from "./model-router.js";
 import { type UserContext } from "../lib/user-context.js";
 import { computeAllowlistFingerprint, resolveSessionMcpServers } from "./mcp-session-manifest.js";
+import { probeToolConflicts, shouldBlockSessionOnConflict, type ToolConflictReport } from "./mcp-tool-conflict-probe.js";
 
 const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
 const ACP_DEBUG_PREVIEW_CHARS = Number(process.env.ACP_DEBUG_PREVIEW_CHARS) || 120;
 const ACP_RESPONSE_COLLECTOR_MODE =
   process.env.ACP_RESPONSE_COLLECTOR_MODE === "full" ? "full" : "last_segment";
+
+// R3: 工具冲突探针缓存——按 server 配置指纹缓存 tools/list + 冲突结果。
+// 同配置不重复探针；session 复用时 getOrCreateSession 直接 return 不触发探针。
+const toolConflictCache = new Map<string, { report: ToolConflictReport; checkedServers: string[] }>();
+
+/**
+ * R3: 在 newSession 前对多 server 配置做工具名冲突检查。
+ * - 按 server 名+command+args 指纹缓存探针结果（同配置不重复 spawn）。
+ * - 探针失败的外部 server 不阻断 service MCP（从结果 server 列表剔除）。
+ * - 冲突时 fail closed：拒绝冲突的外部 server（保留 service-tools）。
+ *   如果冲突涉及 service-tools 自身，抛错阻断整个会话。
+ */
+async function checkToolConflictsBeforeSession(label: string, servers: AcpMcpServer[]): Promise<typeof servers> {
+  const configFingerprint = servers.map((s) => `${s.name}:${s.command}:${s.args.join(",")}`).sort().join("|");
+  const cached = toolConflictCache.get(configFingerprint);
+  let report: ToolConflictReport;
+  let checkedServers: string[];
+
+  if (cached) {
+    report = cached.report;
+    checkedServers = cached.checkedServers;
+  } else {
+    report = await probeToolConflicts(servers);
+    checkedServers = servers.map((s) => s.name);
+    toolConflictCache.set(configFingerprint, { report, checkedServers });
+    // 缓存上限：只保留最近 16 个配置指纹
+    if (toolConflictCache.size > 16) {
+      const oldest = toolConflictCache.keys().next().value;
+      if (oldest) toolConflictCache.delete(oldest);
+    }
+  }
+
+  // 探针失败的 server 剔除（不进入会话）
+  const failedSet = new Set(report.failedServers.keys());
+  let filtered = servers.filter((s) => !failedSet.has(s.name));
+  if (failedSet.size > 0) {
+    logger.warn(`[${label}] 工具冲突探针剔除失败的 server: ${[...failedSet].join(", ")}`);
+  }
+
+  // 冲突检查
+  if (shouldBlockSessionOnConflict(report, "invest-agent-service-tools")) {
+    const conflictNames = report.conflicts.map((c) => c.toolName).join(", ");
+    // 区分：service-tools 卷入冲突 → 阻断；纯外部冲突 → 剔除冲突外部 server
+    const serviceInConflict = report.conflicts.some((c) => c.servers.includes("invest-agent-service-tools"));
+    if (serviceInConflict) {
+      throw new Error(`[${label}] 工具名冲突涉及 service-tools，阻断会话创建: ${conflictNames}`);
+    }
+    // 纯外部冲突：剔除涉及冲突的外部 server（保留 service-tools）
+    const conflictServers = new Set(report.conflicts.flatMap((c) => c.servers));
+    conflictServers.delete("invest-agent-service-tools");
+    filtered = filtered.filter((s) => !conflictServers.has(s.name));
+    logger.warn(`[${label}] 工具名冲突，剔除外部 server: ${[...conflictServers].join(", ")} (${conflictNames})`);
+  }
+
+  // 至少保留 service-tools
+  if (!filtered.some((s) => s.name === "invest-agent-service-tools") && servers.some((s) => s.name === "invest-agent-service-tools")) {
+    const serviceTools = servers.find((s) => s.name === "invest-agent-service-tools");
+    if (serviceTools) filtered = [serviceTools, ...filtered];
+  }
+
+  return filtered;
+}
+
+/** 仅供测试重置冲突探针缓存。 */
+export function resetToolConflictCacheForTest(): void {
+  toolConflictCache.clear();
+}
 const DEFAULT_CODEX_ACP_ARGS = [
   "-c",
   'project_trust_level="trusted"',
@@ -670,9 +738,16 @@ export class StdioAcpAgent {
     const existing = this.sessions.get(sessionKey);
     if (existing) return existing;
 
+    let mcpServers = this.buildMcpServers(cwd, userContext);
+
+    // R3: 多 server 时在 newSession 前做工具名冲突检查（按配置指纹缓存，session 复用不重复）
+    if (mcpServers.length > 1) {
+      mcpServers = await checkToolConflictsBeforeSession(this.label, mcpServers);
+    }
+
     const res = await conn.newSession({
       cwd,
-      mcpServers: this.buildMcpServers(cwd, userContext),
+      mcpServers,
     });
     this.sessions.set(sessionKey, res.sessionId);
     logger.info(

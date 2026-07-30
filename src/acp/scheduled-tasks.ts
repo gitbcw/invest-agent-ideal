@@ -563,25 +563,20 @@ async function readWatchConfig(userId: string) {
 }
 
 export function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: MarketWatchPushMode) {
-  const isBriefMode = pushMode === "scheduled_intraday_brief";
+  // R4: 服务不再编排研究行为。prompt 只解释精确输出协议；数据工具选择、是否推送
+  // 和研究步骤交给 ACP、Workspace Skills 和通知策略决定。
   return [
     "【后台任务：盘中定时简报】",
     "你正在当前用户 Workspace 中生成盘中定时简报。",
-    "这条内容会直接作为微信消息发送给用户，必须使用适合微信阅读的 Markdown。",
-    "请读取 AGENTS.md、config/watch.yaml、config/notification.yaml、config/portfolio.yaml、reports/daily/ 和 market-watch skill。",
+    "请优先遵守 AGENTS.md、config/watch.yaml、config/notification.yaml、config/portfolio.yaml、reports/daily/ 和 market-watch skill。",
     "market-watch 是盘中定时简报/摘要任务，不是明确规则巡检；明确规则巡检只由 rule-alert-check 执行 alert_rules。",
     "是否推送、推送频率、推送内容和提醒边界均以 Workspace 配置与 market-watch skill 为准。",
-    "结构和详略由 Workspace 规则决定；不要输出执行过程。",
-    "数据来源只写可读来源摘要，例如“腾讯行情、腾讯日K、东方财富新闻线索”；禁止展示原始 URL、endpoint 或接口路径。",
-    "开始判断前，必须通过至少一个当前暴露的具名行情读取能力取得本轮市场事实。根据 MCP 能力描述和参数 schema 自行选择最小有用组合，可按需取得调度窗口变化、组合全貌、指数、定向行情、价格历史、资金流、行业题材或事件证据。交易时段或数据源健康证据不能单独替代当前行情事实。核对明确规则时使用 watch_rules.list 或 watch_rules.dry_run。不要使用 shell、curl、本地 HTTP、sandbox token 或工作区文件兜底。",
-    "输出契约：",
-    isBriefMode
-      ? "- 当前是固定盘中简报模式：必须输出一条微信正文；即使没有异常，也要给出盘面状态、持仓观察和“是否需要操作”。"
-      : "- 当前是异常触发模式：若按 Workspace 规则本轮不应推送，只输出：NO_PUSH",
-    isBriefMode
-      ? "- 固定盘中简报模式禁止输出 NO_PUSH、无需推送、暂无提醒等拒绝推送文本。"
-      : "- 若按 Workspace 规则本轮应推送，只输出微信正文。",
-    "- 不要提到 Codex、Hermes、ACP、workspace、sandbox、curl、接口、后台任务或本地路径。",
+    "研究方法、工具选择、数据来源和报告结构由你根据 Workspace Skills 和可用的 MCP 工具自行决定。",
+    "数据来源只写可读来源摘要；禁止展示原始 URL、endpoint 或接口路径。",
+    "输出协议（精确）：",
+    "- 若按 Workspace 规则本轮不应推送，只输出：NO_PUSH",
+    "- 若按 Workspace 规则本轮应推送，只输出微信正文（适合微信阅读的 Markdown）",
+    "这条内容会直接作为微信消息发送给用户。不要提到 Codex、Hermes、ACP、workspace、sandbox、curl、接口、后台任务或本地路径。",
     `当前用户: ${userContext.userId}`,
     `当前实例: ${userContext.instanceId}`,
   ].join("\n");

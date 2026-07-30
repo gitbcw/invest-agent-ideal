@@ -1215,8 +1215,9 @@ export async function saveSkillDailyReview(input: {
 }
 
 /**
- * F2: 周/月复盘受控保存（统一 reviews.save 契约）。
+ * F2/R1: 周/月复盘受控保存（统一 reviews.save 契约）。
  * 写 workspace reports/<kind>/<reportKey>.md + periodicReviewBackend upsert（带 publication metadata）。
+ * R1: reportKey 校验在 backend 层强制；mirror 写失败不吞错。
  */
 export async function saveSkillPeriodicReview(input: {
   userId?: string;
@@ -1229,7 +1230,19 @@ export async function saveSkillPeriodicReview(input: {
 }): Promise<{ kind: PeriodicReviewKind; reportKey: string; filePath: string }> {
   const userId = input.userId ?? DEFAULT_USER_ID;
   const instanceId = input.instanceId ?? DEFAULT_INSTANCE_ID;
-  await mirrorReviewToWorkspace(userId, input.kind, input.reportKey, input.content);
+  // R1: reportKey 校验（backend.upsert 会再校验一次，这里提前拦截给出清晰错误）
+  const { validateReportKey } = await import("../lib/periodic-review-backend.js");
+  const keyError = validateReportKey(input.kind, input.reportKey);
+  if (keyError) throw new Error(`saveSkillPeriodicReview rejected: ${keyError}`);
+
+  // R1: mirror 写失败不吞错（原 mirrorReviewToWorkspace 吞错，这里显式重写保证失败传播）
+  const wsRoot = resolveWorkspacePath(userId);
+  if (existsSync(join(wsRoot, "AGENTS.md"))) {
+    const mdDir = join(wsRoot, "reports", input.kind);
+    await mkdir(mdDir, { recursive: true });
+    await writeFile(join(mdDir, `${input.reportKey}.md`), input.content, "utf-8");
+  }
+
   const generatedAt = new Date().toISOString();
   await periodicReviewBackend.upsert(userId, instanceId, {
     kind: input.kind,
@@ -1243,7 +1256,7 @@ export async function saveSkillPeriodicReview(input: {
       context: input.context ?? null,
     },
   });
-  const filePath = join(resolveWorkspacePath(userId), "reports", input.kind, `${input.reportKey}.md`);
+  const filePath = join(wsRoot, "reports", input.kind, `${input.reportKey}.md`);
   logger.info(`skill ${input.kind}复盘已保存: ${filePath}`);
   return { kind: input.kind, reportKey: input.reportKey, filePath };
 }

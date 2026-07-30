@@ -118,7 +118,12 @@ export function resolveScheduledServiceGrant(taskType: string): string[] {
   return [...READ_TOOLS, ...finalActions];
 }
 
-/** 判断 taskType 是否在 scheduled grant 表里（用于 manifest 决定是否走 grant 计算）。 */
+/**
+ * R2: 判断 taskType 是否属于 scheduled（前缀级 fail closed）。
+ * 任何以 "scheduled-" 开头的 taskType 都走 grant 计算（已知类型有 final-action，
+ * 未知类型 resolveScheduledServiceGrant 返回只读兜底）。这保证未来新增的 scheduled
+ * 任务不会因不在表里而获得全工具（空 allowlist）。
+ */
 export function isScheduledTaskType(taskType: string | undefined): boolean {
-  return Boolean(taskType && taskType in SCHEDULED_FINAL_ACTIONS);
+  return Boolean(taskType && taskType.startsWith("scheduled-"));
 }
