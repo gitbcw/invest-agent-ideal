@@ -61,8 +61,10 @@ if (!backendCheck.ok) {
   process.exit(2); // 明确非零（不是 0=pass，不是 1=test-fail，而是 2=blocked）
 }
 
+let isolatedSqlite;
 try {
-  const { initDb } = await import("../dist/db/index.js");
+  const { initDb, sqlite } = await import("../dist/db/index.js");
+  isolatedSqlite = sqlite;
   const { disposeAllAcp } = await import("../dist/acp/stdio-agent.js");
   const { runScheduledReviewPublicationProbe } = await import("../dist/acp/scheduled-tasks.js");
 
@@ -81,17 +83,23 @@ try {
     );
     console.log(`[publication-smoke] PASSED: published=${result !== null}`);
     console.log(`[publication-smoke] 隔离状态根 ${ISOLATION_ROOT} 将被清理`);
-    process.exit(0);
+    process.exitCode = 0;
   } finally {
     await disposeAllAcp();
   }
 } catch (err) {
   console.error(`[publication-smoke] FAILED: ${err.message}`);
-  process.exit(1);
+  process.exitCode = 1;
 } finally {
+  try {
+    isolatedSqlite?.close();
+  } catch {}
   // R6: 清理临时状态
   try {
     rmSync(ISOLATION_ROOT, { recursive: true, force: true });
     console.log("[publication-smoke] 临时状态已清理");
   } catch {}
 }
+
+// Scheduler imports may retain background handles; exit only after all cleanup has completed.
+process.exit(process.exitCode ?? 0);

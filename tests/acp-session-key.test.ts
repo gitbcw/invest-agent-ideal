@@ -43,6 +43,20 @@ test("different allowlists produce different fingerprints (permission leak fix)"
   assert.notEqual(readOnlyFp, writeOnlyFp);
 });
 
+test("scheduled publication target participates in session fingerprint", () => {
+  const first = computeAllowlistFingerprint({
+    ...ctx(["reviews.save"]),
+    expectedReviewKind: "weekly",
+    expectedReviewKey: "2026-07-27_weekly",
+  }, {});
+  const next = computeAllowlistFingerprint({
+    ...ctx(["reviews.save"]),
+    expectedReviewKind: "weekly",
+    expectedReviewKey: "2026-08-03_weekly",
+  }, {});
+  assert.notEqual(first, next);
+});
+
 test("eval allowlist env produces same fingerprint as equivalent mcpAllowedTools", () => {
   // eval 路径通过 ACP_EVAL_MCP_ALLOWED_TOOLS env 表达 allowlist,
   // 应与 mcpAllowedTools 语义一致

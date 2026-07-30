@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { rm } from "node:fs/promises";
 import { periodicReviewBackend, validateReportKey } from "../src/lib/periodic-review-backend.js";
+import { assertScheduledReviewTarget, serviceToolContextFromEnv } from "../src/mcp/service-tools-core.js";
 
 /**
  * F2/R1: 周/月复盘受控保存测试。
@@ -49,6 +50,22 @@ test("R1: validateReportKey rejects wrong format for kind", () => {
 test("R1: validateReportKey rejects empty or control chars", () => {
   assert.ok(validateReportKey("weekly", ""));
   assert.ok(validateReportKey("weekly", "2026-07-2\x008_weekly"));
+});
+
+test("scheduled reviews.save is bound to the service-provided kind and report key", () => {
+  const context = serviceToolContextFromEnv({
+    INVEST_AGENT_MCP_USER_ID: TEST_USER,
+    INVEST_AGENT_MCP_INSTANCE_ID: TEST_INSTANCE,
+    INVEST_AGENT_MCP_EXPECTED_REVIEW_KIND: "weekly",
+    INVEST_AGENT_MCP_EXPECTED_REVIEW_KEY: "2026-07-28_weekly",
+  });
+  assert.doesNotThrow(() => assertScheduledReviewTarget(context, "weekly", "2026-07-28_weekly"));
+  assert.throws(() => assertScheduledReviewTarget(context, "monthly", "2026-07"), /target mismatch/);
+  assert.throws(() => assertScheduledReviewTarget(context, "weekly", "2026-07-21_weekly"), /target mismatch/);
+  assert.throws(
+    () => assertScheduledReviewTarget({ userId: TEST_USER, instanceId: TEST_INSTANCE }, "weekly", "2026-07-28_weekly"),
+    /missing service-enforced publication target/,
+  );
 });
 
 // ─── R1: backend upsert 拒绝非法 key ──────────────────────────

@@ -19,6 +19,9 @@ export interface UserContext {
   mcpAllowedTools?: string[];
   /** F1: scheduled task type, drives least-privilege service tool grant (e.g. "scheduled-daily-review"). */
   taskType?: string;
+  /** Scheduled reviews bind reviews.save to one service-enforced publication target. */
+  expectedReviewKind?: "daily" | "weekly" | "monthly";
+  expectedReviewKey?: string;
   welcomedAt?: string | null;
 }
 

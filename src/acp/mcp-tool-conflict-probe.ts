@@ -74,9 +74,15 @@ async function probeServerTools(server: AcpMcpServer, timeoutMs = 10_000): Promi
     const env: Record<string, string> = {};
     for (const { name, value } of server.env) env[name] = value;
 
+    const childEnv: NodeJS.ProcessEnv = {};
+    for (const name of ["PATH", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP", "SystemRoot"]) {
+      if (process.env[name] !== undefined) childEnv[name] = process.env[name];
+    }
+    Object.assign(childEnv, env);
+
     const child = spawn(server.command, server.args, {
       stdio: ["pipe", "pipe", "inherit"],
-      env: { ...process.env, ...env },
+      env: childEnv,
     });
 
     const timer = setTimeout(() => {
@@ -111,6 +117,10 @@ async function probeServerTools(server: AcpMcpServer, timeoutMs = 10_000): Promi
     child.on("error", (err) => {
       clearTimeout(timer);
       reject(err);
+    });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error(`probe process exited before completion code=${code ?? "-"} signal=${signal ?? "-"}`));
     });
 
     (async () => {

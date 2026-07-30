@@ -57,6 +57,8 @@ try {
   const scheduledContext = {
     ...context,
     conversationId: `scheduler:daily-review:${context.userId}:${context.instanceId}`,
+    expectedReviewKind: "daily",
+    expectedReviewKey: reviewDate,
   };
   const fullReport = "# 日复盘\n\n这是 Agent 自主生成的完整报告。";
   const pushBrief = "今日复盘已完成：暂无需要立即确认的操作。";

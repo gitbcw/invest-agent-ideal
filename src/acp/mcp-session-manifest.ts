@@ -79,6 +79,8 @@ interface ResolvedIdentity {
   workspacePath: string;
   conversationId: string;
   allowedTools: string[];
+  expectedReviewKind?: string;
+  expectedReviewKey?: string;
 }
 
 function inferSessionKind(taskType: string): McpSessionKind | null {
@@ -130,8 +132,12 @@ export function computeAllowlistFingerprint(
   env: NodeJS.ProcessEnv,
 ): string {
   const tools = resolveAllowedTools(userContext, env);
-  if (tools.length === 0) return "";
-  const normalized = [...new Set(tools)].sort().join(",");
+  if (tools.length === 0 && !userContext?.expectedReviewKind && !userContext?.expectedReviewKey) return "";
+  const normalized = JSON.stringify({
+    tools: [...new Set(tools)].sort(),
+    expectedReviewKind: userContext?.expectedReviewKind ?? null,
+    expectedReviewKey: userContext?.expectedReviewKey ?? null,
+  });
   return createHash("sha256").update(normalized).digest("hex").slice(0, 8);
 }
 
@@ -152,6 +158,12 @@ function resolveServiceScopeEnv(
     { name: "INVEST_AGENT_MCP_CONVERSATION_ID", value: identity.conversationId },
     ...(identity.allowedTools.length
       ? [{ name: "INVEST_AGENT_MCP_ALLOWED_TOOLS", value: identity.allowedTools.join(",") }]
+      : []),
+    ...(identity.expectedReviewKind
+      ? [{ name: "INVEST_AGENT_MCP_EXPECTED_REVIEW_KIND", value: identity.expectedReviewKind }]
+      : []),
+    ...(identity.expectedReviewKey
+      ? [{ name: "INVEST_AGENT_MCP_EXPECTED_REVIEW_KEY", value: identity.expectedReviewKey }]
       : []),
     { name: "INVEST_AGENT_PROJECT_ROOT", value: projectRoot },
     { name: "DB_PATH", value: resolveFromProject(env.DB_PATH || config.db.path) },
@@ -242,6 +254,8 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
     workspacePath,
     conversationId: userContext?.conversationId || "",
     allowedTools,
+    expectedReviewKind: userContext?.expectedReviewKind,
+    expectedReviewKey: userContext?.expectedReviewKey,
   };
   const projectRoot = path.resolve(env.INVEST_AGENT_PROJECT_ROOT || process.cwd());
 

@@ -19,5 +19,13 @@ test("onboarding locks only the core files affected by each step", () => {
 
 test("review locks are date-scoped while unrelated research stays unlocked", () => {
   assert.deepEqual(mutationResourceKeysForOperation("reviews.save", { date: "2026-07-27" }), ["daily-review:2026-07-27"]);
+  assert.deepEqual(
+    mutationResourceKeysForOperation("reviews.save", { kind: "weekly", reportKey: "2026-07-27_weekly" }),
+    ["weekly-review:2026-07-27_weekly"],
+  );
+  assert.deepEqual(
+    mutationResourceKeysForOperation("reviews.save", { kind: "monthly", reportKey: "2026-07" }),
+    ["monthly-review:2026-07"],
+  );
   assert.deepEqual(mutationResourceKeysForOperation("market.quote", { codes: ["600519"] }), []);
 });

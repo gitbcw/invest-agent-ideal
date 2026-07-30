@@ -15,14 +15,15 @@
  */
 
 import { spawn } from "node:child_process";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const PROBE_SENTINEL = "R5_SENTINEL_42bZ9k";
-const COUNTER_FILE = join(process.cwd(), "data", "r5-fixture-call-counter.txt");
+const PROBE_ROOT = mkdtempSync(join(tmpdir(), "invest-agent-r5-fixture-"));
+const COUNTER_FILE = join(PROBE_ROOT, "call-counter.txt");
 
 // 清理旧计数器
-mkdirSync(join(COUNTER_FILE, ".."), { recursive: true });
 writeFileSync(COUNTER_FILE, "0", "utf-8");
 
 // fixture MCP server 脚本（极简，无外部依赖，稳定 transport）
@@ -77,7 +78,7 @@ try {
 registry.setEnabled("r5-fixture", true);
 resetToolConflictCacheForTest();
 
-const workspacePath = process.cwd() + "/data/test-workspaces/r5-fixture-probe";
+const workspacePath = join(PROBE_ROOT, "workspace");
 const conversationId = "r5-fixture-" + Date.now();
 
 console.error(`[r5-fixture-probe] start=${new Date().toISOString()}`);
@@ -127,6 +128,6 @@ try {
   try {
     await disposeAcpForWorkspace(workspacePath);
     registry.setEnabled("r5-fixture", false);
-    rmSync(COUNTER_FILE, { force: true });
+    rmSync(PROBE_ROOT, { recursive: true, force: true });
   } catch {}
 }

@@ -64,6 +64,10 @@ export function mutationResourceKeysForOperation(
     case "method_changes.decide":
       return ["method-changes"];
     case "reviews.save":
+      if (text(input?.kind) === "weekly" || text(input?.kind) === "monthly") {
+        return [`${text(input?.kind)}-review:${text(input?.reportKey) || "invalid"}`];
+      }
+      return [`daily-review:${text(input?.date) || beijingDateKey()}`];
     case "reviews.daily":
       return [`daily-review:${text(input?.date) || beijingDateKey()}`];
     default:

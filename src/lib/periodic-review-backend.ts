@@ -13,7 +13,7 @@
 
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { isAbsolute, join, resolve, relative, sep } from "node:path";
 import { parse, stringify } from "yaml";
 import { ensureWorkspace, resolveWorkspacePath } from "./workspace.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "./user-context.js";
@@ -68,7 +68,7 @@ function isPathContained(wsRoot: string, kind: PeriodicReviewKind, reportKey: st
   const targetFile = resolve(expectedDir, `${reportKey}${ext}`);
   const rel = relative(expectedDir, targetFile);
   // rel 不以 .. 开头且不含 .. 段 = contained
-  return !rel.startsWith("..") && !rel.includes(`${resolve("")}..`);
+  return rel !== "" && !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
 }
 
 function yamlFilePath(userId: string, kind: PeriodicReviewKind, reportKey: string): string {

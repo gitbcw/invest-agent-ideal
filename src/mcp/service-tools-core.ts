@@ -15,7 +15,7 @@ import {
   type PortfolioWatchItem,
   type PortfolioYaml,
 } from "../lib/workspace-store.js";
-import { saveSkillDailyReview, saveSkillPeriodicReview } from "../handlers/review.js";
+import { localDateString, saveSkillDailyReview, saveSkillPeriodicReview } from "../handlers/review.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
 import {
   marketDataReadCapability,
@@ -52,6 +52,8 @@ export interface ServiceToolContext {
   workspacePath?: string;
   projectId?: string;
   conversationId?: string;
+  expectedReviewKind?: "daily" | "weekly" | "monthly";
+  expectedReviewKey?: string;
 }
 
 export function serviceToolContextFromEnv(env: NodeJS.ProcessEnv = process.env): ServiceToolContext {
@@ -59,7 +61,35 @@ export function serviceToolContextFromEnv(env: NodeJS.ProcessEnv = process.env):
   const instanceId = (env.INVEST_AGENT_MCP_INSTANCE_ID || defaultInstanceIdForUser(userId)).trim();
   const workspacePath = env.INVEST_AGENT_MCP_WORKSPACE_PATH?.trim() || undefined;
   const conversationId = env.INVEST_AGENT_MCP_CONVERSATION_ID?.trim() || undefined;
-  return { userId, instanceId, workspacePath, projectId: DEFAULT_PROJECT_ID, conversationId };
+  const rawExpectedKind = env.INVEST_AGENT_MCP_EXPECTED_REVIEW_KIND?.trim();
+  const expectedReviewKind = rawExpectedKind === "daily" || rawExpectedKind === "weekly" || rawExpectedKind === "monthly"
+    ? rawExpectedKind
+    : undefined;
+  const expectedReviewKey = env.INVEST_AGENT_MCP_EXPECTED_REVIEW_KEY?.trim() || undefined;
+  return {
+    userId,
+    instanceId,
+    workspacePath,
+    projectId: DEFAULT_PROJECT_ID,
+    conversationId,
+    expectedReviewKind,
+    expectedReviewKey,
+  };
+}
+
+export function assertScheduledReviewTarget(
+  context: ServiceToolContext,
+  kind: "daily" | "weekly" | "monthly",
+  requestedKey: string,
+): void {
+  if (!context.expectedReviewKind || !context.expectedReviewKey) {
+    throw new Error("scheduled reviews.save missing service-enforced publication target");
+  }
+  if (kind !== context.expectedReviewKind || requestedKey !== context.expectedReviewKey) {
+    throw new Error(
+      `scheduled reviews.save target mismatch: expected ${context.expectedReviewKind}/${context.expectedReviewKey}, got ${kind}/${requestedKey}`,
+    );
+  }
 }
 
 export async function callServiceTool(
@@ -1018,6 +1048,15 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
   const decisionRecords = normalizeRecordList(input?.decisionRecords, "decisionRecords");
   const sourceEvents = normalizeRecordList(input?.sourceEvents, "sourceEvents");
   const kind = (stringInput(input?.kind) || "daily") as "daily" | "weekly" | "monthly";
+  if (!(["daily", "weekly", "monthly"] as const).includes(kind)) {
+    throw new Error(`reviews.save unsupported kind: ${kind}`);
+  }
+  const requestedKey = kind === "daily"
+    ? (stringInput(input?.date) || localDateString())
+    : (stringInput(input?.reportKey) || "");
+  if (scheduledCompletion) {
+    assertScheduledReviewTarget(context, kind, requestedKey);
+  }
   const publicationMeta = {
     ...asRecord(input?.context),
     publication: { conversationId: context.conversationId ?? null, scheduled: scheduledCompletion },

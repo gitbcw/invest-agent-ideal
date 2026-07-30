@@ -16,6 +16,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -46,8 +47,15 @@ const toolConflictCache = new Map<string, { report: ToolConflictReport; checkedS
  * - 冲突时 fail closed：拒绝冲突的外部 server（保留 service-tools）。
  *   如果冲突涉及 service-tools 自身，抛错阻断整个会话。
  */
-async function checkToolConflictsBeforeSession(label: string, servers: AcpMcpServer[]): Promise<typeof servers> {
-  const configFingerprint = servers.map((s) => `${s.name}:${s.command}:${s.args.join(",")}`).sort().join("|");
+export async function checkToolConflictsBeforeSession(label: string, servers: AcpMcpServer[]): Promise<typeof servers> {
+  const configFingerprint = createHash("sha256")
+    .update(JSON.stringify(servers.map((server) => ({
+      name: server.name,
+      command: server.command,
+      args: server.args,
+      env: [...server.env].sort((a, b) => a.name.localeCompare(b.name)),
+    })).sort((a, b) => a.name.localeCompare(b.name))))
+    .digest("hex");
   const cached = toolConflictCache.get(configFingerprint);
   let report: ToolConflictReport;
   let checkedServers: string[];
@@ -66,7 +74,13 @@ async function checkToolConflictsBeforeSession(label: string, servers: AcpMcpSer
     }
   }
 
-  // 探针失败的 server 剔除（不进入会话）
+  if (report.failedServers.has("invest-agent-service-tools")) {
+    throw new Error(
+      `[${label}] service-tools 工具冲突探针失败，阻断会话创建: ${report.failedServers.get("invest-agent-service-tools")}`,
+    );
+  }
+
+  // 探针失败的外部 server 剔除（不进入会话）
   const failedSet = new Set(report.failedServers.keys());
   let filtered = servers.filter((s) => !failedSet.has(s.name));
   if (failedSet.size > 0) {
@@ -86,12 +100,6 @@ async function checkToolConflictsBeforeSession(label: string, servers: AcpMcpSer
     conflictServers.delete("invest-agent-service-tools");
     filtered = filtered.filter((s) => !conflictServers.has(s.name));
     logger.warn(`[${label}] 工具名冲突，剔除外部 server: ${[...conflictServers].join(", ")} (${conflictNames})`);
-  }
-
-  // 至少保留 service-tools
-  if (!filtered.some((s) => s.name === "invest-agent-service-tools") && servers.some((s) => s.name === "invest-agent-service-tools")) {
-    const serviceTools = servers.find((s) => s.name === "invest-agent-service-tools");
-    if (serviceTools) filtered = [serviceTools, ...filtered];
   }
 
   return filtered;

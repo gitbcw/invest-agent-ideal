@@ -55,6 +55,8 @@ export const SERVICE_SCOPE_ENV_REFS = [
   "INVEST_AGENT_MCP_WORKSPACE_PATH",
   "INVEST_AGENT_MCP_CONVERSATION_ID",
   "INVEST_AGENT_MCP_ALLOWED_TOOLS",
+  "INVEST_AGENT_MCP_EXPECTED_REVIEW_KIND",
+  "INVEST_AGENT_MCP_EXPECTED_REVIEW_KEY",
   // passthrough refs (从 env 读 + projectRoot resolve)
   "INVEST_AGENT_PROJECT_ROOT",
   "DB_PATH",
@@ -74,15 +76,7 @@ export const SERVICE_SCOPE_ENV_REFS = [
 ] as const;
 
 /** external-readonly server 被禁止引用的 scope 名 (安全边界护栏)。 */
-const FORBIDDEN_EXTERNAL_REFS = new Set<string>([
-  "DB_PATH",
-  "INVEST_AGENT_SANDBOX_SECRET",
-  "INVEST_AGENT_SANDBOX_SECRET_FILE",
-  "INVEST_AGENT_MCP_USER_ID",
-  "INVEST_AGENT_MCP_INSTANCE_ID",
-  "INVEST_AGENT_MCP_WORKSPACE_PATH",
-  "INVEST_AGENT_PROJECT_ROOT",
-]);
+const FORBIDDEN_EXTERNAL_REFS = new Set<string>(SERVICE_SCOPE_ENV_REFS);
 
 // ─── 校验 ──────────────────────────────────────────────────────────
 

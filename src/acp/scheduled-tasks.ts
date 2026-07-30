@@ -121,6 +121,8 @@ export async function runScheduledReviewPublicationProbe(
       ...baseContext,
       conversationId,
       mcpAllowedTools: ["reviews.save"],
+      expectedReviewKind: "daily" as const,
+      expectedReviewKey: input.date,
     };
     const promptContext = await buildAcpPromptContext({
       userText: [
@@ -314,6 +316,8 @@ async function runScheduledDailyReview(userContext: UserContext): Promise<string
     ? await buildDailyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId })
     : null;
   const reviewDate = reviewContext?.date ?? localDateString();
+  userContext.expectedReviewKind = "daily";
+  userContext.expectedReviewKey = reviewDate;
 
   const promptContext = await buildAcpPromptContext({
     userText: buildDailyReviewTaskPrompt(),
@@ -361,6 +365,8 @@ async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekl
   const reportKey = kind === "weekly"
     ? `${weekRangeForDate().weekStart}_weekly`
     : monthRangeForDate().monthKey;
+  userContext.expectedReviewKind = kind;
+  userContext.expectedReviewKey = reportKey;
 
   if (legacy) {
     if (kind === "weekly") {
