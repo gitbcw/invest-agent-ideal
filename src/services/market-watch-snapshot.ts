@@ -5,6 +5,12 @@ import { marketWatchSnapshots } from "../db/schema.js";
 import { marketSnapshot, type MarketSnapshot, type MarketSnapshotItem } from "./market-data.js";
 
 export async function captureMarketWatchSnapshot(input: { userId: string; projectId: string; instanceId: string; windowKey: string }) {
+  // WP7: 冻结写入。market-watch 新路径 (WP4) 已不再预抓取 snapshot; 这里阻止即使
+  // flag=true 旧路径或未知调用方写入新行。历史数据保留,读取入口仍可用 (deprecated)。
+  // 恢复写入设 MARKET_WATCH_SNAPSHOT_FREEZE=false。
+  if (process.env.MARKET_WATCH_SNAPSHOT_FREEZE !== "false") {
+    return null;
+  }
   const snapshot = await marketSnapshot({ userId: input.userId, instanceId: input.instanceId });
   const previous = await latestMarketWatchSnapshot(input.userId, input.instanceId);
   const delta = buildMarketWatchDelta(snapshot, previous?.snapshot ?? null, previous?.windowKey ?? null);
@@ -59,6 +65,10 @@ export function buildMarketWatchDelta(current: MarketSnapshot, previous: MarketS
 
 function levels(item: MarketSnapshotItem) { return { support: item.support ?? null, resistance: item.resistance ?? null, targetPrice: item.targetPrice ?? null, stopLoss: item.stopLoss ?? null }; }
 
+/**
+ * @deprecated WP7: snapshot 写入已冻结,此函数只读历史数据。新代码不应依赖它做
+ * 实时判定;历史快照仅供审计。读取入口 (market_watch.snapshot MCP 工具) 保留兼容。
+ */
 export async function latestMarketWatchSnapshot(userId: string, instanceId: string) {
   const [row] = await db.select().from(marketWatchSnapshots).where(and(eq(marketWatchSnapshots.userId, userId), eq(marketWatchSnapshots.instanceId, instanceId))).orderBy(desc(marketWatchSnapshots.capturedAt)).limit(1);
   return row ? { id: row.id, windowKey: row.windowKey, capturedAt: row.capturedAt, snapshot: JSON.parse(row.snapshotJson) as MarketSnapshot, delta: JSON.parse(row.deltaJson) } : null;

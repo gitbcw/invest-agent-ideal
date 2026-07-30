@@ -233,10 +233,11 @@ async function runLegacyMarketWatchTask(scope: ScheduledScope, pushMode: MarketW
   if (!await readMarketWatchFactsWereAudited(userContext)) {
     throw new Error("scheduled market-watch did not read current facts through a named market MCP tool");
   }
-  if (marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
+  // WP7: snapshot 写入冻结后 captured 为 null,旧路径的矛盾检测跳过 (无快照可比)
+  if (captured && marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
     reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "调度器已采集到有效实时行情，但上一版正文仍声称行情不可用。请通过具名行情工具核实本轮事实后重写；不得沿用昨日行情，也不得把可用事实写成不可用。 ");
   }
-  if (marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
+  if (captured && marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
     throw new Error("scheduled market-watch reply contradicts a usable captured snapshot");
   }
   const cleaned = sanitizeScheduledReply(reply);
