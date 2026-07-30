@@ -17,6 +17,8 @@ export interface UserContext {
   workspacePath?: string;
   /** Optional MCP tool allowlist for isolated service-owned task phases. */
   mcpAllowedTools?: string[];
+  /** F1: scheduled task type, drives least-privilege service tool grant (e.g. "scheduled-daily-review"). */
+  taskType?: string;
   welcomedAt?: string | null;
 }
 

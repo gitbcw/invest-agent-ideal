@@ -183,7 +183,7 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
 
   // WP4 新路径: 开放研究完全交还 ACP。不约束工具 (ACP 自由选任意已启用只读 MCP)、
   // 不预抓取 snapshot、不审计纠偏、不矛盾检测、不兜底。只处理精确 NO_PUSH 或可投递正文。
-  const userContext = await buildScheduledUserContext(scope, "market-watch");
+  const userContext = { ...await buildScheduledUserContext(scope, "market-watch"), taskType: "scheduled-market-watch" };
   const promptContext = await buildAcpPromptContext({
     userText: buildMarketWatchTaskPrompt(userContext, pushMode),
     userContext,
@@ -288,7 +288,8 @@ export function marketWatchReplyClaimsMissingData(reply: string, snapshot: Marke
 }
 
 export async function runScheduledReviewTask(scope: ScheduledScope, kind: ScheduledReviewKind): Promise<string | null> {
-  const userContext = await buildScheduledUserContext(scope, `${kind}-review`);
+  // F1: taskType 驱动最小权限授权 (daily = reads + reviews.save; weekly/monthly = reads only)
+  const userContext = { ...await buildScheduledUserContext(scope, `${kind}-review`), taskType: `scheduled-${kind}-review` };
 
   if (kind === "daily") {
     return runScheduledDailyReview(userContext);

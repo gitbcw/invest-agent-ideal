@@ -26,6 +26,7 @@ import {
   type McpServerRegistration,
   type McpSessionKind,
 } from "./mcp-registry.js";
+import { isScheduledTaskType, resolveScheduledServiceGrant } from "../mcp/service-tool-classification.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────
 
@@ -103,6 +104,11 @@ function resolveAllowedTools(
   userContext: UserContext | undefined,
   env: NodeJS.ProcessEnv,
 ): string[] {
+  // F1: scheduled task 用 taskType 计算最小权限授权 (scope reads + final-action)。
+  // 这取代 scheduled 任务手写 mcpAllowedTools 的模式,保证后台任务不会发现无关写工具。
+  if (userContext?.taskType && isScheduledTaskType(userContext.taskType)) {
+    return resolveScheduledServiceGrant(userContext.taskType);
+  }
   const evaluationAllowedTools = (env.ACP_EVAL_MCP_ALLOWED_TOOLS || "")
     .split(",")
     .map((name) => name.trim())
