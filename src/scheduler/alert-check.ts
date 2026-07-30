@@ -9,6 +9,7 @@ import { ensureWorkspace } from "../lib/workspace.js";
 import { WorkspaceStore, type RiskLevel } from "../lib/workspace-store.js";
 import { beijingNow, isBeijingTradingDay } from "../lib/schedules-loader.js";
 import { listWatchRules, dryRunWatchRule, type WatchRuleRecord } from "../services/watch-rules.js";
+import { getRulePrices } from "../services/rule-price-facts.js";
 
 /** 巡检结果 */
 export interface AlertItem {
@@ -72,9 +73,20 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
   const alertItems: AlertItem[] = [];
 
   const stage2Rules = (await listWatchRules(userId, instanceId)).filter((rule) => rule.enabled);
+
+  // WP5: 同一 tick 对所有 price_cross 规则批量预取价格事实一次,避免逐规则单独请求。
+  const priceCrossCodes = [...new Set(
+    stage2Rules.filter((rule) => rule.ruleType === "price_cross").map((rule) => rule.stockCode),
+  )];
+  const priceFacts = priceCrossCodes.length > 0
+    ? await getRulePrices(priceCrossCodes)
+    : new Map();
+
   for (const rule of stage2Rules) {
     try {
-      const evaluated = await dryRunWatchRule(rule);
+      const evaluated = rule.ruleType === "price_cross"
+        ? await dryRunWatchRule(rule, priceFacts.get(rule.stockCode) ?? null)
+        : await dryRunWatchRule(rule);
       if (!evaluated.triggered) continue;
       const item = buildStage2AlertItem(rule, evaluated, planMap);
       if (item) alertItems.push(item);

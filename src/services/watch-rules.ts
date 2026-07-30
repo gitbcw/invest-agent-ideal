@@ -6,6 +6,7 @@ import { indicatorCapability } from "./indicators.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { planBackend } from "../lib/data-backend.js";
 import { marketDataReadCapability } from "./market-data.js";
+import { getRulePrices, type RulePriceFact } from "./rule-price-facts.js";
 
 export type WatchRuleType =
   | "price_cross"
@@ -556,13 +557,69 @@ export async function validateWatchRule(input: ValidateWatchRuleInput): Promise<
       };
 }
 
+/**
+ * WP5: 用窄事实 RulePriceFact 判定 price_cross。
+ * 产出与旧 quote 路径兼容的 facts 结构 (currentPrice/operator/threshold/sourceProvider/warnings)。
+ * 不可用 (usable=false) 时不触发,留下最小诊断。
+ */
+function evaluatePriceCrossFromFact(rule: WatchRuleRecord, fact: RulePriceFact | null): DryRunWatchRuleResult {
+  const operator = String(rule.params.operator);
+  const value = Number(rule.params.value);
+
+  if (!fact || !fact.usable || fact.price == null) {
+    const reason = fact?.failureCode
+      ? `当前无法获取行情：${fact.failureCode}`
+      : "当前无法获取行情";
+    return {
+      ok: true,
+      triggered: false,
+      rule,
+      facts: {
+        warnings: fact?.failureCode ? [fact.failureCode] : [],
+        ...(fact?.price != null ? { currentPrice: fact.price } : {}),
+        ...(fact?.provider ? { sourceProvider: fact.provider } : {}),
+      },
+      reason,
+    };
+  }
+
+  const price = fact.price;
+  const triggered = operator === ">=" ? price >= value : price <= value;
+  return {
+    ok: true,
+    triggered,
+    rule,
+    facts: {
+      currentPrice: price,
+      operator,
+      threshold: value,
+      marketTime: fact.asOf,
+      sourceProvider: fact.provider,
+      ...(fact.provider === "sina_quote" ? { warnings: ["fallback_provider:sina_quote"] } : {}),
+    },
+    reason: triggered
+      ? `${rule.stockName} 当前价格 ${price} 已满足 ${operator} ${value}`
+      : `${rule.stockName} 当前价格 ${price} 未满足 ${operator} ${value}`,
+  };
+}
+
 export async function dryRunWatchRuleById(id: number, userId = DEFAULT_USER_ID, instanceId = DEFAULT_INSTANCE_ID): Promise<DryRunWatchRuleResult> {
   const rule = await getWatchRuleById(id, userId, instanceId);
   if (!rule) throw new Error("规则不存在");
   return dryRunWatchRule(rule);
 }
 
-export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatchRuleResult> {
+export async function dryRunWatchRule(rule: WatchRuleRecord, priceFact?: RulePriceFact | null): Promise<DryRunWatchRuleResult> {
+  // WP5: price_cross 优先走窄事实接口 (脱离完整 marketDataReadCapability)。
+  // flag=true 回切旧 quote 路径;priceFact===undefined (未传参) 时内部自取 (单条 dry-run)。
+  // priceFact===null 表示调用方明确表示无可用 fact (如批量预取缺失),不触网。
+  if (rule.ruleType === "price_cross" && process.env.WATCH_RULES_LEGACY_PRICE_QUOTE !== "true") {
+    const fact = priceFact === undefined
+      ? (await getRulePrices([rule.stockCode])).get(rule.stockCode) ?? null
+      : priceFact;
+    return evaluatePriceCrossFromFact(rule, fact);
+  }
+
   const quoteResult = await marketDataReadCapability.quote([rule.stockCode]);
   const quote = quoteResult.items[0];
   if (!quote) {

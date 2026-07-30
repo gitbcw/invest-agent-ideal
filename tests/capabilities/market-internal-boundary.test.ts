@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const expectedOperations: Record<string, string[]> = {
-  "src/services/watch-rules.ts": ["quote", "kline"],
+  // WP5: price_cross 改用 getRulePrices 窄事实接口; 指标规则仍用 marketDataReadCapability.kline。
+  "src/services/watch-rules.ts": ["kline"],
   "src/handlers/review.ts": ["quote", "kline", "indices"],
   "src/handlers/plan-conditions.ts": ["quote"],
   "src/routes/platform.ts": ["health"],
@@ -20,4 +21,15 @@ test("internal market readers use the shared capability", async () => {
     assert.doesNotMatch(source, /\bmarketIndices\(/);
     assert.doesNotMatch(source, /\bmarketHealth\(/);
   }
+});
+
+test("WP5: watch-rules uses narrow price fact interface for price_cross", async () => {
+  const source = await readFile("src/services/watch-rules.ts", "utf8");
+  assert.match(source, /getRulePrices\(/, "price_cross migrated to getRulePrices");
+  assert.match(source, /evaluatePriceCrossFromFact/, "dedicated price-cross evaluator exists");
+});
+
+test("WP5: alert-check batch-prefetches price facts per tick", async () => {
+  const source = await readFile("src/scheduler/alert-check.ts", "utf8");
+  assert.match(source, /getRulePrices\(priceCrossCodes\)/, "batch prefetch before rule loop");
 });
