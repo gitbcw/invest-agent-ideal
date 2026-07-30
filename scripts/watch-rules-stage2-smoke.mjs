@@ -27,15 +27,9 @@ await cleanup();
 
 try {
   const catalog = listWatchRuleCatalog();
+  // WP8: 8 类非价格规则已退役删除,catalog 只剩 price_cross
   assert(catalog.some((item) => item.key === "price_cross"), "catalog includes price_cross");
-  assert(catalog.some((item) => item.key === "ma_cross"), "catalog includes ma_cross");
-  assert(catalog.some((item) => item.key === "macd_cross"), "catalog includes macd_cross");
-  assert(catalog.some((item) => item.key === "kdj_cross"), "catalog includes kdj_cross");
-  assert(catalog.some((item) => item.key === "rsi_threshold"), "catalog includes rsi_threshold");
-  assert(catalog.some((item) => item.key === "boll_break"), "catalog includes boll_break");
-  assert(catalog.some((item) => item.key === "wr_threshold"), "catalog includes wr_threshold");
-  assert(catalog.some((item) => item.key === "volume_ratio"), "catalog includes volume_ratio");
-  assert(catalog.some((item) => item.key === "near_plan_level"), "catalog includes near_plan_level");
+  assert.equal(catalog.length, 1, "catalog only has price_cross after deprecation cleanup");
 
   const invalid = await validateWatchRule({
     userId: USER_ID,
@@ -73,64 +67,14 @@ try {
   });
   assert.equal(rule.ruleType, "price_cross", "created rule has type");
 
-  const macdRule = await createWatchRule({
-    userId: USER_ID,
-    instanceId: INSTANCE_ID,
-    stockCode: "002460",
-    stockName: "赣锋锂业",
-    ruleType: "macd_cross",
-    targetScope: "holding",
-    params: { direction: "golden_cross" },
-    notification: { priority: "P1", push: true },
-    source: { kind: "smoke" },
-  });
-  assert.equal(macdRule.ruleType, "macd_cross", "created MACD rule has type");
-
-  const extraRules = [];
-  for (const input of [
-    { ruleType: "kdj_cross", params: { direction: "golden_cross", threshold: 20 } },
-    { ruleType: "rsi_threshold", params: { period: 6, direction: "below", threshold: 30 } },
-    { ruleType: "boll_break", params: { period: 20, multiplier: 2, direction: "break_upper" } },
-    { ruleType: "wr_threshold", params: { period: 14, direction: "above", threshold: 80 } },
-    { ruleType: "volume_ratio", params: { period: 5, direction: "above", threshold: 1.5 } },
-  ]) {
-    const created = await createWatchRule({
-      userId: USER_ID,
-      instanceId: INSTANCE_ID,
-      stockCode: "002460",
-      stockName: "赣锋锂业",
-      ruleType: input.ruleType,
-      targetScope: "holding",
-      params: input.params,
-      notification: { priority: "P1", push: true },
-      source: { kind: "smoke" },
-    });
-    assert.equal(created.ruleType, input.ruleType, `created ${input.ruleType} rule has type`);
-    extraRules.push(created);
-  }
-
   const listed = await listWatchRules(USER_ID, INSTANCE_ID);
-  assert.equal(listed.length, 7, "list returns created rules");
+  assert.equal(listed.length, 1, "list returns created rule");
 
   const dryRun = await dryRunWatchRuleById(rule.id, USER_ID, INSTANCE_ID);
   assert.equal(dryRun.ok, true, "dry-run returns ok");
   assert.equal(dryRun.rule.id, rule.id, "dry-run returns target rule");
   assert("currentPrice" in dryRun.facts || Array.isArray(dryRun.facts.warnings), "dry-run returns market facts or warnings");
 
-  const macdDryRun = await dryRunWatchRuleById(macdRule.id, USER_ID, INSTANCE_ID);
-  assert.equal(macdDryRun.ok, true, "MACD dry-run returns ok");
-  assert.equal(macdDryRun.rule.id, macdRule.id, "MACD dry-run returns target rule");
-  assert("difToday" in macdDryRun.facts || Array.isArray(macdDryRun.facts.warnings), "MACD dry-run returns indicator facts or warnings");
-
-  for (const extra of extraRules) {
-    const extraDryRun = await dryRunWatchRuleById(extra.id, USER_ID, INSTANCE_ID);
-    assert.equal(extraDryRun.ok, true, `${extra.ruleType} dry-run returns ok`);
-    assert.equal(extraDryRun.rule.id, extra.id, `${extra.ruleType} dry-run returns target rule`);
-    assert(Object.keys(extraDryRun.facts).length > 0 || typeof extraDryRun.reason === "string", `${extra.ruleType} dry-run returns facts or reason`);
-    assert.equal(await deleteWatchRule(extra.id, USER_ID, INSTANCE_ID), true, `delete ${extra.ruleType} returns true`);
-  }
-
-  assert.equal(await deleteWatchRule(macdRule.id, USER_ID, INSTANCE_ID), true, "delete MACD returns true");
   const removed = await deleteWatchRule(rule.id, USER_ID, INSTANCE_ID);
   assert.equal(removed, true, "delete returns true");
 

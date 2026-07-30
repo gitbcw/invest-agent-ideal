@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const expectedOperations: Record<string, string[]> = {
-  // WP5: price_cross 改用 getRulePrices 窄事实接口; 指标规则仍用 marketDataReadCapability.kline。
-  "src/services/watch-rules.ts": ["kline"],
+  // WP8: 8 类指标规则已退役删除; watch-rules 只剩 price_cross (flag=true 旧路径用 .quote)。
+  "src/services/watch-rules.ts": ["quote"],
   "src/handlers/review.ts": ["quote", "kline", "indices"],
   "src/handlers/plan-conditions.ts": ["quote"],
   "src/routes/platform.ts": ["health"],

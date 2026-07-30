@@ -101,16 +101,16 @@ test("onboarding watch setup completes without a redundant confirmation", async 
     const rulePayload = {
       stockCode: "601058",
       stockName: "赛轮轮胎",
-      ruleType: "ma_cross",
+      ruleType: "price_cross",
       targetScope: "holding",
-      params: { period: 20, direction: "break_below" },
+      params: { operator: ">=", value: 10 },
       cooldown: { mode: "cooldown", minutes: 240 },
       notification: { priority: "P0", push: true },
     };
     const requested = await callServiceTool("confirmations.request", {
       operation: "watch_rules.create",
       payload: rulePayload,
-      summary: "确认创建收盘跌破20日线提醒",
+      summary: "确认创建价格上穿提醒",
     }, configured.context) as { confirmationId: string };
     await addUserMessage(configured, "确认", 3_000);
     const created = await callServiceTool("watch_rules.create", {
