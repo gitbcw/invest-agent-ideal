@@ -268,7 +268,11 @@ export function resolveRuntimePlaceholders(
  */
 export function isExternalStdioHealthy(reg: McpServerRegistration, env: NodeJS.ProcessEnv): boolean {
   if (reg.trustClass !== "external-readonly" || reg.transport.kind !== "stdio") return true;
-  // market-data-tool 需要这两个才能 spawn: uv 路径 + 项目目录
+  // 如果 transport 用的是直接 command（非占位符），只需 command 非空即可
+  if (reg.transport.command && !reg.transport.command.startsWith("<runtime:")) {
+    return Boolean(reg.transport.command);
+  }
+  // 占位符 command（如 market-data-tool 的 <runtime:mdt-uv-bin>）需要对应 env
   return Boolean(env.MDT_UV_BIN && env.MDT_PROJECT_DIR);
 }
 
