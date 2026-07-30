@@ -1,6 +1,6 @@
 # 数据源架构讨论笔记
 
-> 状态：核心方向已收敛；实施拆分见 [MCP 注册与 Agent 工具架构重构计划](./mcp-registry-and-agent-tooling-refactor-plan.md)。在对应工作包完成前，本笔记本身不替代现行运行契约。
+> 状态：**方向已落地（WP0-WP8 完成）**。本文档作为决策来源保留，供审计；现行运行契约以 [MCP 注册与 Agent 工具架构重构计划](./mcp-registry-and-agent-tooling-refactor-plan.md) 及各 WP 产物为准。
 >
 > 目的：记录数据源架构重梳过程中的重要判断。只记录已形成的方向和待决问题，不作为实施计划。
 

@@ -1,6 +1,12 @@
 # Service Tools MCP
 
-`invest-agent-service-tools` is the service-owned stdio MCP server attached to Codex ACP sessions. It is the only service capability surface exposed to workspace Agents. HTTP remains an adapter for Dashboard, Platform, Portal, operations, and compatibility callers, but workspace prompts and skills must not instruct Agents to call it.
+`invest-agent-service-tools` is the service-owned stdio MCP server attached to Codex ACP sessions. It is the only **service-owned** capability surface exposed to workspace Agents — it carries confirmed writes and service state reads. HTTP remains an adapter for Dashboard, Platform, Portal, operations, and compatibility callers, but workspace prompts and skills must not instruct Agents to call it.
+
+> **WP2/WP3 update**: ACP sessions can now also assemble **trusted external read-only MCP servers** (such as `market-data-tool`) via the MCP registry. ACP discovers their tools dynamically via `tools/list`; service tools and external MCPs coexist. Service tools are **not** the only ACP data source for open-ended research.
+>
+> **WP6/WP8 update**: Only `price_cross` remains an active watch-rule type. The 8 non-price rule types (ma/macd/kdj/rsi/boll/wr/volume/near_plan) are retired — `watch_rules.create` rejects them; future indicator-based screening will use an external quant tool.
+>
+> **WP7 update**: `market_watch_snapshots` writes are frozen; `market_watch.snapshot` reads historical rows only.
 
 Implementation:
 

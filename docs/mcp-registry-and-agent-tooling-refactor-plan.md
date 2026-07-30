@@ -1,6 +1,6 @@
 # MCP 注册与 Agent 工具架构重构计划
 
-> 状态：待执行
+> 状态：**WP0-WP8 已完成并验收；WP9 文档收敛进行中**。各 WP 产物与验收记录见 [WP0 基线](./mcp-refactor-wp0-baseline.md) 与 [WP6 决策](./mcp-refactor-wp6-rule-decision.md)。
 >
 > 决策来源：[数据源架构讨论笔记](./data-source-architecture-discussion-notes.md)
 >
@@ -100,7 +100,7 @@ getRulePrices(codes: string[]): Promise<Map<string, RulePriceFact>>
 
 ## 四、与旧能力平面计划的关系
 
-[能力平面渐进式抽离计划](./capability-plane-extraction-plan.md) 已经完成的抽离和测试资产不是无效工作，但其后续集成方向有一部分被本计划替代。
+[能力平面渐进式抽离计划](./archive/capability-plane-extraction-plan.md)（已归档，部分 superseded）已经完成的抽离和测试资产不是无效工作，但其后续集成方向有一部分被本计划替代。
 
 | 旧计划判断/成果 | 本计划处理 | 原因 |
 | --- | --- | --- |

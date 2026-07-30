@@ -1,6 +1,8 @@
 # Invest Agent 能力平面渐进式抽离计划
 
-> 状态：待执行
+> ⚠️ **SUPERSEDED（部分）** — 本计划的 capability 抽离与 fixture/runner 资产（`src/capabilities/`、`scripts/capabilities/`、`tests/capabilities/`）仍保留并被 [MCP 注册与 Agent 工具架构重构计划](../mcp-registry-and-agent-tooling-refactor-plan.md) §四继承；但其"外部数据须经服务 adapter 归一化才能供 ACP""scheduler/review/规则共享同一 capability""`market.snapshot` 聚合用户状态+行情"等集成方向已被该重构计划替代，不再指导新实现。本文档保留于 archive 供审计。
+>
+> 状态（历史）：待执行
 > 范围：`market-data-tool`、`research-tool`、`indicator-tool`
 > 核心目标：让领域能力可以脱离完整 Invest Agent 运行时独立开发、调试和测试，同时保持现有 ACP、MCP、安全、状态与生产调用契约不变。
 

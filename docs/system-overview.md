@@ -68,7 +68,7 @@ The service is the machine room. Keep these responsibilities in code and SQLite/
 - Shared onboarding service contract used by both MCP and compatibility HTTP adapters, so state progression and durable writes have one implementation.
 - Onboarding drafts, confirmation binding, frozen commit snapshots, retryable background application, and completion notifications. Workspace onboarding files change only after the final draft commit succeeds.
 - Local HTTP APIs used by Platform, portal connector, operations, and compatibility callers. They are not exposed in workspace prompts or skills.
-- `invest-agent-service-tools` MCP server is the only deterministic service surface exposed to Codex ACP sessions. It exposes named market/portfolio/watchlist/plan tools plus confirmed writes for complete portfolio change sets, onboarding, watchlist add, plan set, method-change proposals, review save, and explicit watch-rule creation. Write tools require explicit user confirmation and are audited by the service.
+- `invest-agent-service-tools` MCP server is the only **service-owned** surface exposed to Codex ACP sessions — it carries confirmed writes (portfolio changes, onboarding, watchlist add, plan set, method-change proposals, review save, watch-rule creation) and service state reads. Write tools require explicit user confirmation and are audited by the service. In addition, the MCP registry (WP1) can assemble **trusted external read-only MCP servers** (such as `market-data-tool`, WP2) into ACP sessions for open-ended research; ACP discovers their tools dynamically via `tools/list`. The service retains admission, scope, credentials, and write boundaries.
 - Canonical conversation log for user-visible web and WeChat history.
 
 Do not reintroduce service-level triage, fast-lane classification, onboarding short-circuiting, review intent detection, or context-packet wrapping for normal WeChat messages. Those behaviors belong in workspace AGENTS.md, skills, and user config.
@@ -97,12 +97,12 @@ The table-level split is defined in [table-ownership.md](./table-ownership.md).
 
 ## Scheduler Boundary
 
-The scheduler is service-owned. It scans workspace schedules and watch configuration, then invokes the workspace-scoped ACP backend or deterministic rule inspection as needed.
+The scheduler is service-owned. It scans workspace schedules and watch configuration, then invokes the workspace-scoped ACP backend or deterministic rule inspection as needed. Per WP4, the scheduler only triggers and delivers — it does not pre-orchestrate research (legacy pre-aggregation, tool allowlists, and forced fallback briefs are behind `SCHEDULED_*_LEGACY_ORCH` flags, default off).
 
 There are two different runtime lines:
 
-- `market-watch`: scheduled brief/summary work that may return `NO_PUSH`.
-- `rule-alert-check`: deterministic rule inspection using sampled current/latest market facts and persisted stage2 watch_rules.
+- `market-watch`: scheduled brief/summary work that may return `NO_PUSH` (precise `NO_PUSH` → no delivery; no forced fallback brief in the new path).
+- `rule-alert-check`: deterministic rule inspection. Per WP5/WP6/WP8, `price_cross` is the only active rule type and uses the narrow `getRulePrices` fact interface (batched per tick); the 8 non-price rule types (ma/macd/kdj/rsi/boll/wr/volume/near_plan) are retired (deprecated, creation blocked). `market_watch_snapshots` writes are frozen (WP7); historical rows are retained.
 
 Rule inspection does not read legacy `alerts` rows, does not mean "intraday touched high", and does not imply close-confirmation semantics. It evaluates the facts available at the scheduler tick, records audit/event state, and pushes according to priority and cooldown. If `market-watch` and `rule-alert-check` hit in the same scheduler tick, rule inspection still records events but suppresses the separate rule push to avoid duplicate WeChat noise.
 
