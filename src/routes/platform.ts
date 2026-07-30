@@ -35,7 +35,7 @@ import { listWatchRules } from "../services/watch-rules.js";
 import { disposeAcpForWorkspace, ensureCodexRuntimeForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
 import { loadCodexWorkspaceUsageSummary, type CodexUsageGroupBy } from "../services/codex-usage.js";
 import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
-import { marketHealth } from "../services/market-data.js";
+import { marketDataReadCapability } from "../services/market-data.js";
 import { getAlertInterval } from "../scheduler/index.js";
 import { createPlatformSession, hasPlatformSession, isLoopbackAddress, platformSessionCookie } from "../lib/platform-session.js";
 import { getWeixinDeliveryHealth, recordWeixinDeliveryAttempt } from "../services/weixin-delivery.js";
@@ -785,7 +785,7 @@ async function partnerSourceQualitySummary() {
     const value = item?.createdAt || item?.timestamp || item?.date;
     return value && String(value).slice(0, 10) === todayKey;
   }) as any[];
-  const health = await marketHealth().catch(() => ({ status: "unknown" }));
+  const health = await marketDataReadCapability.health().catch(() => ({ status: "unknown" }));
   const endpoints = typeof health === "object" && health !== null && "endpoints" in health
     ? ((health as any).endpoints || []) as Array<{ lastStatus?: string; totalFailures?: number }>
     : [];
@@ -1526,7 +1526,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { reportLimit?: string; alertLimit?: string } }>("/api/platform/source-quality", safe(async (request) => {
     const reportLimit = Number(request.query.reportLimit || 14);
     const alertLimit = Number(request.query.alertLimit || 40);
-    const health = await marketHealth();
+    const health = await marketDataReadCapability.health();
     const reports = readSourceQualityReports(reportLimit);
     const alerts = readSourceQualityAlerts(alertLimit);
     return {

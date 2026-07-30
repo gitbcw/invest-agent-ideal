@@ -1,0 +1,24 @@
+{
+  "_fixture": {
+    "capability": "indicators",
+    "case": "success (deterministic)",
+    "captures": "L1 indicator output (indicators.ts, pure functions) on the in-script 30-bar synthetic K-line used by scripts/indicators-smoke.mjs (price 10.1 -> 14). Reproduced from npm run smoke:indicators on the 2026-07-30 build.",
+    "sourceInvariants": "indicators.ts is pure (type-only import of StockKline). Given identical K-line + algorithm version, output must be bit-identical (plan §Phase3 acceptance).",
+    "algorithmVersion": "indicators.ts@current; WP6 must pin a version + checked-in K-line fixture before treating as golden.",
+    "referenceOnly": true
+  },
+  "input": {
+    "klines": "30 bars, synthetic, close 10.1 linear step to 14 (see scripts/indicators-smoke.mjs fixture builder)"
+  },
+  "output": {
+    "computeMA_5_last": 13.7000,
+    "computeEMA_12_last": 13.2840,
+    "computeMACD": { "dif_last": 0.7617 },
+    "computeKDJ": { "K": 89.97, "D": 90.23, "J": 89.46 },
+    "computeBOLL": { "up": 14.31, "mid": 12.78, "down": 11.24 },
+    "computeRSI_6_last": 83.87,
+    "computeWR_14_last": 4.76,
+    "computeOBV_last": 17400000
+  },
+  "_smokeBaseline": "✅ 所有 L1 算子冒烟测试通过 (npm run smoke:indicators, 2026-07-30)"
+}

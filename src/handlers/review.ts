@@ -2,9 +2,9 @@ import { db } from "../db/index.js";
 import { alertEvents } from "../db/schema.js";
 import { settings } from "../db/schema.js";
 import { eq, desc, gte, lte, and } from "drizzle-orm";
-import { marketIndices, marketKline, marketQuote, type MarketSourceMeta } from "../services/market-data.js";
+import { marketDataReadCapability, type MarketSourceMeta } from "../services/market-data.js";
 import type { StockKline, StockQuote } from "../services/stock.js";
-import { analyzeIndicators } from "../services/indicators.js";
+import { indicatorCapability } from "../services/indicators.js";
 import { callDeepSeek } from "../services/deepseek.js";
 import { getStockInfoBatch, formatStockInfoForReview } from "../services/stock-news.js";
 import { logger } from "../lib/logger.js";
@@ -220,7 +220,7 @@ async function reviewKlines(
   userId: string,
   options: { startDate?: string; endDate?: string } = {},
 ): Promise<StockKline[]> {
-  const result = await marketKline({
+  const result = await marketDataReadCapability.kline({
     code,
     period: "day",
     count,
@@ -236,7 +236,7 @@ async function reviewKlinesResult(
   userId: string,
   options: { startDate?: string; endDate?: string } = {},
 ) {
-  return marketKline({
+  return marketDataReadCapability.kline({
     code,
     period: "day",
     count,
@@ -246,7 +246,7 @@ async function reviewKlinesResult(
 }
 
 async function reviewQuote(code: string, userId: string): Promise<StockQuote | undefined> {
-  const result = await marketQuote([code], userId);
+  const result = await marketDataReadCapability.quote([code], userId);
   if (result.warnings.length > 0) {
     logger.warn(`复盘行情数据不完整 user=${userId} code=${code}: ${result.warnings.join(";")}`);
   }
@@ -254,7 +254,7 @@ async function reviewQuote(code: string, userId: string): Promise<StockQuote | u
 }
 
 async function reviewQuoteResult(code: string, userId: string) {
-  const result = await marketQuote([code], userId);
+  const result = await marketDataReadCapability.quote([code], userId);
   if (result.warnings.length > 0) {
     logger.warn(`复盘行情数据不完整 user=${userId} code=${code}: ${result.warnings.join(";")}`);
   }
@@ -286,7 +286,7 @@ async function reviewMarketIndexLines(input: {
       }
       return lines;
     }
-    const indices = await marketIndices(input.userId);
+    const indices = await marketDataReadCapability.indices(input.userId);
     if (indices.warnings.length > 0) {
       logger.warn(`复盘指数数据不完整 user=${input.userId}: ${indices.warnings.join(";")}`);
     }
@@ -324,7 +324,7 @@ async function reviewMarketIndexData(input: {
       }
       return lines;
     }
-    const indices = await marketIndices(input.userId);
+    const indices = await marketDataReadCapability.indices(input.userId);
     if (indices.warnings.length > 0) {
       logger.warn(`复盘指数数据不完整 user=${input.userId}: ${indices.warnings.join(";")}`);
     }
@@ -452,7 +452,7 @@ export async function buildDailyReviewContext(options: { targetDate?: string; us
       const klineResult = await reviewKlinesResult(code, 120, userId, { endDate: isHistorical ? today : undefined });
       collectSourceQuality(sourceQuality, `${meta.name}(${code})日K`, klineResult.source);
       const klines = klineResult.items as StockKline[];
-      const indicator = klines.length >= 30 ? analyzeIndicators(klines) : null;
+      const indicator = klines.length >= 30 ? indicatorCapability.analyzeIndicators(klines) : null;
       const levels = estimateLevels(klines);
 
       let price: number | undefined;
@@ -1268,7 +1268,7 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
       const klineResult = await reviewKlinesResult(code, 120, userId, { endDate: isHistorical ? today : undefined });
       collectSourceQuality(sourceQuality, `${meta.name}(${code})日K`, klineResult.source);
       const klines = klineResult.items as StockKline[];
-      const indicator = klines.length >= 30 ? analyzeIndicators(klines) : null;
+      const indicator = klines.length >= 30 ? indicatorCapability.analyzeIndicators(klines) : null;
       const levels = estimateLevels(klines);
 
       // 历史日期从 K 线取目标日收盘价；实时日期走服务层行情 facade。
@@ -1497,7 +1497,7 @@ export async function generateWeeklyReview(options: { userId?: string; instanceI
       const minLow = Math.min(...weekKlines.map(k => k.low));
       const totalVol = weekKlines.reduce((s, k) => s + k.volume, 0);
 
-      const indicator = klines.length >= 30 ? analyzeIndicators(klines) : null;
+      const indicator = klines.length >= 30 ? indicatorCapability.analyzeIndicators(klines) : null;
 
       weeklyData.push(`| ${item.name}(${item.code}) | ${firstClose} → ${lastClose} | ${weekChange}% | ${maxHigh} | ${minLow} | ${(totalVol / 10000).toFixed(0)}万手 | ${indicator?.trend.trendDesc || "-"} |`);
     } catch {

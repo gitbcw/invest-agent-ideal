@@ -25,7 +25,7 @@ if (existsSync(tmpWorkspace)) rmSync(tmpWorkspace, { recursive: true, force: tru
 mkdirSync(tmpWorkspace, { recursive: true });
 
 // 示例脚本路径(项目内)
-const scriptPath = resolve("./templates/workspace/scripts/indicators/double_ma_cross.ts");
+const scriptPath = resolve("./tests/fixtures/indicators/double_ma_cross.ts");
 assert(existsSync(scriptPath), `示例脚本应存在: ${scriptPath}`);
 
 // 30 日 K 线 fixture(整体上涨趋势)

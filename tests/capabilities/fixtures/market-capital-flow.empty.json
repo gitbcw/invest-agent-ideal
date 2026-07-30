@@ -1,0 +1,22 @@
+{
+  "_fixture": {
+    "capability": "market-data",
+    "case": "empty-result",
+    "captures": "marketCapitalFlow where Eastmoney returns no rows -> empty items, low-confidence provider + standing observation warning preserved (per market-data-service-design.md: capital flow is observation signal, not proof of main-force control)",
+    "redacted": ["userId", "fetchedAt", "marketTime"],
+    "referenceOnly": true
+  },
+  "items": [],
+  "warnings": [
+    "capital_flow:empty:600519"
+  ],
+  "_sourceMetaShape": {
+    "provider": "eastmoney",
+    "endpoint": "emdatah5.eastmoney.com",
+    "confidence": "low",
+    "evidenceLevel": "signal",
+    "usageBoundary": "Auxiliary capital-flow observation; must not be described as proven main-force accumulation/control.",
+    "stale": false,
+    "warnings": ["capital_flow:empty:600519"]
+  }
+}

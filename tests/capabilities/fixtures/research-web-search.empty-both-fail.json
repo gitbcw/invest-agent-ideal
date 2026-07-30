@@ -1,0 +1,20 @@
+{
+  "_fixture": {
+    "capability": "research",
+    "case": "empty-result + partial-failure",
+    "captures": "searchPublicWeb when Doubao returns a business error (HTTP 200 + ResponseMetadata.Error) AND SearXNG 503 -> empty items, provider_failed warnings for BOTH, NO API key leaked. Mirrors tests/external-evidence-search.test.ts 'both providers unavailable'.",
+    "sourceInvariants": "warnings must not contain the DOUBAO_SEARCH_API_KEY substring; provider identity retained.",
+    "redacted": ["userId", "fetchedAt", "API keys"],
+    "referenceOnly": true
+  },
+  "items": [],
+  "source": {
+    "provider": "searxng_web_search",
+    "fetchedAt": "<fetchedAt>",
+    "warnings": [
+      "provider_failed:doubao_web_search:provider_error:10500",
+      "provider_failed:searxng_web_search:fetch_failed:503"
+    ]
+  },
+  "_assertion": "result.source.warnings.every(w => !w.includes('<redacted-key>')) === true"
+}

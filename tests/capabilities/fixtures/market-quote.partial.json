@@ -1,0 +1,41 @@
+{
+  "_fixture": {
+    "capability": "market-data",
+    "case": "partial-failure",
+    "captures": "marketQuote where one code returns no market time -> stale:true + missing_market_time warning, partial data preserved (per market-data-service-design.md §Staleness)",
+    "redacted": ["userId", "fetchedAt", "marketTime"],
+    "referenceOnly": true
+  },
+  "items": [
+    {
+      "code": "600519",
+      "name": "贵州茅台",
+      "price": 1685.00,
+      "yesterdayClose": 1670.50,
+      "open": 1672.00,
+      "volume": 21000,
+      "amount": 353850.0,
+      "high": 1690.00,
+      "low": 1668.00,
+      "change": 14.50,
+      "changePercent": 0.87,
+      "turnoverRate": 0.17,
+      "time": "<marketTime>",
+      "source": {
+        "provider": "tencent",
+        "endpoint": "qt.gtimg.cn/q",
+        "fetchedAt": "<fetchedAt>",
+        "marketTime": "<marketTime>",
+        "confidence": "high",
+        "evidenceLevel": "primary_fact",
+        "usageBoundary": "Level-1 quote only.",
+        "stale": false,
+        "warnings": []
+      }
+    }
+  ],
+  "warnings": [
+    "missing_market_time:000999"
+  ],
+  "_note": "000999 returned a quote shape but no `time`, so it is dropped from items and surfaced as a stale warning rather than silently emitted with invented freshness. A capability contract must preserve this partial-failure semantics (plan §4.4)."
+}

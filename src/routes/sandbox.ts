@@ -17,7 +17,7 @@ import { consumeSandboxConfirmation, createSandboxConfirmation, listPendingSandb
 import { resolveCalendarQueryInstant } from "../lib/market-calendar.js";
 import { enqueuePushJob, getPushJob, processDuePushJobs, type PushBackend } from "../services/push-queue.js";
 import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
-import { marketCalendar, marketCapitalFlow, marketHealth, marketIndices, marketKline, marketQuote, marketResolve, marketSectorTheme, marketSnapshot, marketStockInfo, type MarketKlinePeriod } from "../services/market-data.js";
+import { marketDataReadCapability, marketSnapshot, type MarketKlinePeriod } from "../services/market-data.js";
 import {
   applyConfirmedOnboardingStep,
   isOnboardingStep as isSharedOnboardingStep,
@@ -1587,7 +1587,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     const existing = await watchlistBackend.find(ctx.userId, ctx.instanceId, stockCode);
     if (existing) return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: ctx.userId };
 
-    const quoteResult = await marketQuote([stockCode], ctx.userId);
+    const quoteResult = await marketDataReadCapability.quote([stockCode], ctx.userId);
     const stockName = quoteResult.items[0]?.name || name || stockCode;
     await watchlistBackend.add(ctx.userId, ctx.instanceId, {
       code: stockCode,
@@ -1625,7 +1625,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.post<{ Body: { stockCode: string; stockName?: string; support?: number; resistance?: number; targetPrice?: number; stopLoss?: number; notes?: string; watchConditions?: PlanWatchConditionInput[]; linkedAlertRuleIds?: number[]; planType?: string; strategyKey?: string | null; userId?: string } }>("/api/sandbox/plans/set", sandboxMutationSafe("invest.plan.write", "plans.set", async (ctx, request, reply) => {
     const { stockCode, stockName, support, resistance, targetPrice, stopLoss, notes, watchConditions, linkedAlertRuleIds, planType, strategyKey } = request.body ?? {};
     if (!stockCode) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
-    const quoteResult = await marketQuote([stockCode], ctx.userId);
+    const quoteResult = await marketDataReadCapability.quote([stockCode], ctx.userId);
     const name = stockName || quoteResult.items[0]?.name || stockCode;
     const existing = await planBackend.find(ctx.userId, ctx.instanceId, stockCode);
     await planBackend.upsert(ctx.userId, ctx.instanceId, {
@@ -1774,7 +1774,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { codes?: string } }>("/api/sandbox/market/quote", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
     const codes = splitCodes(request.query.codes);
     if (codes.length === 0) return reply.status(400).send({ ok: false, error: "缺少 codes" });
-    const result = await marketQuote(codes, ctx.userId);
+    const result = await marketDataReadCapability.quote(codes, ctx.userId);
     await audit(ctx, {
       operation: "market.quote",
       resourceType: "market_data",
@@ -1788,7 +1788,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     const code = request.query.code?.trim();
     if (!code) return reply.status(400).send({ ok: false, error: "缺少 code" });
     const period = request.query.period === "m5" ? "m5" : "day";
-    const result = await marketKline({
+    const result = await marketDataReadCapability.kline({
       code,
       period: period as MarketKlinePeriod,
       count: request.query.count ? Number(request.query.count) : undefined,
@@ -1806,7 +1806,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   }));
 
   app.get("/api/sandbox/market/indices", sandboxSafe("invest.market.read", async (ctx) => {
-    const result = await marketIndices(ctx.userId);
+    const result = await marketDataReadCapability.indices(ctx.userId);
     await audit(ctx, {
       operation: "market.indices",
       resourceType: "market_data",
@@ -1818,7 +1818,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { codes?: string } }>("/api/sandbox/market/capital-flow", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
     const codes = splitCodes(request.query.codes);
     if (codes.length === 0) return reply.status(400).send({ ok: false, error: "缺少 codes" });
-    const result = await marketCapitalFlow(codes, ctx.userId);
+    const result = await marketDataReadCapability.capitalFlow(codes, ctx.userId);
     await audit(ctx, {
       operation: "market.capital_flow",
       resourceType: "market_data",
@@ -1831,7 +1831,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { codes?: string } }>("/api/sandbox/market/sector-theme", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
     const codes = splitCodes(request.query.codes);
     if (codes.length === 0) return reply.status(400).send({ ok: false, error: "缺少 codes" });
-    const result = await marketSectorTheme(codes, ctx.userId);
+    const result = await marketDataReadCapability.sectorTheme(codes, ctx.userId);
     await audit(ctx, {
       operation: "market.sector_theme",
       resourceType: "market_data",
@@ -1844,7 +1844,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { codes?: string; days?: string } }>("/api/sandbox/market/stock-info", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
     const codes = splitCodes(request.query.codes);
     if (codes.length === 0) return reply.status(400).send({ ok: false, error: "缺少 codes" });
-    const result = await marketStockInfo(codes.map((code) => ({ code })), {
+    const result = await marketDataReadCapability.stockInfo(codes.map((code) => ({ code })), {
       days: request.query.days ? Number(request.query.days) : undefined,
     }, ctx.userId);
     await audit(ctx, {
@@ -1859,7 +1859,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { keyword?: string } }>("/api/sandbox/market/resolve", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
     const keyword = request.query.keyword?.trim();
     if (!keyword) return reply.status(400).send({ ok: false, error: "缺少 keyword" });
-    const result = await marketResolve(keyword, ctx.userId);
+    const result = await marketDataReadCapability.resolve(keyword, ctx.userId);
     await audit(ctx, {
       operation: "market.resolve",
       resourceType: "market_data",
@@ -1878,7 +1878,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   }));
 
   app.get("/api/sandbox/market/health", sandboxSafe("invest.market.read", async (ctx) => {
-    const result = await marketHealth();
+    const result = await marketDataReadCapability.health();
     await audit(ctx, {
       operation: "market.health",
       resourceType: "market_data",
@@ -1889,7 +1889,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
 
   app.get<{ Querystring: { date?: string } }>("/api/sandbox/market/calendar", sandboxSafe("invest.market.read", async (ctx, request) => {
     const date = resolveCalendarQueryInstant(request.query.date);
-    const result = await marketCalendar(date, ctx.userId);
+    const result = await marketDataReadCapability.calendar(date, ctx.userId);
     await audit(ctx, {
       operation: "market.calendar",
       resourceType: "market_data",

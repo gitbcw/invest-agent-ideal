@@ -18,20 +18,12 @@ import {
 import { saveSkillDailyReview } from "../handlers/review.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
 import {
-  marketCalendar,
-  marketCapitalFlow,
-  marketHealth,
-  marketIndices,
-  marketKline,
-  marketQuote,
-  marketResolve,
-  marketSectorTheme,
+  marketDataReadCapability,
   marketSnapshot,
-  marketStockInfo,
   type MarketKlinePeriod,
 } from "../services/market-data.js";
 import { integratedFundamentals } from "../services/external-market-providers.js";
-import { readPublicWebPage, searchPublicFinanceNews, searchPublicWeb } from "../services/external-evidence-search.js";
+import { researchReadCapability } from "../services/external-evidence-search.js";
 import { resolveStockRefs } from "../services/stock-resolver.js";
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
@@ -139,7 +131,7 @@ async function dispatchServiceTool(
     case "market.quote": {
       const codes = normalizeCodes(input?.codes);
       if (codes.length === 0) throw new Error("codes is required");
-      const result = await marketQuote(codes, context.userId);
+      const result = await marketDataReadCapability.quote(codes, context.userId);
       await audit(context, {
         operation: "market.quote",
         resourceType: "market_data",
@@ -158,7 +150,7 @@ async function dispatchServiceTool(
       const code = stringInput(input?.code);
       if (!code) throw new Error("code is required");
       const period: MarketKlinePeriod = input?.period === "m5" ? "m5" : "day";
-      const result = await marketKline({
+      const result = await marketDataReadCapability.kline({
         code,
         period,
         count: clampInteger(input?.count, 1, 500, period === "m5" ? 120 : 120),
@@ -190,7 +182,7 @@ async function dispatchServiceTool(
       return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), result };
     }
     case "market.indices": {
-      const result = await marketIndices(context.userId);
+      const result = await marketDataReadCapability.indices(context.userId);
       await audit(context, {
         operation: "market.indices",
         resourceType: "market_data",
@@ -201,7 +193,7 @@ async function dispatchServiceTool(
     case "market.capital_flow": {
       const codes = normalizeCodes(input?.codes);
       if (codes.length === 0) throw new Error("codes is required");
-      const result = await marketCapitalFlow(codes, context.userId);
+      const result = await marketDataReadCapability.capitalFlow(codes, context.userId);
       await audit(context, {
         operation: "market.capital_flow",
         resourceType: "market_data",
@@ -213,7 +205,7 @@ async function dispatchServiceTool(
     case "market.sector_theme": {
       const codes = normalizeCodes(input?.codes);
       if (codes.length === 0) throw new Error("codes is required");
-      const result = await marketSectorTheme(codes, context.userId);
+      const result = await marketDataReadCapability.sectorTheme(codes, context.userId);
       await audit(context, {
         operation: "market.sector_theme",
         resourceType: "market_data",
@@ -226,7 +218,7 @@ async function dispatchServiceTool(
       const dateInput = stringInput(input?.date);
       const date = resolveCalendarQueryInstant(dateInput || undefined);
       if (Number.isNaN(date.getTime())) throw new Error("date must use YYYY-MM-DD");
-      const result = await marketCalendar(date, context.userId);
+      const result = await marketDataReadCapability.calendar(date, context.userId);
       await audit(context, {
         operation: "market.calendar",
         resourceType: "market_data",
@@ -236,7 +228,7 @@ async function dispatchServiceTool(
       return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
     }
     case "market.health": {
-      const result = await marketHealth();
+      const result = await marketDataReadCapability.health();
       await audit(context, {
         operation: "market.health",
         resourceType: "market_data",
@@ -253,7 +245,7 @@ async function dispatchServiceTool(
       const stocks = normalizeStockInputs(input?.stocks);
       if (stocks.length === 0) throw new Error("stocks is required");
       const days = clampInteger(input?.days, 1, 90, 7);
-      const result = await marketStockInfo(stocks, { days }, context.userId);
+      const result = await marketDataReadCapability.stockInfo(stocks, { days }, context.userId);
       await audit(context, {
         operation: "market.stock_info",
         resourceType: "market_data",
@@ -267,7 +259,7 @@ async function dispatchServiceTool(
       if (!query) throw new Error("query is required");
       const days = clampInteger(input?.days, 1, 90, 14);
       const limit = clampInteger(input?.limit, 1, 10, 8);
-      const result = await searchPublicFinanceNews({ query, days, limit, userId: context.userId });
+      const result = await researchReadCapability.newsSearch({ query, days, limit, userId: context.userId });
       await audit(context, {
         operation: "research.news_search",
         resourceType: "external_evidence",
@@ -280,7 +272,7 @@ async function dispatchServiceTool(
       const query = stringInput(input?.query);
       if (!query) throw new Error("query is required");
       const limit = clampInteger(input?.limit, 1, 10, 8);
-      const result = await searchPublicWeb({ query, limit, userId: context.userId });
+      const result = await researchReadCapability.webSearch({ query, limit, userId: context.userId });
       await audit(context, {
         operation: "research.web_search",
         resourceType: "external_evidence",
@@ -293,7 +285,7 @@ async function dispatchServiceTool(
       const url = stringInput(input?.url);
       if (!url) throw new Error("url is required");
       const maxCharacters = clampInteger(input?.maxCharacters, 2_000, 50_000, 20_000);
-      const result = await readPublicWebPage({ url, maxCharacters, userId: context.userId });
+      const result = await researchReadCapability.webRead({ url, maxCharacters, userId: context.userId });
       await audit(context, {
         operation: "research.web_read",
         resourceType: "external_evidence",
@@ -308,7 +300,7 @@ async function dispatchServiceTool(
     case "market.resolve": {
       const keyword = stringInput(input?.keyword);
       if (!keyword) throw new Error("keyword is required");
-      const result = await marketResolve(keyword, context.userId);
+      const result = await marketDataReadCapability.resolve(keyword, context.userId);
       await audit(context, {
         operation: "market.resolve",
         resourceType: "market_data",
@@ -913,7 +905,7 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
     await confirmation.consume();
     return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: context.userId };
   }
-  const quoteResult = await marketQuote([stockCode], context.userId);
+  const quoteResult = await marketDataReadCapability.quote([stockCode], context.userId);
   const stockName = quoteResult.items[0]?.name || name || stockCode;
   await watchlistBackend.add(context.userId, context.instanceId, {
     code: stockCode,
@@ -936,7 +928,7 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
   const confirmation = await prepareBoundConfirmation(input, context, "plans.set");
   const stockCode = stringInput(input?.stockCode ?? input?.code);
   if (!stockCode) throw new Error("缺少股票代码");
-  const quoteResult = await marketQuote([stockCode], context.userId);
+  const quoteResult = await marketDataReadCapability.quote([stockCode], context.userId);
   const stockName = stringInput(input?.stockName ?? input?.name) || quoteResult.items[0]?.name || stockCode;
   const existing = await planBackend.find(context.userId, context.instanceId, stockCode);
   await planBackend.upsert(context.userId, context.instanceId, {

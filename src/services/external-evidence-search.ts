@@ -2,15 +2,38 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { parse } from "node-html-parser";
 import { withSourceEvent, type ProviderName } from "./market-data-providers.js";
+import { createResearchCapability } from "../capabilities/research/capability.js";
+import type { ResearchCapabilityContract } from "../capabilities/research/contract.js";
 
 const EASTMONEY_SEARCH_ENDPOINT = "https://search-api-web.eastmoney.com/search/jsonp";
 const SOGOU_SEARCH_ENDPOINT = "https://www.sogou.com/web";
+const DOUBAO_SEARCH_ENDPOINT = "https://open.feedcoopapi.com/search_api/web_search";
+const DOUBAO_QUERY_MAX_CHARS = 100;
+const DOUBAO_QPS = 5;
+const DOUBAO_QPS_WINDOW_MS = 1000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 4;
 const CIRCUIT_FAILURE_THRESHOLD = 3;
 const CIRCUIT_OPEN_MS = 60_000;
 const providerCircuits = new Map<string, { consecutiveFailures: number; openUntil: number }>();
+
+// Process-local 5-QPS limiter for Doubao only; isolated from SearXNG fallback.
+let doubaoRecentSendTimes: number[] = [];
+
+function acquireDoubaoQpsSlot(now = Date.now()): void {
+  const cutoff = now - DOUBAO_QPS_WINDOW_MS;
+  doubaoRecentSendTimes = doubaoRecentSendTimes.filter((ts) => ts > cutoff);
+  if (doubaoRecentSendTimes.length >= DOUBAO_QPS) {
+    throw new Error("DOUBAO_QPS_EXCEEDED");
+  }
+  doubaoRecentSendTimes.push(now);
+}
+
+/** Reset the process-local Doubao QPS window. Test-only hook. */
+export function resetDoubaoQpsWindowForTests(): void {
+  doubaoRecentSendTimes = [];
+}
 
 export interface PublicNewsEvidenceItem {
   title: string;
@@ -32,8 +55,11 @@ export interface PublicNewsEvidenceResult {
   };
 }
 
-type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-type ResolveHost = (hostname: string) => Promise<Array<{ address: string }>>;
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type ResolveHost = (hostname: string) => Promise<Array<{ address: string }>>;
+export interface ResearchWebSearchDependencies { fetchImpl?: FetchLike; now?: Date; searxngUrl?: string; env?: NodeJS.ProcessEnv; }
+export interface ResearchWebReadDependencies { fetchImpl?: FetchLike; now?: Date; resolveHost?: ResolveHost; }
+export interface ResearchNewsDependencies { fetchImpl?: FetchLike; now?: Date; }
 
 export interface PublicWebSearchItem {
   title: string;
@@ -46,7 +72,7 @@ export interface PublicWebSearchResult {
   query: string;
   items: PublicWebSearchItem[];
   source: {
-    provider: "sogou_web_search" | "searxng_web_search";
+    provider: "sogou_web_search" | "searxng_web_search" | "doubao_web_search";
     fetchedAt: string;
     evidenceLevel: "secondary_evidence";
     usageBoundary: string;
@@ -73,30 +99,92 @@ export interface PublicWebPageResult {
   };
 }
 
-export async function searchPublicWeb(
+async function searchPublicWebImpl(
   input: { query: string; limit?: number; userId?: string | null },
-  dependencies: { fetchImpl?: FetchLike; now?: Date; searxngUrl?: string } = {},
+  dependencies: ResearchWebSearchDependencies = {},
 ): Promise<PublicWebSearchResult> {
   const query = normalizeQuery(input.query);
   if (!query) throw new Error("query is required");
   const limit = clampInteger(input.limit, 1, 10, 8);
   const fetchedAt = (dependencies.now ?? new Date()).toISOString();
   const warnings: string[] = [];
-  const searxngUrl = dependencies.searxngUrl ?? process.env.EXTERNAL_WEB_SEARCH_SEARXNG_URL?.trim();
-  const provider = searxngUrl ? "searxng_web_search" : "sogou_web_search";
-  let items: PublicWebSearchItem[] = [];
+  const env = dependencies.env ?? process.env;
+  const searxngUrl = dependencies.searxngUrl ?? env.EXTERNAL_WEB_SEARCH_SEARXNG_URL?.trim();
+  const doubaoConfig = resolveDoubaoConfig(env);
+  const fetchImpl = dependencies.fetchImpl ?? fetch;
 
-  try {
-    items = await runEvidenceProvider(provider, provider, input.userId ?? null, () =>
-      searxngUrl
-        ? fetchSearxngResults({ query, limit, endpoint: searxngUrl, fetchImpl: dependencies.fetchImpl ?? fetch })
-        : fetchSogouResults({ query, limit, fetchImpl: dependencies.fetchImpl ?? fetch }),
-    );
-  } catch (error) {
-    warnings.push(`provider_failed:${provider}:${classifySearchError(error)}`);
+  const chain: Array<{
+    name: "doubao_web_search" | "searxng_web_search" | "sogou_web_search";
+    run: () => Promise<PublicWebSearchItem[]>;
+  }> = [];
+  if (doubaoConfig.enabled) {
+    chain.push({
+      name: "doubao_web_search",
+      run: () => runEvidenceProvider("doubao_web_search", "doubao_web_search", input.userId ?? null, () =>
+        fetchDoubaoResults({
+          query,
+          limit,
+          endpoint: doubaoConfig.endpoint,
+          apiKey: doubaoConfig.apiKey,
+          fetchImpl,
+        }),
+      ),
+    });
   }
-  if (items.length === 0 && warnings.length === 0) warnings.push("no_matching_web_results");
+  if (searxngUrl) {
+    chain.push({
+      name: "searxng_web_search",
+      run: () => runEvidenceProvider("searxng_web_search", "searxng_web_search", input.userId ?? null, () =>
+        fetchSearxngResults({ query, limit, endpoint: searxngUrl, fetchImpl }),
+      ),
+    });
+  } else {
+    chain.push({
+      name: "sogou_web_search",
+      run: () => runEvidenceProvider("sogou_web_search", "sogou_web_search", input.userId ?? null, () =>
+        fetchSogouResults({ query, limit, fetchImpl }),
+      ),
+    });
+  }
 
+  let provider: PublicWebSearchResult["source"]["provider"] = chain[0]?.name ?? "sogou_web_search";
+  let items: PublicWebSearchItem[] = [];
+  for (const candidate of chain) {
+    provider = candidate.name;
+    try {
+      items = await candidate.run();
+    } catch (error) {
+      const reason = classifySearchError(error);
+      // A local QPS-limit overflow is a transient Doubao-only throttle; fall
+      // through silently rather than reporting it as a provider failure.
+      if (reason !== "doubao_qps_exceeded") {
+        warnings.push(`provider_failed:${candidate.name}:${reason}`);
+      }
+      items = [];
+      continue;
+    }
+    if (items.length === 0) {
+      // Only emit the no-usable-result warning for the primary Doubao attempt
+      // to keep fallback semantics explicit and bounded.
+      if (candidate.name === "doubao_web_search") {
+        warnings.push("primary_provider_no_usable_results:doubao_web_search");
+      }
+      continue;
+    }
+    return finalizeWebSearchResult(query, items, provider, fetchedAt, warnings);
+  }
+
+  if (items.length === 0 && warnings.length === 0) warnings.push("no_matching_web_results");
+  return finalizeWebSearchResult(query, items, provider, fetchedAt, warnings);
+}
+
+function finalizeWebSearchResult(
+  query: string,
+  items: PublicWebSearchItem[],
+  provider: PublicWebSearchResult["source"]["provider"],
+  fetchedAt: string,
+  warnings: string[],
+): PublicWebSearchResult {
   return {
     query,
     items,
@@ -110,9 +198,9 @@ export async function searchPublicWeb(
   };
 }
 
-export async function readPublicWebPage(
+async function readPublicWebPageImpl(
   input: { url: string; maxCharacters?: number; userId?: string | null },
-  dependencies: { fetchImpl?: FetchLike; now?: Date; resolveHost?: ResolveHost } = {},
+  dependencies: ResearchWebReadDependencies = {},
 ): Promise<PublicWebPageResult> {
   const requestedUrl = normalizePublicUrl(input.url);
   const fetchedAt = (dependencies.now ?? new Date()).toISOString();
@@ -161,9 +249,9 @@ export async function readPublicWebPage(
   }
 }
 
-export async function searchPublicFinanceNews(
+async function searchPublicFinanceNewsImpl(
   input: { query: string; days?: number; limit?: number; userId?: string | null },
-  dependencies: { fetchImpl?: FetchLike; now?: Date } = {},
+  dependencies: ResearchNewsDependencies = {},
 ): Promise<PublicNewsEvidenceResult> {
   const query = normalizeQuery(input.query);
   if (!query) throw new Error("query is required");
@@ -200,6 +288,17 @@ export async function searchPublicFinanceNews(
     },
   };
 }
+
+export const researchReadCapability: ResearchCapabilityContract = createResearchCapability({
+  newsSearch: searchPublicFinanceNewsImpl,
+  webSearch: searchPublicWebImpl,
+  webRead: readPublicWebPageImpl,
+});
+
+// Compatibility facade for existing callers and test dependency injection.
+export const searchPublicFinanceNews = researchReadCapability.newsSearch;
+export const searchPublicWeb = researchReadCapability.webSearch;
+export const readPublicWebPage = researchReadCapability.webRead;
 
 async function fetchEastmoneyFinanceNews(input: {
   query: string;
@@ -306,11 +405,79 @@ async function fetchSearxngResults(input: {
   return items;
 }
 
+interface DoubaoWebResult {
+  Title?: unknown;
+  Url?: unknown;
+  Summary?: unknown;
+  Snippet?: unknown;
+  SortId?: unknown;
+}
+
+interface DoubaoResponse {
+  ResponseMetadata?: { Error?: { Code?: unknown; Message?: unknown }; RequestId?: unknown };
+  Result?: { WebResults?: unknown };
+}
+
+async function fetchDoubaoResults(input: {
+  query: string;
+  limit: number;
+  endpoint: string;
+  apiKey: string;
+  fetchImpl: FetchLike;
+}): Promise<PublicWebSearchItem[]> {
+  acquireDoubaoQpsSlot();
+  // Provider-enforced maximum; caller limit range (1-10) is always within this.
+  const query = input.query.slice(0, DOUBAO_QUERY_MAX_CHARS);
+  const body = JSON.stringify({
+    Query: query,
+    SearchType: "web",
+    Count: input.limit,
+    Filter: { NeedUrl: true, NeedContent: false },
+  });
+  const response = await input.fetchImpl(input.endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${input.apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (response.status === 429 || response.status >= 500) throw new Error(`HTTP_${response.status}`);
+  if (!response.ok) throw new Error(`HTTP_${response.status}`);
+  const text = await readResponseText(response);
+  let parsed: DoubaoResponse;
+  try { parsed = JSON.parse(text) as DoubaoResponse; } catch { throw new Error("INVALID_RESPONSE"); }
+  // A provider business error is a failure even when HTTP status is 200.
+  const errorMeta = parsed?.ResponseMetadata?.Error;
+  if (errorMeta && (errorMeta.Code !== undefined && errorMeta.Code !== "")) {
+    throw new Error(`DOUBAO_PROVIDER_ERROR:${errorMeta.Code ?? "unknown"}`);
+  }
+  const rawResults = Array.isArray(parsed?.Result?.WebResults) ? (parsed!.Result!.WebResults as DoubaoWebResult[]) : [];
+  if (rawResults.length === 0) throw new Error("INVALID_RESPONSE");
+  const items: PublicWebSearchItem[] = [];
+  for (const row of rawResults) {
+    const title = stripMarkup(String(row?.Title ?? ""));
+    const summary = stripMarkup(String(row?.Summary ?? ""));
+    const snippetRaw = summary || String(row?.Snippet ?? "");
+    const url = safeHttpUrl(String(row?.Url ?? ""));
+    if (!title || !url) continue;
+    const sortId = Number(row?.SortId);
+    const rank = Number.isFinite(sortId) && sortId > 0 ? sortId : items.length + 1;
+    items.push({ title, snippet: snippetRaw.slice(0, 500), url, rank });
+    if (items.length >= input.limit) break;
+  }
+  return items;
+}
+
 async function fetchSogouResults(input: {
   query: string;
   limit: number;
   fetchImpl: FetchLike;
 }): Promise<PublicWebSearchItem[]> {
+
+
   const url = new URL(SOGOU_SEARCH_ENDPOINT);
   url.searchParams.set("query", input.query);
   const response = await input.fetchImpl(url, {
@@ -563,6 +730,21 @@ function normalizeQuery(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
+interface DoubaoRuntimeConfig {
+  enabled: boolean;
+  apiKey: string;
+  endpoint: string;
+}
+
+function resolveDoubaoConfig(env: NodeJS.ProcessEnv = process.env): DoubaoRuntimeConfig {
+  const apiKey = (env.DOUBAO_SEARCH_API_KEY ?? "").trim();
+  const enabledFlag = (env.DOUBAO_SEARCH_ENABLED ?? "").trim().toLowerCase();
+  // Enabled by default when a key is present, unless explicitly turned off.
+  const enabled = apiKey.length > 0 && enabledFlag !== "false" && enabledFlag !== "0";
+  const endpoint = (env.DOUBAO_SEARCH_ENDPOINT ?? "").trim() || DOUBAO_SEARCH_ENDPOINT;
+  return { enabled, apiKey, endpoint };
+}
+
 function stripMarkup(value: string): string {
   return value.replace(/<[^>]*>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/\s+/g, " ").trim();
 }
@@ -581,6 +763,8 @@ function classifySearchError(error: unknown): string {
   if (message.includes("timeout") || message.includes("Timeout")) return "timeout";
   if (/unable to verify|certificate|SELF_SIGNED|CERT_/i.test(message)) return "tls_certificate_untrusted";
   if (/HTTP_\d+/.test(message)) return message.toLowerCase();
+  if (message.startsWith("DOUBAO_QPS_EXCEEDED")) return "doubao_qps_exceeded";
+  if (message.startsWith("DOUBAO_PROVIDER_ERROR")) return "doubao_provider_error";
   if (["INVALID_RESPONSE", "RESPONSE_TOO_LARGE", "UNSUPPORTED_CONTENT_TYPE", "TOO_MANY_REDIRECTS", "UPSTREAM_CHALLENGE", "CIRCUIT_OPEN"].includes(message)) return message.toLowerCase();
   return "upstream_error";
 }

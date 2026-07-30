@@ -1,0 +1,22 @@
+{
+  "_fixture": {
+    "capability": "market-data / research provider",
+    "case": "no-permission (not-configured)",
+    "captures": "integratedFundamentals when neither Tushare nor TDX credentials are configured -> structured warnings tushare:not_configured / tdx:not_configured, plus externalProviderAvailability() flags. No credential is exposed or requested from the user (external-market-providers.ts L143/175/181).",
+    "sourceInvariants": "missing provider entitlement surfaces as a stable warning code, not an exception; availability flags drive market.health.",
+    "redacted": ["userId", "fetchedAt", "tokens"],
+    "referenceOnly": true
+  },
+  "result": {
+    "code": "600519",
+    "sources": [],
+    "warnings": [
+      "tushare:not_configured",
+      "tdx:not_configured"
+    ]
+  },
+  "availability": [
+    { "provider": "tushare", "configured": false },
+    { "provider": "tdx", "configured": false }
+  ]
+}

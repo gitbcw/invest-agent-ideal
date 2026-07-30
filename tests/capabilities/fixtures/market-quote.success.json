@@ -1,0 +1,69 @@
+{
+  "_fixture": {
+    "capability": "market-data",
+    "case": "success",
+    "captures": "marketQuote(['600519','000001']) normalized result envelope (MarketQuote[] + warnings)",
+    "redacted": ["userId", "fetchedAt", "marketTime"],
+    "referenceOnly": true
+  },
+  "items": [
+    {
+      "code": "600519",
+      "name": "贵州茅台",
+      "price": 1685.00,
+      "yesterdayClose": 1670.50,
+      "open": 1672.00,
+      "volume": 21000,
+      "amount": 353850.0,
+      "high": 1690.00,
+      "low": 1668.00,
+      "change": 14.50,
+      "changePercent": 0.87,
+      "turnoverRate": 0.17,
+      "time": "<marketTime>",
+      "bidVolume": 1200,
+      "askVolume": 980,
+      "bidAskImbalance": 0.10,
+      "source": {
+        "provider": "tencent",
+        "endpoint": "qt.gtimg.cn/q",
+        "referenceUrl": "https://qt.gtimg.cn/q=sh600519",
+        "fetchedAt": "<fetchedAt>",
+        "marketTime": "<marketTime>",
+        "confidence": "high",
+        "evidenceLevel": "primary_fact",
+        "usageBoundary": "Level-1 quote only; use for price/OHLCV/turnover/5-level imbalance observation.",
+        "stale": false,
+        "warnings": []
+      }
+    },
+    {
+      "code": "000001",
+      "name": "平安银行",
+      "price": 11.20,
+      "yesterdayClose": 11.05,
+      "open": 11.08,
+      "volume": 830000,
+      "amount": 92760.0,
+      "high": 11.28,
+      "low": 11.04,
+      "change": 0.15,
+      "changePercent": 1.36,
+      "turnoverRate": 0.43,
+      "time": "<marketTime>",
+      "source": {
+        "provider": "tencent",
+        "endpoint": "qt.gtimg.cn/q",
+        "referenceUrl": "https://qt.gtimg.cn/q=sz000001",
+        "fetchedAt": "<fetchedAt>",
+        "marketTime": "<marketTime>",
+        "confidence": "high",
+        "evidenceLevel": "primary_fact",
+        "usageBoundary": "Level-1 quote only.",
+        "stale": false,
+        "warnings": []
+      }
+    }
+  ],
+  "warnings": []
+}

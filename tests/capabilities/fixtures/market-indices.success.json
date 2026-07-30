@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "code": "000001", "name": "上证指数", "price": 3500.12, "changePercent": 0.42, "source": { "provider": "tencent", "endpoint": "qt.gtimg.cn/q", "fetchedAt": "<fetchedAt>", "confidence": "high", "evidenceLevel": "primary_fact", "usageBoundary": "Level-1 index quote.", "stale": false, "warnings": [] } }
+  ],
+  "warnings": []
+}

@@ -33,7 +33,7 @@ const engine = new CompositeIndicatorEngine();
 
 // === 1. 模板 YAML 解析 ===
 {
-  const yamlPath = resolve("./templates/workspace/config/composite_indicators.yaml");
+  const yamlPath = resolve("./tests/fixtures/indicators/composite_indicators.yaml");
   assert(existsSync(yamlPath), `模板应存在: ${yamlPath}`);
   const configs = engine.loadConfig(yamlPath);
   assert(configs.length === 3, `应解析出 3 条,实际 ${configs.length}`);

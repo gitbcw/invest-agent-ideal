@@ -1,0 +1,31 @@
+{
+  "_fixture": {
+    "capability": "research",
+    "case": "success",
+    "captures": "searchPublicWeb query via SearXNG JSON backend (or sogou fallback) -> PublicWebSearchResult with provider provenance + final URLs",
+    "sourceInvariants": "source.provider is the ACTUAL hit; audit/telemetry keep provider identity even on fallback (plan §Phase2, service-tools-mcp.md)",
+    "redacted": ["userId", "fetchedAt", "API keys"],
+    "referenceOnly": true
+  },
+  "items": [
+    {
+      "rank": 1,
+      "title": "示例公开财经报道标题",
+      "snippet": "示例摘要,仅用于发现来源,必须继续读取原文核验。",
+      "url": "https://example.com/finance/example-article",
+      "provider": "searxng_web_search"
+    },
+    {
+      "rank": 2,
+      "title": "示例二级来源标题",
+      "snippet": "示例摘要片段。",
+      "url": "https://example.org/markets/note",
+      "provider": "searxng_web_search"
+    }
+  ],
+  "source": {
+    "provider": "searxng_web_search",
+    "fetchedAt": "<fetchedAt>",
+    "warnings": []
+  }
+}

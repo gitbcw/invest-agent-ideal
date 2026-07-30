@@ -1,0 +1,1 @@
+{"requestedUrl":"https://example.com/article","page":{"url":"https://example.com/article","title":"示例公开页面","text":"脱敏的公开网页正文。","contentType":"text/html","fetchedAt":"<fetchedAt>","truncated":false},"source":{"provider":"public_web_page","fetchedAt":"<fetchedAt>","evidenceLevel":"secondary_evidence","usageBoundary":"保留 URL 和抓取时间。","warnings":[]}}

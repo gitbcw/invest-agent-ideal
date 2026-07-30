@@ -1,4 +1,6 @@
 import type { StockKline } from "./stock.js";
+import { createIndicatorCapability } from "../capabilities/indicators/capability.js";
+import type { IndicatorCapabilityContract } from "../capabilities/indicators/contract.js";
 
 // ==================== 趋势指标 ====================
 
@@ -425,3 +427,15 @@ export function computeOBV(klines: StockKline[]): OBVValue {
   }
   return { values, last: values[values.length - 1] };
 }
+
+export const indicatorCapability: IndicatorCapabilityContract = createIndicatorCapability({
+  analyzeIndicators,
+  computeMA,
+  computeEMA,
+  computeMACD,
+  computeKDJ,
+  computeBOLL,
+  computeRSI,
+  computeWR,
+  computeOBV,
+});

@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { alertRules } from "../db/schema.js";
-import { marketQuote } from "../services/market-data.js";
+import { marketDataReadCapability } from "../services/market-data.js";
 import { getIndicatorDefinition } from "./indicator-definitions.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { planBackend } from "../lib/data-backend.js";
@@ -71,7 +71,7 @@ async function resolveStockName(userId: string, instanceId: string, stockCode: s
   if (stockName) return stockName;
   const existing = await planBackend.find(userId, instanceId, stockCode);
   if (existing?.name) return existing.name;
-  const quote = await marketQuote([stockCode], userId).catch(() => ({ items: [] }));
+  const quote = await marketDataReadCapability.quote([stockCode], userId).catch(() => ({ items: [] }));
   return quote.items[0]?.name || stockCode;
 }
 

@@ -1,0 +1,11 @@
+{
+  "code": "600519",
+  "period": "day",
+  "count": 2,
+  "items": [
+    { "date": "2026-07-28", "open": 1660.1, "close": 1670.5, "high": 1678.2, "low": 1656.4, "volume": 21000 },
+    { "date": "2026-07-29", "open": 1672, "close": 1685, "high": 1690, "low": 1668, "volume": 22000 }
+  ],
+  "priceConvention": { "unit": "CNY_per_share", "adjustment": "forward_adjusted", "displayDecimals": 2, "roundingMode": "half_up", "comparisonTolerance": 0.005, "valuePolicy": "preserve_provider_precision" },
+  "source": { "provider": "tencent", "endpoint": "web.ifzq.gtimg.cn/appstock/app/fqkline/get", "fetchedAt": "<fetchedAt>", "marketTime": "2026-07-29", "confidence": "high", "evidenceLevel": "primary_fact", "usageBoundary": "Level-1 historical price facts.", "stale": false, "warnings": [] }
+}

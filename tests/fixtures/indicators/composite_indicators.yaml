@@ -1,0 +1,33 @@
+- key: macd_volume_combo
+  name: MACD volume combo
+  reliability: stable
+  type: rule_tree
+  inputs:
+    - key: macd_signal
+      source: signal.macd
+  combine: and
+  thresholds: {}
+  user_acknowledged: true
+- key: oversold_bounce
+  name: Oversold bounce
+  reliability: stable
+  type: rule_tree
+  inputs:
+    - key: rsi_signal
+      source: signal.rsi
+  combine: or
+  thresholds: {}
+  user_acknowledged: true
+- key: trend_breakout_filter
+  name: Trend breakout filter
+  reliability: stable
+  type: rule_tree
+  inputs:
+    - key: ma_signal
+      source: signal.ma
+    - key: macd_signal
+      source: signal.macd
+  combine: and
+  thresholds:
+    trigger: { expr: "ma_signal && macd_signal" }
+  user_acknowledged: true

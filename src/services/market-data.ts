@@ -42,6 +42,8 @@ import {
   type ProviderName,
 } from "./market-data-providers.js";
 import { externalProviderAvailability, type ExternalProviderAvailability } from "./external-market-providers.js";
+import { createMarketDataCapability } from "../capabilities/market-data/capability.js";
+import type { MarketDataCapabilityContract } from "../capabilities/market-data/contract.js";
 
 export type { MarketDataProvider, MarketDataConfidence } from "./market-data-providers.js";
 export type { EndpointStat } from "./market-data-providers.js";
@@ -452,7 +454,7 @@ function isStaleQuoteDate(date: Date, now = new Date()): boolean {
   return quoteDateKey < calendar.dateKey;
 }
 
-export async function marketQuote(
+async function marketQuoteImpl(
   codes: string[],
   userId: string | null = null,
 ): Promise<{ items: MarketQuote[]; warnings: string[] }> {
@@ -546,7 +548,7 @@ async function crossCheckQuotes(primaryQuotes: StockQuote[], userId: string | nu
   return warnings;
 }
 
-export async function marketKline(
+async function marketKlineImpl(
   input: {
     code: string;
     period?: MarketKlinePeriod;
@@ -685,7 +687,7 @@ function decimalPlaces(value: number): number {
   return Math.max(0, coefficientDecimals - exponent);
 }
 
-export async function marketIndices(
+async function marketIndicesImpl(
   userId: string | null = null,
 ): Promise<{ items: MarketIndexQuote[]; warnings: string[] }> {
   const provider: ProviderName = "tencent_indices";
@@ -760,7 +762,7 @@ async function crossCheckIndices(
   return warnings;
 }
 
-export async function marketCapitalFlow(
+async function marketCapitalFlowImpl(
   codes: string[],
   userId: string | null = null,
 ): Promise<{ items: MarketCapitalFlow[]; warnings: string[] }> {
@@ -785,7 +787,7 @@ export async function marketCapitalFlow(
   };
 }
 
-export async function marketSectorTheme(
+async function marketSectorThemeImpl(
   codes: string[],
   userId: string | null = null,
 ): Promise<{ items: MarketSectorTheme[]; warnings: string[] }> {
@@ -817,7 +819,7 @@ export async function marketSectorTheme(
   return { items, warnings };
 }
 
-export async function marketStockInfo(
+async function marketStockInfoImpl(
   stocks: Array<{ code: string; name?: string }>,
   options: { days?: number; targetDate?: string } = {},
   userId: string | null = null,
@@ -860,7 +862,7 @@ export async function marketStockInfo(
   return { items, warnings };
 }
 
-export async function marketResolve(
+async function marketResolveImpl(
   keyword: string,
   userId: string | null = null,
 ) {
@@ -876,7 +878,7 @@ export async function marketResolve(
   };
 }
 
-export async function marketCalendar(
+async function marketCalendarImpl(
   date: Date = new Date(),
   userId: string | null = null,
 ): Promise<MarketCalendarReport> {
@@ -887,7 +889,7 @@ export async function marketCalendar(
  * 健康检查:同步从内存 endpointStats 返回,不再做主动探测。
  * 进程冷启动后短期内 endpoints 列表可能为空——属于预期,因为 ondemand 调用会逐步填充。
  */
-export async function marketHealth(): Promise<MarketHealthReport> {
+async function marketHealthImpl(): Promise<MarketHealthReport> {
   return {
     ok: true,
     checkedAt: new Date().toISOString(),
@@ -911,6 +913,30 @@ export async function marketHealth(): Promise<MarketHealthReport> {
     })),
   };
 }
+
+export const marketDataReadCapability: MarketDataCapabilityContract = createMarketDataCapability({
+  quote: marketQuoteImpl,
+  kline: marketKlineImpl,
+  indices: marketIndicesImpl,
+  capitalFlow: marketCapitalFlowImpl,
+  sectorTheme: marketSectorThemeImpl,
+  stockInfo: marketStockInfoImpl,
+  resolve: marketResolveImpl,
+  calendar: marketCalendarImpl,
+  health: marketHealthImpl,
+});
+
+// Compatibility facade: adapters keep their existing imports while market-only
+// behavior is supplied by the capability contract.
+export const marketQuote = marketDataReadCapability.quote;
+export const marketKline = marketDataReadCapability.kline;
+export const marketIndices = marketDataReadCapability.indices;
+export const marketCapitalFlow = marketDataReadCapability.capitalFlow;
+export const marketSectorTheme = marketDataReadCapability.sectorTheme;
+export const marketStockInfo = marketDataReadCapability.stockInfo;
+export const marketResolve = marketDataReadCapability.resolve;
+export const marketCalendar = marketDataReadCapability.calendar;
+export const marketHealth = marketDataReadCapability.health;
 
 export async function marketSnapshot(input: {
   userId: string;

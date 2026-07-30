@@ -1,0 +1,26 @@
+{
+  "_fixture": {
+    "capability": "research",
+    "case": "rate-limit",
+    "captures": "searchPublicWeb when Doubao process-local 5-QPS limiter is exceeded -> DOUBAO_QPS_EXCEEDED classified as doubao_qps_exceeded warning; chain falls through to next provider without crashing (external-evidence-search.ts DOUBAO_QPS=5, classifyResearchError).",
+    "sourceInvariants": "rate-limit is a structured warning, not a thrown string; fallback provider may still produce results.",
+    "redacted": ["userId", "fetchedAt", "API keys"],
+    "referenceOnly": true
+  },
+  "items": [
+    {
+      "rank": 1,
+      "title": "示例回退来源标题",
+      "snippet": "由回退 provider 命中。",
+      "url": "https://example.com/finance/fallback",
+      "provider": "searxng_web_search"
+    }
+  ],
+  "source": {
+    "provider": "searxng_web_search",
+    "fetchedAt": "<fetchedAt>",
+    "warnings": [
+      "provider_failed:doubao_web_search:rate_limited:doubao_qps_exceeded"
+    ]
+  }
+}

@@ -2,10 +2,10 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { alertRules } from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
-import { computeBOLL, computeKDJ, computeMA, computeMACD, computeRSI, computeWR } from "./indicators.js";
+import { indicatorCapability } from "./indicators.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { planBackend } from "../lib/data-backend.js";
-import { marketKline, marketQuote } from "./market-data.js";
+import { marketDataReadCapability } from "./market-data.js";
 
 export type WatchRuleType =
   | "price_cross"
@@ -563,7 +563,7 @@ export async function dryRunWatchRuleById(id: number, userId = DEFAULT_USER_ID, 
 }
 
 export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatchRuleResult> {
-  const quoteResult = await marketQuote([rule.stockCode]);
+  const quoteResult = await marketDataReadCapability.quote([rule.stockCode]);
   const quote = quoteResult.items[0];
   if (!quote) {
     return {
@@ -610,7 +610,7 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
   if (rule.ruleType === "ma_cross") {
     const period = Number(rule.params.period);
     const direction = String(rule.params.direction) as WatchRuleDirection;
-    const klineResult = await marketKline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 5) });
+    const klineResult = await marketDataReadCapability.kline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 5) });
     const klines = klineResult.items as Array<{ close: number }>;
     if (klines.length < period + 2) {
       return {
@@ -631,7 +631,7 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
       };
     }
     const closes = klines.map((item) => item.close);
-    const maValues = computeMA(closes, period).values;
+    const maValues = indicatorCapability.computeMA(closes, period).values;
     const lastIdx = closes.length - 1;
     const prevIdx = lastIdx - 1;
     const maToday = maValues[lastIdx];
@@ -676,7 +676,7 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
 
   if (rule.ruleType === "macd_cross") {
     const direction = String(rule.params.direction) as WatchRuleMacdDirection;
-    const klineResult = await marketKline({ code: rule.stockCode, period: "day", count: 120 });
+    const klineResult = await marketDataReadCapability.kline({ code: rule.stockCode, period: "day", count: 120 });
     const klines = klineResult.items as Array<{ close: number }>;
     if (klines.length < 35) {
       return {
@@ -697,7 +697,7 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
       };
     }
     const closes = klines.map((item) => item.close);
-    const { dif, dea } = computeMACD(closes);
+    const { dif, dea } = indicatorCapability.computeMACD(closes);
     const lastIdx = closes.length - 1;
     const prevIdx = lastIdx - 1;
     const difToday = dif[lastIdx];
@@ -748,12 +748,12 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
   if (rule.ruleType === "kdj_cross") {
     const direction = String(rule.params.direction) as WatchRuleKdjDirection;
     const threshold = Number(rule.params.threshold ?? (direction === "golden_cross" ? 20 : 80));
-    const klineResult = await marketKline({ code: rule.stockCode, period: "day", count: 80 });
+    const klineResult = await marketDataReadCapability.kline({ code: rule.stockCode, period: "day", count: 80 });
     const klines = klineResult.items as Array<{ close: number; high: number; low: number; volume: number }>;
     if (klines.length < 15) {
       return dailyKlineInsufficient(rule, klineResult.source, klines.length, 15, "K线数量不足，无法判断 KDJ 金叉/死叉");
     }
-    const { k, d, j } = computeKDJ(klines as any);
+    const { k, d, j } = indicatorCapability.computeKDJ(klines as any);
     const lastIdx = klines.length - 1;
     const prevIdx = lastIdx - 1;
     const kToday = k[lastIdx];
@@ -791,13 +791,13 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
     const period = Number(rule.params.period ?? 6);
     const direction = String(rule.params.direction) as WatchRuleThresholdDirection;
     const threshold = Number(rule.params.threshold);
-    const klineResult = await marketKline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 5) });
+    const klineResult = await marketDataReadCapability.kline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 5) });
     const klines = klineResult.items as Array<{ close: number }>;
     if (klines.length < period + 2) {
       return dailyKlineInsufficient(rule, klineResult.source, klines.length, period + 2, "K线数量不足，无法判断 RSI 阈值");
     }
     const closes = klines.map((item) => item.close);
-    const rsi = computeRSI(closes, period);
+    const rsi = indicatorCapability.computeRSI(closes, period);
     const rsiToday = rsi.last;
     if (rsiToday == null) {
       return { ok: true, triggered: false, rule, facts: {}, reason: "RSI 结果为空" };
@@ -825,12 +825,12 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
     const period = Number(rule.params.period ?? 20);
     const multiplier = Number(rule.params.multiplier ?? 2);
     const direction = String(rule.params.direction) as WatchRuleBollDirection;
-    const klineResult = await marketKline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 5) });
+    const klineResult = await marketDataReadCapability.kline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 5) });
     const klines = klineResult.items as Array<{ close: number; high: number; low: number; volume: number }>;
     if (klines.length < period + 2) {
       return dailyKlineInsufficient(rule, klineResult.source, klines.length, period + 2, "K线数量不足，无法判断布林带突破");
     }
-    const boll = computeBOLL(klines as any, period, multiplier);
+    const boll = indicatorCapability.computeBOLL(klines as any, period, multiplier);
     const lastIdx = klines.length - 1;
     const closeToday = klines[lastIdx].close;
     const upper = boll.up[lastIdx];
@@ -864,12 +864,12 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
     const period = Number(rule.params.period ?? 14);
     const direction = String(rule.params.direction) as WatchRuleThresholdDirection;
     const threshold = Number(rule.params.threshold);
-    const klineResult = await marketKline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 5) });
+    const klineResult = await marketDataReadCapability.kline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 5) });
     const klines = klineResult.items as Array<{ close: number; high: number; low: number; volume: number }>;
     if (klines.length < period + 1) {
       return dailyKlineInsufficient(rule, klineResult.source, klines.length, period + 1, "K线数量不足，无法判断 WR 阈值");
     }
-    const wr = computeWR(klines as any, period);
+    const wr = indicatorCapability.computeWR(klines as any, period);
     const wrToday = wr.last;
     if (wrToday == null) {
       return { ok: true, triggered: false, rule, facts: {}, reason: "WR 结果为空" };
@@ -897,7 +897,7 @@ export async function dryRunWatchRule(rule: WatchRuleRecord): Promise<DryRunWatc
     const period = Number(rule.params.period ?? 5);
     const direction = String(rule.params.direction) as WatchRuleThresholdDirection;
     const threshold = Number(rule.params.threshold);
-    const klineResult = await marketKline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 2) });
+    const klineResult = await marketDataReadCapability.kline({ code: rule.stockCode, period: "day", count: Math.max(80, period + 2) });
     const klines = klineResult.items as Array<{ close: number; volume: number }>;
     if (klines.length < period + 1) {
       return dailyKlineInsufficient(rule, klineResult.source, klines.length, period + 1, "K线数量不足，无法判断成交量倍数");
