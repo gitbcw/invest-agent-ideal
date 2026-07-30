@@ -1,14 +1,31 @@
 #!/usr/bin/env node
 /**
- * F6: scheduled-review-publication 自包含 smoke wrapper。
+ * R6: 真正隔离的 scheduled-review-publication smoke。
  *
- * 原始 probe (scheduled-review-publication-probe.mjs) 需要 <userId> <instanceId> <date>
- * 三个参数。本 wrapper 提供隔离默认值，让 `npm run smoke:scheduled-review-publication`
- * 可无参数运行。它仍是 live probe（需 codex backend 可用 + model API）。
+ * 使用临时 DB/Workspace/Runtime/Reviews 根（mktemp -d），不触碰生产状态。
+ * 凭据前置检查：codex backend 不可用时返回明确非零（不当 skip 为 pass）。
+ * 执行后清理临时状态。
  *
- * 若 codex backend 不可用（无 .env / 无 API key），会以明确的 "skipped" 状态退出，
- * 而非因缺参数 crash。
+ * 用法: npm run smoke:scheduled-review-publication
  */
+
+import { mkdtempSync, rmSync, existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+// R6: 创建完全隔离的临时状态根
+const ISOLATION_ROOT = mkdtempSync(join(tmpdir(), "invest-agent-pub-smoke-"));
+const isolatedDb = join(ISOLATION_ROOT, "test.db");
+const isolatedWs = join(ISOLATION_ROOT, "workspaces");
+const isolatedRuntime = join(ISOLATION_ROOT, "runtime");
+const isolatedReviews = join(ISOLATION_ROOT, "reviews");
+
+// R6: 覆盖所有状态环境变量，确保不碰生产
+process.env.DB_PATH = isolatedDb;
+process.env.WORKSPACE_ROOT = isolatedWs;
+process.env.RUNTIME_DATA_ROOT = isolatedRuntime;
+process.env.REVIEWS_ROOT = isolatedReviews;
+process.env.NODE_ENV = "test";
 
 const userId = process.argv[2]?.trim() || "pub-smoke-user";
 const instanceId = process.argv[3]?.trim() || "invest-agent-pub-smoke";
@@ -16,16 +33,42 @@ const today = new Date();
 const date = process.argv[4]?.trim() ||
   `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
+console.log(`[publication-smoke] ISOLATION_ROOT=${ISOLATION_ROOT}`);
 console.log(`[publication-smoke] userId=${userId} instanceId=${instanceId} date=${date}`);
-console.log("[publication-smoke] 这是 live probe，需要 codex backend + model API");
+
+// R6: 凭据前置检查——codex backend 可用性
+function checkCodexBackend() {
+  const codexAcp = process.env.CODEX_ACP_COMMAND || "/Users/combo/.local/bin/codex-acp";
+  if (!existsSync(codexAcp)) {
+    return { ok: false, reason: `codex-acp not found at ${codexAcp}` };
+  }
+  // 检查 .env 是否有 model router 凭据（不读值，只看键存在）
+  const envFile = join(process.cwd(), ".env");
+  if (!existsSync(envFile)) {
+    return { ok: false, reason: ".env not found (no model router credentials)" };
+  }
+  return { ok: true };
+}
+
+const backendCheck = checkCodexBackend();
+if (!backendCheck.ok) {
+  // R6: 无 backend 时明确非零，不当 skip 为 pass
+  console.error(`[publication-smoke] BLOCKED: ${backendCheck.reason}`);
+  console.error("[publication-smoke] 这是 live probe，需要 codex backend + model API。");
+  console.error("[publication-smoke] 在无 backend 的 CI 环境中，此命令应返回非零（不当 skip 为 pass）。");
+  // 清理临时状态
+  rmSync(ISOLATION_ROOT, { recursive: true, force: true });
+  process.exit(2); // 明确非零（不是 0=pass，不是 1=test-fail，而是 2=blocked）
+}
 
 try {
   const { initDb } = await import("../dist/db/index.js");
   const { disposeAllAcp } = await import("../dist/acp/stdio-agent.js");
   const { runScheduledReviewPublicationProbe } = await import("../dist/acp/scheduled-tasks.js");
-  const { rm } = await import("node:fs/promises");
 
   initDb();
+  console.log("[publication-smoke] DB initialized (isolated)");
+
   try {
     const result = await runScheduledReviewPublicationProbe(
       { userId, instanceId, projectId: "invest-agent" },
@@ -37,16 +80,18 @@ try {
       },
     );
     console.log(`[publication-smoke] PASSED: published=${result !== null}`);
+    console.log(`[publication-smoke] 隔离状态根 ${ISOLATION_ROOT} 将被清理`);
     process.exit(0);
   } finally {
     await disposeAllAcp();
   }
 } catch (err) {
-  // codex backend 不可用时明确标注 skipped，不因 crash 退出
-  if (err.message?.includes("ACP") || err.message?.includes("timeout") || err.message?.includes("ECONNREFUSED")) {
-    console.log(`[publication-smoke] SKIPPED: codex backend unavailable (${err.message.slice(0, 80)})`);
-    process.exit(0); // live probe 不可用不阻断（非离线回归）
-  }
   console.error(`[publication-smoke] FAILED: ${err.message}`);
   process.exit(1);
+} finally {
+  // R6: 清理临时状态
+  try {
+    rmSync(ISOLATION_ROOT, { recursive: true, force: true });
+    console.log("[publication-smoke] 临时状态已清理");
+  } catch {}
 }
