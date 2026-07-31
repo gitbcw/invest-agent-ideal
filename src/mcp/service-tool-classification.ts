@@ -15,22 +15,10 @@
 
 export type ServiceToolClass = "read" | "final-action" | "other-write";
 
-/** 43 个服务 MCP 工具的风险分类单一真相。 */
+/** 服务 MCP 工具的风险分类单一真相。 */
 export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
-  // ── read: 行情与市场事实 (12) ──
-  "market.snapshot": "read",
+  // ── read: 历史市场观察记录、研究证据、用户状态 ──
   "market_watch.snapshot": "read",
-  "market.quote": "read",
-  "market.kline": "read",
-  "market.fundamentals": "read",
-  "market.indices": "read",
-  "market.capital_flow": "read",
-  "market.sector_theme": "read",
-  "market.calendar": "read",
-  "market.health": "read",
-  "market.stock_info": "read",
-  "market.resolve": "read",
-  // ── read: 研究证据 (3) ──
   "research.news_search": "read",
   "research.web_search": "read",
   "research.web_read": "read",

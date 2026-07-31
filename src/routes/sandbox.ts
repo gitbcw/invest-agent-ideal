@@ -9,15 +9,12 @@ import { methodChangeBackend } from "../lib/method-change-backend.js";
 import { WorkspaceStore, type OnboardingStepKey, type OnboardingStateYaml, type StrategyYaml } from "../lib/workspace-store.js";
 import { sandboxContextFromRequest, type SandboxPermission } from "../lib/sandbox-context.js";
 import { assertSandboxToolAllowed, type ToolId } from "../platform/tool-registry.js";
-import { resolveStockRefs } from "../services/stock-resolver.js";
 import { buildDailyReviewContext, buildMonthlyReviewContext, buildWeeklyReviewContext, generateDailyReview, saveSkillDailyReview } from "../handlers/review.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, listPendingSandboxConfirmations } from "../lib/sandbox-confirmation.js";
-import { resolveCalendarQueryInstant } from "../lib/market-calendar.js";
 import { enqueuePushJob, getPushJob, processDuePushJobs, type PushBackend } from "../services/push-queue.js";
 import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
-import { marketDataReadCapability, marketSnapshot, type MarketKlinePeriod } from "../services/market-data.js";
 import {
   applyConfirmedOnboardingStep,
   isOnboardingStep as isSharedOnboardingStep,
@@ -51,13 +48,6 @@ function parseJsonText(value: string | null | undefined, fallback: unknown) {
   } catch {
     return fallback;
   }
-}
-
-function splitCodes(value: string | undefined) {
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function serializeHolding(row: Awaited<ReturnType<typeof portfolioBackend.listActive>>[number], userId: string, instanceId: string) {
@@ -307,21 +297,6 @@ async function requireConfirmation(ctx: ReturnType<typeof sandboxContextFromRequ
     message: "删除类操作需要用户二次确认。请向用户确认这次删除；用户确认后，在下一轮请求中带 confirmationId 重试。",
   });
   return true;
-}
-
-async function handleMarketSnapshot(ctx: ReturnType<typeof sandboxContextFromRequest>, body?: { includeCapitalFlow?: boolean }) {
-  const result = await marketSnapshot({
-    userId: ctx.userId,
-    instanceId: ctx.instanceId,
-    includeCapitalFlow: body?.includeCapitalFlow === true,
-  });
-  await audit(ctx, {
-    operation: "market.snapshot",
-    resourceType: "market_data",
-    requestBody: body,
-    resultSummary: `holdings=${result.holdings.length}; watchlist=${result.watchlist.length}; plans=${result.plans.length}; warnings=${result.warnings.length}`,
-  });
-  return result;
 }
 
 const ONBOARDING_STEPS: OnboardingStepKey[] = [
@@ -1155,7 +1130,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     if (missingCodes.length > 0) {
       return reply.status(400).send({
         ok: false,
-        error: "持仓和观察仓写入前必须补齐 6 位证券代码；请先调用 market.resolve 或让用户确认歧义标的后再重试",
+        error: "持仓和观察仓写入前必须补齐 6 位证券代码；请先通过外部数据 MCP 或让用户确认歧义标的后再重试",
         missingCodes,
       });
     }
@@ -1579,16 +1554,14 @@ export function registerSandboxRoutes(app: FastifyInstance) {
 
   app.post<{ Body: { name?: string; code?: string; reason?: string; userId?: string } }>("/api/sandbox/watchlist/add", sandboxMutationSafe("invest.watchlist.write", "watchlist.add", async (ctx, request, reply) => {
     const { name, code, reason } = request.body ?? {};
-    if (!name && !code) return reply.status(400).send({ ok: false, error: "请输入股票名称或代码" });
-    const { codes, unresolved } = await resolveStockRefs([{ code, name }]);
-    if (codes.length === 0) return reply.status(400).send({ ok: false, error: `未找到股票：${unresolved[0]?.name ?? code}` });
+    if (!code) return reply.status(400).send({ ok: false, error: "缺少 6 位股票代码；请先通过外部数据 MCP 或用户确认完成代码解析" });
+    if (!/^\d{6}$/.test(code)) return reply.status(400).send({ ok: false, error: "stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀" });
 
-    const stockCode = codes[0];
+    const stockCode = code;
     const existing = await watchlistBackend.find(ctx.userId, ctx.instanceId, stockCode);
     if (existing) return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: ctx.userId };
 
-    const quoteResult = await marketDataReadCapability.quote([stockCode], ctx.userId);
-    const stockName = quoteResult.items[0]?.name || name || stockCode;
+    const stockName = name || stockCode;
     await watchlistBackend.add(ctx.userId, ctx.instanceId, {
       code: stockCode,
       name: stockName,
@@ -1625,8 +1598,8 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.post<{ Body: { stockCode: string; stockName?: string; support?: number; resistance?: number; targetPrice?: number; stopLoss?: number; notes?: string; watchConditions?: PlanWatchConditionInput[]; linkedAlertRuleIds?: number[]; planType?: string; strategyKey?: string | null; userId?: string } }>("/api/sandbox/plans/set", sandboxMutationSafe("invest.plan.write", "plans.set", async (ctx, request, reply) => {
     const { stockCode, stockName, support, resistance, targetPrice, stopLoss, notes, watchConditions, linkedAlertRuleIds, planType, strategyKey } = request.body ?? {};
     if (!stockCode) return reply.status(400).send({ ok: false, error: "缺少股票代码" });
-    const quoteResult = await marketDataReadCapability.quote([stockCode], ctx.userId);
-    const name = stockName || quoteResult.items[0]?.name || stockCode;
+    if (!/^\d{6}$/.test(stockCode)) return reply.status(400).send({ ok: false, error: "stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀" });
+    const name = stockName || stockCode;
     const existing = await planBackend.find(ctx.userId, ctx.instanceId, stockCode);
     await planBackend.upsert(ctx.userId, ctx.instanceId, {
       code: stockCode,
@@ -1769,134 +1742,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     const { runAlertCheck, formatAlerts } = await import("../scheduler/alert-check.js");
     const items = await runAlertCheck({ force: request.body?.force === true, userId: ctx.userId, instanceId: ctx.instanceId });
     return { ok: true, userId: ctx.userId, count: items.length, alerts: items, text: items.length > 0 ? formatAlerts(items) : "当前无提醒" };
-  }));
-
-  app.get<{ Querystring: { codes?: string } }>("/api/sandbox/market/quote", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
-    const codes = splitCodes(request.query.codes);
-    if (codes.length === 0) return reply.status(400).send({ ok: false, error: "缺少 codes" });
-    const result = await marketDataReadCapability.quote(codes, ctx.userId);
-    await audit(ctx, {
-      operation: "market.quote",
-      resourceType: "market_data",
-      requestBody: { codes },
-      resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-    });
-    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, updatedAt: new Date().toISOString(), ...result };
-  }));
-
-  app.get<{ Querystring: { code?: string; period?: string; count?: string; startDate?: string; endDate?: string } }>("/api/sandbox/market/kline", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
-    const code = request.query.code?.trim();
-    if (!code) return reply.status(400).send({ ok: false, error: "缺少 code" });
-    const period = request.query.period === "m5" ? "m5" : "day";
-    const result = await marketDataReadCapability.kline({
-      code,
-      period: period as MarketKlinePeriod,
-      count: request.query.count ? Number(request.query.count) : undefined,
-      startDate: request.query.startDate,
-      endDate: request.query.endDate,
-    }, ctx.userId);
-    await audit(ctx, {
-      operation: "market.kline",
-      resourceType: "market_data",
-      resourceId: code,
-      requestBody: request.query,
-      resultSummary: `period=${result.period}; count=${result.items.length}`,
-    });
-    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, updatedAt: new Date().toISOString(), result };
-  }));
-
-  app.get("/api/sandbox/market/indices", sandboxSafe("invest.market.read", async (ctx) => {
-    const result = await marketDataReadCapability.indices(ctx.userId);
-    await audit(ctx, {
-      operation: "market.indices",
-      resourceType: "market_data",
-      resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-    });
-    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, updatedAt: new Date().toISOString(), ...result };
-  }));
-
-  app.get<{ Querystring: { codes?: string } }>("/api/sandbox/market/capital-flow", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
-    const codes = splitCodes(request.query.codes);
-    if (codes.length === 0) return reply.status(400).send({ ok: false, error: "缺少 codes" });
-    const result = await marketDataReadCapability.capitalFlow(codes, ctx.userId);
-    await audit(ctx, {
-      operation: "market.capital_flow",
-      resourceType: "market_data",
-      requestBody: { codes },
-      resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-    });
-    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, updatedAt: new Date().toISOString(), ...result };
-  }));
-
-  app.get<{ Querystring: { codes?: string } }>("/api/sandbox/market/sector-theme", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
-    const codes = splitCodes(request.query.codes);
-    if (codes.length === 0) return reply.status(400).send({ ok: false, error: "缺少 codes" });
-    const result = await marketDataReadCapability.sectorTheme(codes, ctx.userId);
-    await audit(ctx, {
-      operation: "market.sector_theme",
-      resourceType: "market_data",
-      requestBody: { codes },
-      resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-    });
-    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, updatedAt: new Date().toISOString(), ...result };
-  }));
-
-  app.get<{ Querystring: { codes?: string; days?: string } }>("/api/sandbox/market/stock-info", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
-    const codes = splitCodes(request.query.codes);
-    if (codes.length === 0) return reply.status(400).send({ ok: false, error: "缺少 codes" });
-    const result = await marketDataReadCapability.stockInfo(codes.map((code) => ({ code })), {
-      days: request.query.days ? Number(request.query.days) : undefined,
-    }, ctx.userId);
-    await audit(ctx, {
-      operation: "market.stock_info",
-      resourceType: "market_data",
-      requestBody: request.query,
-      resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-    });
-    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, updatedAt: new Date().toISOString(), ...result };
-  }));
-
-  app.get<{ Querystring: { keyword?: string } }>("/api/sandbox/market/resolve", sandboxSafe("invest.market.read", async (ctx, request, reply) => {
-    const keyword = request.query.keyword?.trim();
-    if (!keyword) return reply.status(400).send({ ok: false, error: "缺少 keyword" });
-    const result = await marketDataReadCapability.resolve(keyword, ctx.userId);
-    await audit(ctx, {
-      operation: "market.resolve",
-      resourceType: "market_data",
-      requestBody: { keyword },
-      resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-    });
-    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, updatedAt: new Date().toISOString(), ...result };
-  }));
-
-  app.post<{ Body: { includeCapitalFlow?: boolean } }>("/api/sandbox/market/snapshot", sandboxSafe("invest.market.read", async (ctx, request) => {
-    return handleMarketSnapshot(ctx, request.body);
-  }));
-
-  app.get<{ Querystring: { includeCapitalFlow?: string } }>("/api/sandbox/market/snapshot", sandboxSafe("invest.market.read", async (ctx, request) => {
-    return handleMarketSnapshot(ctx, { includeCapitalFlow: request.query.includeCapitalFlow === "true" });
-  }));
-
-  app.get("/api/sandbox/market/health", sandboxSafe("invest.market.read", async (ctx) => {
-    const result = await marketDataReadCapability.health();
-    await audit(ctx, {
-      operation: "market.health",
-      resourceType: "market_data",
-      resultSummary: `endpoints=${result.endpoints.length}; failed=${result.endpoints.filter((e) => e.lastStatus === "fail").length}`,
-    });
-    return { ...result, userId: ctx.userId, instanceId: ctx.instanceId };
-  }));
-
-  app.get<{ Querystring: { date?: string } }>("/api/sandbox/market/calendar", sandboxSafe("invest.market.read", async (ctx, request) => {
-    const date = resolveCalendarQueryInstant(request.query.date);
-    const result = await marketDataReadCapability.calendar(date, ctx.userId);
-    await audit(ctx, {
-      operation: "market.calendar",
-      resourceType: "market_data",
-      requestBody: request.query,
-      resultSummary: `date=${result.dateKey}; tradingDay=${result.isTradingDay}; session=${result.session}`,
-    });
-    return { ok: true, userId: ctx.userId, instanceId: ctx.instanceId, updatedAt: new Date().toISOString(), result };
   }));
 
   app.post("/api/sandbox/alerts/check-and-push", sandboxSafe(["invest.alert.check", "push.weixin.send"], async (ctx, request) => {

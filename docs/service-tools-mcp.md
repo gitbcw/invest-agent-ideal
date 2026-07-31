@@ -38,22 +38,11 @@ Codex ACP receives an explicit MCP child-process environment. The wiring must ca
 
 Read tools:
 
-- Legacy service-owned `market.*` facade tools are still part of the service MCP contract, but an ACP runtime can hide them with `INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED=false`. This is used while shifting market/provider facts to external read-only data MCP servers. `market_watch.snapshot` remains available because it is scheduler-window audit/comparison evidence, not a live market-data facade.
-- `market.snapshot`
-- `market_watch.snapshot`（当前 user/instance 最近一次 scheduler 盘中快照及有效变化标记；定时简报可将其作为审计/比较输入，而非唯一行情来源）
-- `market.quote`
-- `market.kline`
-- `market.fundamentals`
+- Service-owned `market.*` facade tools are retired and archived under `docs/archive/service-market-data-retirement-2026-07-31/`. ACP market/provider facts should come from the external `market-data-tool` MCP discovered through the normal MCP manifest.
+- `market_watch.snapshot`（当前 user/instance 最近一次 scheduler 盘中历史快照及有效变化标记；只读历史审计/比较输入，不是实时行情来源）
 - `research.news_search`：当结构化服务数据或个股证据不足时，按关键词检索公开财经新闻；返回媒体、发布时间、链接、抓取时间和 warning，仅作为二级证据，不能填充缺失行情或财报字段。
 - `research.web_search`：通用公开网页检索，用于专业数据和财经新闻工具未覆盖的长尾问题；返回排名、标题、摘要、URL、provider、抓取时间和 warning。摘要只用于发现来源，必须继续读取原文核验。provider 链按确定性顺序：配置 `DOUBAO_SEARCH_API_KEY`（且未用 `DOUBAO_SEARCH_ENABLED=false` 关闭）时优先使用豆包搜索 Custom，无可用结果或失败时回退到自建 SearXNG JSON 后端（`EXTERNAL_WEB_SEARCH_SEARXNG_URL`）；两者都未配置时使用低置信度搜狗结果页。回退只用于发现来源，不表示 SearXNG “验证”或“修正”了豆包结果；MCP 输出、审计和遥测中始终保留实际命中的 provider 身份。
 - `research.web_read`：读取搜索所得的公开 HTTP(S) 页面并返回清洗正文；拒绝凭据 URL、本机/内网/保留地址和非文本内容，逐跳校验重定向，并限制超时、响应大小和最大字符数。它不是任意 HTTP 代理或文件下载器。
-- `market.indices`
-- `market.capital_flow`
-- `market.sector_theme`
-- `market.calendar`
-- `market.health`
-- `market.stock_info`
-- `market.resolve`
 - `portfolio.read`
 - `watchlist.read`
 - `plans.read`
@@ -129,10 +118,9 @@ The probe does not collect market data or enqueue a push. It opens an isolated s
 Expected checks:
 
 - TypeScript build passes.
-- Core tools can read portfolio, watchlist, plans, conversation history, pending confirmations, market snapshot, quotes, K-lines, indices, market calendar, market health, and watch-rule catalog/list/validate.
+- Core tools can read portfolio, watchlist, plans, conversation history, pending confirmations, historical market-watch snapshots, research evidence, and watch-rule catalog/list/validate.
 - Stdio MCP protocol exposes all required read/write tools.
 - A restricted stdio MCP session exposes only its allowlisted tools.
-- `market.snapshot` returns usable holdings/watchlist/plan facts without relying on shell network access.
 - General web tools are discoverable through MCP, page reads cannot reach local/private addresses, and search/page results preserve final URL, fetch time, provider and warnings.
 - Durable writes reject missing, expired, replayed, cross-scope, payload-mismatched, or stale-revision confirmations. Portfolio writes also reject unresolved watchlist transitions and complete allocations that do not total 100%.
 - Scheduled `reviews.save` accepts only the trusted scheduler conversation scope, preserves full report and push brief separately, appends optional decision/source records, and keeps manual unconfirmed saves rejected.

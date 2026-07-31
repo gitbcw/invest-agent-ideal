@@ -1,4 +1,4 @@
-import type { StockKline } from "./stock.js";
+import type { StockKline } from "./market-types.js";
 import { createIndicatorCapability } from "../capabilities/indicators/capability.js";
 import type { IndicatorCapabilityContract } from "../capabilities/indicators/contract.js";
 

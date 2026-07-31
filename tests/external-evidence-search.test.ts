@@ -437,7 +437,7 @@ test("both providers unavailable returns no items and stable, non-secret warning
 });
 
 test("provider registry accepts and emits doubao_web_search metadata", async () => {
-  const { getProvider } = await import("../src/services/market-data-providers.js");
+  const { getProvider } = await import("../src/services/source-telemetry.js");
   const meta = getProvider("doubao_web_search");
   assert.equal(meta.runtimeProvider, "web");
   assert.equal(meta.confidence, "medium");

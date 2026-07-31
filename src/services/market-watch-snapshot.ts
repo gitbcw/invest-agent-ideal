@@ -1,24 +1,13 @@
-import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { marketWatchSnapshots } from "../db/schema.js";
-import { marketSnapshot, type MarketSnapshot, type MarketSnapshotItem } from "./market-data.js";
+import type { MarketSnapshot, MarketSnapshotItem } from "./market-types.js";
 
-export async function captureMarketWatchSnapshot(input: { userId: string; projectId: string; instanceId: string; windowKey: string }) {
-  // WP7: 冻结写入。market-watch 新路径 (WP4) 已不再预抓取 snapshot; 这里阻止即使
-  // flag=true 旧路径或未知调用方写入新行。历史数据保留,读取入口仍可用 (deprecated)。
-  // 恢复写入设 MARKET_WATCH_SNAPSHOT_FREEZE=false。
-  if (process.env.MARKET_WATCH_SNAPSHOT_FREEZE !== "false") {
-    return null;
-  }
-  const snapshot = await marketSnapshot({ userId: input.userId, instanceId: input.instanceId });
-  const previous = await latestMarketWatchSnapshot(input.userId, input.instanceId);
-  const delta = buildMarketWatchDelta(snapshot, previous?.snapshot ?? null, previous?.windowKey ?? null);
-  const tradingDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
-  const now = new Date().toISOString();
-  const record = { id: randomUUID(), ...input, capturedAt: snapshot.updatedAt, snapshot, delta, createdAt: now };
-  await db.insert(marketWatchSnapshots).values({ id: record.id, userId: input.userId, projectId: input.projectId, instanceId: input.instanceId, tradingDate, windowKey: input.windowKey, capturedAt: record.capturedAt, snapshotJson: JSON.stringify(snapshot), deltaJson: JSON.stringify(delta), createdAt: now });
-  return record;
+export async function captureMarketWatchSnapshot(_input: { userId: string; projectId: string; instanceId: string; windowKey: string }) {
+  // Retired with the service-owned market-data facade. Historical rows remain
+  // readable through latestMarketWatchSnapshot, but the service no longer
+  // collects live market snapshots or calls bundled providers.
+  return null;
 }
 
 /**

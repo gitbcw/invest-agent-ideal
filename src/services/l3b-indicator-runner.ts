@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { logger } from "../lib/logger.js";
 import { ScriptIndicatorEngine } from "./script-indicator-engine.js";
 import type { IndicatorContext, IndicatorResult } from "./sandbox-runtime.js";
-import type { StockKline } from "./stock.js";
+import type { StockKline } from "./market-types.js";
 
 export interface L3bTriggeredItem {
   registryKey: string;

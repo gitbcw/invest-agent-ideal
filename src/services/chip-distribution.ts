@@ -1,4 +1,4 @@
-import type { StockKline } from "./stock.js";
+import type { StockKline } from "./market-types.js";
 
 /**
  * 筹码分布模型(基于换手率衰减)

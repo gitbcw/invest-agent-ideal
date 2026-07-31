@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { parse } from "node-html-parser";
-import { withSourceEvent, type ProviderName } from "./market-data-providers.js";
+import { withSourceEvent, type ProviderName } from "./source-telemetry.js";
 import { createResearchCapability } from "../capabilities/research/capability.js";
 import type { ResearchCapabilityContract } from "../capabilities/research/contract.js";
 

@@ -7,8 +7,8 @@ import { dryRunWatchRule, type WatchRuleRecord } from "../src/services/watch-rul
  * WP5/F4: 窄价格事实接口测试。
  *
  * F4: toRulePriceFact 现在接收 StockQuote + provider 参数（脱离 marketDataReadCapability）。
- * getRulePrices 直接组合 getQuote + getSinaQuote（需网络），这里用导出的纯函数
- * toRulePriceFact 覆盖映射逻辑; evaluatePriceCrossFromFact 通过 dryRunWatchRule(rule, fact) 注入测试。
+ * 服务自有行情 provider 已退役；toRulePriceFact 保留纯映射逻辑，
+ * evaluatePriceCrossFromFact 通过 dryRunWatchRule(rule, fact) 注入测试。
  */
 
 function makeQuote(overrides: Partial<{ price: number | null; time: string }> = {}) {
@@ -165,8 +165,8 @@ test("F4: rule-price-facts does not import marketDataReadCapability", () => {
     !importLines.some((l) => l.includes("marketDataReadCapability")),
     "rule-price-facts must not import marketDataReadCapability",
   );
-  assert.ok(source.includes("getQuote"), "rule-price-facts uses getQuote (tencent) directly");
-  assert.ok(source.includes("getSinaQuote"), "rule-price-facts uses getSinaQuote (fallback) directly");
+  assert.ok(!source.includes("from \"./stock.js\""), "rule-price-facts must not import retired stock providers");
+  assert.ok(source.includes("market_data_provider_retired"), "retired provider failure code is explicit");
 });
 
 test("F4: rule-price-facts has TTL cache", () => {

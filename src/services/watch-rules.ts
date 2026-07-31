@@ -2,7 +2,6 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { alertRules } from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
-import { marketDataReadCapability } from "./market-data.js";
 import { getRulePrices, type RulePriceFact } from "./rule-price-facts.js";
 
 // WP8: 8 类非价格规则已退役删除。只剩 price_cross。
@@ -393,61 +392,13 @@ export async function dryRunWatchRuleById(id: number, userId = DEFAULT_USER_ID, 
 }
 
 export async function dryRunWatchRule(rule: WatchRuleRecord, priceFact?: RulePriceFact | null): Promise<DryRunWatchRuleResult> {
-  // WP5: price_cross 优先走窄事实接口 (脱离完整 marketDataReadCapability)。
-  // flag=true 回切旧 quote 路径;priceFact===undefined (未传参) 时内部自取 (单条 dry-run)。
-  // priceFact===null 表示调用方明确表示无可用 fact (如批量预取缺失),不触网。
-  if (rule.ruleType === "price_cross" && process.env.WATCH_RULES_LEGACY_PRICE_QUOTE !== "true") {
+  if (rule.ruleType === "price_cross") {
     const fact = priceFact === undefined
       ? (await getRulePrices([rule.stockCode])).get(rule.stockCode) ?? null
       : priceFact;
     return evaluatePriceCrossFromFact(rule, fact);
   }
 
-  const quoteResult = await marketDataReadCapability.quote([rule.stockCode]);
-  const quote = quoteResult.items[0];
-  if (!quote) {
-    return {
-      ok: true,
-      triggered: false,
-      rule,
-      facts: {
-        warnings: quoteResult.warnings,
-      },
-      reason: quoteResult.warnings.length > 0
-        ? `当前无法获取行情：${quoteResult.warnings.join("；")}`
-        : "当前无法获取行情",
-    };
-  }
-  const quoteFacts = {
-    marketTime: quote.source.marketTime,
-    fetchedAt: quote.source.fetchedAt,
-    sourceProvider: quote.source.provider,
-    sourceConfidence: quote.source.confidence,
-    stale: quote.source.stale,
-    warnings: [...quoteResult.warnings, ...quote.source.warnings],
-  };
-
-  if (rule.ruleType === "price_cross") {
-    const operator = String(rule.params.operator);
-    const value = Number(rule.params.value);
-    const triggered = operator === ">=" ? quote.price >= value : quote.price <= value;
-    return {
-      ok: true,
-      triggered,
-      rule,
-      facts: {
-        currentPrice: quote.price,
-        operator,
-        threshold: value,
-        ...quoteFacts,
-      },
-      reason: triggered
-        ? `${rule.stockName} 当前价格 ${quote.price} 已满足 ${operator} ${value}`
-        : `${rule.stockName} 当前价格 ${quote.price} 未满足 ${operator} ${value}`,
-    };
-  }
-
-  // WP8: 8 类非价格规则已退役删除。price_cross 是唯一规则类型,不会到达此处。
   return {
     ok: true,
     triggered: false,

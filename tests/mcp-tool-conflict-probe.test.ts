@@ -56,18 +56,18 @@ test("no conflict when servers have distinct tool names", async () => {
 
 test("conflict detected when two servers share a tool name", async () => {
   const servers = [
-    makeFixtureServer("service-tools", ["market.quote", "portfolio.read"]),
-    makeFixtureServer("external-mcp", ["market.quote", "research.search"]),
+    makeFixtureServer("service-tools", ["shared.lookup", "portfolio.read"]),
+    makeFixtureServer("external-mcp", ["shared.lookup", "research.search"]),
   ];
   const report = await probeToolConflicts(servers);
   assert.equal(report.conflicts.length, 1);
-  assert.equal(report.conflicts[0].toolName, "market.quote");
+  assert.equal(report.conflicts[0].toolName, "shared.lookup");
   assert.deepEqual(report.conflicts[0].servers.sort(), ["external-mcp", "service-tools"]);
 });
 
 test("shouldBlockSessionOnConflict blocks on any conflict (fail closed)", () => {
   const reportWithConflict: ToolConflictReport = {
-    conflicts: [{ toolName: "market.quote", servers: ["a", "b"] }],
+    conflicts: [{ toolName: "shared.lookup", servers: ["a", "b"] }],
     serverTools: new Map(),
     failedServers: new Map(),
   };
@@ -145,7 +145,7 @@ test("session assembly drops an external server when only its probe fails", asyn
     args: ["-e", "process.exit(1)"],
     env: [],
   };
-  const service = makeFixtureServer("invest-agent-service-tools", ["market.quote"]);
+  const service = makeFixtureServer("invest-agent-service-tools", ["shared.lookup"]);
   const resolved = await checkToolConflictsBeforeSession("test", [service, failedExternal]);
   assert.deepEqual(resolved.map((server) => server.name), ["invest-agent-service-tools"]);
 });

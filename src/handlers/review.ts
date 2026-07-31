@@ -2,11 +2,9 @@ import { db } from "../db/index.js";
 import { alertEvents } from "../db/schema.js";
 import { settings } from "../db/schema.js";
 import { eq, desc, gte, lte, and } from "drizzle-orm";
-import { marketDataReadCapability, type MarketSourceMeta } from "../services/market-data.js";
-import type { StockKline, StockQuote } from "../services/stock.js";
+import type { MarketSourceMeta, StockKline, StockQuote } from "../services/market-types.js";
 import { indicatorCapability } from "../services/indicators.js";
 import { callDeepSeek } from "../services/deepseek.js";
-import { getStockInfoBatch, formatStockInfoForReview } from "../services/stock-news.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { portfolioBackend, watchlistBackend, planBackend, isWorkspaceBackend } from "../lib/data-backend.js";
@@ -215,51 +213,47 @@ function collectSourceQuality(
   }
 }
 
+function retiredMarketSource(label: string): MarketSourceMeta {
+  const now = new Date().toISOString();
+  return {
+    provider: "external_market_data_mcp",
+    endpoint: "external MCP discovery",
+    fetchedAt: now,
+    marketTime: null,
+    confidence: "low",
+    stale: true,
+    warnings: [`${label}:service_market_data_retired`],
+  };
+}
+
 async function reviewKlines(
-  code: string,
-  count: number,
-  userId: string,
-  options: { startDate?: string; endDate?: string } = {},
+  _code: string,
+  _count: number,
+  _userId: string,
+  _options: { startDate?: string; endDate?: string } = {},
 ): Promise<StockKline[]> {
-  const result = await marketDataReadCapability.kline({
-    code,
-    period: "day",
-    count,
-    startDate: options.startDate,
-    endDate: options.endDate,
-  }, userId);
-  return result.items as StockKline[];
+  return [];
 }
 
 async function reviewKlinesResult(
   code: string,
-  count: number,
-  userId: string,
-  options: { startDate?: string; endDate?: string } = {},
-) {
-  return marketDataReadCapability.kline({
-    code,
-    period: "day",
-    count,
-    startDate: options.startDate,
-    endDate: options.endDate,
-  }, userId);
+  _count: number,
+  _userId: string,
+  _options: { startDate?: string; endDate?: string } = {},
+): Promise<{ items: StockKline[]; warnings: string[]; source: MarketSourceMeta }> {
+  return {
+    items: [],
+    warnings: ["service_market_data_retired"],
+    source: retiredMarketSource(`${code}日K`),
+  };
 }
 
-async function reviewQuote(code: string, userId: string): Promise<StockQuote | undefined> {
-  const result = await marketDataReadCapability.quote([code], userId);
-  if (result.warnings.length > 0) {
-    logger.warn(`复盘行情数据不完整 user=${userId} code=${code}: ${result.warnings.join(";")}`);
-  }
-  return result.items[0];
+async function reviewQuote(_code: string, _userId: string): Promise<StockQuote | undefined> {
+  return undefined;
 }
 
-async function reviewQuoteResult(code: string, userId: string) {
-  const result = await marketDataReadCapability.quote([code], userId);
-  if (result.warnings.length > 0) {
-    logger.warn(`复盘行情数据不完整 user=${userId} code=${code}: ${result.warnings.join(";")}`);
-  }
-  return result;
+async function reviewQuoteResult(_code: string, _userId: string): Promise<{ items: StockQuote[]; warnings: string[] }> {
+  return { items: [], warnings: ["service_market_data_retired"] };
 }
 
 async function reviewMarketIndexLines(input: {
@@ -287,11 +281,7 @@ async function reviewMarketIndexLines(input: {
       }
       return lines;
     }
-    const indices = await marketDataReadCapability.indices(input.userId);
-    if (indices.warnings.length > 0) {
-      logger.warn(`复盘指数数据不完整 user=${input.userId}: ${indices.warnings.join(";")}`);
-    }
-    return indices.items.map((i) => `${i.name} ${i.price} ${i.changePercent >= 0 ? "+" : ""}${i.changePercent}%`);
+    return ["大盘指数数据已交由外部数据 MCP 获取，服务层不再预取。"];
   } catch {
     return ["大盘指数数据获取失败"];
   }
@@ -325,12 +315,8 @@ async function reviewMarketIndexData(input: {
       }
       return lines;
     }
-    const indices = await marketDataReadCapability.indices(input.userId);
-    if (indices.warnings.length > 0) {
-      logger.warn(`复盘指数数据不完整 user=${input.userId}: ${indices.warnings.join(";")}`);
-    }
-    for (const index of indices.items) collectSourceQuality(input.sourceQuality, "大盘指数", index.source);
-    return indices.items.map((i) => `${i.name} ${i.price} ${i.changePercent >= 0 ? "+" : ""}${i.changePercent}%`);
+    collectSourceQuality(input.sourceQuality, "大盘指数", retiredMarketSource("大盘指数"));
+    return ["大盘指数数据已交由外部数据 MCP 获取，服务层不再预取。"];
   } catch {
     collectSourceQuality(input.sourceQuality, "大盘指数", null, "获取失败");
     return ["大盘指数数据获取失败"];
@@ -516,9 +502,7 @@ export async function buildDailyReviewContext(options: { targetDate?: string; us
   let infoFilterText = "暂无重大信息。";
   if (template.sections.info_filter.enabled) {
     try {
-      const stockList = [...allCodes.entries()].map(([code, meta]) => ({ code, name: meta.name }));
-      const infos = await getStockInfoBatch(stockList, 3, 3, isHistorical ? today : undefined);
-      infoFilterText = formatStockInfoForReview(infos);
+      infoFilterText = "个股公告/新闻证据已交由外部数据 MCP 获取，服务层不再预取。";
     } catch {
       infoFilterText = "信息面数据获取失败，请人工确认。";
     }
@@ -1371,9 +1355,7 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
   let infoFilterText = "暂无重大信息。";
   if (template.sections.info_filter.enabled) {
     try {
-      const stockList = [...allCodes.entries()].map(([code, meta]) => ({ code, name: meta.name }));
-      const infos = await getStockInfoBatch(stockList, 3, 3, isHistorical ? today : undefined);
-      infoFilterText = formatStockInfoForReview(infos);
+      infoFilterText = "个股公告/新闻证据已交由外部数据 MCP 获取，服务层不再预取。";
     } catch {
       infoFilterText = "信息面数据获取失败，请人工确认。";
     }

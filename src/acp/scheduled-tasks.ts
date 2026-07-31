@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
 import { recordAcpTrace } from "./trace.js";
@@ -16,10 +15,6 @@ import { WorkspaceStore } from "../lib/workspace-store.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { periodicReviewBackend } from "../lib/periodic-review-backend.js";
-import { captureMarketWatchSnapshot } from "../services/market-watch-snapshot.js";
-import { db } from "../db/index.js";
-import { sandboxAuditLogs } from "../db/schema.js";
-import type { MarketSnapshot } from "../services/market-data.js";
 import {
   buildDailyReviewContext,
   buildMonthlyReviewContext,
@@ -32,16 +27,6 @@ import {
 const SCHEDULED_ACP_TIMEOUT_MS =
   Number(process.env.SCHEDULED_ACP_TIMEOUT_MS) || 600_000;
 
-/**
- * WP4: 预编排 feature flag。
- *
- * 新路径 (flag=false, 默认) 把开放研究完全交还 ACP 与 Workspace Skills：
- * market-watch 不约束工具/不预抓取/不审计纠偏/不兜底；review 不预聚合注入/不禁工具。
- * flag=true 保留旧编排,可灰度回切。flag 读取统一用 `=== "true"`,与 ACP_EVAL_* 一致。
- */
-export function isLegacyMarketWatchOrch(): boolean {
-  return process.env.SCHEDULED_MARKET_WATCH_LEGACY_ORCH === "true";
-}
 
 export function isLegacyReviewOrch(): boolean {
   return process.env.SCHEDULED_REVIEW_LEGACY_ORCH === "true";
@@ -62,33 +47,6 @@ export interface ScheduledReviewPublicationProbeInput {
 
 type ScheduledReviewKind = "daily" | "weekly" | "monthly";
 type MarketWatchPushMode = "exception_only" | "scheduled_intraday_brief";
-const MARKET_WATCH_ALLOWED_TOOLS = [
-  "market_watch.snapshot",
-  "market.snapshot",
-  "market.quote",
-  "market.indices",
-  "market.kline",
-  "market.capital_flow",
-  "market.sector_theme",
-  "market.stock_info",
-  "market.calendar",
-  "market.health",
-  "watch_rules.list",
-  "watch_rules.dry_run",
-];
-
-// Calendar and health describe the availability of a market session or source,
-// but neither supplies the market facts a scheduled brief is required to use.
-export const MARKET_WATCH_FACT_TOOLS = [
-  "market_watch.snapshot",
-  "market.snapshot",
-  "market.quote",
-  "market.indices",
-  "market.kline",
-  "market.capital_flow",
-  "market.sector_theme",
-  "market.stock_info",
-] as const;
 
 /**
  * Single-purpose acceptance probe for the scheduled review publication step.
@@ -180,10 +138,6 @@ export async function runScheduledReviewPublicationProbe(
 export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
   const pushMode = await resolveMarketWatchPushMode(scope.userId);
 
-  if (isLegacyMarketWatchOrch()) {
-    return runLegacyMarketWatchTask(scope, pushMode);
-  }
-
   // WP4 新路径: 开放研究完全交还 ACP。不约束工具 (ACP 自由选任意已启用只读 MCP)、
   // 不预抓取 snapshot、不审计纠偏、不矛盾检测、不兜底。只处理精确 NO_PUSH 或可投递正文。
   const userContext = { ...await buildScheduledUserContext(scope, "market-watch"), taskType: "scheduled-market-watch" };
@@ -204,90 +158,6 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
   // NO_PUSH 一律 return null (无兜底简报); 空正文也 return null
   if (!cleaned || cleaned === "NO_PUSH") return null;
   return cleaned;
-}
-
-/**
- * 旧 market-watch 编排 (flag=true 时): snapshot 预抓取 + 具名行情审计 + 纠偏重跑
- * + 文本/快照矛盾检测 + 固定简报模式兜底。保留用于灰度回切。
- */
-async function runLegacyMarketWatchTask(scope: ScheduledScope, pushMode: MarketWatchPushMode): Promise<string | null> {
-  const userContext = {
-    ...await buildScheduledUserContext(scope, "market-watch"),
-    mcpAllowedTools: MARKET_WATCH_ALLOWED_TOOLS,
-  };
-  const windowKey = new Date().toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
-  const captured = await captureMarketWatchSnapshot({ userId: userContext.userId, projectId: userContext.projectId || DEFAULT_PROJECT_ID, instanceId: userContext.instanceId || DEFAULT_INSTANCE_ID, windowKey });
-  const promptContext = await buildAcpPromptContext({
-    userText: buildMarketWatchTaskPrompt(userContext, pushMode),
-    userContext,
-  });
-  let reply = await runAcpTask({
-    userContext,
-    promptText: promptContext.promptText,
-    conversationId: userContext.conversationId!,
-    messageId: randomUUID(),
-    mode: "scheduled-market-watch",
-    sandboxTokenId: promptContext.sandboxContext.tokenId,
-    sandboxPermissions: promptContext.sandboxContext.permissions,
-  });
-  if (!await readMarketWatchFactsWereAudited(userContext)) {
-    reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "上一轮没有通过任何具名行情工具取得本轮市场事实。现在必须调用至少一个行情事实工具，再依据实际返回结果重写简报。");
-  }
-  if (!await readMarketWatchFactsWereAudited(userContext)) {
-    throw new Error("scheduled market-watch did not read current facts through a named market MCP tool");
-  }
-  // WP7: snapshot 写入冻结后 captured 为 null,旧路径的矛盾检测跳过 (无快照可比)
-  if (captured && marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
-    reply = await runMarketWatchCorrection(userContext, pushMode, promptContext, "调度器已采集到有效实时行情，但上一版正文仍声称行情不可用。请通过具名行情工具核实本轮事实后重写；不得沿用昨日行情，也不得把可用事实写成不可用。 ");
-  }
-  if (captured && marketWatchReplyClaimsMissingData(reply, captured.snapshot)) {
-    throw new Error("scheduled market-watch reply contradicts a usable captured snapshot");
-  }
-  const cleaned = sanitizeScheduledReply(reply);
-  if (!cleaned) return null;
-  if (cleaned === "NO_PUSH") {
-    if (pushMode === "scheduled_intraday_brief") {
-      logger.warn(`固定盘中简报返回 NO_PUSH，改用兜底简报 user=${userContext.userId} instance=${userContext.instanceId}`);
-      return buildMarketWatchFallbackBrief();
-    }
-    return null;
-  }
-  return cleaned;
-}
-
-async function runMarketWatchCorrection(
-  userContext: UserContext,
-  pushMode: MarketWatchPushMode,
-  promptContext: Awaited<ReturnType<typeof buildAcpPromptContext>>,
-  correction: string,
-) {
-  return runAcpTask({
-    userContext,
-    promptText: [buildMarketWatchTaskPrompt(userContext, pushMode), correction].join("\n"),
-    conversationId: userContext.conversationId!,
-    messageId: randomUUID(),
-    mode: "scheduled-market-watch",
-    sandboxTokenId: promptContext.sandboxContext.tokenId,
-    sandboxPermissions: promptContext.sandboxContext.permissions,
-  });
-}
-
-export async function readMarketWatchFactsWereAudited(userContext: UserContext) {
-  const [audit] = await db.select({ id: sandboxAuditLogs.id }).from(sandboxAuditLogs).where(and(
-    eq(sandboxAuditLogs.userId, userContext.userId),
-    eq(sandboxAuditLogs.instanceId, userContext.instanceId || DEFAULT_INSTANCE_ID),
-    eq(sandboxAuditLogs.conversationId, userContext.conversationId || ""),
-    inArray(sandboxAuditLogs.operation, [...MARKET_WATCH_FACT_TOOLS]),
-    eq(sandboxAuditLogs.status, "success"),
-  )).limit(1);
-  return Boolean(audit);
-}
-
-export function marketWatchReplyClaimsMissingData(reply: string, snapshot: MarketSnapshot) {
-  const hasUsableQuote = [...snapshot.holdings, ...snapshot.watchlist, ...snapshot.plans]
-    .some((item) => item.quote && !["stale", "invalid", "unknown"].includes(item.quote.tradingStatus.status));
-  if (!hasUsableQuote) return false;
-  return /(?:实时行情|行情快照|本轮行情).{0,12}(?:不可用|未返回|缺失|未获得)/.test(reply);
 }
 
 export async function runScheduledReviewTask(scope: ScheduledScope, kind: ScheduledReviewKind): Promise<string | null> {
@@ -588,15 +458,6 @@ export function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: M
     "这条内容会直接作为微信消息发送给用户。不要提到 Codex、Hermes、ACP、workspace、sandbox、curl、接口、后台任务或本地路径。",
     `当前用户: ${userContext.userId}`,
     `当前实例: ${userContext.instanceId}`,
-  ].join("\n");
-}
-
-function buildMarketWatchFallbackBrief() {
-  return [
-    "【盘中简报】",
-    "本轮未检测到需要立即确认的 P0 级风险或明确买卖区触发。",
-    "当前按固定盘中简报规则推送：普通波动先观察，不追涨杀跌；如后续接近关键区间、出现重大公告或核心逻辑变化，再单独提醒。",
-    "是否需要操作：暂不需要。",
   ].join("\n");
 }
 

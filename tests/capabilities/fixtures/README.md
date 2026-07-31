@@ -57,12 +57,10 @@ Applied to every baseline before commit, and required of any future fixture adde
    envelope only — never raw provider HTML/JSON, internal network addresses, or
    credential-bearing URLs. `research.web_read` provenance keeps only the final
    public URL, content-type and character count.
-6. **No real holdings.** `market.snapshot` is intentionally NOT captured here: it
-   aggregates user portfolio/watchlist/plans and stays a Core-Service orchestration,
-   not a capability fixture (see plan §1A.3).
+6. **No real holdings.** User portfolio/watchlist/plans remain service state and are not captured in capability fixtures.
 
 ## Out of scope for WP0
 
 - Wiring these into a runner or `npm test` (that is WP1/WP2/WP6).
-- Capturing `market.snapshot` or any user-state-dependent output.
+- Capturing user-state-dependent output.
 - Live provider golden values (live probes must not be frozen as永远正确).

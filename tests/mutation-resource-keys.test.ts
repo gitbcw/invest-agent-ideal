@@ -27,5 +27,5 @@ test("review locks are date-scoped while unrelated research stays unlocked", () 
     mutationResourceKeysForOperation("reviews.save", { kind: "monthly", reportKey: "2026-07" }),
     ["monthly-review:2026-07"],
   );
-  assert.deepEqual(mutationResourceKeysForOperation("market.quote", { codes: ["600519"] }), []);
+  assert.deepEqual(mutationResourceKeysForOperation("research.web_search", { query: "600519" }), []);
 });

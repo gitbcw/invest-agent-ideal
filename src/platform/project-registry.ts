@@ -54,7 +54,6 @@ export const ALLOWED_SANDBOX_TOOLS = [
   "invest.onboarding.write",
   "invest.review.read",
   "invest.review.write",
-  "invest.market.read",
   "invest.alert.read",
   "invest.alert.write",
   "invest.alert.check",

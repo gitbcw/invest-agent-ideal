@@ -1,19 +1,18 @@
 /**
  * 窄价格事实接口 (WP5/F4)
  *
- * 让价格阈值规则 (price_cross) 脱离完整 marketDataReadCapability 和 ACP。
- * F4: 直接组合腾讯主源 (getQuote) + 新浪 fallback (getSinaQuote)，不再导入
- * marketDataReadCapability（不继承其 telemetry/crossCheck/sourceMeta 生命周期）。
+ * 价格阈值规则 (price_cross) 的窄事实接口。
+ *
+ * 服务自有行情 provider 已退役；这里不再直连腾讯/新浪或完整 market facade。
+ * 后续若规则引擎需要恢复实时价格，应接入外部数据 MCP 的受控规则取价能力。
  *
  * 设计要点:
- *   - 独立 provider adapter：腾讯主源 + 新浪逐代码 fallback。
  *   - 短 TTL 缓存（5 秒）：同一 tick 内或短时间内的重复请求只打一次 provider。
  *   - 批量去重：重复 code 只请求一次。
- *   - usable 判定：price 是有限正数。
- *   - 全失败时不抛异常，返回 usable=false + failureCode。
+ *   - 当前全部返回 usable=false + failureCode，不触网、不抛异常。
  */
 
-import { getQuote, getSinaQuote, type StockQuote } from "./stock.js";
+import type { StockQuote } from "./market-types.js";
 
 export interface RulePriceFact {
   /** 规范证券代码 (6 位字符串)。 */
@@ -58,55 +57,12 @@ export async function getRulePrices(codes: string[]): Promise<Map<string, RulePr
   return facts;
 }
 
-/** 直接组合腾讯主源 + 新浪 fallback，不经 marketDataReadCapability。 */
 async function fetchRulePricesFromProviders(codes: string[]): Promise<Map<string, RulePriceFact>> {
   const result = new Map<string, RulePriceFact>();
-  const quoteByCode = new Map<string, { quote: StockQuote; provider: string }>();
-
-  // 主源：腾讯
-  let primaryQuotes: StockQuote[] = [];
-  try {
-    primaryQuotes = await getQuote(codes);
-    for (const q of primaryQuotes) {
-      const key = normalizeCodeKey(q.code);
-      if (key) quoteByCode.set(key, { quote: q, provider: "tencent_quote" });
-    }
-  } catch {
-    // 主源全失败，逐代码 fallback
-  }
-
-  // 逐代码 fallback：主源未返回的 code 走新浪
-  const missing = codes.filter((c) => !quoteByCode.has(normalizeCodeKey(c) || c));
-  if (missing.length > 0) {
-    try {
-      const fallbackQuotes = await getSinaQuote(missing);
-      for (const q of fallbackQuotes) {
-        const key = normalizeCodeKey(q.code);
-        if (key && !quoteByCode.has(key)) {
-          quoteByCode.set(key, { quote: q, provider: "sina_quote" });
-        }
-      }
-    } catch {
-      // fallback 也失败，missing code 标记 quote_failed
-    }
-  }
-
   for (const code of codes) {
-    const key = normalizeCodeKey(code) || code;
-    const entry = quoteByCode.get(key);
-    if (!entry) {
-      result.set(code, { code, price: null, asOf: null, usable: false, provider: null, failureCode: "missing" });
-    } else {
-      result.set(code, toRulePriceFact(code, entry.quote, entry.provider));
-    }
+    result.set(code, { code, price: null, asOf: null, usable: false, provider: null, failureCode: "market_data_provider_retired" });
   }
   return result;
-}
-
-/** 把可能的 sh600519/sz000001/600519.SH 等形式归一为纯 6 位代码做匹配。 */
-function normalizeCodeKey(code: string): string | null {
-  const match = String(code).match(/(\d{6})/);
-  return match ? match[1] : null;
 }
 
 /**

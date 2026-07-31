@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { CompositeIndicatorEngine, parseCompositeYaml, type CompositeIndicatorConfig } from "./composite-indicator-engine.js";
 import { analyzeIndicators, computeMA, computeMACD, computeRSI, computeKDJ } from "./indicators.js";
 import { logger } from "../lib/logger.js";
-import type { StockKline } from "./stock.js";
+import type { StockKline } from "./market-types.js";
 
 export interface L3aTriggeredItem {
   configKey: string;

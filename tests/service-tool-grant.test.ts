@@ -12,9 +12,7 @@ import {
 
 // 实际注册的 43 个工具名（从 invest-agent-service-tools.ts registerJsonTool 提取）
 const REGISTERED_TOOLS = [
-  "market.snapshot", "market_watch.snapshot", "market.quote", "market.kline",
-  "market.fundamentals", "market.indices", "market.capital_flow", "market.sector_theme",
-  "market.calendar", "market.health", "market.stock_info", "market.resolve",
+  "market_watch.snapshot",
   "research.news_search", "research.web_search", "research.web_read",
   "portfolio.read", "watchlist.read", "plans.read", "conversation.history",
   "confirmations.pending", "watch_rules.catalog", "watch_rules.list",
@@ -31,7 +29,7 @@ const REGISTERED_TOOLS = [
 
 // ─── 分类表完整性 ──────────────────────────────────────────────
 
-test("classification table covers all 43 registered tools", () => {
+test("classification table covers all registered tools", () => {
   for (const tool of REGISTERED_TOOLS) {
     assert.ok(
       tool in SERVICE_TOOL_CLASSIFICATION,
@@ -67,7 +65,7 @@ test("market-watch grant = reads only, no write tools", () => {
 test("daily-review grant = reads + reviews.save", () => {
   const grant = resolveScheduledServiceGrant("scheduled-daily-review");
   assert.ok(grant.includes("reviews.save"));
-  assert.ok(grant.includes("market.quote"));
+  assert.ok(!grant.some((tool) => tool.startsWith("market.")));
   assert.ok(grant.includes("portfolio.read"));
   // 不含 other-write
   for (const tool of grant) {

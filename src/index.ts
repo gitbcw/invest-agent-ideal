@@ -35,7 +35,7 @@ async function main() {
   // 初始化数据库
   initDb();
 
-  // 注册数据质量告警 sink(给 services/market-data-providers.ts 用,避免循环依赖)
+  // 注册数据质量告警 sink(给 services/source-telemetry.ts 用,避免循环依赖)
   registerDataQualityAlertSink();
 
   // 启动 HTTP 服务

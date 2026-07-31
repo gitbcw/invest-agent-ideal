@@ -14,7 +14,7 @@ import {
   setAlertSink,
   type ProviderName,
   type MarketDataProvider,
-} from "../services/market-data-providers.js";
+} from "../services/source-telemetry.js";
 
 export type DataQualitySeverity = "P1" | "P2" | "P3";
 
@@ -88,7 +88,7 @@ async function appendDataQualityAlert(userId: string, event: DataQualityAlertEve
 }
 
 /**
- * 注册告警 sink 给 services/market-data-providers.ts 使用,避免循环依赖。
+ * 注册告警 sink 给 services/source-telemetry.ts 使用,避免循环依赖。
  * 必须在 server 启动早期调用一次。
  */
 export function registerDataQualityAlertSink(): void {

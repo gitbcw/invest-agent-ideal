@@ -28,7 +28,7 @@ export {
   estimateTurnoversFromVolume,
 } from "./chip-distribution.js";
 
-export type { StockKline } from "./stock.js";
+export type { StockKline } from "./market-types.js";
 
 export type {
   MAValue,
@@ -51,7 +51,7 @@ export type {
  */
 export interface IndicatorContext {
   /** 日 K 线,按时间升序(旧→新) */
-  klines: import("./stock.js").StockKline[];
+  klines: import("./market-types.js").StockKline[];
   /** 每日换手率(百分比 0-100),与 klines 等长 */
   turnovers: Array<number | undefined>;
   /** 用户在 composite_indicators.yaml 注册时声明的参数 */

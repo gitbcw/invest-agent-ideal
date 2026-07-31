@@ -3,6 +3,8 @@ dist/
 data/
 logs/
 .env
+.env.bak.*
+.zcode/plans/
 .DS_Store
 /.codex/*
 !/.codex/skills/

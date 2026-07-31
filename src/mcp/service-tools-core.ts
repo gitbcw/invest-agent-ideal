@@ -6,7 +6,6 @@ import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-bac
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
-import { resolveCalendarQueryInstant } from "../lib/market-calendar.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId } from "../lib/user-context.js";
 import {
   WorkspaceStore,
@@ -17,14 +16,7 @@ import {
 } from "../lib/workspace-store.js";
 import { localDateString, saveSkillDailyReview, saveSkillPeriodicReview } from "../handlers/review.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
-import {
-  marketDataReadCapability,
-  marketSnapshot,
-  type MarketKlinePeriod,
-} from "../services/market-data.js";
-import { integratedFundamentals } from "../services/external-market-providers.js";
 import { researchReadCapability } from "../services/external-evidence-search.js";
-import { resolveStockRefs } from "../services/stock-resolver.js";
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
 import { latestMarketWatchSnapshot } from "../services/market-watch-snapshot.js";
@@ -139,151 +131,6 @@ async function dispatchServiceTool(
       });
       return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
     }
-    case "market.snapshot": {
-      const result = await marketSnapshot({
-        userId: context.userId,
-        instanceId: context.instanceId,
-        includeCapitalFlow: input?.includeCapitalFlow === true,
-      });
-      await audit(context, {
-        operation: "market.snapshot",
-        resourceType: "market_data",
-        requestBody: { includeCapitalFlow: input?.includeCapitalFlow === true },
-        resultSummary: `holdings=${result.holdings.length}; watchlist=${result.watchlist.length}; warnings=${result.warnings.length}`,
-      });
-      return {
-        ok: true,
-        userId: context.userId,
-        instanceId: context.instanceId,
-        result,
-      };
-    }
-    case "market.quote": {
-      const codes = normalizeCodes(input?.codes);
-      if (codes.length === 0) throw new Error("codes is required");
-      const result = await marketDataReadCapability.quote(codes, context.userId);
-      await audit(context, {
-        operation: "market.quote",
-        resourceType: "market_data",
-        requestBody: { codes },
-        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-      });
-      return {
-        ok: true,
-        userId: context.userId,
-        instanceId: context.instanceId,
-        updatedAt: new Date().toISOString(),
-        ...result,
-      };
-    }
-    case "market.kline": {
-      const code = stringInput(input?.code);
-      if (!code) throw new Error("code is required");
-      const period: MarketKlinePeriod = input?.period === "m5" ? "m5" : "day";
-      const result = await marketDataReadCapability.kline({
-        code,
-        period,
-        count: clampInteger(input?.count, 1, 500, period === "m5" ? 120 : 120),
-        startDate: stringInput(input?.startDate),
-        endDate: stringInput(input?.endDate),
-      }, context.userId);
-      await audit(context, {
-        operation: "market.kline",
-        resourceType: "market_data",
-        resourceId: code,
-        requestBody: { code, period, count: input?.count, startDate: input?.startDate, endDate: input?.endDate },
-        resultSummary: `period=${result.period}; count=${result.items.length}; adjustment=${result.priceConvention.adjustment}; displayDecimals=${result.priceConvention.displayDecimals}; tolerance=${result.priceConvention.comparisonTolerance}; warnings=${result.source.warnings.length}`,
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), result };
-    }
-    case "market.fundamentals": {
-      const code = stringInput(input?.code);
-      if (!code) throw new Error("code is required");
-      const tradeDate = stringInput(input?.tradeDate);
-      if (tradeDate && !/^\d{8}$/.test(tradeDate)) throw new Error("tradeDate must use YYYYMMDD");
-      const result = await integratedFundamentals({ code, tradeDate: tradeDate || undefined, userId: context.userId });
-      await audit(context, {
-        operation: "market.fundamentals",
-        resourceType: "market_data",
-        resourceId: code,
-        requestBody: { code, tradeDate: tradeDate || undefined },
-        resultSummary: `sources=${result.sources.length}; warnings=${result.warnings.length}`,
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), result };
-    }
-    case "market.indices": {
-      const result = await marketDataReadCapability.indices(context.userId);
-      await audit(context, {
-        operation: "market.indices",
-        resourceType: "market_data",
-        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
-    }
-    case "market.capital_flow": {
-      const codes = normalizeCodes(input?.codes);
-      if (codes.length === 0) throw new Error("codes is required");
-      const result = await marketDataReadCapability.capitalFlow(codes, context.userId);
-      await audit(context, {
-        operation: "market.capital_flow",
-        resourceType: "market_data",
-        requestBody: { codes },
-        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
-    }
-    case "market.sector_theme": {
-      const codes = normalizeCodes(input?.codes);
-      if (codes.length === 0) throw new Error("codes is required");
-      const result = await marketDataReadCapability.sectorTheme(codes, context.userId);
-      await audit(context, {
-        operation: "market.sector_theme",
-        resourceType: "market_data",
-        requestBody: { codes },
-        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
-    }
-    case "market.calendar": {
-      const dateInput = stringInput(input?.date);
-      const date = resolveCalendarQueryInstant(dateInput || undefined);
-      if (Number.isNaN(date.getTime())) throw new Error("date must use YYYY-MM-DD");
-      const result = await marketDataReadCapability.calendar(date, context.userId);
-      await audit(context, {
-        operation: "market.calendar",
-        resourceType: "market_data",
-        requestBody: { date: dateInput },
-        resultSummary: `date=${result.dateKey}; tradingDay=${result.isTradingDay}; session=${result.session}`,
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
-    }
-    case "market.health": {
-      const result = await marketDataReadCapability.health();
-      await audit(context, {
-        operation: "market.health",
-        resourceType: "market_data",
-        resultSummary: `capabilities=${result.capabilities.length}; endpoints=${result.endpoints.length}`,
-      });
-      return {
-        ok: true,
-        userId: context.userId,
-        instanceId: context.instanceId,
-        result,
-      };
-    }
-    case "market.stock_info": {
-      const stocks = normalizeStockInputs(input?.stocks);
-      if (stocks.length === 0) throw new Error("stocks is required");
-      const days = clampInteger(input?.days, 1, 90, 7);
-      const result = await marketDataReadCapability.stockInfo(stocks, { days }, context.userId);
-      await audit(context, {
-        operation: "market.stock_info",
-        resourceType: "market_data",
-        requestBody: { stocks, days },
-        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
-    }
     case "research.news_search": {
       const query = stringInput(input?.query);
       if (!query) throw new Error("query is required");
@@ -326,18 +173,6 @@ async function dispatchServiceTool(
           : `page_unavailable; warnings=${result.source.warnings.length}`,
       });
       return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
-    }
-    case "market.resolve": {
-      const keyword = stringInput(input?.keyword);
-      if (!keyword) throw new Error("keyword is required");
-      const result = await marketDataReadCapability.resolve(keyword, context.userId);
-      await audit(context, {
-        operation: "market.resolve",
-        resourceType: "market_data",
-        requestBody: { keyword },
-        resultSummary: `count=${result.items.length}; warnings=${result.warnings.length}`,
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, updatedAt: new Date().toISOString(), ...result };
     }
     case "portfolio.read": {
       const rows = await portfolioBackend.listActive(context.userId, context.instanceId);
@@ -938,17 +773,15 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
   const confirmation = await prepareBoundConfirmation(input, context, "watchlist.add");
   const name = stringInput(input?.name ?? input?.stockName);
   const code = stringInput(input?.code ?? input?.stockCode);
-  if (!name && !code) throw new Error("请输入股票名称或代码");
-  const { codes, unresolved } = await resolveStockRefs([{ code, name }]);
-  if (codes.length === 0) throw new Error(`未找到股票：${unresolved[0]?.name ?? code}`);
-  const stockCode = codes[0];
+  if (!code) throw new Error("缺少 6 位股票代码；请先通过外部数据 MCP 或用户确认完成代码解析");
+  if (!/^\d{6}$/.test(code)) throw new Error("stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀");
+  const stockCode = code;
   const existing = await watchlistBackend.find(context.userId, context.instanceId, stockCode);
   if (existing) {
     await confirmation.consume();
     return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: context.userId };
   }
-  const quoteResult = await marketDataReadCapability.quote([stockCode], context.userId);
-  const stockName = quoteResult.items[0]?.name || name || stockCode;
+  const stockName = name || stockCode;
   await watchlistBackend.add(context.userId, context.instanceId, {
     code: stockCode,
     name: stockName,
@@ -970,8 +803,8 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
   const confirmation = await prepareBoundConfirmation(input, context, "plans.set");
   const stockCode = stringInput(input?.stockCode ?? input?.code);
   if (!stockCode) throw new Error("缺少股票代码");
-  const quoteResult = await marketDataReadCapability.quote([stockCode], context.userId);
-  const stockName = stringInput(input?.stockName ?? input?.name) || quoteResult.items[0]?.name || stockCode;
+  if (!/^\d{6}$/.test(stockCode)) throw new Error("stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀");
+  const stockName = stringInput(input?.stockName ?? input?.name) || stockCode;
   const existing = await planBackend.find(context.userId, context.instanceId, stockCode);
   await planBackend.upsert(context.userId, context.instanceId, {
     code: stockCode,

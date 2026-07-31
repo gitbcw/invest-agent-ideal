@@ -25,7 +25,6 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [table-ownership.md](./table-ownership.md) | SQLite table ownership: service / workspace / discard |
 | [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md) | Sandbox token, permission, audit, and isolation model |
 | [composite-indicator-system.md](./composite-indicator-system.md) | Implemented L1, L3a and L3b indicator contracts, acknowledgement gate, and runtime red lines |
-| [market-data-service-design.md](./market-data-service-design.md) | Market data facade, MCP tool contract, and non-Agent HTTP adapter |
 | [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
 | [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
 | [workspace-compatibility.md](./workspace-compatibility.md) | Read-only preflight, managed-asset ownership, backup, migration and rollback contract for existing user Workspaces |
@@ -65,7 +64,6 @@ Initial Portal design, completed work packages and acceptance records are under 
 | [data-source-policy-decision.md](./data-source-policy-decision.md) | Accepted data-source policy and cost posture |
 | [data-provider-cost-evaluation.md](./data-provider-cost-evaluation.md) | Provider cost bands and build-vs-buy decision support |
 | [doubao-search-integration-plan.md](./doubao-search-integration-plan.md) | Proposed Doubao Search Custom primary / SearXNG fallback implementation plan |
-| [market-data-resource-inventory.md](./market-data-resource-inventory.md) | Active provider/resource ledger, evidence status, and promotion acceptance set |
 | [mcp-registry-and-agent-tooling-refactor-plan.md](./mcp-registry-and-agent-tooling-refactor-plan.md) | MCP registration, Agent-owned research, scheduler simplification, and narrow deterministic rule facts (WP0-WP8 completed) |
 | [mcp-refactor-wp0-baseline.md](./mcp-refactor-wp0-baseline.md) | Refactor WP0 baseline: consumer matrix, conflict-item status table, test baseline |
 | [mcp-refactor-wp6-rule-decision.md](./mcp-refactor-wp6-rule-decision.md) | WP6 non-price rule retirement decision and rationale |
@@ -129,3 +127,5 @@ Archive material can explain how a decision emerged, but the current decision mu
 A document may stay outside `docs/archive/` only if it helps an agent make current implementation, verification, operation, or product-boundary decisions.
 
 Archive it if it is historical, superseded, mainly a dated record, or useful only as background. When in doubt, archive the long record and keep the current decision in a short current document.
+
+Retired service-owned market-data source code and historical design docs are archived under [archive/service-market-data-retirement-2026-07-31](./archive/service-market-data-retirement-2026-07-31/). Current ACP market facts should come from the external `market-data-tool` MCP.

@@ -45,7 +45,6 @@ const allowedTools = new Set(
     .map((name) => name.trim())
     .filter(Boolean)
 );
-const serviceMarketToolsEnabled = process.env.INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED !== "false";
 
 async function main() {
   const { callServiceTool, serviceToolContextFromEnv } = await import("./service-tools-core.js");
@@ -56,96 +55,10 @@ async function main() {
   });
 
   registerJsonTool(
-    {
-      server,
-      callServiceTool,
-      context,
-    },
-    "market.snapshot",
-    "Read a service-owned market snapshot for the current user: holdings, watchlist, plans, indices, source metadata, and warnings.",
-    { includeCapitalFlow: z.boolean().optional().describe("Whether to include capital-flow data when the service supports it.") }
-  );
-
-  registerJsonTool(
     { server, callServiceTool, context },
     "market_watch.snapshot",
     "Read the latest scheduler-captured market-watch facts and change marker for the current user and instance.",
     {}
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.quote",
-    "Read current quotes for A-share stock codes through the service market-data facade.",
-    { codes: z.array(z.string()).min(1).describe("Six-digit stock codes, for example ['002460','601058'].") }
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.kline",
-    "Read daily or five-minute K-line bars through the service market-data facade, including source metadata and warnings.",
-    {
-      code: z.string().describe("Six-digit A-share stock code."),
-      period: z.enum(["day", "m5"]).optional(),
-      count: z.number().int().min(1).max(500).optional(),
-      startDate: z.string().optional(),
-      endDate: z.string().optional(),
-    }
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.fundamentals",
-    "Read normalized fundamentals assembled by the service from allowlisted providers. The result includes source metadata, reporting periods, units, and warnings; it does not accept vendor queries.",
-    {
-      code: z.string().describe("Six-digit A-share stock code."),
-      tradeDate: z.string().regex(/^[0-9]{8}$/).optional().describe("Optional Tushare trading date in YYYYMMDD format."),
-    }
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.indices",
-    "Read core market index quotes with source metadata and warnings.",
-    {}
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.capital_flow",
-    "Read supplemental capital-flow observations for A-share stock codes. Do not treat these observations as proof of institutional intent.",
-    { codes: z.array(z.string()).min(1) }
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.sector_theme",
-    "Read service-owned industry, concept, and theme tags for A-share stock codes.",
-    { codes: z.array(z.string()).min(1) }
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.calendar",
-    "Read the A-share trading-day and market-session report for a Beijing date. When omitted or set to today's Beijing date, the session reflects the current Beijing time.",
-    { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.health",
-    "Read market-data provider health and endpoint status from the service layer.",
-    {}
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.stock_info",
-    "Read service-owned announcements, news, and research-report evidence for named A-share stocks. Treat news and reports as supplemental evidence.",
-    {
-      stocks: z.array(z.object({ code: z.string(), name: z.string().optional() })).min(1),
-      days: z.number().int().min(1).max(90).optional(),
-    }
   );
 
   registerJsonTool(
@@ -179,13 +92,6 @@ async function main() {
       maxCharacters: z.number().int().min(2000).max(50000).optional(),
     },
     { openWorldHint: true }
-  );
-
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market.resolve",
-    "Resolve an A-share company name or alias to candidate stock codes. This is for identity resolution, not investment evidence.",
-    { keyword: z.string().min(1) }
   );
 
   registerJsonTool(
@@ -557,7 +463,6 @@ function registerJsonTool(
   annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean } = {}
 ) {
   if (allowedTools.size > 0 && !allowedTools.has(name)) return;
-  if (!serviceMarketToolsEnabled && name.startsWith("market.")) return;
   runtime.server.registerTool(
     name,
     {

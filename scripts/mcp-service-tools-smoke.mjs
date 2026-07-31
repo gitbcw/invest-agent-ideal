@@ -38,8 +38,6 @@ try {
     ["portfolio.read", {}],
     ["watchlist.read", {}],
     ["plans.read", {}],
-    ["market.calendar", { date: "2026-07-15" }],
-    ["market.fundamentals", { code: "600519" }],
     ["conversation.history", {}],
     ["confirmations.pending", {}],
     ["watch_rules.catalog", {}],
@@ -119,22 +117,9 @@ try {
       "watch_rules.create",
       "watchlist.add",
     ];
-    const legacyMarketTools = [
-      "market.calendar",
-      "market.capital_flow",
-      "market.indices",
-      "market.kline",
-      "market.fundamentals",
-      "market.resolve",
-      "market.sector_theme",
-      "market.stock_info",
-    ];
+    const retiredMarketTools = toolNames.filter((name) => name.startsWith("market."));
     assert.deepEqual(baseRequiredTools.filter((name) => !toolNames.includes(name)), []);
-    if (process.env.INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED === "false") {
-      assert.deepEqual(legacyMarketTools.filter((name) => toolNames.includes(name)), []);
-    } else {
-      assert.deepEqual(legacyMarketTools.filter((name) => !toolNames.includes(name)), []);
-    }
+    assert.deepEqual(retiredMarketTools, []);
     const portfolio = await client.callTool({ name: "portfolio.read", arguments: {} });
     assert.notEqual(portfolio.isError, true);
     const portfolioText = portfolio.content?.find((item) => item.type === "text")?.text;

@@ -23,7 +23,7 @@ test("captureMarketWatchSnapshot is frozen by default (returns null, no write)",
 
 test("captureMarketWatchSnapshot can be unfrozen with explicit false", async () => {
   process.env.MARKET_WATCH_SNAPSHOT_FREEZE = "false";
-  // 恢复写入路径会触网 (marketSnapshot 取行情); 这里只验证不再被冻结拦截 (返回非 null 或触网错误)
+  // Service-owned market snapshot capture is retired; even explicit unfreeze remains a no-op.
   try {
     const result = await captureMarketWatchSnapshot({
       userId: "unfreeze-test-user",

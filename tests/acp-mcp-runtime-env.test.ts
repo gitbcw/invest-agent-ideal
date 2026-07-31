@@ -49,7 +49,6 @@ test("Codex MCP child receives the scoped service runtime locations", () => {
       WORKSPACE_BACKEND: "workspace",
       RUNTIME_DATA_ROOT: "runtime/user-a",
       REVIEWS_ROOT: "reviews/user-a",
-      INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED: "false",
       INVEST_AGENT_SANDBOX_SECRET: secret,
       INVEST_AGENT_SANDBOX_SECRET_FILE: "runtime/.sandbox-secret",
       TUSHARE_TOKEN: "tushare-test-token",
@@ -74,7 +73,6 @@ test("Codex MCP child receives the scoped service runtime locations", () => {
     WORKSPACE_BACKEND: "workspace",
     RUNTIME_DATA_ROOT: path.join(projectRoot, "runtime", "user-a"),
     REVIEWS_ROOT: path.join(projectRoot, "reviews", "user-a"),
-    INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED: "false",
     INVEST_AGENT_SANDBOX_SECRET: secret,
     INVEST_AGENT_SANDBOX_SECRET_FILE: path.join(projectRoot, "runtime", ".sandbox-secret"),
     TUSHARE_TOKEN: "tushare-test-token",
@@ -104,7 +102,7 @@ test("evaluation mode can expose only general web evidence tools", () => {
   assert.equal(server?.env?.find((entry) => entry.name === "INVEST_AGENT_MCP_ALLOWED_TOOLS")?.value, "research.web_search,research.web_read");
 });
 
-test("service MCP can hide legacy market facade tools while keeping scheduler snapshot", async () => {
+test("service MCP does not expose retired market facade tools while keeping scheduler snapshot", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "invest-agent-service-mcp-tools-"));
   const env = {
     ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => typeof value === "string")),
@@ -119,7 +117,6 @@ test("service MCP can hide legacy market facade tools while keeping scheduler sn
     INVEST_AGENT_MCP_INSTANCE_ID: "invest-agent-service-market-flag-user",
     INVEST_AGENT_MCP_WORKSPACE_PATH: path.join(tempRoot, "workspaces", "service-market-flag-user"),
     INVEST_AGENT_MCP_CONVERSATION_ID: "service-market-flag-test",
-    INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED: "false",
   };
   const transport = new StdioClientTransport({
     command: process.execPath,

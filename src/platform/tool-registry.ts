@@ -15,7 +15,6 @@ export type ToolId =
   | "invest.onboarding.write"
   | "invest.review.read"
   | "invest.review.write"
-  | "invest.market.read"
   | "invest.alert.read"
   | "invest.alert.write"
   | "invest.alert.check"
@@ -136,14 +135,6 @@ const toolDefinitions: ToolDefinition[] = [
     requiredPermissions: ["review:self"],
     resourceType: "daily_review",
     risk: "write",
-  },
-  {
-    id: "invest.market.read",
-    displayName: "读取行情信息",
-    description: "读取服务层行情、K 线、指数、资金流、股票解析和行情快照。",
-    requiredPermissions: ["read:self"],
-    resourceType: "market_data",
-    risk: "read",
   },
   {
     id: "invest.alert.read",

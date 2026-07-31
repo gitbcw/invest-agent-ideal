@@ -26,8 +26,8 @@ test("no allowlist (full tools) produces empty fingerprint", () => {
 
 test("same allowlist produces same fingerprint regardless of order", () => {
   // order 不应影响指纹 (sorted),否则同一 allowlist 不同顺序会错误地不复用 session
-  const fp1 = computeAllowlistFingerprint(ctx(["reviews.save", "market.quote"]), {});
-  const fp2 = computeAllowlistFingerprint(ctx(["market.quote", "reviews.save"]), {});
+  const fp1 = computeAllowlistFingerprint(ctx(["reviews.save", "portfolio.read"]), {});
+  const fp2 = computeAllowlistFingerprint(ctx(["portfolio.read", "reviews.save"]), {});
   assert.equal(fp1, fp2);
   assert.ok(fp1.length > 0);
 });
@@ -35,7 +35,7 @@ test("same allowlist produces same fingerprint regardless of order", () => {
 test("different allowlists produce different fingerprints (permission leak fix)", () => {
   // 核心回归门:全量 (无 allowlist) vs 只读阶段 (有 allowlist) 必须不同
   const fullFp = computeAllowlistFingerprint(ctx(), {});
-  const readOnlyFp = computeAllowlistFingerprint(ctx(["market.quote", "market.kline"]), {});
+  const readOnlyFp = computeAllowlistFingerprint(ctx(["portfolio.read", "watchlist.read"]), {});
   const writeOnlyFp = computeAllowlistFingerprint(ctx(["reviews.save"]), {});
 
   assert.notEqual(fullFp, readOnlyFp);
@@ -70,7 +70,7 @@ test("eval allowlist env produces same fingerprint as equivalent mcpAllowedTools
 test("mcpAllowedTools takes precedence over eval env", () => {
   // 显式 mcpAllowedTools 应优先于 env (与 resolveAllowedTools 一致)
   const explicit = computeAllowlistFingerprint(ctx(["reviews.save"]), {
-    ACP_EVAL_MCP_ALLOWED_TOOLS: "market.quote",
+    ACP_EVAL_MCP_ALLOWED_TOOLS: "portfolio.read",
   });
   const expected = computeAllowlistFingerprint(ctx(["reviews.save"]), {});
   assert.equal(explicit, expected);
@@ -106,7 +106,7 @@ test("interactive full-tools and scheduled read-only do not share session", () =
     {},
   );
   const scheduledFp = computeAllowlistFingerprint(
-    { userId: "u", conversationId: "shared", mcpAllowedTools: ["market.quote"] },
+    { userId: "u", conversationId: "shared", mcpAllowedTools: ["portfolio.read"] },
     {},
   );
   assert.notEqual(interactiveFp, scheduledFp);
