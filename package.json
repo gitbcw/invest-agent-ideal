@@ -66,6 +66,7 @@
     "probe:market-data-tool": "node scripts/mcp-market-data-tool-probe.mjs",
     "probe:mcp-acp-e2e": "npm run build && node scripts/mcp-acp-e2e-probe.mjs",
     "probe:mcp-tool-call": "npm run build && node scripts/mcp-acp-tool-call-probe.mjs",
+    "probe:mcp-qsse-tool-call": "npm run build && node scripts/mcp-acp-qsse-tool-call-probe.mjs",
     "probe:mcp-fixture-tool-call": "npm run build && node scripts/mcp-acp-fixture-tool-call-probe.mjs",
     "release:deploy": "node scripts/release-deploy.mjs deploy",
     "release:rollback": "node scripts/release-deploy.mjs rollback",

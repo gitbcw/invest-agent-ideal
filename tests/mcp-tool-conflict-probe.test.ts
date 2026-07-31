@@ -149,3 +149,57 @@ test("session assembly drops an external server when only its probe fails", asyn
   const resolved = await checkToolConflictsBeforeSession("test", [service, failedExternal]);
   assert.deepEqual(resolved.map((server) => server.name), ["invest-agent-service-tools"]);
 });
+
+// ─── 三 server 回归 (service + 两个外部 stdio) ─────────────────────
+//
+// 探针本身已是通用逻辑;这里证明 service-owned + 两个 external-readonly stdio
+// server 共存时,冲突策略保持不变,无需任何 server-specific 分支。
+
+test("three assembled stdio servers with distinct tools all pass conflict probe", async () => {
+  resetToolConflictCacheForTest();
+  const service = makeFixtureServer("invest-agent-service-tools", ["portfolio.read", "watchlist.read"]);
+  const extA = makeFixtureServer("market-data-tool", ["mdt.quote", "mdt.kline"]);
+  const extB = makeFixtureServer("fixture-quant-tool", ["qst.screen", "qst.ranking"]);
+
+  const report = await probeToolConflicts([service, extA, extB]);
+  assert.equal(report.conflicts.length, 0);
+  assert.equal(report.serverTools.size, 3);
+  assert.equal(report.failedServers.size, 0);
+});
+
+test("three-server external/external tool collision blocks session", async () => {
+  resetToolConflictCacheForTest();
+  // 两个外部 server 共享一个工具名 → 冲突,应阻断 (纯外部冲突也 fail closed)
+  const service = makeFixtureServer("invest-agent-service-tools", ["portfolio.read"]);
+  const extA = makeFixtureServer("market-data-tool", ["data.fetch", "mdt.quote"]);
+  const extB = makeFixtureServer("fixture-quant-tool", ["data.fetch", "qst.screen"]);
+
+  const report = await probeToolConflicts([service, extA, extB]);
+  assert.equal(report.conflicts.length, 1);
+  assert.equal(report.conflicts[0].toolName, "data.fetch");
+  assert.deepEqual(report.conflicts[0].servers.sort(), ["fixture-quant-tool", "market-data-tool"]);
+  assert.equal(
+    shouldBlockSessionOnConflict(report, "invest-agent-service-tools"),
+    true,
+  );
+});
+
+test("three-server external/service tool collision blocks session", async () => {
+  resetToolConflictCacheForTest();
+  // 外部 server 与 service server 冲突 → 阻断 (service 工具永不被外部遮蔽)
+  const service = makeFixtureServer("invest-agent-service-tools", ["shared.lookup", "portfolio.read"]);
+  const extA = makeFixtureServer("market-data-tool", ["mdt.quote"]);
+  const extB = makeFixtureServer("fixture-quant-tool", ["shared.lookup", "qst.screen"]);
+
+  const report = await probeToolConflicts([service, extA, extB]);
+  assert.equal(report.conflicts.length, 1);
+  assert.equal(report.conflicts[0].toolName, "shared.lookup");
+  assert.deepEqual(report.conflicts[0].servers.sort(), [
+    "fixture-quant-tool",
+    "invest-agent-service-tools",
+  ]);
+  assert.equal(
+    shouldBlockSessionOnConflict(report, "invest-agent-service-tools"),
+    true,
+  );
+});

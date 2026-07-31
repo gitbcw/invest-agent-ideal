@@ -20,8 +20,9 @@ import type { AcpBackendId } from "./stdio-agent.js";
 import {
   getMcpRegistry,
   resolveRuntimePlaceholders,
-  isExternalStdioHealthy,
+  checkExternalStdioReadiness,
   resolveExternalServer,
+  resolveExternalHttpServer,
   type McpRegistry,
   type McpServerRegistration,
   type McpSessionKind,
@@ -30,13 +31,23 @@ import { isScheduledTaskType, resolveScheduledServiceGrant } from "../mcp/servic
 
 // ─── 类型 ──────────────────────────────────────────────────────────
 
-/** ACP mcpServers 数组元素。对齐 SDK 的 McpServer stdio 形态 (WP1 仅产出 stdio)。 */
-export type AcpMcpServer = {
-  name: string;
-  command: string;
-  args: string[];
-  env: Array<{ name: string; value: string }>;
-};
+/** ACP mcpServers 数组元素，覆盖 stdio 与 HTTP transport。 */
+export type AcpMcpServer =
+  | {
+      type?: "stdio";
+      name: string;
+      command: string;
+      args: string[];
+      env: Array<{ name: string; value: string }>;
+    }
+  | {
+      type: "http";
+      name: string;
+      url: string;
+      headers: Array<{ name: string; value: string }>;
+      /** 由注册声明计算的脱敏指纹；供运行时缓存使用。 */
+      configFingerprint: string;
+    };
 
 /** 脱敏 manifest 摘要 —— 可安全记录到 trace/日志,不含 secret。 */
 export interface AcpMcpSessionManifest {
@@ -64,6 +75,8 @@ export interface ResolveSessionInput {
   runId?: string;
   /** 测试注入;生产用全局单例。 */
   registry?: McpRegistry;
+  /** ACP initialize response capability; HTTP MCP is assembled only when true. */
+  mcpCapabilities?: { http?: boolean };
 }
 
 export interface ResolveSessionResult {
@@ -214,11 +227,16 @@ function computeConfigFingerprint(
   const fingerprintInput = JSON.stringify({
     id: reg.id,
     transport: reg.transport.kind,
-    // 只含 scope 变量名,不含值;http 的 headerRefs 也是引用名
+    endpoint: reg.transport.kind === "http" ? reg.transport.url : undefined,
+    // 只含 scope 变量名,不含值；HTTP headerRefs/headers 都是引用名。
     scopeRefs:
       reg.transport.kind === "stdio"
         ? (reg.transport.envRefs || [])
-        : (reg.transport.headerRefs || []),
+        : [
+            ...(reg.transport.headerRefs || []),
+            ...(reg.transport.headers || []).map((header) => header.envRef),
+            ...(reg.transport.requiredEnvRefs || []),
+          ].sort(),
     // scope 身份参与指纹 (userId/instanceId 区分不同用户的会话)
     scopeIdentity: { userId: identity.userId, instanceId: identity.instanceId },
   });
@@ -263,18 +281,37 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
   const servers: AcpMcpServer[] = [];
 
   for (const reg of registry.listEnabledRegistrations(sessionKind)) {
-    // WP1: http transport 类型就绪但 ACP capability 未声明,暂 fail closed。
-    // WP2 接入外部 MCP 时在此探针 capability 后放行。
+    // ACP capability 未声明时 fail closed,避免把 HTTP server 交给不兼容的 Agent。
     if (reg.transport.kind === "http") {
-      logger.warn(
-        `MCP server ${reg.id} uses http transport which is not yet enabled (ACP capability unprobed); skipping`,
-      );
+      if (input.mcpCapabilities?.http !== true) {
+        logger.warn(`MCP server ${reg.id} uses http transport but ACP http capability is unavailable; skipping`);
+        continue;
+      }
+      const external = resolveExternalHttpServer(reg, env);
+      if (!external) {
+        logger.warn(`MCP server ${reg.id} is missing required HTTP configuration; skipping`);
+        continue;
+      }
+      const configFingerprint = computeConfigFingerprint(reg, identity);
+      servers.push({
+        type: "http",
+        name: reg.id,
+        url: external.url,
+        headers: external.headers,
+        configFingerprint,
+      });
+      manifestServers.push({
+        id: reg.id,
+        transportKind: "http",
+        version: reg.versionPolicy?.expected,
+        configFingerprint,
+      });
       continue;
     }
 
     // service-scoped: 复用 WP1 的 scope 解析
     if (reg.trustClass === "service-scoped") {
-      const resolved = resolveRuntimePlaceholders(reg, { projectRoot, execPath: process.execPath, env });
+      const resolved = resolveRuntimePlaceholders(reg, { projectRoot, execPath: process.execPath });
       if (resolved.transport.kind !== "stdio") continue;
       servers.push({
         name: resolved.id,
@@ -291,12 +328,16 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
       continue;
     }
 
-    // external-readonly (WP2): 健康检查 + 外部 env 解析
+    // external-readonly (WP2): 结构化 readiness 检查 + 外部 env 解析
     if (reg.trustClass === "external-readonly") {
-      if (!isExternalStdioHealthy(reg, env)) {
-        // 外部 MCP 不健康时会话明确缺少该服务器,不阻断 service-scoped MCP 启动
+      const readiness = checkExternalStdioReadiness(reg, env);
+      if (!readiness.ok) {
+        // 外部 MCP 未就绪时会话明确缺少该服务器,不阻断 service-scoped MCP 启动。
+        // 日志只记录引用名,绝不记录对应值。
         logger.warn(
-          `MCP server ${reg.id} is not healthy (missing required env MDT_PROJECT_DIR/MDT_UV_BIN); skipping`,
+          `MCP server ${reg.id} is not ready code=${readiness.code}` +
+            (readiness.missingRefs.length ? ` missing=${readiness.missingRefs.join(",")}` : "") +
+            "; skipping",
         );
         continue;
       }

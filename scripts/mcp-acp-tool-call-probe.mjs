@@ -12,22 +12,23 @@
  * 禁用/破坏外部 MCP 时，Agent 无法获得正确的工具数量，probe 必须失败。
  *
  * 用法:
- *   MDT_PROJECT_DIR=/path/to/market-data-tool MDT_UV_BIN=$(which uv) \
- *     INVEST_AGENT_MCP_EXTERNAL_ENABLED=true \
+ *   MARKET_DATA_MCP_URL=http://127.0.0.1:8000/mcp \
+ *     MARKET_DATA_MCP_TOKEN=... \
+ *     INVEST_AGENT_MCP_MARKET_DATA_ENABLED=true \
  *     node scripts/mcp-acp-tool-call-probe.mjs
  */
 
 const { getCurrentAcpAgent, disposeAcpForWorkspace } = await import("../dist/acp/stdio-agent.js");
 
 const probeStart = new Date().toISOString();
-const MDT_PROJECT_DIR = process.env.MDT_PROJECT_DIR;
-const MDT_UV_BIN = process.env.MDT_UV_BIN || "uv";
+const MARKET_DATA_MCP_URL = process.env.MARKET_DATA_MCP_URL;
+const MARKET_DATA_MCP_TOKEN = process.env.MARKET_DATA_MCP_TOKEN;
 
 console.error(`[tool-call-probe] start=${probeStart}`);
-console.error(`[tool-call-probe] MDT_PROJECT_DIR=${MDT_PROJECT_DIR || "(unset)"}`);
+console.error(`[tool-call-probe] endpoint configured=${Boolean(MARKET_DATA_MCP_URL)}`);
 
-if (!MDT_PROJECT_DIR || process.env.INVEST_AGENT_MCP_EXTERNAL_ENABLED !== "true") {
-  console.error("[tool-call-probe] 需要 MDT_PROJECT_DIR + INVEST_AGENT_MCP_EXTERNAL_ENABLED=true");
+if (!MARKET_DATA_MCP_URL || !MARKET_DATA_MCP_TOKEN || process.env.INVEST_AGENT_MCP_MARKET_DATA_ENABLED !== "true") {
+  console.error("[tool-call-probe] requires MARKET_DATA_MCP_URL, MARKET_DATA_MCP_TOKEN, and INVEST_AGENT_MCP_MARKET_DATA_ENABLED=true");
   process.exit(1);
 }
 
@@ -60,7 +61,7 @@ try {
 
   const conclusion = {
     timestamp: new Date().toISOString(),
-    environment: { MDT_PROJECT_DIR, MDT_UV_BIN, node: process.version },
+    environment: { endpointConfigured: Boolean(MARKET_DATA_MCP_URL), node: process.version },
     conversationId,
     replyRaw: reply.slice(0, 100),
     expectedToolCount: EXPECTED_TOOL_COUNT,
@@ -84,7 +85,7 @@ try {
   console.error(`[tool-call-probe] FAILED: ${err.message}`);
   console.log(JSON.stringify({
     timestamp: new Date().toISOString(),
-    environment: { MDT_PROJECT_DIR, MDT_UV_BIN },
+    environment: { endpointConfigured: Boolean(MARKET_DATA_MCP_URL) },
     error: err.message,
   }, null, 2));
   process.exit(1);

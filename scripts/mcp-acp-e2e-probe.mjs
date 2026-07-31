@@ -6,8 +6,9 @@
  * 记录命令、时间、版本、脱敏日志，可重复运行。
  *
  * 用法:
- *   MDT_PROJECT_DIR=/path/to/market-data-tool MDT_UV_BIN=$(which uv) \
- *     INVEST_AGENT_MCP_EXTERNAL_ENABLED=true \
+ *   MARKET_DATA_MCP_URL=http://127.0.0.1:8000/mcp \
+ *     MARKET_DATA_MCP_TOKEN=... \
+ *     INVEST_AGENT_MCP_MARKET_DATA_ENABLED=true \
  *     node scripts/mcp-acp-e2e-probe.mjs
  *
  * 探针: 开启外部 MCP → codex-acp 会话 → service-tools + market-data-tool 都装配 →
@@ -18,15 +19,15 @@ const { getCurrentAcpAgent, disposeAcpForWorkspace } = await import("../dist/acp
 const { resetMcpRegistryForTest } = await import("../dist/acp/mcp-registry.js");
 
 const probeStart = new Date().toISOString();
-const MDT_PROJECT_DIR = process.env.MDT_PROJECT_DIR;
-const MDT_UV_BIN = process.env.MDT_UV_BIN || "uv";
+const MARKET_DATA_MCP_URL = process.env.MARKET_DATA_MCP_URL;
+const MARKET_DATA_MCP_TOKEN = process.env.MARKET_DATA_MCP_TOKEN;
 
 console.error(`[e2e-probe] start=${probeStart}`);
-console.error(`[e2e-probe] MDT_PROJECT_DIR=${MDT_PROJECT_DIR || "(unset)"} MDT_UV_BIN=${MDT_UV_BIN}`);
+console.error(`[e2e-probe] endpoint configured=${Boolean(MARKET_DATA_MCP_URL)}`);
 console.error(`[e2e-probe] node=${process.version} platform=${process.platform}`);
 
-if (!MDT_PROJECT_DIR) {
-  console.error("[e2e-probe] MDT_PROJECT_DIR 未设置，仅验证 service-tools 单 server");
+if (!MARKET_DATA_MCP_URL || !MARKET_DATA_MCP_TOKEN) {
+  console.error("[e2e-probe] MARKET_DATA_MCP_URL / MARKET_DATA_MCP_TOKEN 未设置，仅验证 service-tools 单 server");
 }
 
 const workspacePath = process.cwd() + "/data/test-workspaces/e2e-acp-probe";
@@ -45,12 +46,12 @@ try {
 
   const conclusion = {
     timestamp: new Date().toISOString(),
-    environment: { MDT_PROJECT_DIR, MDT_UV_BIN, node: process.version },
+    environment: { endpointConfigured: Boolean(MARKET_DATA_MCP_URL), node: process.version },
     conversationId,
     replyLength: result.text.length,
     replyPreview: result.text.slice(0, 80),
     usageSource: result.usage?.source,
-    externalMcpEnabled: process.env.INVEST_AGENT_MCP_EXTERNAL_ENABLED === "true",
+    externalMcpEnabled: process.env.INVEST_AGENT_MCP_MARKET_DATA_ENABLED === "true",
   };
 
   console.log(JSON.stringify(conclusion, null, 2));
@@ -60,7 +61,7 @@ try {
   console.error(`[e2e-probe] FAILED: ${err.message}`);
   console.log(JSON.stringify({
     timestamp: new Date().toISOString(),
-    environment: { MDT_PROJECT_DIR, MDT_UV_BIN, node: process.version },
+    environment: { endpointConfigured: Boolean(MARKET_DATA_MCP_URL), node: process.version },
     error: err.message,
   }, null, 2));
   process.exit(1);

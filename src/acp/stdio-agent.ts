@@ -27,7 +27,12 @@ import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 import { isAcpDiagnosticText } from "../lib/customer-output.js";
 import { type UserContext } from "../lib/user-context.js";
-import { computeAllowlistFingerprint, resolveSessionMcpServers, type AcpMcpSessionManifest } from "./mcp-session-manifest.js";
+import {
+  computeAllowlistFingerprint,
+  resolveSessionMcpServers,
+  type AcpMcpServer,
+  type AcpMcpSessionManifest,
+} from "./mcp-session-manifest.js";
 import { probeToolConflicts, shouldBlockSessionOnConflict, type ToolConflictReport } from "./mcp-tool-conflict-probe.js";
 
 const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
@@ -50,9 +55,14 @@ export async function checkToolConflictsBeforeSession(label: string, servers: Ac
   const configFingerprint = createHash("sha256")
     .update(JSON.stringify(servers.map((server) => ({
       name: server.name,
-      command: server.command,
-      args: server.args,
-      env: [...server.env].sort((a, b) => a.name.localeCompare(b.name)),
+      ...(server.type === "http"
+        ? { type: "http", configFingerprint: server.configFingerprint }
+        : {
+            type: "stdio",
+            command: server.command,
+            args: server.args,
+            env: [...server.env].sort((a, b) => a.name.localeCompare(b.name)),
+          }),
     })).sort((a, b) => a.name.localeCompare(b.name))))
     .digest("hex");
   const cached = toolConflictCache.get(configFingerprint);
@@ -168,13 +178,6 @@ interface AcpBackendOverride {
   model?: string;
   modelLabel?: string;
 }
-
-type AcpMcpServer = {
-  name: string;
-  command: string;
-  args: string[];
-  env: Array<{ name: string; value: string }>;
-};
 
 /**
  * 从 conversationId / scope 推断本次会话的任务类型,用于 MCP 注册表按 sessionKind
@@ -514,6 +517,7 @@ export class StdioAcpAgent {
   private readonly collectors = new Map<string, ResponseCollector>();
   private readonly activeConversations = new Set<string>();
   private readonly inFlightPromptRejectors = new Map<string, (error: Error) => void>();
+  private httpMcpSupported = false;
 
   constructor(private readonly def: AcpBackendDef, private readonly override: AcpBackendOverride = {}) {}
 
@@ -744,11 +748,16 @@ export class StdioAcpAgent {
       )
     );
 
-    await conn.initialize({
+    const initResult = await conn.initialize({
       protocolVersion: acp.PROTOCOL_VERSION,
       clientInfo: { name: "invest-agent", version: "1.0.0" },
       clientCapabilities: {},
     });
+
+    const agentCapabilities = initResult as {
+      agentCapabilities?: { mcpCapabilities?: { http?: boolean } };
+    };
+    this.httpMcpSupported = agentCapabilities.agentCapabilities?.mcpCapabilities?.http === true;
 
     this.connection = conn;
     this.ready = true;
@@ -801,6 +810,7 @@ export class StdioAcpAgent {
       env: process.env,
       taskType,
       sessionId: userContext?.conversationId || "",
+      mcpCapabilities: { http: this.httpMcpSupported },
     });
   }
 

@@ -9,21 +9,56 @@
  *     对应子进程或传输请求,绝不进入 manifest 摘要、trace 或用户可见输出。
  *   - service-scoped 注册项必须由 invest-agent 拥有;external-readonly 注册项
  *     永不获得 service scope 环境引用 (DB_PATH / Workspace / sandbox secret 等)。
- *   - http transport 类型已就绪,但实际启用需 WP2 探针确认 Agent capability;
- *     WP1 阶段 ACP capability 未声明 mcp_capabilities.http,故 http 注册项虽能
- *     注册,但 resolve 时会 fail closed。
+ *   - external-readonly stdio server 通过声明式的 `<env:NAME>` 模板描述启动命令与
+ *     参数。解析只做纯字符串替换 (Node 端直接 spawn(command, args)),绝不调用
+ *     shell 或对命令替换求值。新增第二个外部 server 只需声明注册项,核心解析
+ *     逻辑不再出现 server-specific 分支。
+ *   - http transport 只有在 ACP 初始化声明 mcp_capabilities.http=true 时才装配;
+ *     capability 缺失时 fail closed。
  */
 
 import path from "node:path";
 import { logger } from "../lib/logger.js";
-import { buildExternalRegistrations } from "./external-mcp-registrations.js";
+import {
+  buildExternalRegistrations,
+  isExternalRegistrationActivated,
+} from "./external-mcp-registrations.js";
 
 // ─── 注册模型 ──────────────────────────────────────────────────────
 
-/** Transport 对齐 ACP SDK 0.16.1 实际类型 (http/sse/stdio)。SDK 无 streamable-http 概念。 */
+/**
+ * Transport 对齐 ACP SDK 0.16.1 实际类型 (http/sse/stdio)。SDK 无 streamable-http 概念。
+ *
+ * stdio command / args 支持两种写法:
+ *   - 字面量值 (如 "-m"、"run"):原样使用。
+ *   - `<env:VARIABLE_NAME>` 模板:解析时用同名环境变量的值做纯字符串替换。
+ *     模板绝不触发 shell;值直接作为 spawn(command, args) 的对应元素。
+ * requiredEnvRefs 声明所有必须在解析时存在的引用名 (含模板里出现的变量),
+ * 缺任一即该外部 server unavailable (fail closed, 仅跳过该 server)。
+ * envRefs 声明要注入子进程环境的引用名 (envRefs ⊇ requiredEnvRefs 通常成立,
+ * 但并非强制:启动专用值可不进 child env)。
+ */
+export type McpHttpHeaderRef = {
+  name: string;
+  envRef: string;
+  prefix?: string;
+};
+
 export type McpTransport =
-  | { kind: "stdio"; command: string; args: string[]; envRefs?: string[] }
-  | { kind: "http"; url: string; headerRefs?: string[] };
+  | {
+      kind: "stdio";
+      command: string;
+      args: string[];
+      envRefs?: string[];
+      requiredEnvRefs?: string[];
+    }
+  | {
+      kind: "http";
+      url: string;
+      headerRefs?: string[];
+      headers?: McpHttpHeaderRef[];
+      requiredEnvRefs?: string[];
+    };
 
 export type McpTrustClass = "service-scoped" | "external-readonly";
 export type McpOwner = "invest-agent" | "external";
@@ -78,6 +113,49 @@ export const SERVICE_SCOPE_ENV_REFS = [
 /** external-readonly server 被禁止引用的 scope 名 (安全边界护栏)。 */
 const FORBIDDEN_EXTERNAL_REFS = new Set<string>(SERVICE_SCOPE_ENV_REFS);
 
+// ─── <env:NAME> 模板工具 ───────────────────────────────────────────
+//
+// 模板形式严格限定为 `<env:VARIABLE_NAME>`。VARIABLE_NAME 必须是合法的环境
+// 变量名 (字母/数字/下划线,首字符非数字)。替换是纯字符串操作,绝不调用 shell。
+
+const ENV_TOKEN_RE = /<env:([A-Za-z_][A-Za-z0-9_]*)>/g;
+// 仅用于在校验阶段报告"看起来像模板但 token 名非法"的情况
+const MALFORMED_TOKEN_RE = /<env:([^>]*)>/g;
+
+function isEnvVarName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+/** 提取字符串中所有合法 `<env:NAME>` 引用的变量名 (去重)。 */
+function extractEnvRefs(value: string): string[] {
+  const refs = new Set<string>();
+  let m: RegExpExecArray | null;
+  ENV_TOKEN_RE.lastIndex = 0;
+  while ((m = ENV_TOKEN_RE.exec(value)) !== null) {
+    refs.add(m[1]);
+  }
+  return Array.from(refs);
+}
+
+/** 检测形如 `<env:...>` 但变量名非法的 token,返回首个非法原始片段。 */
+function findMalformedEnvToken(value: string): string | null {
+  let m: RegExpExecArray | null;
+  MALFORMED_TOKEN_RE.lastIndex = 0;
+  while ((m = MALFORMED_TOKEN_RE.exec(value)) !== null) {
+    const raw = m[1];
+    if (!isEnvVarName(raw)) return `<env:${raw}>`;
+  }
+  return null;
+}
+
+/**
+ * 纯字符串替换 `<env:NAME>` → env[NAME] (env 中缺失或空串时替换为空串)。
+ * 返回替换后的字符串。绝不调用 shell、绝不求值命令替换。
+ */
+function interpolateEnv(value: string, env: NodeJS.ProcessEnv): string {
+  return value.replace(ENV_TOKEN_RE, (_, name: string) => env[name] ?? "");
+}
+
 // ─── 校验 ──────────────────────────────────────────────────────────
 
 export class McpRegistryError extends Error {
@@ -103,15 +181,82 @@ export function validateRegistration(reg: McpServerRegistration): string | null 
   if (reg.transport.kind === "stdio") {
     if (!reg.transport.command) return `stdio server missing command: ${reg.id}`;
     if (!Array.isArray(reg.transport.args)) return `stdio server missing args: ${reg.id}`;
+
+    // 模板 token 校验 (仅 stdio)
+    const { command, args, envRefs = [], requiredEnvRefs = [] } = reg.transport;
+
+    // 1) 非法 token 名 (如 `<env:not a valid name>`)
+    for (const candidate of [command, ...args]) {
+      const malformed = findMalformedEnvToken(candidate);
+      if (malformed) {
+        return `invalid env token in transport for ${reg.id}: ${malformed}`;
+      }
+    }
+
+    // 2) 所有模板里出现的变量必须声明在 requiredEnvRefs 里
+    const templateRefs = new Set<string>();
+    for (const candidate of [command, ...args]) {
+      for (const ref of extractEnvRefs(candidate)) templateRefs.add(ref);
+    }
+    const declared = new Set(requiredEnvRefs);
+    const undeclared = Array.from(templateRefs).filter((r) => !declared.has(r));
+    if (undeclared.length) {
+      return (
+        `transport template references missing requiredEnvRefs for ${reg.id}: ${undeclared.join(", ")}`
+      );
+    }
+
+    // 3) required/env refs 呻必须是合法变量名
+    for (const ref of [...requiredEnvRefs, ...envRefs]) {
+      if (!isEnvVarName(ref)) {
+        return `invalid env reference name for ${reg.id}: ${ref}`;
+      }
+    }
   } else if (reg.transport.kind === "http") {
     if (!reg.transport.url) return `http server missing url: ${reg.id}`;
+    const refs = [
+      ...(reg.transport.headerRefs || []),
+      ...(reg.transport.headers || []).map((header) => header.envRef),
+      ...(reg.transport.requiredEnvRefs || []),
+    ];
+    for (const ref of refs) {
+      if (!isEnvVarName(ref)) return `invalid env reference name for ${reg.id}: ${ref}`;
+    }
+    const malformed = findMalformedEnvToken(reg.transport.url);
+    if (malformed) return `invalid env token in transport for ${reg.id}: ${malformed}`;
+    const templateRefs = extractEnvRefs(reg.transport.url);
+    const declared = new Set(reg.transport.requiredEnvRefs || []);
+    const undeclared = templateRefs.filter((ref) => !declared.has(ref));
+    if (undeclared.length) {
+      return `transport template references missing requiredEnvRefs for ${reg.id}: ${undeclared.join(", ")}`;
+    }
+    const duplicateHeaders = new Set<string>();
+    for (const header of reg.transport.headers || []) {
+      if (!header.name || !header.envRef) return `http header ref is incomplete: ${reg.id}`;
+      if (duplicateHeaders.has(header.name.toLowerCase())) {
+        return `duplicate http header: ${reg.id} ${header.name}`;
+      }
+      duplicateHeaders.add(header.name.toLowerCase());
+    }
   }
   // external-readonly 安全边界:不得引用 forbidden scope
   if (reg.trustClass === "external-readonly") {
-    const refs = reg.transport.kind === "stdio" ? reg.transport.envRefs : reg.transport.headerRefs;
-    const leaked = (refs || []).filter((r) => FORBIDDEN_EXTERNAL_REFS.has(r));
-    if (leaked.length) {
-      return `external-readonly server ${reg.id} must not reference service scope env: ${leaked.join(", ")}`;
+    if (reg.transport.kind === "stdio") {
+      const refs = [...(reg.transport.envRefs || []), ...(reg.transport.requiredEnvRefs || [])];
+      const leaked = refs.filter((r) => FORBIDDEN_EXTERNAL_REFS.has(r));
+      if (leaked.length) {
+        return `external-readonly server ${reg.id} must not reference service scope env: ${leaked.join(", ")}`;
+      }
+    } else {
+      const refs = [
+        ...(reg.transport.headerRefs || []),
+        ...(reg.transport.headers || []).map((header) => header.envRef),
+        ...(reg.transport.requiredEnvRefs || []),
+      ];
+      const leaked = refs.filter((r) => FORBIDDEN_EXTERNAL_REFS.has(r));
+      if (leaked.length) {
+        return `external-readonly server ${reg.id} must not reference service scope env: ${leaked.join(", ")}`;
+      }
     }
   }
   return null;
@@ -194,22 +339,27 @@ let globalRegistry: McpRegistry | undefined;
 export function getMcpRegistry(): McpRegistry {
   if (!globalRegistry) {
     globalRegistry = new McpRegistry();
-    // WP2: 受 env 开关控制接入外部只读 MCP。默认关闭,保证零行为回归。
-    if (process.env.INVEST_AGENT_MCP_EXTERNAL_ENABLED === "true") {
-      registerExternalMcpServers(globalRegistry);
-    }
+    // 外部只读 MCP 按各自 activation 开关接入 (默认关闭)。
+    // activation 判断由 external-mcp-registrations.ts 拥有,本模块不含 server-specific 逻辑。
+    registerExternalMcpServers(globalRegistry);
   }
   return globalRegistry;
 }
 
 /**
  * 把外部只读 MCP 注册项接入注册表并启用。
- * 幂等:已注册的 id 跳过。受 env 开关 INVEST_AGENT_MCP_EXTERNAL_ENABLED 控制。
+ * 每个 registration 自带 isActivated() 判断 (env 开关),只有激活的才注册+启用。
+ * 幂等:已注册的 id 跳过。
  */
-export function registerExternalMcpServers(registry: McpRegistry): void {
+export function registerExternalMcpServers(
+  registry: McpRegistry,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   // 延迟导入避免循环依赖
   for (const reg of buildExternalRegistrations()) {
     if (registry.getRegistration(reg.id)) continue;
+    // 仅注册并启用声明了 activation=true 的项;其余跳过 (零行为回归)
+    if (!isExternalRegistrationActivated(reg, env)) continue;
     registry.register(reg);
     registry.setEnabled(reg.id, true);
   }
@@ -225,70 +375,107 @@ export function resetMcpRegistryForTest(): void {
 }
 
 /**
- * 运行时把注册项中的 `<runtime:*>` 占位符解析成实际路径/命令。
- * service-scoped 用 exec-path/dist-mcp-path;external 用 mdt-uv-bin/mdt-run-args。
+ * 运行时把 service-scoped 注册项中的 `<runtime:*>` 占位符解析成实际路径/命令。
+ *
+ * 仅处理 service-scoped 的 `<runtime:exec-path>` 与 `<runtime:dist-mcp-path>`。
+ * external-readonly server 的 `<env:NAME>` 模板由 resolveExternalServer 处理,
+ * 不在这里展开 —— 两条解析路径独立,避免把外部 server 的环境推导耦合进 service scope。
  */
 export function resolveRuntimePlaceholders(
   reg: McpServerRegistration,
-  ctx: { projectRoot: string; execPath: string; env?: NodeJS.ProcessEnv },
+  ctx: { projectRoot: string; execPath: string },
 ): McpServerRegistration {
   if (reg.transport.kind !== "stdio") return reg;
-  const env = ctx.env || process.env;
   return {
     ...reg,
     transport: {
       ...reg.transport,
-      command: reg.transport.command
-        .replace("<runtime:exec-path>", ctx.execPath)
-        .replace("<runtime:mdt-uv-bin>", env.MDT_UV_BIN || ""),
+      command: reg.transport.command.replace("<runtime:exec-path>", ctx.execPath),
       args: reg.transport.args.map((arg) =>
-        arg
-          .replace(
-            "<runtime:dist-mcp-path>",
-            path.join(ctx.projectRoot, "dist/mcp/invest-agent-service-tools.js"),
-          )
-          .replace(
-            "<runtime:mdt-run-args>",
-            JSON.stringify(["run", "--project", env.MDT_PROJECT_DIR || "", "mdt-mcp"]),
-          ),
+        arg.replace(
+          "<runtime:dist-mcp-path>",
+          path.join(ctx.projectRoot, "dist/mcp/invest-agent-service-tools.js"),
+        ),
       ),
     },
   };
 }
 
+// ─── external-readonly stdio readiness / resolve ──────────────────
+//
+// 用结构化、不含 secret 的结果替换原先的 boolean 健康检查。caller 可记录
+// "缺少哪个引用名",但绝不会记录对应值。
+
+export type ExternalStdioReadiness =
+  | { ok: true }
+  | {
+      ok: false;
+      code: "missing_required_env" | "invalid_template" | "empty_command";
+      missingRefs: string[];
+    };
+
 /**
- * external-readonly server 缺少必需 env 引用时,会话应明确缺少该服务器 (fail closed)。
- * 返回 null 表示健康检查未通过;返回 string[] 表示占位符是否需要展开。
+ * 评估一个 external-readonly stdio server 是否就绪可启动。
+ *
+ * 顺序:
+ *   1. 非法模板 token → invalid_template
+ *   2. requiredEnvRefs 中任一缺失/空 → missing_required_env (missingRefs 列出名字)
+ *   3. 解析后 command 为空 → empty_command
+ * 返回值只含引用名,绝不含环境变量值。
+ *
+ * 非 external-readonly / 非 stdio 的注册项恒为 ok (由其它路径处理)。
  */
-export function isExternalStdioHealthy(reg: McpServerRegistration, env: NodeJS.ProcessEnv): boolean {
-  if (reg.trustClass !== "external-readonly" || reg.transport.kind !== "stdio") return true;
-  // 如果 transport 用的是直接 command（非占位符），只需 command 非空即可
-  if (reg.transport.command && !reg.transport.command.startsWith("<runtime:")) {
-    return Boolean(reg.transport.command);
+export function checkExternalStdioReadiness(
+  reg: McpServerRegistration,
+  env: NodeJS.ProcessEnv,
+): ExternalStdioReadiness {
+  if (reg.trustClass !== "external-readonly" || reg.transport.kind !== "stdio") return { ok: true };
+
+  const { command, args, requiredEnvRefs = [] } = reg.transport;
+
+  // 1) 模板 token 名合法性 (与校验阶段一致的双保险)
+  for (const candidate of [command, ...args]) {
+    const malformed = findMalformedEnvToken(candidate);
+    if (malformed) {
+      return { ok: false, code: "invalid_template", missingRefs: [malformed] };
+    }
   }
-  // 占位符 command（如 market-data-tool 的 <runtime:mdt-uv-bin>）需要对应 env
-  return Boolean(env.MDT_UV_BIN && env.MDT_PROJECT_DIR);
+
+  // 2) 必需引用必须存在且非空
+  const missing = requiredEnvRefs.filter((ref) => !env[ref] || env[ref] === "");
+  if (missing.length) {
+    return { ok: false, code: "missing_required_env", missingRefs: [...missing] };
+  }
+
+  // 3) 解析后 command 不能为空 (字面量 command 自然非空;模板替换后可能为空)
+  const resolvedCommand = interpolateEnv(command, env);
+  if (!resolvedCommand) {
+    return { ok: false, code: "empty_command", missingRefs: [] };
+  }
+
+  return { ok: true };
 }
 
 /**
- * 解析 external-readonly server 的 env:只含它声明的、且在 env 中存在的引用。
- * 绝不注入 service scope env (WP1 校验已禁止声明,这里双保险过滤)。
- * mdt-run-args 占位符展开成多个 args (而非单个 JSON 字符串)。
+ * 解析 external-readonly server 的 stdio 启动配置。
+ *
+ *   1. checkExternalStdioReadiness 先判断;不就绪返回 null (caller skip 该 server)。
+ *   2. 用纯字符串替换展开 command/args 中的 `<env:NAME>` (绝不调 shell)。
+ *   3. 从声明的 envRefs 构造 child env,双保险过滤 forbidden service scope。
+ *
+ * 返回的 env 数组只含声明过且当前 env 中存在的引用;secret 值只进入子进程,
+ * 绝不进入 manifest / 日志 / 指纹。
  */
 export function resolveExternalServer(
   reg: McpServerRegistration,
   env: NodeJS.ProcessEnv,
 ): { command: string; args: string[]; env: Array<{ name: string; value: string }> } | null {
   if (reg.transport.kind !== "stdio") return null;
-  if (!isExternalStdioHealthy(reg, env)) return null;
+  const readiness = checkExternalStdioReadiness(reg, env);
+  if (!readiness.ok) return null;
 
-  // mdt-run-args 展开为实际子进程参数
-  let args: string[];
-  if (reg.transport.args.length === 1 && reg.transport.args[0] === "<runtime:mdt-run-args>") {
-    args = ["run", "--project", env.MDT_PROJECT_DIR || "", "mdt-mcp"];
-  } else {
-    args = [...reg.transport.args];
-  }
+  const command = interpolateEnv(reg.transport.command, env);
+  const args = reg.transport.args.map((arg) => interpolateEnv(arg, env));
 
   const serverEnv: Array<{ name: string; value: string }> = [];
   for (const ref of reg.transport.envRefs || []) {
@@ -299,11 +486,46 @@ export function resolveExternalServer(
     }
   }
 
-  return {
-    command: reg.transport.command === "<runtime:mdt-uv-bin>" ? env.MDT_UV_BIN || "" : reg.transport.command,
-    args,
-    env: serverEnv,
-  };
+  return { command, args, env: serverEnv };
+}
+
+export type ResolvedExternalHttpServer = {
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+};
+
+/** Resolve an external HTTP MCP URL and its declared secret headers. */
+export function resolveExternalHttpServer(
+  reg: McpServerRegistration,
+  env: NodeJS.ProcessEnv,
+): ResolvedExternalHttpServer | null {
+  if (reg.transport.kind !== "http") return null;
+  // 注册时已校验；这里再 fail closed，保证直接调用该解析器时也不会把 service scope
+  // 作为外部 HTTP 请求的 URL、required ref 或 header 传出。
+  if (reg.trustClass === "external-readonly") {
+    const refs = [
+      ...(reg.transport.headerRefs || []),
+      ...(reg.transport.headers || []).map((header) => header.envRef),
+      ...(reg.transport.requiredEnvRefs || []),
+      ...extractEnvRefs(reg.transport.url),
+    ];
+    if (refs.some((ref) => FORBIDDEN_EXTERNAL_REFS.has(ref))) return null;
+  }
+  const required = reg.transport.requiredEnvRefs || [];
+  const missing = required.filter((ref) => !env[ref] || env[ref] === "");
+  if (missing.length) return null;
+  const url = interpolateEnv(reg.transport.url, env);
+  if (!url) return null;
+  const headers: Array<{ name: string; value: string }> = [];
+  for (const ref of reg.transport.headerRefs || []) {
+    const value = env[ref];
+    if (value) headers.push({ name: "Authorization", value: `Bearer ${value}` });
+  }
+  for (const header of reg.transport.headers || []) {
+    const value = env[header.envRef];
+    if (value) headers.push({ name: header.name, value: `${header.prefix || ""}${value}` });
+  }
+  return { url, headers };
 }
 
 /** 调试用:导出安全边界引用集。 */

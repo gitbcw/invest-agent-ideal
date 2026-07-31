@@ -12,6 +12,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { logger } from "../lib/logger.js";
 import type { AcpMcpServer } from "./mcp-session-manifest.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 export interface ToolConflict {
   toolName: string;
@@ -70,6 +72,7 @@ export async function probeToolConflicts(servers: AcpMcpServer[]): Promise<ToolC
 
 /** 连接单个 stdio MCP server，执行 initialize → tools/list，返回工具名列表。 */
 async function probeServerTools(server: AcpMcpServer, timeoutMs = 10_000): Promise<string[]> {
+  if (server.type === "http") return probeHttpServerTools(server, timeoutMs);
   return new Promise<string[]>((resolve, reject) => {
     const env: Record<string, string> = {};
     for (const { name, value } of server.env) env[name] = value;
@@ -142,6 +145,27 @@ async function probeServerTools(server: AcpMcpServer, timeoutMs = 10_000): Promi
       }
     })();
   });
+}
+
+/** Connect to an HTTP MCP server and enumerate tools for the same conflict check. */
+async function probeHttpServerTools(
+  server: Extract<AcpMcpServer, { type: "http" }>,
+  timeoutMs: number,
+): Promise<string[]> {
+  const client = new Client({ name: "invest-agent-tool-conflict-probe", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(server.url), {
+    requestInit: { headers: Object.fromEntries(server.headers.map((header) => [header.name, header.value])) },
+  });
+  const timeout = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`probe timeout after ${timeoutMs}ms`)), timeoutMs).unref();
+  });
+  try {
+    await Promise.race([client.connect(transport), timeout]);
+    const listed = await Promise.race([client.listTools(), timeout]);
+    return (listed.tools ?? []).map((tool) => tool.name);
+  } finally {
+    await client.close().catch(() => undefined);
+  }
 }
 
 /**

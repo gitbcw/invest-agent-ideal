@@ -4,6 +4,17 @@
 
 > **WP2/WP3 update**: ACP sessions can now also assemble **trusted external read-only MCP servers** (such as `market-data-tool`) via the MCP registry. ACP discovers their tools dynamically via `tools/list`; service tools and external MCPs coexist. Service tools are **not** the only ACP data source for open-ended research.
 >
+> **External MCP registration supports declarative stdio and HTTP transports.** Stdio launch values use generic `<env:NAME>` tokens in `command`/`args`; HTTP servers declare a URL and explicitly mapped credential headers. Both transports resolve from environment references without shell execution or per-tool adapters. Key guarantees:
+>
+> - **Per-server activation, default disabled.** `market-data-tool` is enabled by `INVEST_AGENT_MCP_MARKET_DATA_ENABLED=true`; the legacy `INVEST_AGENT_MCP_EXTERNAL_ENABLED=true` remains a compatibility alias for `market-data-tool` only and is **not** inherited by future external servers.
+> - **Required references gate connection.** Any missing `requiredEnvRefs` value makes only that external server unavailable (skipped); the service-owned server still starts. Failure of the service-owned server remains blocking.
+> - **Secret isolation.** External stdio children receive only declared `envRefs`; HTTP credentials are passed only as declared request headers. Neither transport receives service scope (`DB_PATH`, Workspace paths, user/instance identity, sandbox secrets, service credentials), and resolved credential values never enter manifests, config fingerprints, or logs.
+> - **HTTP is capability-gated.** HTTP MCP is assembled only when the ACP initialize response advertises `mcp_capabilities.http=true`; otherwise it is skipped fail closed. Resolved URL and headers are never written to the manifest or logs.
+>
+> **qsse-qlib quant screening** is registered as a separate external read-only Streamable HTTP MCP and remains disabled by default. Set `INVEST_AGENT_MCP_QSSE_ENABLED=true`, `QSSE_MCP_URL` to the remote `/mcp` endpoint, and `QSSE_MCP_TOKEN` to its Bearer credential to enable it. The token is injected into ACP as an `Authorization: Bearer` header and never enters the manifest or logs. The server is interactive-only in the first release: it is excluded from scheduled and evaluation sessions to protect the two-request screening concurrency limit. ACP discovers its `quant_*` tools dynamically; Invest Agent does not maintain per-tool adapters.
+>
+> **market-data-tool** is also an external read-only Streamable HTTP MCP and remains disabled by default. Set `INVEST_AGENT_MCP_MARKET_DATA_ENABLED=true`, `MARKET_DATA_MCP_URL`, and `MARKET_DATA_MCP_TOKEN`. It remains available to interactive and scheduled-read sessions, but is excluded from evaluation sessions.
+>
 > **WP6/WP8 update**: Only `price_cross` remains an active watch-rule type. The 8 non-price rule types (ma/macd/kdj/rsi/boll/wr/volume/near_plan) are retired — `watch_rules.create` rejects them; future indicator-based screening will use an external quant tool.
 >
 > **WP7 update**: `market_watch_snapshots` writes are frozen; `market_watch.snapshot` reads historical rows only.
