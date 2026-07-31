@@ -43,6 +43,14 @@ test("ACP trace stores compact runtime metadata without successful prompt/raw re
         taskType: "interactive",
         servers: [{ id: "market-data-tool", transportKind: "stdio", configFingerprint: "abc123" }],
       },
+      toolCalls: [{
+        source: "acp-event",
+        toolCallId: "call-1",
+        title: "quant_screen_stocks",
+        status: "completed",
+        inputChars: 18,
+        outputChars: 42,
+      }],
     });
 
     const [row] = await db.select().from(codexAcpTraces).where(eq(codexAcpTraces.userId, "trace-user"));
@@ -54,6 +62,8 @@ test("ACP trace stores compact runtime metadata without successful prompt/raw re
     assert.equal(row.promptChars, "internal prompt that should not be persisted on success".length);
     assert.equal(row.replyChars, "raw reply".length);
     assert.match(row.mcpManifest ?? "", /market-data-tool/);
+    assert.match(row.toolCalls ?? "", /quant_screen_stocks/);
+    assert.doesNotMatch(row.toolCalls ?? "", /secret/);
     sqlite.close();
   } finally {
     await rm(root, { recursive: true, force: true });

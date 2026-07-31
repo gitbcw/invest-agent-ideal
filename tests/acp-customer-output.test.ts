@@ -51,7 +51,7 @@ describe("ACP customer reply diagnostics", () => {
     assert.equal(collector.toText(), "");
   });
 
-  test("does not expose ACP goal lifecycle events as customer text", () => {
+test("does not expose ACP goal lifecycle events as customer text", () => {
     const collector = new ResponseCollector();
     collector.handleUpdate(update("agent_message_chunk", "已加入初始配置草稿。") as never);
     collector.handleUpdate(update("usage_update") as never);
@@ -76,6 +76,40 @@ describe("ACP customer reply diagnostics", () => {
       "盘中简报将使用默认时段。"
     );
   });
+});
+
+test("collects ACP tool-call lifecycle summaries without raw input or output", () => {
+  const collector = new ResponseCollector();
+  collector.handleUpdate({
+    sessionId: "s1",
+    update: {
+      sessionUpdate: "tool_call",
+      toolCallId: "call-1",
+      title: "quant_screen_stocks",
+      kind: "read",
+      rawInput: { secret: "must-not-persist" },
+    },
+  } as never);
+  collector.handleUpdate({
+    sessionId: "s1",
+    update: {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "call-1",
+      status: "completed",
+      rawOutput: { rows: [{ symbol: "600519" }] },
+    },
+  } as never);
+
+  const [toolCall] = collector.toolCallsSnapshot();
+  assert.equal(toolCall.source, "acp-event");
+  assert.equal(toolCall.toolCallId, "call-1");
+  assert.equal(toolCall.title, "quant_screen_stocks");
+  assert.equal(toolCall.status, "completed");
+  assert.equal(toolCall.serverId, undefined);
+  assert.equal(toolCall.inputChars, JSON.stringify({ secret: "must-not-persist" }).length);
+  assert.equal(toolCall.outputChars, JSON.stringify({ rows: [{ symbol: "600519" }] }).length);
+  assert.equal("rawInput" in toolCall, false);
+  assert.equal("rawOutput" in toolCall, false);
 });
 
 describe("customer output sanitization", () => {

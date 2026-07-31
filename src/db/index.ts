@@ -333,6 +333,7 @@ export function initDb() {
       acp_backend TEXT,
       acp_model TEXT,
       mcp_manifest TEXT,
+      tool_calls TEXT,
       prompt_chars INTEGER,
       reply_chars INTEGER,
       status TEXT NOT NULL,
@@ -769,6 +770,7 @@ export function initDb() {
   ensureColumn("codex_acp_traces", "acp_backend", "TEXT");
   ensureColumn("codex_acp_traces", "acp_model", "TEXT");
   ensureColumn("codex_acp_traces", "mcp_manifest", "TEXT");
+  ensureColumn("codex_acp_traces", "tool_calls", "TEXT");
   ensureColumn("codex_acp_traces", "prompt_chars", "INTEGER");
   ensureColumn("codex_acp_traces", "reply_chars", "INTEGER");
   ensureColumn("codex_acp_traces", "input_tokens", "INTEGER");

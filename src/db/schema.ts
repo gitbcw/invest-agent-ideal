@@ -318,6 +318,7 @@ export const codexAcpTraces = sqliteTable("codex_acp_traces", {
   acpBackend: text("acp_backend"),
   acpModel: text("acp_model"),
   mcpManifest: text("mcp_manifest"),
+  toolCalls: text("tool_calls"),
   promptChars: integer("prompt_chars"),
   replyChars: integer("reply_chars"),
   status: text("status").notNull(),

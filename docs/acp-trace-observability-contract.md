@@ -19,6 +19,7 @@ Keep fields that answer "what happened to this ACP turn?" without storing unnece
 - Outcome: `status`, `error_message`, `elapsed_ms`, `created_at`.
 - Model/runtime: `acp_backend`, `acp_model`.
 - MCP assembly: sanitized `mcp_manifest` with server ids, transport kind, version, and config fingerprint only. No secrets, env values, tool results, or payloads.
+- ACP tool events: compact `tool_calls` summaries with ACP `toolCallId`, title/tool name when exposed, status, elapsed time, and input/output sizes. These prove that the Agent emitted/observed an ACP tool-call event; they do not yet prove which external MCP server executed it.
 - User/customer text: `user_text` and `reply_text_sanitized`, redacted and truncated.
 - Size/cost: `prompt_chars`, `reply_chars`, token/cost fields, `usage_source`.
 - Narrow task summary: `review_context_summary`, `sandbox_token_id`, `sandbox_permissions`.
@@ -44,7 +45,7 @@ Do not store large market payloads, full webpages, raw MCP stdout, credentials, 
 
 ## Known gap
 
-External read-only MCP native tool calls, such as `market-data-tool`, are currently visible to ACP but not uniformly mirrored into `sandbox_audit_logs` because they bypass `invest-agent-service-tools`. For local diagnosis, `mcp_manifest` proves which external servers were mounted, but it does not enumerate every native tool call.
+External read-only MCP native tool calls, such as `market-data-tool`, are currently visible to ACP and their ACP-side lifecycle is captured in `tool_calls`, but they are not uniformly mirrored into `sandbox_audit_logs` because they bypass `invest-agent-service-tools`. For local diagnosis, `mcp_manifest` proves which external servers were mounted, while `tool_calls` proves the Agent-side event; neither currently proves which external server received and executed the request.
 
 If exact external MCP tool-call telemetry becomes necessary, add a small MCP proxy/observer layer or a Codex ACP event hook that records only:
 

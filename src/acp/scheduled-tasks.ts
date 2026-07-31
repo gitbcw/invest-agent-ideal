@@ -396,6 +396,7 @@ async function runAcpTask(input: ScheduledAcpTaskInput) {
       acpBackend: acpResult.backendId,
       acpModel: acpResult.model,
       mcpManifest: acpResult.mcpManifest,
+      toolCalls: acpResult.toolCalls,
     });
     return reply;
   } catch (error) {

@@ -116,6 +116,7 @@ export function createAgent(): AcpAgent {
           acpBackend: acpResult.backendId,
           acpModel: acpResult.model,
           mcpManifest: acpResult.mcpManifest,
+          toolCalls: acpResult.toolCalls,
         });
         return textResponse(
           cleaned,

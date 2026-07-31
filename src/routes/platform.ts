@@ -196,6 +196,7 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
       acpBackend: codexAcpTraces.acpBackend,
       acpModel: codexAcpTraces.acpModel,
       mcpManifest: codexAcpTraces.mcpManifest,
+      toolCalls: codexAcpTraces.toolCalls,
       promptChars: codexAcpTraces.promptChars,
       replyChars: codexAcpTraces.replyChars,
       createdAt: codexAcpTraces.createdAt,

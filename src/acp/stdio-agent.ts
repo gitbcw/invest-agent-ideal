@@ -229,6 +229,23 @@ export interface AcpChatResult {
   model?: string;
   modelLabel?: string;
   mcpManifest?: AcpMcpSessionManifest;
+  toolCalls?: AcpToolCallSummary[];
+}
+
+/** ACP 侧工具事件摘要；不等同于外部 MCP server 的实际执行证明。 */
+export interface AcpToolCallSummary {
+  source: "acp-event";
+  toolCallId: string;
+  serverId?: string;
+  toolName?: string;
+  title?: string;
+  kind?: string;
+  status?: string;
+  startedAt: string;
+  completedAt?: string;
+  elapsedMs?: number;
+  inputChars?: number;
+  outputChars?: number;
 }
 
 // ─── 后端定义 ───────────────────────────────────────────────────────
@@ -291,9 +308,21 @@ export class ResponseCollector {
   private readonly segments: string[] = [];
   private currentSegment: string[] = [];
   private usageUpdate: SessionUpdate | undefined;
+  private readonly toolCallRecords = new Map<string, AcpToolCallSummary>();
+  private readonly toolCallStartedAt = new Map<string, number>();
 
   handleUpdate(notification: SessionNotification) {
     const update = notification.update;
+    if (update.sessionUpdate === "tool_call") {
+      this.recordToolCall(update as Record<string, unknown>);
+      this.flushSegment();
+      return;
+    }
+    if (update.sessionUpdate === "tool_call_update") {
+      this.recordToolCall(update as Record<string, unknown>);
+      this.flushSegment();
+      return;
+    }
     if (update.sessionUpdate === "usage_update") {
       this.usageUpdate = update;
       this.flushSegment();
@@ -340,6 +369,43 @@ export class ResponseCollector {
 
   usageFromUpdate() {
     return this.usageUpdate;
+  }
+
+  toolCallsSnapshot(): AcpToolCallSummary[] {
+    return [...this.toolCallRecords.values()].map((record) => ({ ...record }));
+  }
+
+  private recordToolCall(update: Record<string, unknown>) {
+    const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
+    if (!toolCallId) return;
+    const now = Date.now();
+    const existing = this.toolCallRecords.get(toolCallId);
+    const startedAtMs = this.toolCallStartedAt.get(toolCallId) ?? now;
+    if (!existing) this.toolCallStartedAt.set(toolCallId, startedAtMs);
+    const status = stringValue(update.status) ?? existing?.status;
+    const completed = status === "completed" || status === "failed";
+    const input = update.rawInput;
+    const output = update.rawOutput;
+    this.toolCallRecords.set(toolCallId, {
+      source: "acp-event",
+      toolCallId,
+      serverId: stringValue(update.serverId) ?? existing?.serverId,
+      toolName: stringValue(update.toolName) ?? stringValue(update.name) ?? existing?.toolName,
+      title: stringValue(update.title) ?? existing?.title,
+      kind: stringValue(update.kind) ?? existing?.kind,
+      status,
+      startedAt: existing?.startedAt ?? new Date(startedAtMs).toISOString(),
+      completedAt: completed ? new Date(now).toISOString() : existing?.completedAt,
+      elapsedMs: completed ? Math.max(0, now - startedAtMs) : existing?.elapsedMs,
+      inputChars: input === undefined ? existing?.inputChars : safeSerializedSize(input),
+      outputChars:
+        output !== undefined
+          ? safeSerializedSize(output)
+          : Array.isArray(update.content)
+            ? safeSerializedSize(update.content)
+            : existing?.outputChars,
+    });
+    if (completed) this.toolCallStartedAt.delete(toolCallId);
   }
 
   private flushSegment() {
@@ -493,6 +559,19 @@ function optionalNumber(value: unknown) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function safeSerializedSize(value: unknown): number | undefined {
+  try {
+    const serialized = typeof value === "string" ? value : JSON.stringify(value);
+    return typeof serialized === "string" ? serialized.length : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function estimateTokens(text: string) {
@@ -650,6 +729,7 @@ export class StdioAcpAgent {
       model: this.override.model,
       modelLabel: this.override.modelLabel,
       mcpManifest: this.sessionManifests.get(sessionKey),
+      toolCalls: collector.toolCallsSnapshot(),
     };
   }
 

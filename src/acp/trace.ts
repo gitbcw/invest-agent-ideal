@@ -30,6 +30,7 @@ export interface AcpTraceInput {
   acpBackend?: string;
   acpModel?: string;
   mcpManifest?: unknown;
+  toolCalls?: unknown;
   status: TraceStatus;
   errorMessage?: string;
   elapsedMs?: number;
@@ -64,6 +65,7 @@ export async function recordAcpTrace(input: AcpTraceInput) {
       acpBackend: truncate(input.acpBackend, 80),
       acpModel: truncate(input.acpModel, 160),
       mcpManifest: truncate(input.mcpManifest, 4000),
+      toolCalls: truncate(input.toolCalls, 4000),
       promptChars: input.promptText?.length,
       replyChars: input.replyTextRaw?.length ?? input.replyTextSanitized?.length,
       status: input.status,
