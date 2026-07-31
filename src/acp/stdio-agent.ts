@@ -630,8 +630,10 @@ export class StdioAcpAgent {
   }
 
   private get args() {
-    if (this.def.id !== "codex" || !this.override.model) return this.def.args;
-    return [...this.def.args, "-c", `model=${JSON.stringify(this.override.model)}`];
+    // codex-acp accepts its own small CLI surface and does not forward `-c`
+    // flags to the Codex app-server.  Codex session settings are injected via
+    // CODEX_CONFIG in buildCodexRuntimeEnv instead.
+    return this.def.args;
   }
 
   async ensureReady(): Promise<ClientSideConnection> {
@@ -780,7 +782,7 @@ export class StdioAcpAgent {
     const args = this.args;
     const label = this.label;
     const cwd = this.cwd;
-    const env = await buildRuntimeEnvForBackend(this.def.id, cwd);
+    const env = await buildRuntimeEnvForBackend(this.def.id, cwd, this.override.model);
     logger.info(`启动 ${label} ACP: ${command}${args.length ? ` ${args.join(" ")}` : ""}`);
 
     const child = spawn(command, args, {
@@ -926,13 +928,42 @@ async function buildHermesRuntimeEnv(workspacePath: string): Promise<NodeJS.Proc
   };
 }
 
-async function buildCodexRuntimeEnv(workspacePath: string): Promise<NodeJS.ProcessEnv> {
+async function buildCodexRuntimeEnv(workspacePath: string, model?: string): Promise<NodeJS.ProcessEnv> {
   const codexHome = path.join(workspacePath, ".codex");
   await ensureCodexHome(codexHome);
+
+  // `@agentclientprotocol/codex-acp` does not forward its CLI `-c` arguments
+  // to the Codex app-server.  It uses these two environment variables instead
+  // when creating an ACP session.  Without them, an isolated DeepSeek config
+  // can still be routed as the app-server's default OpenAI model.
+  const codexConfig = parseCodexAcpConfig(model);
+  const modelProvider = readConfiguredCodexModelProvider(path.join(codexHome, "config.toml"));
   return {
     ...process.env,
     CODEX_HOME: codexHome,
+    CODEX_CONFIG: JSON.stringify(codexConfig),
+    ...(modelProvider ? { MODEL_PROVIDER: modelProvider } : {}),
   };
+}
+
+function parseCodexAcpConfig(model?: string): Record<string, unknown> {
+  return {
+    project_trust_level: "trusted",
+    sandbox_mode: "workspace-write",
+    sandbox_workspace_write: { network_access: true },
+    approval_policy: "never",
+    ...(model ? { model } : {}),
+  };
+}
+
+function readConfiguredCodexModelProvider(configPath: string): string | undefined {
+  try {
+    const source = readFileSync(configPath, "utf8");
+    const match = /^\s*model_provider\s*=\s*[\"']([^\"']+)[\"']\s*$/m.exec(source);
+    return match?.[1]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function ensureHermesHome(hermesHome: string): Promise<void> {
@@ -979,8 +1010,8 @@ async function ensureHermesHome(hermesHome: string): Promise<void> {
   }
 }
 
-function buildRuntimeEnvForBackend(id: AcpBackendId, workspacePath: string): Promise<NodeJS.ProcessEnv> {
-  return id === "codex" ? buildCodexRuntimeEnv(workspacePath) : buildHermesRuntimeEnv(workspacePath);
+function buildRuntimeEnvForBackend(id: AcpBackendId, workspacePath: string, model?: string): Promise<NodeJS.ProcessEnv> {
+  return id === "codex" ? buildCodexRuntimeEnv(workspacePath, model) : buildHermesRuntimeEnv(workspacePath);
 }
 
 export async function ensureHermesRuntimeForWorkspace(workspacePath: string): Promise<string> {
