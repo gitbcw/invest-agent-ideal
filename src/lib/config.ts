@@ -82,8 +82,7 @@ export const config = {
     acpArgs: process.env.CODEX_ACP_ARGS?.trim()
       ? process.env.CODEX_ACP_ARGS.trim().split(/\s+/)
       : [],
-    simpleModel: process.env.CODEX_SIMPLE_MODEL || "gpt-5.4-mini",
-    complexModel: process.env.CODEX_COMPLEX_MODEL || "gpt-5.5",
+    model: process.env.CODEX_MODEL || process.env.CODEX_COMPLEX_MODEL || "gpt-5.5",
     acpCwd: process.env.CODEX_ACP_CWD || process.cwd(),
     acpTimeoutMs: Number(process.env.CODEX_ACP_TIMEOUT_MS) || 1800000,
     sourceHome: path.resolve(process.env.CODEX_SOURCE_HOME || path.join(process.env.HOME || "", ".codex")),

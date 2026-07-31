@@ -16,8 +16,8 @@ const fixtureArg = process.argv.find((value) => value.startsWith("--fixture="));
 const caseArg = process.argv.find((value) => value.startsWith("--case="));
 const fixturePath = path.resolve(PROJECT_ROOT, fixtureArg?.slice("--fixture=".length) || "tests/fixtures/acp-data-quality/core-v1.json");
 
-if (process.env.CODEX_COMPLEX_MODEL !== EXPECTED_MODEL) {
-  throw new Error(`ACP data-quality evaluation requires CODEX_COMPLEX_MODEL=${EXPECTED_MODEL}; received ${process.env.CODEX_COMPLEX_MODEL || "(unset)"}`);
+if (process.env.CODEX_MODEL !== EXPECTED_MODEL) {
+  throw new Error(`ACP data-quality evaluation requires CODEX_MODEL=${EXPECTED_MODEL}; received ${process.env.CODEX_MODEL || "(unset)"}`);
 }
 
 const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
@@ -63,7 +63,7 @@ const manifest = {
   fixtureVersion: fixture.version,
   startedAt: runStartedAt,
   gitSha: gitSha(),
-  model: process.env.CODEX_COMPLEX_MODEL,
+  model: process.env.CODEX_MODEL,
   caseTimeoutMs: CASE_TIMEOUT_MS,
   caseRuntimeTimeoutMs: CASE_RUNTIME_TIMEOUT_MS,
   runtime: {

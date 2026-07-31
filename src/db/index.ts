@@ -330,6 +330,11 @@ export function initDb() {
       review_context_summary TEXT,
       sandbox_token_id TEXT,
       sandbox_permissions TEXT,
+      acp_backend TEXT,
+      acp_model TEXT,
+      mcp_manifest TEXT,
+      prompt_chars INTEGER,
+      reply_chars INTEGER,
       status TEXT NOT NULL,
       error_message TEXT,
       elapsed_ms INTEGER,
@@ -761,6 +766,11 @@ export function initDb() {
   ensureColumn("codex_acp_traces", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("codex_acp_traces", "sandbox_token_id", "TEXT");
   ensureColumn("codex_acp_traces", "sandbox_permissions", "TEXT");
+  ensureColumn("codex_acp_traces", "acp_backend", "TEXT");
+  ensureColumn("codex_acp_traces", "acp_model", "TEXT");
+  ensureColumn("codex_acp_traces", "mcp_manifest", "TEXT");
+  ensureColumn("codex_acp_traces", "prompt_chars", "INTEGER");
+  ensureColumn("codex_acp_traces", "reply_chars", "INTEGER");
   ensureColumn("codex_acp_traces", "input_tokens", "INTEGER");
   ensureColumn("codex_acp_traces", "output_tokens", "INTEGER");
   ensureColumn("codex_acp_traces", "thought_tokens", "INTEGER");

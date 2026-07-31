@@ -3,11 +3,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
-import { resolveScheduledModelTier, type AcpModelTier } from "./model-router.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
 import { recordAcpTrace } from "./trace.js";
 import { extractFinalCustomerReply, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
+import { config } from "../lib/config.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { UserContext } from "../lib/user-context.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID } from "../lib/user-context.js";
@@ -481,7 +481,6 @@ interface ScheduledAcpTaskInput {
   conversationId: string;
   messageId: string;
   mode: string;
-  modelTier?: AcpModelTier;
   reviewContextSummary?: Record<string, unknown>;
   sandboxTokenId?: string;
   sandboxPermissions?: string[];
@@ -503,9 +502,8 @@ export function buildScheduledAcpChatParams(input: ScheduledAcpTaskInput) {
 async function runAcpTask(input: ScheduledAcpTaskInput) {
   const startedAt = Date.now();
   try {
-    const acpResult = await (await getCurrentAcpAgent(input.userContext.workspacePath, {
-      modelTier: input.modelTier || resolveScheduledModelTier(input.mode),
-    })).chatWithUsage(buildScheduledAcpChatParams(input));
+    const acpResult = await (await getCurrentAcpAgent(input.userContext.workspacePath))
+      .chatWithUsage(buildScheduledAcpChatParams(input));
     const reply = acpResult.text;
     await recordAcpTrace({
       userId: input.userContext.userId,
@@ -525,6 +523,9 @@ async function runAcpTask(input: ScheduledAcpTaskInput) {
       status: "success",
       elapsedMs: Date.now() - startedAt,
       usage: acpResult.usage,
+      acpBackend: acpResult.backendId,
+      acpModel: acpResult.model,
+      mcpManifest: acpResult.mcpManifest,
     });
     return reply;
   } catch (error) {
@@ -544,6 +545,8 @@ async function runAcpTask(input: ScheduledAcpTaskInput) {
       elapsedMs: Date.now() - startedAt,
       sandboxTokenId: input.sandboxTokenId,
       sandboxPermissions: input.sandboxPermissions,
+      acpBackend: config.acp.backend,
+      acpModel: config.codex.model,
     });
     throw error;
   }

@@ -194,6 +194,11 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
       usageSource: codexAcpTraces.usageSource,
       reviewContextSummary: codexAcpTraces.reviewContextSummary,
       sandboxTokenId: codexAcpTraces.sandboxTokenId,
+      acpBackend: codexAcpTraces.acpBackend,
+      acpModel: codexAcpTraces.acpModel,
+      mcpManifest: codexAcpTraces.mcpManifest,
+      promptChars: codexAcpTraces.promptChars,
+      replyChars: codexAcpTraces.replyChars,
       createdAt: codexAcpTraces.createdAt,
     })
     .from(codexAcpTraces)

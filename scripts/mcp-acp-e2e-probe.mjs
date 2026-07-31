@@ -33,7 +33,7 @@ const workspacePath = process.cwd() + "/data/test-workspaces/e2e-acp-probe";
 const conversationId = "f5-e2e-probe-" + Date.now();
 
 try {
-  const agent = await getCurrentAcpAgent(workspacePath, { modelTier: "simple" });
+  const agent = await getCurrentAcpAgent(workspacePath);
   console.error("[e2e-probe] ACP agent ready (codex-acp spawned)");
 
   const result = await agent.chatWithUsage({

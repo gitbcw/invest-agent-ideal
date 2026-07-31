@@ -4,14 +4,12 @@ import { textResponse } from "./protocol.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
-import { isChatModelRouterEnabled, isSimpleModelTierEnabled, resolveChatModelTier } from "./model-router.js";
 import { dedupeRepeatedCustomerText, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { recordAcpTrace } from "./trace.js";
 import { DEFAULT_USER_ID } from "../lib/user-context.js";
 import type { UserContext } from "../lib/user-context.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
-import { WorkspaceStore } from "../lib/workspace-store.js";
 import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 
 const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
@@ -70,19 +68,12 @@ export function createAgent(): AcpAgent {
           conversationId,
         };
 
-        const includeRoutingContext = isChatModelRouterEnabled() && isSimpleModelTierEnabled();
         const promptContext = await buildAcpPromptContext({
           userText: buildChannelForwardPrompt(text, userContext, message.context?.attachments),
           userContext,
-          includeContextPacket: includeRoutingContext,
+          includeContextPacket: false,
         });
-        const modelTier = await shouldUseComplexForOnboarding(userContext)
-          ? "complex"
-          : await resolveChatModelTier({
-              text,
-              contextPacket: promptContext.contextPacket,
-            });
-        const acpAgent = await getCurrentAcpAgent(userContext.workspacePath, { modelTier });
+        const acpAgent = await getCurrentAcpAgent(userContext.workspacePath);
         const acpResult = await acpAgent.chatWithUsage({
           conversationId,
           text: promptContext.promptText,
@@ -122,6 +113,9 @@ export function createAgent(): AcpAgent {
           status: "success",
           elapsedMs: Date.now() - startedAt,
           usage: acpResult.usage,
+          acpBackend: acpResult.backendId,
+          acpModel: acpResult.model,
+          mcpManifest: acpResult.mcpManifest,
         });
         return textResponse(
           cleaned,
@@ -144,6 +138,8 @@ export function createAgent(): AcpAgent {
           status: errorMessage.includes("超时") ? "timeout" : "error",
           errorMessage,
           elapsedMs: Date.now() - startedAt,
+          acpBackend: config.acp.backend,
+          acpModel: config.codex.model,
         });
         if (isBusy) {
           return textResponse("上一条消息还在处理中，我处理完会直接回复。你可以稍等一下再发下一条。");
@@ -155,16 +151,6 @@ export function createAgent(): AcpAgent {
       }
     },
   };
-}
-
-async function shouldUseComplexForOnboarding(userContext: UserContext) {
-  if (!userContext.workspacePath) return false;
-  try {
-    const state = await new WorkspaceStore(userContext.userId).readOnboardingState();
-    return state.status !== "completed";
-  } catch {
-    return false;
-  }
 }
 
 async function postProcessAcpReply(input: {

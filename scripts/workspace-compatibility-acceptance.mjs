@@ -101,7 +101,7 @@ try {
     mcpAllowedTools: ["portfolio.read", "market_watch.snapshot"],
   };
   const startedAt = Date.now();
-  const result = await (await getCurrentAcpAgent(workspacePath, { modelTier: "complex" })).chatWithUsage({
+  const result = await (await getCurrentAcpAgent(workspacePath)).chatWithUsage({
     conversationId,
     messageId: randomUUID(),
     cwd: workspacePath,

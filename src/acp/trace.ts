@@ -7,6 +7,8 @@ import type { AcpTokenUsage } from "./stdio-agent.js";
 
 const TEXT_LIMIT = 8000;
 const ERROR_LIMIT = 1200;
+const STORE_PROMPT_TEXT = process.env.ACP_TRACE_STORE_PROMPT_TEXT === "true";
+const STORE_RAW_REPLY = process.env.ACP_TRACE_STORE_RAW_REPLY === "true";
 
 type TraceStatus = "success" | "timeout" | "error";
 
@@ -25,6 +27,9 @@ export interface AcpTraceInput {
   reviewContextSummary?: unknown;
   sandboxTokenId?: string;
   sandboxPermissions?: string[];
+  acpBackend?: string;
+  acpModel?: string;
+  mcpManifest?: unknown;
   status: TraceStatus;
   errorMessage?: string;
   elapsedMs?: number;
@@ -49,13 +54,18 @@ export async function recordAcpTrace(input: AcpTraceInput) {
       messageId: truncate(input.messageId, 300),
       channel: truncate(input.channel, 120) ?? "unknown",
       userText: truncate(input.userText) ?? "",
-      promptText: truncate(input.promptText),
-      replyTextRaw: truncate(input.replyTextRaw),
+      promptText: STORE_PROMPT_TEXT || input.status !== "success" ? truncate(input.promptText) : undefined,
+      replyTextRaw: STORE_RAW_REPLY || input.status !== "success" ? truncate(input.replyTextRaw) : undefined,
       replyTextSanitized: truncate(input.replyTextSanitized),
       mode: truncate(input.mode, 120) ?? "chat",
       reviewContextSummary: truncate(input.reviewContextSummary, 2000),
       sandboxTokenId: truncate(input.sandboxTokenId, 120),
       sandboxPermissions: truncate(input.sandboxPermissions, 1000),
+      acpBackend: truncate(input.acpBackend, 80),
+      acpModel: truncate(input.acpModel, 160),
+      mcpManifest: truncate(input.mcpManifest, 4000),
+      promptChars: input.promptText?.length,
+      replyChars: input.replyTextRaw?.length ?? input.replyTextSanitized?.length,
       status: input.status,
       errorMessage: truncate(input.errorMessage, ERROR_LIMIT),
       elapsedMs: input.elapsedMs,

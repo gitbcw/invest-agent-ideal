@@ -39,7 +39,7 @@ const workspacePath = process.cwd() + "/data/test-workspaces/r5-tool-call-probe"
 const conversationId = "r5-tool-call-" + Date.now();
 
 try {
-  const agent = await getCurrentAcpAgent(workspacePath, { modelTier: "simple" });
+  const agent = await getCurrentAcpAgent(workspacePath);
   console.error("[tool-call-probe] ACP agent ready, 发送要求工具调用的 prompt...");
 
   const result = await agent.chatWithUsage({

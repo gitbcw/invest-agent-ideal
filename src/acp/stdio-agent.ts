@@ -26,9 +26,8 @@ import { settings } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 import { isAcpDiagnosticText } from "../lib/customer-output.js";
-import type { AcpModelTier } from "./model-router.js";
 import { type UserContext } from "../lib/user-context.js";
-import { computeAllowlistFingerprint, resolveSessionMcpServers } from "./mcp-session-manifest.js";
+import { computeAllowlistFingerprint, resolveSessionMcpServers, type AcpMcpSessionManifest } from "./mcp-session-manifest.js";
 import { probeToolConflicts, shouldBlockSessionOnConflict, type ToolConflictReport } from "./mcp-tool-conflict-probe.js";
 
 const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
@@ -166,8 +165,8 @@ export interface AcpBackendDef {
 
 interface AcpBackendOverride {
   cwd?: string;
-  modelTier?: AcpModelTier;
   model?: string;
+  modelLabel?: string;
 }
 
 type AcpMcpServer = {
@@ -197,7 +196,6 @@ export interface AcpBackendStatus {
   ready: boolean;
   command: string;
   cwd: string;
-  modelTier?: AcpModelTier;
   model?: string;
   pid?: number;
   sessions: number;
@@ -224,6 +222,10 @@ export interface AcpTokenUsage {
 export interface AcpChatResult {
   text: string;
   usage: AcpTokenUsage;
+  backendId: AcpBackendId;
+  model?: string;
+  modelLabel?: string;
+  mcpManifest?: AcpMcpSessionManifest;
 }
 
 // ─── 后端定义 ───────────────────────────────────────────────────────
@@ -508,6 +510,7 @@ export class StdioAcpAgent {
   private starting: Promise<ClientSideConnection> | null = null;
   private lastError: string | undefined;
   private readonly sessions = new Map<string, string>();
+  private readonly sessionManifests = new Map<string, AcpMcpSessionManifest>();
   private readonly collectors = new Map<string, ResponseCollector>();
   private readonly activeConversations = new Set<string>();
   private readonly inFlightPromptRejectors = new Map<string, (error: Error) => void>();
@@ -520,7 +523,7 @@ export class StdioAcpAgent {
 
   get label(): string {
     if (this.def.id !== "codex" || !this.override.model) return this.def.label;
-    return `${this.def.label}/${this.override.modelTier || "model"}:${this.override.model}`;
+    return `${this.def.label}/model:${this.override.model}`;
   }
 
   status(isCurrent: boolean): AcpBackendStatus {
@@ -530,7 +533,6 @@ export class StdioAcpAgent {
       ready: this.ready,
       command: this.def.command,
       cwd: this.cwd,
-      modelTier: this.override.modelTier,
       model: this.override.model,
       pid: this.process?.pid,
       sessions: this.sessions.size,
@@ -640,6 +642,10 @@ export class StdioAcpAgent {
     return {
       text,
       usage: extractAcpUsage(promptResult, collector.usageFromUpdate(), params.text, text),
+      backendId: this.def.id,
+      model: this.override.model,
+      modelLabel: this.override.modelLabel,
+      mcpManifest: this.sessionManifests.get(sessionKey),
     };
   }
 
@@ -648,6 +654,7 @@ export class StdioAcpAgent {
       if (key !== conversationId && !key.startsWith(`${conversationId}::`)) continue;
       this.collectors.delete(sessionId);
       this.sessions.delete(key);
+      this.sessionManifests.delete(key);
     }
   }
 
@@ -657,6 +664,7 @@ export class StdioAcpAgent {
     this.starting = null;
     this.connection = null;
     this.sessions.clear();
+    this.sessionManifests.clear();
     this.collectors.clear();
     this.activeConversations.clear();
 
@@ -706,6 +714,7 @@ export class StdioAcpAgent {
       this.connection = null;
       this.process = null;
       this.sessions.clear();
+      this.sessionManifests.clear();
       this.collectors.clear();
     });
 
@@ -757,7 +766,8 @@ export class StdioAcpAgent {
     const existing = this.sessions.get(sessionKey);
     if (existing) return existing;
 
-    let mcpServers = this.buildMcpServers(cwd, userContext);
+    const resolvedMcp = this.buildMcpSession(cwd, userContext);
+    let mcpServers = resolvedMcp.servers;
 
     // R3: 多 server 时在 newSession 前做工具名冲突检查（按配置指纹缓存，session 复用不重复）
     if (mcpServers.length > 1) {
@@ -769,14 +779,29 @@ export class StdioAcpAgent {
       mcpServers,
     });
     this.sessions.set(sessionKey, res.sessionId);
+    this.sessionManifests.set(sessionKey, {
+      ...resolvedMcp.manifest,
+      sessionId: res.sessionId,
+      servers: resolvedMcp.manifest.servers.filter((server) =>
+        mcpServers.some((active) => active.name === server.id),
+      ),
+    });
     logger.info(
       `${this.label} ACP 新会话 key=${sessionKey} cwd=${cwd} session=${res.sessionId}`
     );
     return res.sessionId;
   }
 
-  private buildMcpServers(cwd: string, userContext?: UserContext) {
-    return buildInvestAgentMcpServers(this.def.id, cwd, userContext);
+  private buildMcpSession(cwd: string, userContext?: UserContext) {
+    const taskType = inferTaskType(userContext, process.env);
+    return resolveSessionMcpServers({
+      backendId: this.def.id,
+      cwd,
+      userContext,
+      env: process.env,
+      taskType,
+      sessionId: userContext?.conversationId || "",
+    });
   }
 
   private timeoutAfter(ms: number): Promise<never> {
@@ -947,8 +972,8 @@ const scopedInstances = new Map<string, StdioAcpAgent>();
 let currentBackendId: AcpBackendId | null = null;
 let settingsLoaded = false;
 
-export function resolveAcpModel(tier: AcpModelTier): string {
-  return tier === "complex" ? config.codex.complexModel : config.codex.simpleModel;
+export function resolveDefaultCodexModel(): string {
+  return config.codex.model;
 }
 
 function scopedInstanceKey(id: AcpBackendId, override: AcpBackendOverride): string | undefined {
@@ -997,14 +1022,15 @@ export async function loadCurrentBackendId(): Promise<AcpBackendId> {
 
 export async function getCurrentAcpAgent(
   workspacePath?: string,
-  options: { modelTier?: AcpModelTier } = {},
+  options: { model?: string; modelLabel?: string } = {},
 ): Promise<StdioAcpAgent> {
   const id = await loadCurrentBackendId();
-  const modelTier = options.modelTier;
-  const model = id === "codex" && modelTier ? resolveAcpModel(modelTier) : undefined;
+  const model = id === "codex"
+    ? options.model || resolveDefaultCodexModel()
+    : undefined;
   return getOrCreateInstance(id, {
     ...(workspacePath ? { cwd: workspacePath } : {}),
-    ...(modelTier ? { modelTier } : {}),
+    ...(options.modelLabel ? { modelLabel: options.modelLabel } : {}),
     ...(model ? { model } : {}),
   });
 }
@@ -1088,7 +1114,7 @@ export async function listAcpBackends(): Promise<{
 }
 
 export async function startDefaultAcp(): Promise<void> {
-  const agent = await getCurrentAcpAgent(undefined, { modelTier: "complex" });
+  const agent = await getCurrentAcpAgent();
   await agent.ensureReady();
 }
 

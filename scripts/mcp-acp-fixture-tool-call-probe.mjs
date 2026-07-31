@@ -85,7 +85,7 @@ console.error(`[r5-fixture-probe] start=${new Date().toISOString()}`);
 console.error(`[r5-fixture-probe] sentinel=${PROBE_SENTINEL}`);
 
 try {
-  const agent = await getCurrentAcpAgent(workspacePath, { modelTier: "simple" });
+  const agent = await getCurrentAcpAgent(workspacePath);
   console.error("[r5-fixture-probe] ACP agent ready");
 
   const result = await agent.chatWithUsage({

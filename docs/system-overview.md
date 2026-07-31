@@ -17,13 +17,13 @@ WeChat message
   -> response returns to WeChat
 ```
 
-The service remains running because it owns durable state, scheduling, local APIs, push delivery, and operational surfaces. The workspace ACP backend owns complex reasoning and investment judgment.
+The service remains running because it owns durable state, scheduling, local APIs, push delivery, and operational surfaces. The workspace ACP backend owns reasoning, tool selection, and investment judgment.
 
 ### Local HTTP Access
 
 The runtime binds to `127.0.0.1` by default. Other than the minimal `/health` and discovery endpoints, local HTTP APIs require `Authorization: Bearer <INVEST_AGENT_API_TOKEN>` (or `x-invest-agent-token`). Platform supports account/password login with an `HttpOnly` session cookie; the service token remains an owner-level operational credential, and HTTP Basic with username `invest-agent` remains a local compatibility path. Production must set the service token explicitly. Sandbox APIs retain their separate short-lived sandbox-token authentication. The cloud portal must use the authenticated connector protocol rather than reach these local routes from a browser.
 
-The default ACP model tier is `complex`. The `simple` tier remains in code for future optimization, but it is disabled unless `ACP_SIMPLE_MODEL_ENABLED=true` is set after stability debugging.
+The default Codex ACP model is selected by configuration (`CODEX_MODEL`, with legacy fallback to `CODEX_COMPLEX_MODEL`). The normal runtime path does not split traffic into simple/complex tiers; changing the model should be a configuration or instance/channel policy choice, not a hard-coded branch.
 
 ## Runtime Flow
 
