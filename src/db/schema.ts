@@ -339,6 +339,24 @@ export const codexAcpTraces = sqliteTable("codex_acp_traces", {
   createdAt: text("created_at").notNull(),
 });
 
+/** External MCP observer evidence; one row per observed tools/call request. */
+export const externalMcpToolCalls = sqliteTable("external_mcp_tool_calls", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  instanceId: text("instance_id").notNull(),
+  conversationId: text("conversation_id"),
+  serverId: text("server_id").notNull(),
+  toolName: text("tool_name").notNull(),
+  requestId: text("request_id"),
+  status: text("status").notNull(),
+  elapsedMs: integer("elapsed_ms").notNull(),
+  inputChars: integer("input_chars"),
+  outputChars: integer("output_chars"),
+  errorClass: text("error_class"),
+  createdAt: text("created_at").notNull(),
+});
+
 export const indicatorDefinitions = sqliteTable("indicator_definitions", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   key: text("key").notNull().unique(),

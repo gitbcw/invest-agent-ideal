@@ -9,6 +9,7 @@ import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { registerPortalRoutes } from "./routes/portal.js";
 import { registerSandboxRoutes } from "./routes/sandbox.js";
 import { registerWatchRuleRoutes } from "./routes/watch-rules.js";
+import { registerExternalMcpObserverRoutes } from "./routes/external-mcp-observer.js";
 import { assertPlatformPartnerKeySafety, autoStartPlatformWeixinListeners, projectWeixinManagerForInstance, registerPlatformRoutes } from "./routes/platform.js";
 import { ensureBuiltInIndicatorDefinitions } from "./handlers/indicator-definitions.js";
 import { enqueuePushJob, getPushJob, getPushQueueSummary, processDuePushJobs, type PushBackend } from "./services/push-queue.js";
@@ -113,6 +114,7 @@ export async function createServer() {
   registerSandboxRoutes(app);
   registerPlatformRoutes(app);
   registerWatchRuleRoutes(app);
+  registerExternalMcpObserverRoutes(app);
 
   if (!isOfflineMode()) startPushQueueWorker();
 

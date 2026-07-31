@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import type { UserContext } from "../lib/user-context.js";
 import { defaultInstanceIdForUser } from "../lib/user-context.js";
 import { config } from "../lib/config.js";
+import { serviceApiToken } from "../lib/service-auth.js";
 import { logger } from "../lib/logger.js";
 import type { AcpBackendId } from "./stdio-agent.js";
 import {
@@ -84,10 +85,20 @@ export interface ResolveSessionResult {
   servers: AcpMcpServer[];
 }
 
+function shouldUseExternalMcpObserver(env: NodeJS.ProcessEnv): boolean {
+  return env.INVEST_AGENT_MCP_OBSERVER_ENABLED === "true";
+}
+
+function observerUrl(serverId: string, env: NodeJS.ProcessEnv): string {
+  const baseUrl = (env.INVEST_AGENT_MCP_OBSERVER_BASE_URL || `http://127.0.0.1:${config.port}`).replace(/\/$/, "");
+  return `${baseUrl}/api/internal/mcp-observer/${encodeURIComponent(serverId)}`;
+}
+
 // ─── scope 解析 (1:1 搬迁自原 buildInvestAgentMcpServers) ─────────
 
 interface ResolvedIdentity {
   userId: string;
+  projectId: string;
   instanceId: string;
   workspacePath: string;
   conversationId: string;
@@ -268,6 +279,7 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
   const allowedTools = resolveAllowedTools(userContext, env);
   const identity: ResolvedIdentity = {
     userId,
+    projectId: userContext?.projectId || "invest-agent",
     instanceId,
     workspacePath,
     conversationId: userContext?.conversationId || "",
@@ -293,11 +305,24 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
         continue;
       }
       const configFingerprint = computeConfigFingerprint(reg, identity);
+      const observerEnabled = reg.trustClass === "external-readonly" && shouldUseExternalMcpObserver(env);
+      if (observerEnabled && !serviceApiToken) {
+        logger.warn(`MCP observer is enabled but service API token is unavailable; skipping ${reg.id}`);
+        continue;
+      }
       servers.push({
         type: "http",
         name: reg.id,
-        url: external.url,
-        headers: external.headers,
+        url: observerEnabled ? observerUrl(reg.id, env) : external.url,
+        headers: observerEnabled
+          ? [
+              { name: "X-Invest-Agent-Token", value: serviceApiToken },
+              { name: "X-Invest-Agent-Mcp-User-Id", value: identity.userId },
+              { name: "X-Invest-Agent-Mcp-Project-Id", value: identity.projectId },
+              { name: "X-Invest-Agent-Mcp-Instance-Id", value: identity.instanceId },
+              { name: "X-Invest-Agent-Mcp-Conversation-Id", value: identity.conversationId },
+            ]
+          : external.headers,
         configFingerprint,
       });
       manifestServers.push({

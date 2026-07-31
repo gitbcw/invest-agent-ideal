@@ -30,6 +30,8 @@ The HTTP resolver repeats this check before composing a request, so direct resol
 
 Resolved credential values may enter only the spawned external child environment or the outbound HTTP request headers. They never enter the session manifest, log messages, registration fingerprints, or the tool-conflict cache key. Diagnostics may name missing environment references but never their values.
 
+Set `INVEST_AGENT_MCP_OBSERVER_ENABLED=true` to send external HTTP MCP traffic through the local observer. It records only `server_id`, `tool_name`, request id, completion status, elapsed time, and input/output sizes in `external_mcp_tool_calls`; it never persists raw tool arguments, results, or credentials.
+
 ## Assembly behavior
 
 HTTP MCP is assembled only after the ACP initialize response advertises `agentCapabilities.mcpCapabilities.http=true`; an unavailable capability or missing required configuration skips that external server without blocking the service-owned MCP. Service-owned MCP initialization remains blocking.

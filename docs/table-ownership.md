@@ -25,6 +25,7 @@
 | `ai_instances` | 用户助手注册(历史表名) | 平台元数据 + 路由依据;产品语义上一用户一助手 |
 | `settings` | 系统级 KV(signal_config、巡检间隔、复盘模板) | 平台默认值,跨用户共享 |
 | `codex_acp_traces` | ACP 调用审计(历史表名保留) | 系统审计,与用户方法无关 |
+| `external_mcp_tool_calls` | 外部 MCP observer 调用证据 | service-to-external 协议边界审计；按 user/instance/conversation、server 和 tool 查询 |
 | `conversation_sessions` | canonical conversation log 会话索引 | 用户门户与微信共享的权威对话历史索引;云端 portal 只保存镜像,本地 SQLite 是权威源 |
 | `conversation_messages` | canonical conversation log 消息明细 | 用户门户 `conversation.list/get/chat` 和微信对话审计共用;需要分页、幂等和跨 channel 查询索引 |
 | `conversation_artifacts` | 一等 AI artifact 权威索引(复盘、公司分析、指标、正式发布的图表/文档) | 文件树、过期/删除生命周期、retention 分类和同路径版本 tombstone 都靠这张表权威判定;Workspace 文件本身归该用户实例,但索引与生命周期状态归服务层 |

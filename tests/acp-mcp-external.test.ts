@@ -273,6 +273,31 @@ test("market-data HTTP credentials do not enter the manifest", () => {
   assert.equal(JSON.stringify(servers.map((server) => ({ name: server.name, type: server.type }))).includes("market-data-secret"), false);
 });
 
+test("external HTTP observer keeps provider credentials out of the ACP server configuration", () => {
+  const registry = createMcpRegistry([buildBuiltinServiceToolsRegistration()]);
+  registry.register(buildMarketDataToolRegistration());
+  registry.setEnabled("market-data-tool", true);
+  const { servers } = resolveSessionMcpServers({
+    backendId: "codex",
+    cwd: "/tmp/ws",
+    userContext: { userId: "user-a", projectId: "invest-agent", instanceId: "invest-agent-user-a", conversationId: "c1" },
+    env: {
+      ...HEALTHY_ENV,
+      INVEST_AGENT_MCP_OBSERVER_ENABLED: "true",
+      INVEST_AGENT_MCP_OBSERVER_BASE_URL: "http://observer.test",
+    },
+    taskType: "interactive",
+    sessionId: "c1",
+    registry,
+    mcpCapabilities: { http: true },
+  });
+  const observed = servers.find((server) => server.name === "market-data-tool");
+  assert.ok(observed && observed.type === "http");
+  assert.equal(observed.url, "http://observer.test/api/internal/mcp-observer/market-data-tool");
+  assert.ok(observed.headers.some((header) => header.name === "X-Invest-Agent-Token"));
+  assert.equal(JSON.stringify(observed.headers).includes(HEALTHY_ENV.MARKET_DATA_MCP_TOKEN), false);
+});
+
 // ─── fail closed: 缺必需 env 时 skip (结构化诊断) ─────────────────
 
 test("missing market-data HTTP token skips the server but keeps service-tools", () => {

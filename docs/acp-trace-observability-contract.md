@@ -47,13 +47,13 @@ Do not store large market payloads, full webpages, raw MCP stdout, credentials, 
 
 External read-only MCP native tool calls, such as `market-data-tool`, are currently visible to ACP and their ACP-side lifecycle is captured in `tool_calls`, but they are not uniformly mirrored into `sandbox_audit_logs` because they bypass `invest-agent-service-tools`. For local diagnosis, `mcp_manifest` proves which external servers were mounted, while `tool_calls` proves the Agent-side event; neither currently proves which external server received and executed the request.
 
-If exact external MCP tool-call telemetry becomes necessary, add a small MCP proxy/observer layer or a Codex ACP event hook that records only:
+When `INVEST_AGENT_MCP_OBSERVER_ENABLED=true`, the built-in Streamable HTTP observer is placed between ACP and each enabled external HTTP MCP. It records only:
 
 - server id, tool name, status, elapsed time;
 - result size and provider/source metadata when available;
 - no raw result payload by default.
 
-Do not re-wrap external data tools into service-owned market facades just for trace.
+The observer is opt-in so existing direct MCP installations remain compatible. It keeps external credentials in the service process; ACP receives only the service observer token and scope headers. Do not re-wrap external data tools into service-owned market facades just for trace.
 
 ## What to remove or stop relying on
 

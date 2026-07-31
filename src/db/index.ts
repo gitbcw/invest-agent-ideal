@@ -353,6 +353,22 @@ export function initDb() {
       usage_raw TEXT,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS external_mcp_tool_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL,
+      conversation_id TEXT,
+      server_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      request_id TEXT,
+      status TEXT NOT NULL,
+      elapsed_ms INTEGER NOT NULL,
+      input_chars INTEGER,
+      output_chars INTEGER,
+      error_class TEXT,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS indicator_definitions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       key TEXT NOT NULL UNIQUE,
@@ -865,6 +881,8 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_user_conversation ON codex_acp_traces(user_id, conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_instance ON codex_acp_traces(instance_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_status ON codex_acp_traces(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_external_mcp_tool_calls_scope ON external_mcp_tool_calls(user_id, instance_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_external_mcp_tool_calls_server_tool ON external_mcp_tool_calls(server_id, tool_name, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_sessions_scope_time ON conversation_sessions(instance_id, user_id, updated_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_sessions_channel_time ON conversation_sessions(channel, updated_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_time ON conversation_messages(conversation_id, created_at);
