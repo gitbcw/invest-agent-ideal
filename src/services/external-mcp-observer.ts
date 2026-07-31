@@ -8,6 +8,8 @@ export type ExternalMcpObserverScope = {
   projectId: string;
   instanceId: string;
   conversationId?: string;
+  /** Per prompt/run correlation key; for ACP calls this equals codex_acp_traces.message_id. */
+  runId?: string;
 };
 
 export function resolveObservedExternalMcp(serverId: string, env: NodeJS.ProcessEnv = process.env) {
@@ -43,6 +45,7 @@ export async function recordObservedExternalToolCall(input: {
     projectId: input.scope.projectId,
     instanceId: input.scope.instanceId,
     conversationId: input.scope.conversationId,
+    runId: input.scope.runId,
     serverId: input.serverId,
     toolName: input.toolName,
     requestId: input.requestId,

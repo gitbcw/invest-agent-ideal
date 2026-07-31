@@ -19,7 +19,7 @@ Keep fields that answer "what happened to this ACP turn?" without storing unnece
 - Outcome: `status`, `error_message`, `elapsed_ms`, `created_at`.
 - Model/runtime: `acp_backend`, `acp_model`.
 - MCP assembly: sanitized `mcp_manifest` with server ids, transport kind, version, and config fingerprint only. No secrets, env values, tool results, or payloads.
-- ACP tool events: compact `tool_calls` summaries with ACP `toolCallId`, title/tool name when exposed, status, elapsed time, and input/output sizes. These prove that the Agent emitted/observed an ACP tool-call event; they do not yet prove which external MCP server executed it.
+- ACP tool events: compact, valid-JSON `tool_calls` summaries with ACP `toolCallId`, title/tool name when exposed, status, elapsed time, and input/output sizes. Oversized payloads are stored as a valid JSON truncation envelope rather than sliced text. These prove that the Agent emitted/observed an ACP tool-call event; they do not yet prove which external MCP server executed it.
 - User/customer text: `user_text` and `reply_text_sanitized`, redacted and truncated.
 - Size/cost: `prompt_chars`, `reply_chars`, token/cost fields, `usage_source`.
 - Narrow task summary: `review_context_summary`, `sandbox_token_id`, `sandbox_permissions`.
@@ -49,9 +49,11 @@ External read-only MCP native tool calls, such as `market-data-tool`, are curren
 
 When `INVEST_AGENT_MCP_OBSERVER_ENABLED=true`, the built-in Streamable HTTP observer is placed between ACP and each enabled external HTTP MCP. It records only:
 
-- server id, tool name, status, elapsed time;
+- server id, tool name, status, elapsed time, and the per-turn `run_id`;
 - result size and provider/source metadata when available;
 - no raw result payload by default.
+
+For observer-routed external HTTP MCPs, the ACP session is scoped to a single turn because MCP headers are fixed at session creation. `run_id` equals `codex_acp_traces.message_id`, so observer evidence can be joined to one exact ACP trace instead of merely the broader conversation.
 
 The observer is opt-in so existing direct MCP installations remain compatible. It keeps external credentials in the service process; ACP receives only the service observer token and scope headers. Do not re-wrap external data tools into service-owned market facades just for trace.
 

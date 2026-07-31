@@ -359,6 +359,7 @@ export function initDb() {
       project_id TEXT NOT NULL DEFAULT 'invest-agent',
       instance_id TEXT NOT NULL,
       conversation_id TEXT,
+      run_id TEXT,
       server_id TEXT NOT NULL,
       tool_name TEXT NOT NULL,
       request_id TEXT,
@@ -801,6 +802,7 @@ export function initDb() {
   ensureColumn("codex_acp_traces", "cost_currency", "TEXT");
   ensureColumn("codex_acp_traces", "usage_source", "TEXT");
   ensureColumn("codex_acp_traces", "usage_raw", "TEXT");
+  ensureColumn("external_mcp_tool_calls", "run_id", "TEXT");
   ensureColumn("sandbox_audit_logs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("sandbox_audit_logs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("pending_sandbox_confirmations", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
@@ -883,6 +885,7 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_status ON codex_acp_traces(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_external_mcp_tool_calls_scope ON external_mcp_tool_calls(user_id, instance_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_external_mcp_tool_calls_server_tool ON external_mcp_tool_calls(server_id, tool_name, created_at);
+    CREATE INDEX IF NOT EXISTS idx_external_mcp_tool_calls_run ON external_mcp_tool_calls(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_sessions_scope_time ON conversation_sessions(instance_id, user_id, updated_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_sessions_channel_time ON conversation_sessions(channel, updated_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_time ON conversation_messages(conversation_id, created_at);

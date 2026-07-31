@@ -83,6 +83,8 @@ export interface ResolveSessionInput {
 export interface ResolveSessionResult {
   manifest: AcpMcpSessionManifest;
   servers: AcpMcpServer[];
+  /** Observer headers are fixed at ACP session creation, so these sessions cannot span turns. */
+  requiresTurnScopedSession: boolean;
 }
 
 function shouldUseExternalMcpObserver(env: NodeJS.ProcessEnv): boolean {
@@ -291,6 +293,7 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
 
   const manifestServers: AcpMcpSessionManifest["servers"] = [];
   const servers: AcpMcpServer[] = [];
+  let requiresTurnScopedSession = false;
 
   for (const reg of registry.listEnabledRegistrations(sessionKind)) {
     // ACP capability 未声明时 fail closed,避免把 HTTP server 交给不兼容的 Agent。
@@ -321,6 +324,7 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
               { name: "X-Invest-Agent-Mcp-Project-Id", value: identity.projectId },
               { name: "X-Invest-Agent-Mcp-Instance-Id", value: identity.instanceId },
               { name: "X-Invest-Agent-Mcp-Conversation-Id", value: identity.conversationId },
+              ...(runId ? [{ name: "X-Invest-Agent-Mcp-Run-Id", value: runId }] : []),
             ]
           : external.headers,
         configFingerprint,
@@ -331,6 +335,7 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
         version: reg.versionPolicy?.expected,
         configFingerprint,
       });
+      if (observerEnabled) requiresTurnScopedSession = true;
       continue;
     }
 
@@ -399,7 +404,7 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
       .join(",")}`,
   );
 
-  return { manifest, servers };
+  return { manifest, servers, requiresTurnScopedSession };
 }
 
 function emptyManifest(
@@ -413,5 +418,6 @@ function emptyManifest(
   return {
     manifest: { sessionId, runId, userId, instanceId, taskType, servers: [] },
     servers: [],
+    requiresTurnScopedSession: false,
   };
 }

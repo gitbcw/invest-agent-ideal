@@ -64,6 +64,19 @@ test("ACP trace stores compact runtime metadata without successful prompt/raw re
     assert.match(row.mcpManifest ?? "", /market-data-tool/);
     assert.match(row.toolCalls ?? "", /quant_screen_stocks/);
     assert.doesNotMatch(row.toolCalls ?? "", /secret/);
+    assert.equal(sqlite.prepare("SELECT json_valid(tool_calls) AS valid FROM codex_acp_traces WHERE user_id = ?").get("trace-user").valid, 1);
+
+    await recordAcpTrace({
+      conversationId: "large-json-conversation",
+      channel: "api",
+      userText: "trace test",
+      mode: "chat",
+      status: "success",
+      toolCalls: [{ title: "large tool output", output: "x".repeat(20_000) }],
+    });
+    const [largeRow] = await db.select().from(codexAcpTraces).where(eq(codexAcpTraces.conversationId, "large-json-conversation"));
+    assert.equal(sqlite.prepare("SELECT json_valid(tool_calls) AS valid FROM codex_acp_traces WHERE conversation_id = ?").get("large-json-conversation").valid, 1);
+    assert.match(largeRow.toolCalls ?? "", /"truncated":true/);
     sqlite.close();
   } finally {
     await rm(root, { recursive: true, force: true });

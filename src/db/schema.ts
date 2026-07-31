@@ -346,6 +346,8 @@ export const externalMcpToolCalls = sqliteTable("external_mcp_tool_calls", {
   projectId: text("project_id").notNull().default("invest-agent"),
   instanceId: text("instance_id").notNull(),
   conversationId: text("conversation_id"),
+  /** Per-turn correlation key. Equals the ACP/trace messageId for observer-routed calls. */
+  runId: text("run_id"),
   serverId: text("server_id").notNull(),
   toolName: text("tool_name").notNull(),
   requestId: text("request_id"),

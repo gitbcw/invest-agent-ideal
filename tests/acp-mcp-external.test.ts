@@ -154,6 +154,7 @@ test("qsse-qlib assembles beside service tools without receiving service scope",
     env: QSSE_HEALTHY_ENV,
     taskType: "interactive",
     sessionId: "c1",
+    runId: "turn-1",
     registry,
     mcpCapabilities: { http: true },
   });
@@ -233,6 +234,7 @@ test("enabled market-data-tool is assembled alongside service-tools", () => {
     env: HEALTHY_ENV,
     taskType: "interactive",
     sessionId: "c1",
+    runId: "turn-1",
     registry,
     mcpCapabilities: { http: true },
   });
@@ -288,6 +290,7 @@ test("external HTTP observer keeps provider credentials out of the ACP server co
     },
     taskType: "interactive",
     sessionId: "c1",
+    runId: "turn-1",
     registry,
     mcpCapabilities: { http: true },
   });
@@ -295,6 +298,7 @@ test("external HTTP observer keeps provider credentials out of the ACP server co
   assert.ok(observed && observed.type === "http");
   assert.equal(observed.url, "http://observer.test/api/internal/mcp-observer/market-data-tool");
   assert.ok(observed.headers.some((header) => header.name === "X-Invest-Agent-Token"));
+  assert.ok(observed.headers.some((header) => header.name === "X-Invest-Agent-Mcp-Run-Id" && header.value === "turn-1"));
   assert.equal(JSON.stringify(observed.headers).includes(HEALTHY_ENV.MARKET_DATA_MCP_TOKEN), false);
 });
 

@@ -674,10 +674,18 @@ export class StdioAcpAgent {
     // WP3: sessionKey 必须纳入 allowlist 指纹,否则同一 conversation 不同 allowlist 会复用
     // session,导致权限泄漏 (全量 session 被只读阶段复用)。无 allowlist (全量) 时指纹为空串。
     const allowlistFp = computeAllowlistFingerprint(params.userContext, process.env);
-    const sessionKey = [params.conversationId, params.cwd, allowlistFp]
+    const resolvedMcp = this.buildMcpSession(params.cwd ?? this.cwd, params.userContext, params.messageId);
+    const sessionKey = [
+      params.conversationId,
+      params.cwd,
+      allowlistFp,
+      // Observer headers are immutable for an ACP session. Include the turn id so
+      // external evidence can be joined to exactly one ACP trace.
+      resolvedMcp.requiresTurnScopedSession ? params.messageId : undefined,
+    ]
       .filter((part) => part !== undefined && part !== "")
       .join("::");
-    const sessionId = await this.getOrCreateSession(sessionKey, conn, params.cwd, params.userContext);
+    const sessionId = await this.getOrCreateSession(sessionKey, conn, params.cwd, resolvedMcp);
     const prompt = [{ type: "text" as const, text: params.text }];
     const collector = new ResponseCollector();
     this.collectors.set(sessionId, collector);
@@ -850,12 +858,11 @@ export class StdioAcpAgent {
     sessionKey: string,
     conn: ClientSideConnection,
     cwd = this.cwd,
-    userContext?: UserContext
+    resolvedMcp: ReturnType<StdioAcpAgent["buildMcpSession"]>,
   ) {
     const existing = this.sessions.get(sessionKey);
     if (existing) return existing;
 
-    const resolvedMcp = this.buildMcpSession(cwd, userContext);
     let mcpServers = resolvedMcp.servers;
 
     // R3: 多 server 时在 newSession 前做工具名冲突检查（按配置指纹缓存，session 复用不重复）
@@ -881,7 +888,7 @@ export class StdioAcpAgent {
     return res.sessionId;
   }
 
-  private buildMcpSession(cwd: string, userContext?: UserContext) {
+  private buildMcpSession(cwd: string, userContext?: UserContext, runId?: string) {
     const taskType = inferTaskType(userContext, process.env);
     return resolveSessionMcpServers({
       backendId: this.def.id,
@@ -890,6 +897,7 @@ export class StdioAcpAgent {
       env: process.env,
       taskType,
       sessionId: userContext?.conversationId || "",
+      runId,
       mcpCapabilities: { http: this.httpMcpSupported },
     });
   }

@@ -52,6 +52,7 @@ test("observer forwards tools/call and persists minimal external MCP evidence", 
         "x-invest-agent-mcp-project-id": "invest-agent",
         "x-invest-agent-mcp-instance-id": "invest-agent-observer-user",
         "x-invest-agent-mcp-conversation-id": "observer-conversation",
+        "x-invest-agent-mcp-run-id": "observer-message-1",
       },
       payload: { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "get_realtime_quote", arguments: { symbols: ["600519"] } } },
     });
@@ -63,6 +64,7 @@ test("observer forwards tools/call and persists minimal external MCP evidence", 
     assert.equal(row.serverId, "market-data-tool");
     assert.equal(row.toolName, "get_realtime_quote");
     assert.equal(row.status, "completed");
+    assert.equal(row.runId, "observer-message-1");
     assert.ok((row.inputChars || 0) > 0);
     assert.equal(row.outputChars, null);
   } finally {

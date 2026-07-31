@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { AcpMessage, AcpResponse } from "./protocol.js";
 import { textResponse } from "./protocol.js";
 import { logger } from "../lib/logger.js";
@@ -77,7 +76,9 @@ export function createAgent(): AcpAgent {
         const acpResult = await acpAgent.chatWithUsage({
           conversationId,
           text: promptContext.promptText,
-          messageId: randomUUID(),
+          // Reuse the service message id so the ACP trace and external MCP observer
+          // share one stable per-turn correlation key.
+          messageId: message.id,
           timeoutMs: userChannel === "weixin-mobile"
             ? WEIXIN_DIRECT_ACP_TIMEOUT_MS
             : ACP_EVALUATION_CASE_TIMEOUT_MS > 0

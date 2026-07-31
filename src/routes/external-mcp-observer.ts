@@ -18,7 +18,13 @@ function scopeFromHeaders(headers: Record<string, string | string[] | undefined>
   const projectId = value("x-invest-agent-mcp-project-id");
   const instanceId = value("x-invest-agent-mcp-instance-id");
   if (!userId || !projectId || !instanceId) return null;
-  return { userId, projectId, instanceId, conversationId: value("x-invest-agent-mcp-conversation-id") };
+  return {
+    userId,
+    projectId,
+    instanceId,
+    conversationId: value("x-invest-agent-mcp-conversation-id"),
+    runId: value("x-invest-agent-mcp-run-id"),
+  };
 }
 
 /** Transparent HTTP MCP relay. It records only tools/call metadata, never request or result bodies. */

@@ -7,6 +7,7 @@ import type { AcpTokenUsage } from "./stdio-agent.js";
 
 const TEXT_LIMIT = 8000;
 const ERROR_LIMIT = 1200;
+const JSON_FIELD_LIMIT = 16_000;
 const STORE_PROMPT_TEXT = process.env.ACP_TRACE_STORE_PROMPT_TEXT === "true";
 const STORE_RAW_REPLY = process.env.ACP_TRACE_STORE_RAW_REPLY === "true";
 
@@ -45,6 +46,33 @@ function truncate(value: unknown, limit = TEXT_LIMIT) {
   return `${text.slice(0, limit)}\n...[truncated ${text.length - limit} chars]`;
 }
 
+/**
+ * JSON audit fields must remain parseable even when they exceed their storage
+ * budget. Plain string slicing turns a valid array/object into malformed JSON,
+ * which made tool-call traces impossible to query reliably.
+ */
+function serializeJsonForStorage(value: unknown, limit = JSON_FIELD_LIMIT) {
+  if (value === undefined || value === null) return undefined;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    serialized = JSON.stringify({ serializationError: true });
+  }
+  if (serialized === undefined) return undefined;
+  const redacted = redactSensitiveText(serialized);
+  if (redacted.length <= limit) return redacted;
+
+  const envelope = (preview: string) => JSON.stringify({
+    truncated: true,
+    originalChars: redacted.length,
+    preview,
+  });
+  let preview = redacted.slice(0, Math.max(0, limit - 160));
+  while (preview.length > 0 && envelope(preview).length > limit) preview = preview.slice(0, -64);
+  return envelope(preview);
+}
+
 export async function recordAcpTrace(input: AcpTraceInput) {
   try {
     await db.insert(codexAcpTraces).values({
@@ -64,8 +92,8 @@ export async function recordAcpTrace(input: AcpTraceInput) {
       sandboxPermissions: truncate(input.sandboxPermissions, 1000),
       acpBackend: truncate(input.acpBackend, 80),
       acpModel: truncate(input.acpModel, 160),
-      mcpManifest: truncate(input.mcpManifest, 4000),
-      toolCalls: truncate(input.toolCalls, 4000),
+      mcpManifest: serializeJsonForStorage(input.mcpManifest, 4000),
+      toolCalls: serializeJsonForStorage(input.toolCalls),
       promptChars: input.promptText?.length,
       replyChars: input.replyTextRaw?.length ?? input.replyTextSanitized?.length,
       status: input.status,

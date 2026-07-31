@@ -20,6 +20,7 @@ workspaces/
 .agents/
 eval-reports/
 .tmp/
+.local/
 .hermes/
 __pycache__/
 *.pyc
