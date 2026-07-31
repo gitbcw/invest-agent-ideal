@@ -24,7 +24,7 @@ Help the user build a trackable observation pool. This skill must not output "to
 1. Understand the user's style, market scope, risk preference, and current holdings.
 2. Build candidate drafts only within the user's stated scope and ability circle.
 3. For each candidate, record source reason, style fit, missing data, risk flags, and waiting conditions.
-4. For candidates already named by the user, use the narrowest currently exposed named MCP read capability. Treat returned source, time, confidence, warnings, and missing fields as fact boundaries.
+4. For candidates already named by the user, use the narrowest currently exposed MCP read capabilities: service MCP for current user state and external read-only data MCP for quotes, price history, financial reports, news, research reports, sectors, or calendar when available. Treat returned source, time, confidence, warnings, and missing fields as fact boundaries.
 5. Scan financial, valuation, governance, liquidity, theme-overheat, and style-mismatch risks.
 6. Define buy-waiting zones as price, valuation, event, or financial validation conditions.
 7. Ask for confirmation before writing to `config/observation_pool.yaml`.

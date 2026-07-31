@@ -359,6 +359,16 @@ function debugSessionUpdate(label: string, notification: SessionNotification) {
   const update = notification.update;
   const updateRecord: Record<string, unknown> = isRecord(update) ? update : {};
   const record = sanitizeDebugValue(update) as Record<string, unknown>;
+  const availableCommands = Array.isArray(updateRecord.availableCommands)
+    ? updateRecord.availableCommands
+        .slice(0, 80)
+        .map((command) => isRecord(command) ? {
+          name: typeof command.name === "string" ? command.name : undefined,
+          description: typeof command.description === "string"
+            ? command.description.slice(0, ACP_DEBUG_PREVIEW_CHARS)
+            : undefined,
+        } : command)
+    : undefined;
   const content = updateRecord.content;
   const text =
     isRecord(content) && typeof content.text === "string"
@@ -367,6 +377,7 @@ function debugSessionUpdate(label: string, notification: SessionNotification) {
   logger.info(
     `[ACP_DEBUG] ${label} session=${notification.sessionId} update=${String(update.sessionUpdate)} keys=${Object.keys(record).join(",")} summary=${JSON.stringify({
       ...record,
+      availableCommands,
       contentTextPreview: text,
     })}`
   );

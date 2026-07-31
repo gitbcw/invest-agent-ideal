@@ -38,6 +38,7 @@ Codex ACP receives an explicit MCP child-process environment. The wiring must ca
 
 Read tools:
 
+- Legacy service-owned `market.*` facade tools are still part of the service MCP contract, but an ACP runtime can hide them with `INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED=false`. This is used while shifting market/provider facts to external read-only data MCP servers. `market_watch.snapshot` remains available because it is scheduler-window audit/comparison evidence, not a live market-data facade.
 - `market.snapshot`
 - `market_watch.snapshot`（当前 user/instance 最近一次 scheduler 盘中快照及有效变化标记；定时简报可将其作为审计/比较输入，而非唯一行情来源）
 - `market.quote`

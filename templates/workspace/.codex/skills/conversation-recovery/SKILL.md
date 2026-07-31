@@ -14,4 +14,4 @@ When a user says `确认`, `继续`, `可以`, `就这个`, `第二个`, or anot
 3. If the result still has zero or multiple plausible targets, ask a concise clarification question.
 4. Do not write state, confirm a draft, or infer a target until it is unique and the user has explicitly confirmed it.
 
-Use named MCP reads for current holdings, watchlist, plans, market facts, and source health. If the required tool is unavailable, state the user-visible limitation; do not use shell, HTTP, tokens, database files, or hidden service routes as a fallback. Never expose tools, paths, ports, or internal steps to the user.
+Use named MCP reads for current holdings, watchlist, plans, market facts, and source health. Prefer service MCP for current user state and external read-only data MCP for market/provider facts when available. If the required tool is unavailable, state the user-visible limitation; do not use shell, HTTP, tokens, database files, or hidden service routes as a fallback. Never expose tools, paths, ports, or internal steps to the user.

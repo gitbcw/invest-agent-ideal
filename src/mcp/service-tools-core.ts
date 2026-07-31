@@ -375,6 +375,12 @@ async function dispatchServiceTool(
     }
     case "watchlist.read": {
       const rows = await watchlistBackend.list(context.userId, context.instanceId);
+      await audit(context, {
+        operation: "watchlist.read",
+        resourceType: "watchlist",
+        resourceId: context.instanceId,
+        resultSummary: `watchlist=${rows.length}`,
+      });
       return {
         ok: true,
         userId: context.userId,
@@ -392,6 +398,12 @@ async function dispatchServiceTool(
     }
     case "plans.read": {
       const rows = await planBackend.list(context.userId, context.instanceId);
+      await audit(context, {
+        operation: "plans.read",
+        resourceType: "stock_plans",
+        resourceId: context.instanceId,
+        resultSummary: `plans=${rows.length}`,
+      });
       return {
         ok: true,
         userId: context.userId,

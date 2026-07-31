@@ -177,6 +177,13 @@ function resolveServiceScopeEnv(
     { name: "REVIEWS_ROOT", value: resolveFromProject(env.REVIEWS_ROOT || path.join(projectRoot, "reviews")) },
   ];
 
+  if (env.INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED) {
+    runtimeEnv.push({
+      name: "INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED",
+      value: env.INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED,
+    });
+  }
+
   // Credentials are deliberately passed only to the child process. This
   // configuration is never logged or included in customer-visible output.
   if (env.INVEST_AGENT_SANDBOX_SECRET) {

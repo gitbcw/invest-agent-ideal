@@ -97,19 +97,11 @@ try {
     await client.connect(transport);
     const listed = await client.listTools();
     const toolNames = listed.tools.map((tool) => tool.name).sort();
-    const requiredTools = [
+    const baseRequiredTools = [
       "confirmations.pending",
       "confirmations.request",
       "conversation.history",
       "market_watch.snapshot",
-      "market.calendar",
-      "market.capital_flow",
-      "market.indices",
-      "market.kline",
-      "market.fundamentals",
-      "market.resolve",
-      "market.sector_theme",
-      "market.stock_info",
       "research.news_search",
       "research.web_search",
       "research.web_read",
@@ -127,7 +119,22 @@ try {
       "watch_rules.create",
       "watchlist.add",
     ];
-    assert.deepEqual(requiredTools.filter((name) => !toolNames.includes(name)), []);
+    const legacyMarketTools = [
+      "market.calendar",
+      "market.capital_flow",
+      "market.indices",
+      "market.kline",
+      "market.fundamentals",
+      "market.resolve",
+      "market.sector_theme",
+      "market.stock_info",
+    ];
+    assert.deepEqual(baseRequiredTools.filter((name) => !toolNames.includes(name)), []);
+    if (process.env.INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED === "false") {
+      assert.deepEqual(legacyMarketTools.filter((name) => toolNames.includes(name)), []);
+    } else {
+      assert.deepEqual(legacyMarketTools.filter((name) => !toolNames.includes(name)), []);
+    }
     const portfolio = await client.callTool({ name: "portfolio.read", arguments: {} });
     assert.notEqual(portfolio.isError, true);
     const portfolioText = portfolio.content?.find((item) => item.type === "text")?.text;

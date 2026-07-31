@@ -45,6 +45,7 @@ const allowedTools = new Set(
     .map((name) => name.trim())
     .filter(Boolean)
 );
+const serviceMarketToolsEnabled = process.env.INVEST_AGENT_SERVICE_MARKET_TOOLS_ENABLED !== "false";
 
 async function main() {
   const { callServiceTool, serviceToolContextFromEnv } = await import("./service-tools-core.js");
@@ -258,7 +259,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "confirmations.request",
-    "Register an exact durable-write draft before asking the user to confirm it. The returned confirmationId is bound to the current conversation, operation, and payload.",
+    "Safe pre-write step: call this in the same turn when the user asks to change durable state. It only registers an exact draft and returns a confirmationId; it does not perform the durable write. After this call, show the draft and wait for a later explicit user confirmation before calling the matching write tool.",
     {
       operation: z.enum(["portfolio.apply_changes", "onboarding.confirm_portfolio", "onboarding.confirm_step", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "watch_rules.create"]),
       payload: z.record(z.string(), z.unknown()),
@@ -556,6 +557,7 @@ function registerJsonTool(
   annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean } = {}
 ) {
   if (allowedTools.size > 0 && !allowedTools.has(name)) return;
+  if (!serviceMarketToolsEnabled && name.startsWith("market.")) return;
   runtime.server.registerTool(
     name,
     {

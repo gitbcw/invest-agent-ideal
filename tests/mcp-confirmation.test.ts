@@ -73,6 +73,27 @@ test("MCP durable writes consume an exact, later-turn confirmation once", async 
     const invalidDrafts = await db.select().from(pendingSandboxConfirmations).where(eq(pendingSandboxConfirmations.userId, userId));
     assert.equal(invalidDrafts.length, 0, "invalid onboarding drafts must be rejected before creating a confirmation");
 
+    const watchlistDraft = {
+      name: "贵州茅台",
+      code: "600519",
+      reason: "用户主动要求加入自选股",
+    };
+    const watchlistConfirmation = await callServiceTool("confirmations.request", {
+      operation: "watchlist.add",
+      payload: watchlistDraft,
+      summary: "请确认加入自选股",
+    }, context) as { ok: boolean; confirmationId: string; operation: string };
+    assert.equal(watchlistConfirmation.ok, true);
+    assert.equal(watchlistConfirmation.operation, "watchlist.add");
+    const [watchlistPending] = await db.select().from(pendingSandboxConfirmations).where(eq(pendingSandboxConfirmations.id, watchlistConfirmation.confirmationId));
+    assert.equal(watchlistPending?.operation, "watchlist.add");
+    assert.equal(watchlistPending?.requestBody, JSON.stringify(watchlistDraft));
+    const watchlistAudits = await db.select().from(sandboxAuditLogs).where(and(
+      eq(sandboxAuditLogs.userId, userId),
+      eq(sandboxAuditLogs.operation, "confirmations.request")
+    ));
+    assert.ok(watchlistAudits.some((row) => row.resultSummary?.includes("watchlist.add")), "watchlist confirmation requests must be audited");
+
     const payload = {
       step: "style",
       summary: "保存趋势辅助型风格",
