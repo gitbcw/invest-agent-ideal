@@ -8,8 +8,14 @@ test("web channel teaches the proactive inline SVG selection policy", () => {
   assert.match(instruction, /看比读更划算时才给/);
   assert.match(instruction, /教学\/讲解\/介绍投资概念/);
   assert.match(instruction, /两个或以上对象或方案的比较/);
+  assert.match(instruction, /默认最多一张/);
+  assert.match(instruction, /只有用户明确要求多图、两张图或分别画图/);
+  assert.match(instruction, /复杂话题本身不是生成第二张图的理由/);
   assert.match(instruction, /纯词义解释、单一事实或简短行情问答/);
   assert.match(instruction, /只能使用下方的 `invest-svg` 内联图示/);
+  assert.match(instruction, /最多 2 张/);
+  assert.doesNotMatch(instruction, /复杂话题可用 2-3 张/);
+  assert.doesNotMatch(instruction, /最多 3 张/);
 });
 
 test("non-web channels do not receive the Portal visual policy", () => {

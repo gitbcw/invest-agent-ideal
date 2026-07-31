@@ -35,3 +35,17 @@ test("extractInlineSvgVisuals rejects XML processing features", () => {
   const result = extractInlineSvgVisuals(`\`\`\`invest-svg\n<!DOCTYPE svg><svg viewBox="0 0 680 320"><title>x</title></svg>\n\`\`\``);
   assert.equal(result.visuals.length, 0);
 });
+
+test("extractInlineSvgVisuals caps Portal replies at two visuals", () => {
+  const second = SAFE_SVG.replace("三种价格情景", "第二张图");
+  const third = SAFE_SVG.replace("三种价格情景", "第三张图");
+  const result = extractInlineSvgVisuals([
+    "```invest-svg", SAFE_SVG, "```",
+    "```invest-svg", second, "```",
+    "```invest-svg", third, "```",
+  ].join("\n"));
+
+  assert.equal(result.visuals.length, 2);
+  assert.deepEqual(result.visuals.map((visual) => visual.title), ["三种价格情景", "第二张图"]);
+  assert.equal(result.text, "图示如下。");
+});

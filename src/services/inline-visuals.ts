@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { sanitizeSvgForInline, scanForUnsafeContent } from "./svg-sanitizer.js";
 
-const MAX_INLINE_VISUALS = 3;
+const MAX_INLINE_VISUALS = 2;
 const MAX_SVG_BYTES = 64 * 1024;
 const SVG_BLOCK = /```invest-svg\s*\r?\n([\s\S]*?)\r?\n```/gi;
 
