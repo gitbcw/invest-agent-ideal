@@ -13,6 +13,11 @@ import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 
 const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
   Number(process.env.WEIXIN_DIRECT_ACP_TIMEOUT_MS) || 600_000;
+// Portal Relay treats an unanswered request as failed after ten minutes. End
+// the ACP turn earlier so the connector can persist a visible terminal reply
+// instead of leaving the Portal's user message pending after a long run.
+const PORTAL_DIRECT_ACP_TIMEOUT_MS =
+  Number(process.env.PORTAL_DIRECT_ACP_TIMEOUT_MS) || 480_000;
 const ACP_EVALUATION_CASE_TIMEOUT_MS = Number(process.env.ACP_EVAL_CASE_TIMEOUT_MS) || 0;
 
 export interface AcpAgent {
@@ -81,6 +86,8 @@ export function createAgent(): AcpAgent {
           messageId: message.id,
           timeoutMs: userChannel === "weixin-mobile"
             ? WEIXIN_DIRECT_ACP_TIMEOUT_MS
+            : userChannel === "web"
+              ? PORTAL_DIRECT_ACP_TIMEOUT_MS
             : ACP_EVALUATION_CASE_TIMEOUT_MS > 0
               ? ACP_EVALUATION_CASE_TIMEOUT_MS
               : undefined,

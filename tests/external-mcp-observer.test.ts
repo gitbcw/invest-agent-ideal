@@ -6,7 +6,11 @@ import { db, initDb } from "../src/db/index.js";
 import { externalMcpToolCalls } from "../src/db/schema.js";
 import { serviceApiToken } from "../src/lib/service-auth.js";
 import { registerExternalMcpObserverRoutes } from "../src/routes/external-mcp-observer.js";
-import { observedToolCallFromBody } from "../src/services/external-mcp-observer.js";
+import {
+  observedToolCallFromBody,
+  reserveExternalMcpToolCall,
+  resolveExternalMcpToolCallBudget,
+} from "../src/services/external-mcp-observer.js";
 
 function restoreEnv(name: string, value: string | undefined) {
   if (value === undefined) delete process.env[name];
@@ -19,6 +23,27 @@ test("recognizes only JSON-RPC tools/call requests", () => {
     requestId: "7",
   });
   assert.equal(observedToolCallFromBody({ method: "tools/list", id: 8 }), null);
+});
+
+test("external MCP budget limits total calls and repeated identical tool calls per turn", () => {
+  const state = { totalCalls: 0, consecutiveCalls: 0 };
+  const budget = { maxCalls: 3, maxConsecutiveCalls: 2 };
+  assert.equal(reserveExternalMcpToolCall({ state, serverId: "market", toolName: "quote", budget }).allowed, true);
+  assert.equal(reserveExternalMcpToolCall({ state, serverId: "market", toolName: "quote", budget }).allowed, true);
+  const repeated = reserveExternalMcpToolCall({ state, serverId: "market", toolName: "quote", budget });
+  assert.deepEqual(repeated, { allowed: false, reason: "consecutive_calls", totalCalls: 2, consecutiveCalls: 3 });
+  assert.equal(state.totalCalls, 2, "rejected calls must not consume total budget");
+  assert.equal(reserveExternalMcpToolCall({ state, serverId: "market", toolName: "news", budget }).allowed, true);
+  const exhausted = reserveExternalMcpToolCall({ state, serverId: "qsse", toolName: "industry", budget });
+  assert.deepEqual(exhausted, { allowed: false, reason: "total_calls", totalCalls: 3, consecutiveCalls: 1 });
+});
+
+test("external MCP budget defaults safely and permits explicit controlled disable", () => {
+  assert.deepEqual(resolveExternalMcpToolCallBudget({}), { maxCalls: 12, maxConsecutiveCalls: 4 });
+  assert.deepEqual(resolveExternalMcpToolCallBudget({ EXTERNAL_MCP_MAX_CALLS_PER_TURN: "0", EXTERNAL_MCP_MAX_CONSECUTIVE_CALLS: "0" }), {
+    maxCalls: 0,
+    maxConsecutiveCalls: 0,
+  });
 });
 
 test("observer forwards tools/call and persists minimal external MCP evidence", async () => {

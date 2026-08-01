@@ -5,12 +5,56 @@ import { logger } from "../lib/logger.js";
 import {
   observedToolCallFromBody,
   recordObservedExternalToolCall,
+  reserveExternalMcpToolCall,
+  resolveExternalMcpToolCallBudget,
   resolveObservedExternalMcp,
   serializedSize,
+  type ExternalMcpToolCallBudgetState,
   type ExternalMcpObserverScope,
 } from "../services/external-mcp-observer.js";
 
 const OBSERVER_PREFIX = "/api/internal/mcp-observer/";
+const TURN_BUDGET_STATE_TTL_MS = 60 * 60 * 1000;
+const MAX_TRACKED_TURNS = 2_000;
+const turnBudgetStates = new Map<string, { state: ExternalMcpToolCallBudgetState; expiresAt: number }>();
+
+function turnBudgetKey(scope: ExternalMcpObserverScope): string | null {
+  if (!scope.runId) return null;
+  return [scope.userId, scope.projectId, scope.instanceId, scope.conversationId || "", scope.runId].join("\u0000");
+}
+
+function budgetStateForTurn(scope: ExternalMcpObserverScope, now = Date.now()): ExternalMcpToolCallBudgetState | null {
+  const key = turnBudgetKey(scope);
+  if (!key) return null;
+  for (const [candidate, entry] of turnBudgetStates) {
+    if (entry.expiresAt <= now) turnBudgetStates.delete(candidate);
+  }
+  if (turnBudgetStates.size >= MAX_TRACKED_TURNS) {
+    const oldest = turnBudgetStates.keys().next().value;
+    if (oldest) turnBudgetStates.delete(oldest);
+  }
+  const existing = turnBudgetStates.get(key);
+  if (existing) {
+    existing.expiresAt = now + TURN_BUDGET_STATE_TTL_MS;
+    return existing.state;
+  }
+  const state: ExternalMcpToolCallBudgetState = { totalCalls: 0, consecutiveCalls: 0 };
+  turnBudgetStates.set(key, { state, expiresAt: now + TURN_BUDGET_STATE_TTL_MS });
+  return state;
+}
+
+function budgetExceededResponse(input: { requestId?: string; reason: "total_calls" | "consecutive_calls"; budget: ReturnType<typeof resolveExternalMcpToolCallBudget> }) {
+  const limit = input.reason === "total_calls" ? input.budget.maxCalls : input.budget.maxConsecutiveCalls;
+  const label = input.reason === "total_calls" ? "total external tool-call" : "consecutive identical-tool";
+  return {
+    jsonrpc: "2.0",
+    id: input.requestId ?? null,
+    error: {
+      code: -32001,
+      message: `External MCP ${label} budget (${limit}) is exhausted for this turn. Stop calling external tools and answer from the evidence already retrieved; state any remaining data gap explicitly.`,
+    },
+  };
+}
 
 function scopeFromHeaders(headers: Record<string, string | string[] | undefined>): ExternalMcpObserverScope | null {
   const value = (name: string) => Array.isArray(headers[name]) ? headers[name]?.[0] : headers[name];
@@ -42,6 +86,26 @@ export function registerExternalMcpObserverRoutes(app: FastifyInstance) {
     const startedAt = Date.now();
     const body = request.body;
     const toolCall = observedToolCallFromBody(body);
+    if (toolCall) {
+      const state = budgetStateForTurn(scope, startedAt);
+      if (state) {
+        const budget = resolveExternalMcpToolCallBudget();
+        const decision = reserveExternalMcpToolCall({ state, serverId, toolName: toolCall.toolName, budget });
+        if (!decision.allowed) {
+          await recordObservedExternalToolCall({
+            scope,
+            serverId,
+            toolName: toolCall.toolName,
+            requestId: toolCall.requestId,
+            status: "failed",
+            elapsedMs: Date.now() - startedAt,
+            inputChars: serializedSize(body),
+            errorClass: decision.reason === "total_calls" ? "MCP_TOOL_CALL_BUDGET_EXHAUSTED" : "MCP_TOOL_CALL_REPEAT_BUDGET_EXHAUSTED",
+          });
+          return reply.status(200).send(budgetExceededResponse({ requestId: toolCall.requestId, reason: decision.reason, budget }));
+        }
+      }
+    }
     try {
       const response = await fetch(target.resolved.url, {
         method: request.method,
