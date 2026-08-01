@@ -33,6 +33,12 @@ import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { reviewViewpointBackend } from "../lib/review-viewpoint-backend.js";
 import { listWatchRules } from "../services/watch-rules.js";
 import { readExternalMcpToolCallStats } from "../services/external-mcp-observer.js";
+import {
+  applyMcpServerOverride,
+  clearMcpServerOverride,
+  readAllMcpServerOverrides,
+} from "../services/mcp-control-plane.js";
+import { getMcpRegistry } from "../acp/mcp-registry.js";
 import { disposeAcpForWorkspace, ensureCodexRuntimeForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
 import { loadCodexWorkspaceUsageSummary, type CodexUsageGroupBy } from "../services/codex-usage.js";
 import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
@@ -1013,6 +1019,7 @@ function partnerRoutePermission(pathname: string, method: string): PlatformPermi
   if (pathname === "/api/platform/audit" || pathname === "/api/platform/rule-alerts") return "admin_audit.read";
   if (pathname === "/api/platform/source-quality") return "admin_audit.read";
   if (pathname === "/api/platform/mcp-tools/status") return "admin_audit.read";
+  if (pathname.startsWith("/api/platform/mcp/servers/")) return "mcp.manage";
   if (method === "GET" && pathname === "/api/platform/instances") return "customers.sensitive.read";
   if (method === "POST" && pathname === "/api/platform/instances") return "instances.create";
   if (pathname.includes("/portal/credential")) return "portal.credential.issue";
@@ -1563,6 +1570,59 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     const summary = readExternalMcpToolCallStats({ days: Number(request.query.days) || undefined });
     return { ok: true, ...summary };
   }));
+
+  // ─── T-243 Phase 2: MCP server 运行时启停控制面 ─────────────────
+  //
+  // 启停模型:env 是启动基线 (activateIf 规则),DB 覆盖是运行时层 (优先级更高)。
+  // 覆盖只作用于已注册的 server;未注册的拒绝 (不能凭空启用未配置的 server)。
+  // 权限 mcp.manage:owner 自动拥有 (*),partner 默认无。
+
+  app.get("/api/platform/mcp/servers", safe(async () => {
+    const registry = getMcpRegistry();
+    const overrides = new Map(readAllMcpServerOverrides().map((o) => [o.serverId, o]));
+    const servers = registry.listRegistrations().map((reg) => {
+      const override = overrides.get(reg.id);
+      return {
+        id: reg.id,
+        owner: reg.owner,
+        trustClass: reg.trustClass,
+        sessionKinds: reg.sessionKinds,
+        enabled: reg.enabled,
+        hasOverride: Boolean(override),
+        override: override ?? null,
+      };
+    });
+    return { ok: true, updatedAt: new Date().toISOString(), servers };
+  }));
+
+  app.post<{ Params: { serverId: string }; Body: { reason?: string } }>(
+    "/api/platform/mcp/servers/:serverId/disable",
+    safe(async (request, reply) => {
+      const { serverId } = request.params;
+      const ok = applyMcpServerOverride(serverId, false, request.body?.reason);
+      if (!ok) return reply.status(404).send({ ok: false, error: `未注册的 MCP server: ${serverId} (需先配置 env 并激活)` });
+      return { ok: true, serverId, enabled: false };
+    }),
+  );
+
+  app.post<{ Params: { serverId: string } }>(
+    "/api/platform/mcp/servers/:serverId/enable",
+    safe(async (request, reply) => {
+      const { serverId } = request.params;
+      const ok = applyMcpServerOverride(serverId, true);
+      if (!ok) return reply.status(404).send({ ok: false, error: `未注册的 MCP server: ${serverId} (需先配置 env 并激活)` });
+      return { ok: true, serverId, enabled: true };
+    }),
+  );
+
+  app.delete<{ Params: { serverId: string } }>(
+    "/api/platform/mcp/servers/:serverId/override",
+    safe(async (request) => {
+      const { serverId } = request.params;
+      const removed = clearMcpServerOverride(serverId);
+      return { ok: true, serverId, removed };
+    }),
+  );
 
   app.post<{ Body: { userId?: string; displayName?: string; instanceName?: string } }>("/api/platform/instances", safe(async (request, reply) => {
     const userId = request.body?.userId?.trim();

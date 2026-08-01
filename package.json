@@ -64,6 +64,7 @@
     "release:snapshot": "node scripts/release-snapshot.mjs",
     "release:snapshot:smoke": "node scripts/release-snapshot-smoke.mjs",
     "probe:market-data-tool": "node scripts/mcp-market-data-tool-probe.mjs",
+    "mcp:check": "node --import tsx scripts/mcp-registry-check.ts",
     "probe:mcp-acp-e2e": "npm run build && node scripts/mcp-acp-e2e-probe.mjs",
     "probe:mcp-tool-call": "npm run build && node scripts/mcp-acp-tool-call-probe.mjs",
     "probe:mcp-qsse-tool-call": "npm run build && node scripts/mcp-acp-qsse-tool-call-probe.mjs",

@@ -370,6 +370,12 @@ export function initDb() {
       error_class TEXT,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS mcp_server_overrides (
+      server_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL,
+      reason TEXT,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS indicator_definitions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       key TEXT NOT NULL UNIQUE,

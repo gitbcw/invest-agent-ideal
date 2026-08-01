@@ -7,6 +7,7 @@ import { disposeAllAcp, startDefaultAcp } from "./acp/stdio-agent.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { stopPlatformWeixinListeners } from "./routes/platform.js";
 import { registerDataQualityAlertSink } from "./handlers/data-quality-report.js";
+import { applyMcpServerOverridesOnStartup } from "./services/mcp-control-plane.js";
 import { startPortalConnector } from "./portal/connector.js";
 import { startAttachmentRetentionCleanup, stopAttachmentRetentionCleanup } from "./services/attachment-retention.js";
 
@@ -34,6 +35,10 @@ async function main() {
 
   // 初始化数据库
   initDb();
+
+  // 应用 MCP server 运行时启停覆盖到 registry (T-243 Phase 2)。
+  // 在 HTTP 服务启动前应用:DB 覆盖优先级高于 env 基线,启动时固化一次。
+  applyMcpServerOverridesOnStartup();
 
   // 注册数据质量告警 sink(给 services/source-telemetry.ts 用,避免循环依赖)
   registerDataQualityAlertSink();

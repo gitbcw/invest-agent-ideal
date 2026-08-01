@@ -359,6 +359,18 @@ export const externalMcpToolCalls = sqliteTable("external_mcp_tool_calls", {
   createdAt: text("created_at").notNull(),
 });
 
+/**
+ * MCP server 运行时启停覆盖 (T-243 Phase 2)。
+ * per-server 一行,enabled 覆盖 env 基线 (env 是启动时基线,DB 是运行时覆盖)。
+ * reason 记录启停理由 (借鉴 ToolRegistry 的 disable(name, reason) 语义,审计用)。
+ */
+export const mcpServerOverrides = sqliteTable("mcp_server_overrides", {
+  serverId: text("server_id").primaryKey(),
+  enabled: integer("enabled").notNull(),
+  reason: text("reason"),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const indicatorDefinitions = sqliteTable("indicator_definitions", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   key: text("key").notNull().unique(),
