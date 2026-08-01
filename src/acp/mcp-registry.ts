@@ -64,6 +64,15 @@ export type McpTrustClass = "service-scoped" | "external-readonly";
 export type McpOwner = "invest-agent" | "external";
 export type McpSessionKind = "interactive" | "scheduled-read" | "evaluation";
 
+/**
+ * 声明式激活规则 (T-243)。声明后 isExternalRegistrationActivated 直接按规则求值，
+ * 不再需要在 switch-case 里登记 server。未声明 activateIf 的外部 server 一律 fail-closed。
+ *
+ *   - env-any-of: 任一声明的 env 引用 === "true" (精确、大小写敏感) 即激活。
+ *     用于兼容多别名开关 (如 market-data-tool 的 dedicated + legacy 两个开关)。
+ */
+export type McpActivationRule = { kind: "env-any-of"; refs: string[] };
+
 export interface McpServerRegistration {
   id: string;
   owner: McpOwner;
@@ -72,7 +81,20 @@ export interface McpServerRegistration {
   transport: McpTransport;
   versionPolicy?: { expected?: string; allowedRange?: string };
   sessionKinds: McpSessionKind[];
+  /**
+   * 声明式激活规则 (仅对 external-readonly 有意义)。声明后由 evaluateActivation
+   * 求值；mcp-registry 与 mcp-session-manifest 都不含 server-specific 激活逻辑。
+   */
+  activateIf?: McpActivationRule;
 }
+
+/**
+ * 按声明式 activateIf 规则求值一个外部注册项是否应被激活。
+ * 未声明规则的 (含 service-scoped) 一律返回 false —— 由各自默认 enabled 控制。
+ *
+ * 实现放在 external-mcp-registrations.ts 的 evaluateActivation (避免本模块与
+ * external 文件循环依赖);这里仅作为类型契约的说明锚点。详见 external 模块。
+ */
 
 // ─── service-scoped 环境引用名 ────────────────────────────────────
 //
@@ -176,6 +198,20 @@ export function validateRegistration(reg: McpServerRegistration): string | null 
   }
   if (!Array.isArray(reg.sessionKinds) || reg.sessionKinds.length === 0) {
     return `sessionKinds must be non-empty: ${reg.id}`;
+  }
+  // 声明式激活规则校验 (T-243): 仅支持已知 kind, refs 必须是合法 env 变量名。
+  if (reg.activateIf) {
+    if (reg.activateIf.kind !== "env-any-of") {
+      return `unknown activateIf kind for ${reg.id}: ${reg.activateIf.kind}`;
+    }
+    if (!Array.isArray(reg.activateIf.refs) || reg.activateIf.refs.length === 0) {
+      return `activateIf.refs must be non-empty: ${reg.id}`;
+    }
+    for (const ref of reg.activateIf.refs) {
+      if (!isEnvVarName(ref)) {
+        return `invalid activateIf ref name for ${reg.id}: ${ref}`;
+      }
+    }
   }
   // transport 一致性
   if (reg.transport.kind === "stdio") {

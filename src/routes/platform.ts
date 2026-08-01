@@ -32,6 +32,7 @@ import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-bac
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { reviewViewpointBackend } from "../lib/review-viewpoint-backend.js";
 import { listWatchRules } from "../services/watch-rules.js";
+import { readExternalMcpToolCallStats } from "../services/external-mcp-observer.js";
 import { disposeAcpForWorkspace, ensureCodexRuntimeForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
 import { loadCodexWorkspaceUsageSummary, type CodexUsageGroupBy } from "../services/codex-usage.js";
 import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
@@ -1011,6 +1012,7 @@ function partnerRoutePermission(pathname: string, method: string): PlatformPermi
   if (pathname.includes("/investment-state")) return "customers.sensitive.read";
   if (pathname === "/api/platform/audit" || pathname === "/api/platform/rule-alerts") return "admin_audit.read";
   if (pathname === "/api/platform/source-quality") return "admin_audit.read";
+  if (pathname === "/api/platform/mcp-tools/status") return "admin_audit.read";
   if (method === "GET" && pathname === "/api/platform/instances") return "customers.sensitive.read";
   if (method === "POST" && pathname === "/api/platform/instances") return "instances.create";
   if (pathname.includes("/portal/credential")) return "portal.credential.issue";
@@ -1553,6 +1555,13 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       reports,
       alerts,
     };
+  }));
+
+  // T-243: 把 observer 写入的 external_mcp_tool_calls 接通成可见。
+  // 此前该表 src 内零读取 (只写不读);本路由是首个聚合 read API。
+  app.get<{ Querystring: { days?: string } }>("/api/platform/mcp-tools/status", safe(async (request) => {
+    const summary = readExternalMcpToolCallStats({ days: Number(request.query.days) || undefined });
+    return { ok: true, ...summary };
   }));
 
   app.post<{ Body: { userId?: string; displayName?: string; instanceName?: string } }>("/api/platform/instances", safe(async (request, reply) => {

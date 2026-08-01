@@ -1,4 +1,5 @@
 import { db } from "../db/index.js";
+import { sqlite } from "../db/index.js";
 import { externalMcpToolCalls } from "../db/schema.js";
 import { buildExternalRegistrations, isExternalRegistrationActivated } from "../acp/external-mcp-registrations.js";
 import { resolveExternalHttpServer } from "../acp/mcp-registry.js";
@@ -65,4 +66,131 @@ export function serializedSize(value: unknown): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+// ─── T-243 聚合读取 ────────────────────────────────────────────────
+//
+// observer 一直在写 external_mcp_tool_calls,但此前 src 内零读取 (只写不读)。
+// 下面是面向 Platform UI 的聚合 read API,把采集到的数据接通成可见。
+// 按 server_id + tool_name 分组,给出调用量 / 成功率 / p95 延迟 / 最近错误。
+
+export type ExternalMcpToolStat = {
+  serverId: string;
+  toolName: string;
+  totalCalls: number;
+  completed: number;
+  failed: number;
+  failureRate: number;
+  /** 最近成功时间 (ISO)。 */
+  lastCompletedAt: string | null;
+  /** 最近一次失败时间 (ISO)。 */
+  lastFailedAt: string | null;
+  /** 最近一次失败错误类 (如 HTTP_500 / UPSTREAM_ERROR)。 */
+  lastErrorClass: string | null;
+  /** 样本 p95 延迟 (毫秒),窗口内最近 max(1, totalCalls) 条采样。 */
+  latencyP95Ms: number | null;
+};
+
+export type ExternalMcpToolStatSummary = {
+  updatedAt: string;
+  /** 窗口天数 (默认 7)。 */
+  days: number;
+  /** server+tool 维度统计行。 */
+  stats: ExternalMcpToolStat[];
+  /** 已声明的外部注册项 (无论是否激活),供 UI 展示"已接入工具集"。 */
+  registrations: Array<{
+    id: string;
+    activated: boolean;
+    trustClass: string;
+    sessionKinds: string[];
+  }>;
+};
+
+/**
+ * 聚合 external_mcp_tool_calls 的统计。仅 GROUP BY server/tool + COUNT/时间戳,
+ * 不读取任何 body/参数/结果 (observer 写入时本就不存这些)。
+ *
+ * latencyP95 用 SQLite 取窗口内该组 elapsed_ms 的第 95 百分位近似
+ * (better-sqlite3 无原生 percentile,这里用排序后行号取近似,样本量小够用)。
+ */
+export function readExternalMcpToolCallStats(
+  options: { days?: number } = {},
+): ExternalMcpToolStatSummary {
+  const days = Math.max(1, Math.min(90, Number(options.days) || 7));
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  // 聚合行:窗口内每 server+tool 的调用量/成功失败/最近时间戳/最近错误类。
+  const rows = sqlite
+    .prepare(
+      `SELECT server_id AS serverId,
+              tool_name AS toolName,
+              COUNT(*) AS totalCalls,
+              SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
+              SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+              MAX(CASE WHEN status='completed' THEN created_at END) AS lastCompletedAt,
+              MAX(CASE WHEN status='failed' THEN created_at END) AS lastFailedAt,
+              (SELECT error_class FROM external_mcp_tool_calls AS inner_t
+                 WHERE inner_t.server_id = outer_t.server_id
+                   AND inner_t.tool_name = outer_t.tool_name
+                   AND inner_t.status = 'failed'
+                 ORDER BY inner_t.created_at DESC LIMIT 1) AS lastErrorClass
+       FROM external_mcp_tool_calls AS outer_t
+       WHERE created_at >= ?
+       GROUP BY server_id, tool_name
+       ORDER BY totalCalls DESC`,
+    )
+    .all(since) as Array<{
+      serverId: string;
+      toolName: string;
+      totalCalls: number;
+      completed: number;
+      failed: number;
+      lastCompletedAt: string | null;
+      lastFailedAt: string | null;
+      lastErrorClass: string | null;
+    }>;
+
+  // p95 延迟:对每个 server+tool 取窗口内 elapsed_ms 排序后近似第 95 百分位。
+  const stats: ExternalMcpToolStat[] = rows.map((row) => {
+    const latencySamples = sqlite
+      .prepare(
+        `SELECT elapsed_ms AS elapsedMs FROM external_mcp_tool_calls
+         WHERE server_id = ? AND tool_name = ? AND created_at >= ?
+         ORDER BY elapsed_ms ASC`,
+      )
+      .all(row.serverId, row.toolName, since) as Array<{ elapsedMs: number }>;
+    const latencyP95Ms = percentileFromSamples(
+      latencySamples.map((sample) => sample.elapsedMs),
+      0.95,
+    );
+    const failureRate = row.totalCalls > 0 ? row.failed / row.totalCalls : 0;
+    return {
+      serverId: row.serverId,
+      toolName: row.toolName,
+      totalCalls: row.totalCalls,
+      completed: row.completed,
+      failed: row.failed,
+      failureRate: Number(failureRate.toFixed(4)),
+      lastCompletedAt: row.lastCompletedAt,
+      lastFailedAt: row.lastFailedAt,
+      lastErrorClass: row.lastErrorClass,
+      latencyP95Ms,
+    };
+  });
+
+  const registrations = buildExternalRegistrations().map((reg) => ({
+    id: reg.id,
+    activated: isExternalRegistrationActivated(reg),
+    trustClass: reg.trustClass,
+    sessionKinds: reg.sessionKinds,
+  }));
+
+  return { updatedAt: new Date().toISOString(), days, stats, registrations };
+}
+
+function percentileFromSamples(values: number[], ratio: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+  return sorted[index] ?? null;
 }

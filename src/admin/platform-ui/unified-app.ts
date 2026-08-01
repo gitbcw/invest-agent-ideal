@@ -71,7 +71,8 @@ function adminViewsHtml(): string {
         </section>
       </section>
       <section id="view-source-quality" class="view cost-grid">
-        <div class="panel"><div class="panel-head"><h2>数据源可靠性</h2><span class="muted" id="sourceQualityUpdated">未加载</span></div><div class="panel-body" id="sourceQualityPanel"><div class="empty">加载中...</div></div></div>
+        <div class="panel"><div class="panel-head"><h2>MCP 工具状态</h2><span class="muted" id="mcpToolsUpdated">未加载</span></div><div class="panel-body" id="mcpToolsPanel"><div class="empty">加载中...</div></div></div>
+        <div class="panel"><div class="panel-head"><h2>数据源可靠性（历史）</h2><span class="muted" id="sourceQualityUpdated">未加载</span></div><div class="panel-body" id="sourceQualityPanel"><div class="empty">加载中...</div></div></div>
       </section>
       <section id="view-audit" class="view audit-grid">
         <div class="panel"><div class="panel-head"><h2>日志审计</h2><span class="muted" id="auditScopeHint">对话审计</span></div><div class="panel-body"><div class="form-grid"><div class="segmented"><button id="auditScopeConversation" class="segment active" onclick="setAuditScope('conversation')">对话审计</button><button id="auditScopePush" class="segment" onclick="setAuditScope('push')">推送审计</button></div><div class="field"><label>用户</label><select id="auditUser" class="select" onchange="onAuditUserChange()"></select></div><div class="field"><label>用户助手</label><select id="auditInstance" class="select" onchange="loadAudit()"></select></div><div class="field"><label>条数</label><select id="auditLimit" class="select" onchange="loadAudit()"><option value="30">30</option><option value="60">60</option><option value="120">120</option></select></div><button class="btn btn-primary" onclick="loadAudit()">刷新审计</button><div class="muted" id="auditHelp">对话审计查看微信用户消息进入 Codex 后的原始回复、清洗回复和入站提示。</div></div></div></div>
@@ -127,7 +128,7 @@ function dashboardShell(role: "owner" | "partner"): string {
           <a id="nav-instances" href="#instances" onclick="setView('instances');return false">用户助手 <span class="chev">›</span></a>
           <a id="nav-audit" href="#audit" onclick="setView('audit');return false">日志审计 <span class="chev">›</span></a>
           <a id="nav-rule-alerts" href="#rule-alerts" onclick="setView('rule-alerts');return false">规则巡检 <span class="chev">›</span></a>
-          <a id="nav-source-quality" href="#source-quality" onclick="setView('source-quality');return false">数据源质量 <span class="chev">›</span></a>
+          <a id="nav-source-quality" href="#source-quality" onclick="setView('source-quality');return false">MCP 工具状态 <span class="chev">›</span></a>
         </div>` : "";
   return `<div class="shell">
     <aside class="sidebar">
@@ -182,7 +183,7 @@ if(!authenticated){
 // 关键：setView 需同时处理运营视图（loadOpsView 驱动）和管理视图（懒加载 init）。
 const DASHBOARD_JS = `
 const OPS_VIEWS=['overview','customers','quality','runtime'];
-const TITLE_MAP={overview:'运营总览',customers:'客户与助手',quality:'产品质量',runtime:'运行与触达',instances:'用户助手',cost:'成本统计','source-quality':'数据源质量',audit:'日志审计','rule-alerts':'规则巡检'};
+const TITLE_MAP={overview:'运营总览',customers:'客户与助手',quality:'产品质量',runtime:'运行与触达',instances:'用户助手',cost:'成本统计','source-quality':'MCP 工具状态',audit:'日志审计','rule-alerts':'规则巡检'};
 const state={loaded:new Set(),customers:[]};
 const showError=(message)=>{const el=document.getElementById('notice');el.textContent=message;el.classList.add('show');};
 const finishUpdated=(data)=>{const el=document.getElementById('updated');if(el)el.textContent='数据更新时间：'+(data.updatedAt?new Date(data.updatedAt).toLocaleString('zh-CN'):'-');};
@@ -205,6 +206,7 @@ function setView(view){
   if(name==='rule-alerts'&&!(RULE_ALERTS.tasks||[]).length&&typeof initRuleAlertsFromSelection==='function')initRuleAlertsFromSelection();
   if(name==='cost'&&!COST.platform&&typeof initCostFromSelection==='function')initCostFromSelection();
   if(name==='source-quality'&&!SOURCE_QUALITY&&typeof loadSourceQuality==='function')loadSourceQuality();
+  if(name==='source-quality'&&!MCP_TOOLS&&typeof loadMcpToolsStatus==='function')loadMcpToolsStatus();
 }
 window.addEventListener('hashchange',()=>setView(location.hash.slice(1)));
 `;
