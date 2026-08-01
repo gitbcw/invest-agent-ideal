@@ -3,7 +3,7 @@
 - 任务：T-243（投研助手 MCP/Skills 挂载管理能力标准化）
 - 项目：P-17 投研助手
 - 日期：2026-08-01
-- 状态：**首版**（基于 T-243 方案 B Phase 1-2 机制 + T-235 MinerU 首个真实接入样本）
+- 状态：**首版**（基于 T-243 方案 B Phase 1-2 机制；T-235 MinerU 最终走 service-tools 内置工具，不在本 SOP 治理范围，见末尾"治理边界"）
 - worktree：`invest-agent-ideal-mcp-mount` / 分支 `feat/mcp-mount-standardization`
 
 ## 适用范围
@@ -131,17 +131,36 @@ npm run mcp:check
 - token 只进入 ACP 会话 / 子进程，**绝不**进入 manifest 摘要、trace 或日志。
 - stdio server 的 `<env:NAME>` 模板是纯字符串替换，**绝不**调用 shell。
 
-## 首个真实接入样本：T-235 MinerU
+## 真实接入样本：T-235 MinerU 文档解析
 
-MinerU（文档解析 MCP）是 T-243 新机制的首个真实接入样本，验证了：
-- 声明式 `activateIf` 注册，**零 switch-case 改动**（T-243 Phase 1 核心契约成立）
-- `mcp:check` 门禁自动覆盖新 server（18/18 全过）
-- 安全边界未被破坏（external-readonly + Bearer token + 数据上云权衡已确认）
+> **注意：T-235 最终实现走的是 service-tools 内置工具，不走本 SOP 的 MCP 注册流程。** 见下方"治理边界"说明。
 
-部署后置——待 operator 在生产 `.env` 配置 `MINERU_API_TOKEN` 并开启 `INVEST_AGENT_MCP_MINERU_ENABLED=true` 后，即可端到端验证真实样本解析。
+T-235 文档解析能力的演进路径：
+1. 调研阶段原计划走本 SOP（声明 `buildMineruRegistration` 接入 MinerU 托管 MCP）。
+2. 实测发现 MinerU 托管 MCP（`mcp.mineru.net`）token scope 不通、且只支持 URL 不支持本地附件。
+3. 认清 MinerU 本质是异步 REST API（用户 token 对 `mineru.net` REST API 直接有效），强行包 MCP 反而重。
+4. **最终实现：service-tools 内置 `file.parse` 工具，直连 MinerU REST API**（`src/services/mineru-parse.ts` + service-tools-core.ts dispatch）。
+
+### 治理边界（重要）
+
+`file.parse` 是 `invest-agent-service-tools` 内部工具，**不在本 SOP 的 T-243 治理体系内**：
+
+| T-243 治理能力 | file.parse 覆盖 | 说明 |
+|---|---|---|
+| 声明式注册（activateIf） | ❌ | service-tools 内部硬编码，非 external registration |
+| Platform UI server 级启停 | ❌ | 启停 API 操作 `mcp_server_overrides`，针对外部 server，不覆盖 service-tools 内部工具 |
+| `mcp:check` 门禁 | ❌ | 检查 external registrations，不查 service-tools 内部工具 |
+| 运行状态可见（observer 聚合） | ❌ | 调用进 `sandbox_audit_logs`（audit），不进 `external_mcp_tool_calls`（observer 只盯外部 HTTP MCP） |
+
+`file.parse` 可用的开关：① `MINERU_API_TOKEN` 配不配（不配则工具拒绝调用）；② `INVEST_AGENT_MCP_ALLOWED_TOOLS` 会话级 allowlist。
+
+这是 T-243 方案 C（统一工具控制面）要解决的问题——service-tools 内部工具（含 file.parse）不在统一治理里。方案 C 未采纳（工作量 30-40 人天，触及生产在跑的 service-tools，收益边际递减）。**用户 2026-08-01 确认保持现状，接受治理不一致**——文档解析不是高频运维对象，token + allowlist 开关够用。
+
+待生产配 `MINERU_API_TOKEN` 后，用户上传 pdf/excel/word → AI 调 `file.parse` → 内容进对话。
 
 ## 后续演进（T-243 Phase 3+ 待办）
 
 - OTel GenAI semconv emit（observer 对齐 `mcp.*` + `gen_ai.tool.*` 属性，接 Langfuse 或自研 dashboard）
 - 接入后健康基线告警（失败率超阈值告警，接 observer 数据）
 - catalog digest 漂移检测（跨 release 比对工具集哈希，预警同名/静默 schema 变更）
+- 若未来需要统一治理 service-tools 内部工具，启动方案 C（见 T-243 方案文档）
