@@ -96,6 +96,17 @@ async function main() {
 
   registerJsonTool(
     { server, callServiceTool, context },
+    "file.parse",
+    "Parse a user-uploaded document attachment (PDF/Word/PPT/Excel/CSV/image) into Markdown text via MinerU. Pass the attachment_id shown in the attachment context of the conversation. Returns the parsed document content as Markdown. The file is uploaded to and parsed by the MinerU cloud service (servers in China). Use this instead of writing your own parsing code. If MINERU_API_TOKEN is not configured, this tool returns an error explaining it is unavailable.",
+    {
+      attachment_id: z.string().min(1).describe("The attachment_id from the conversation attachment context."),
+      language: z.string().optional().describe("Document language for OCR accuracy, e.g. 'ch', 'en'. Defaults to 'ch'."),
+    },
+    { readOnlyHint: true, openWorldHint: true }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
     "portfolio.read",
     "Read active portfolio holdings, weights, cash state, and the current revision for the current user and instance. Read this before drafting portfolio changes.",
     {}

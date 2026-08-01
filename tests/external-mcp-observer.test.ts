@@ -8,6 +8,7 @@ import { serviceApiToken } from "../src/lib/service-auth.js";
 import { registerExternalMcpObserverRoutes } from "../src/routes/external-mcp-observer.js";
 import {
   observedToolCallFromBody,
+  readExternalMcpToolCallStats,
   reserveExternalMcpToolCall,
   resolveExternalMcpToolCallBudget,
 } from "../src/services/external-mcp-observer.js";
@@ -99,4 +100,79 @@ test("observer forwards tools/call and persists minimal external MCP evidence", 
     restoreEnv("MARKET_DATA_MCP_URL", previous.url);
     restoreEnv("MARKET_DATA_MCP_TOKEN", previous.token);
   }
+});
+
+// ─── T-243 聚合 read API ──────────────────────────────────────────
+
+test("readExternalMcpToolCallStats aggregates server+tool calls with success rate and p95", async () => {
+  initDb();
+  // 用一个隔离的 server/tool 注入样本数据,避免与其他测试数据耦合。
+  const serverId = "stats-test-server";
+  const toolName = "stats_test_tool";
+  const baseTime = Date.now();
+  // 清掉历史残留 (幂等)
+  await db.delete(externalMcpToolCalls);
+  const rows = [
+    { status: "completed", elapsedMs: 100, errorClass: null, offsetSec: -60 },
+    { status: "completed", elapsedMs: 200, errorClass: null, offsetSec: -50 },
+    { status: "completed", elapsedMs: 300, errorClass: null, offsetSec: -40 },
+    { status: "completed", elapsedMs: 400, errorClass: null, offsetSec: -30 },
+    { status: "failed", elapsedMs: 500, errorClass: "HTTP_500", offsetSec: -20 },
+  ];
+  for (const row of rows) {
+    await db.insert(externalMcpToolCalls).values({
+      userId: "stats-user",
+      projectId: "invest-agent",
+      instanceId: "stats-instance",
+      serverId,
+      toolName,
+      status: row.status,
+      elapsedMs: row.elapsedMs,
+      errorClass: row.errorClass,
+      createdAt: new Date(baseTime + row.offsetSec * 1000).toISOString(),
+    });
+  }
+
+  const summary = readExternalMcpToolCallStats({ days: 7 });
+  const hit = summary.stats.find((s) => s.serverId === serverId && s.toolName === toolName);
+  assert.ok(hit, "expected stat row for injected sample");
+  assert.equal(hit.totalCalls, 5);
+  assert.equal(hit.completed, 4);
+  assert.equal(hit.failed, 1);
+  assert.equal(hit.failureRate, 0.2);
+  assert.equal(hit.lastErrorClass, "HTTP_500");
+  // p95 over [100,200,300,400,500] → 第 95 百分位 ≈ 500
+  assert.ok(hit.latencyP95Ms !== null && hit.latencyP95Ms >= 400, `p95 too low: ${hit.latencyP95Ms}`);
+  // registrations 暴露已声明的注册项 (含激活状态)
+  const ids = summary.registrations.map((r) => r.id);
+  assert.ok(ids.includes("market-data-tool"));
+  assert.ok(ids.includes("qsse-qlib"));
+
+  await db.delete(externalMcpToolCalls);
+});
+
+test("readExternalMcpToolCallStats respects the days window", async () => {
+  initDb();
+  const serverId = "window-test-server";
+  const toolName = "window_test_tool";
+  await db.delete(externalMcpToolCalls);
+  const now = Date.now();
+  // 一条在窗口内 (10 分钟前),一条在窗口外 (30 天前)
+  await db.insert(externalMcpToolCalls).values({
+    userId: "window-user", projectId: "invest-agent", instanceId: "window-instance",
+    serverId, toolName, status: "completed", elapsedMs: 100,
+    createdAt: new Date(now - 10 * 60 * 1000).toISOString(),
+  });
+  await db.insert(externalMcpToolCalls).values({
+    userId: "window-user", projectId: "invest-agent", instanceId: "window-instance",
+    serverId, toolName, status: "failed", elapsedMs: 100, errorClass: "OLD",
+    createdAt: new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString(),
+  });
+
+  const summary7d = readExternalMcpToolCallStats({ days: 7 });
+  const hit7d = summary7d.stats.find((s) => s.serverId === serverId);
+  assert.ok(hit7d);
+  assert.equal(hit7d.totalCalls, 1, "only the in-window row should be counted");
+
+  await db.delete(externalMcpToolCalls);
 });

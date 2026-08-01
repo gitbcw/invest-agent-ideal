@@ -26,6 +26,7 @@ const TOOL_MANIFEST: ToolManifestItem[] = [
   },
   { name: "trade_log.query", policy: "read", description: "查看交易日志、操作记录、买卖记录、持仓变更记录" },
   { name: "review_records.query", policy: "read", description: "查看复盘记录、历史复盘、最近复盘、复盘存档" },
+  { name: "file.parse", policy: "read", description: "解析用户上传的文档附件（PDF/Word/PPT/Excel/CSV/图片）为 Markdown 文本；传入附件上下文里的 attachment_id" },
   { name: "conversation.history", policy: "read", description: "查询当前实例/会话的权威对话记录；用于会话上下文不足时理解“确认”“继续”等短句" },
   { name: "confirmations.pending", policy: "read", description: "查询当前实例/会话仍待用户确认的服务端操作；用于执行确认前消除歧义" },
   { name: "monitor.overview", policy: "read", description: "查看监控、巡检、整体状态、概览" },

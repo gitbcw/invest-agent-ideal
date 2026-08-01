@@ -1,7 +1,69 @@
-// Owner 视图 C：数据源质量（source-quality）。
-// 含：能力总览/能力矩阵表/Provider 健康/Endpoint 状态表/质量日报/告警表。数据源 /api/platform/source-quality。
+// Owner 视图 C：MCP 工具状态 + 数据源质量（历史）。
+// MCP 工具状态 (T-243) 消费 /api/platform/mcp-tools/status,把 observer 写入的
+// external_mcp_tool_calls 接通成可见 (此前该表只写不读)。
+// 数据源质量 (历史) 消费 /api/platform/source-quality;service-owned 数据源已 retired。
 
 export const SOURCE_JS = `
+async function loadMcpToolsStatus(){
+  const root=document.getElementById('mcpToolsPanel');
+  if(root)root.innerHTML='<div class="empty">正在加载 MCP 工具状态...</div>';
+  try{
+    const [statsRes,serversRes]=await Promise.all([
+      platformJson('/api/platform/mcp-tools/status?days=7'),
+      platformJson('/api/platform/mcp/servers'),
+    ]);
+    MCP_TOOLS={...statsRes,servers:(serversRes.servers||[])};
+    renderMcpToolsStatus();
+  }catch(error){document.getElementById('mcpToolsPanel').innerHTML='<div class="error" style="display:block">MCP 工具状态加载失败: '+esc(error.message)+'</div>';}
+}
+function renderMcpToolsStatus(){
+  const root=document.getElementById('mcpToolsPanel');
+  if(!root||!MCP_TOOLS)return;
+  document.getElementById('mcpToolsUpdated').textContent='更新于 '+fmtTime(MCP_TOOLS.updatedAt);
+  const servers=MCP_TOOLS.servers||[];
+  const stats=MCP_TOOLS.stats||[];
+  const enabledCount=servers.filter((s)=>s.enabled).length;
+  const overriddenCount=servers.filter((s)=>s.hasOverride).length;
+  const totalCalls=stats.reduce((sum,s)=>sum+s.totalCalls,0);
+  const totalFailed=stats.reduce((sum,s)=>sum+s.failed,0);
+  const overallRate=totalCalls>0?(((totalCalls-totalFailed)/totalCalls)*100).toFixed(1):'-';
+  root.innerHTML=
+    '<div class="section" style="margin-top:0"><h3>MCP 工具概览</h3><div class="cost-summary">'+stat(fmtNumber(servers.length),'已注册')+stat(fmtNumber(enabledCount),'当前启用')+stat(fmtNumber(overriddenCount),'运行时覆盖')+stat(fmtNumber(totalCalls),'窗口内调用')+stat(overallRate==='-'?'-':(overallRate+'%'),'整体成功率')+'</div><div class="cost-source">'+badge('窗口: '+MCP_TOOLS.days+' 天','info')+badge('数据源 external_mcp_tool_calls','gray')+'</div></div>'+
+    '<div class="section"><h3>MCP Server 启停</h3>'+renderMcpServersTable(servers)+'</div>'+
+    '<div class="section"><h3>工具调用统计</h3>'+renderMcpStatsTable(stats)+'</div>';
+}
+function renderMcpServersTable(rows){
+  if(!rows.length)return '<div class="empty">暂无已注册的 MCP server</div>';
+  return '<div style="overflow:auto"><table class="cost-table"><thead><tr><th>Server</th><th>信任级别</th><th>会话场景</th><th>状态</th><th>覆盖</th><th>操作</th></tr></thead><tbody>'+rows.map((r)=>{
+    const statusBadge=badge(r.enabled?'启用':'停用',r.enabled?'ok':'warn');
+    const overrideBadge=r.hasOverride?(r.override?(badge('覆盖:'+(r.override.enabled?'启用':'停用'),'info')+(r.override.reason?' '+esc(r.override.reason):'')):badge('覆盖','info')):badge('env 基线','gray');
+    const toggleBtn=r.enabled
+      ?'<button class="btn" onclick="toggleMcpServer(\\''+esc(r.id)+'\\',false)">禁用</button>'
+      :'<button class="btn btn-primary" onclick="toggleMcpServer(\\''+esc(r.id)+'\\',true)">启用</button>';
+    const clearBtn=r.hasOverride?' <button class="btn" onclick="clearMcpOverride(\\''+esc(r.id)+'\\')">恢复基线</button>':'';
+    return '<tr><td class="mono"><strong>'+esc(r.id)+'</strong></td><td>'+badge(r.trustClass==='external-readonly'?'外部只读':(r.trustClass==='service-scoped'?'服务内':'gray'),r.trustClass==='external-readonly'?'info':'gray')+'</td><td class="muted">'+esc((r.sessionKinds||[]).join(', ')||'-')+'</td><td>'+statusBadge+'</td><td>'+overrideBadge+'</td><td>'+toggleBtn+clearBtn+'</td></tr>';
+  }).join('')+'</tbody></table></div>';
+}
+async function toggleMcpServer(serverId,enable){
+  const reason=enable?null:window.prompt('禁用 '+serverId+' 的理由 (可选,审计用):','')||'';
+  try{
+    const url='/api/platform/mcp/servers/'+encodeURIComponent(serverId)+'/'+(enable?'enable':'disable');
+    await platformJson(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(enable?{}:{reason})});
+    showNotice(serverId+' 已'+(enable?'启用':'禁用'),reason?('理由: '+reason):'','ok');
+    await loadMcpToolsStatus();
+  }catch(error){showNotice('启停失败',error.message,'error');}
+}
+async function clearMcpOverride(serverId){
+  try{
+    await platformJson('/api/platform/mcp/servers/'+encodeURIComponent(serverId)+'/override',{method:'DELETE'});
+    showNotice(serverId+' 已恢复 env 基线','','ok');
+    await loadMcpToolsStatus();
+  }catch(error){showNotice('恢复基线失败',error.message,'error');}
+}
+function renderMcpStatsTable(rows){
+  if(!rows.length)return '<div class="empty">窗口内暂无外部 MCP 工具调用记录;冷启动或外部 MCP 未启用时为正常状态。</div>';
+  return '<div style="overflow:auto"><table class="cost-table"><thead><tr><th>Server</th><th>工具</th><th>调用</th><th>成功</th><th>失败</th><th>失败率</th><th>P95延迟(ms)</th><th>最近成功</th><th>最近失败</th><th>最近错误</th></tr></thead><tbody>'+rows.map((r)=>{const rateKind=r.failureRate>=0.2?'warn':(r.failureRate>0?'info':'ok');return '<tr><td class="mono">'+esc(r.serverId)+'</td><td class="mono">'+esc(r.toolName)+'</td><td>'+esc(fmtNumber(r.totalCalls))+'</td><td>'+esc(fmtNumber(r.completed))+'</td><td>'+esc(fmtNumber(r.failed))+'</td><td>'+badge((r.failureRate*100).toFixed(1)+'%',rateKind)+'</td><td>'+(r.latencyP95Ms==null?'-':fmtNumber(r.latencyP95Ms))+'</td><td>'+esc(fmtTime(r.lastCompletedAt))+'</td><td>'+esc(fmtTime(r.lastFailedAt))+'</td><td class="mono">'+esc(r.lastErrorClass||'-')+'</td></tr>';}).join('')+'</tbody></table></div>';
+}
 async function loadSourceQuality(){
   const root=document.getElementById('sourceQualityPanel');
   if(root)root.innerHTML='<div class="empty">正在加载数据源质量...</div>';

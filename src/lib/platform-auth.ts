@@ -33,7 +33,8 @@ export type PlatformPermission =
   | "weixin.disconnect"
   | "weixin.test_push"
   | "portal.credential.issue"
-  | "access.manage";
+  | "access.manage"
+  | "mcp.manage";
 
 export interface PlatformAuthContext {
   userId: string;

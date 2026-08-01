@@ -766,3 +766,84 @@ test("HTTP external registration assembles when ACP advertises HTTP capability",
   assert.equal(external.type, "http");
   assert.equal(JSON.stringify(manifest).includes("do-not-log"), false);
 });
+
+// ─── T-243 声明式激活 (activateIf) ───────────────────────────────
+//
+// 验证 activation 不再依赖 switch-case:新外部 server 只需在 builder 声明 activateIf,
+// 未声明的 fail-closed。这保证后续接入 (如 T-235 文件解析) 无需改激活分派表。
+
+test("market-data-tool registration declares activateIf covering dedicated + legacy flags", () => {
+  const reg = buildMarketDataToolRegistration();
+  assert.ok(reg.activateIf);
+  assert.equal(reg.activateIf.kind, "env-any-of");
+  assert.deepEqual(reg.activateIf.refs, [
+    "INVEST_AGENT_MCP_MARKET_DATA_ENABLED",
+    "INVEST_AGENT_MCP_EXTERNAL_ENABLED",
+  ]);
+});
+
+test("qsse-qlib registration declares a dedicated activateIf flag", () => {
+  const reg = buildQsseQlibRegistration();
+  assert.ok(reg.activateIf);
+  assert.deepEqual(reg.activateIf, { kind: "env-any-of", refs: ["INVEST_AGENT_MCP_QSSE_ENABLED"] });
+});
+
+test("validateRegistration accepts a well-formed activateIf", () => {
+  const reg: McpServerRegistration = {
+    id: "future-server",
+    owner: "external",
+    enabled: false,
+    trustClass: "external-readonly",
+    transport: {
+      kind: "http",
+      url: "<env:FUTURE_MCP_URL>",
+      requiredEnvRefs: ["FUTURE_MCP_URL"],
+    },
+    sessionKinds: ["interactive"],
+    activateIf: { kind: "env-any-of", refs: ["INVEST_AGENT_MCP_FUTURE_ENABLED"] },
+  };
+  assert.equal(validateRegistration(reg), null);
+});
+
+test("validateRegistration rejects an unknown activateIf kind", () => {
+  const reg = {
+    id: "bad-kind-server",
+    owner: "external",
+    enabled: false,
+    trustClass: "external-readonly",
+    transport: { kind: "http", url: "<env:X_URL>", requiredEnvRefs: ["X_URL"] },
+    sessionKinds: ["interactive"],
+    activateIf: { kind: "unknown-kind", refs: ["X_ENABLED"] },
+  } as unknown as McpServerRegistration;
+  const err = validateRegistration(reg);
+  assert.ok(err);
+  assert.ok(err.includes("unknown activateIf kind"));
+});
+
+test("validateRegistration rejects activateIf with empty refs", () => {
+  const reg = {
+    id: "empty-refs-server",
+    owner: "external",
+    enabled: false,
+    trustClass: "external-readonly",
+    transport: { kind: "http", url: "<env:X_URL>", requiredEnvRefs: ["X_URL"] },
+    sessionKinds: ["interactive"],
+    activateIf: { kind: "env-any-of", refs: [] },
+  } as unknown as McpServerRegistration;
+  const err = validateRegistration(reg);
+  assert.ok(err);
+  assert.ok(err.includes("activateIf.refs must be non-empty"));
+});
+
+test("new external server activates purely via declared activateIf (no switch-case needed)", () => {
+  // 模拟未来接入 (如 T-235 文件解析):声明 activateIf 后即被 registerExternalMcpServers 接入,
+  // 无需在 activation 分派表里登记 id。这是 T-243 消灭 switch-case 的核心契约。
+  const registry = createMcpRegistry([buildBuiltinServiceToolsRegistration()]);
+  registerExternalMcpServers(registry, { INVEST_AGENT_MCP_FILE_PARSER_ENABLED: "true" });
+  // 没有 builder 声明 file-parser,所以不会被接入;仅证明 registerExternalMcpServers
+  // 不会因"未知 server id"而 panic —— 旧 switch-case 的 default 分支已删除。
+  assert.deepEqual(
+    registry.listRegistrations().map((r) => r.id),
+    ["invest-agent-service-tools"],
+  );
+});

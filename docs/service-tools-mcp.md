@@ -54,6 +54,7 @@ Read tools:
 - `research.news_search`：当结构化服务数据或个股证据不足时，按关键词检索公开财经新闻；返回媒体、发布时间、链接、抓取时间和 warning，仅作为二级证据，不能填充缺失行情或财报字段。
 - `research.web_search`：通用公开网页检索，用于专业数据和财经新闻工具未覆盖的长尾问题；返回排名、标题、摘要、URL、provider、抓取时间和 warning。摘要只用于发现来源，必须继续读取原文核验。provider 链按确定性顺序：配置 `DOUBAO_SEARCH_API_KEY`（且未用 `DOUBAO_SEARCH_ENABLED=false` 关闭）时优先使用豆包搜索 Custom，无可用结果或失败时回退到自建 SearXNG JSON 后端（`EXTERNAL_WEB_SEARCH_SEARXNG_URL`）；两者都未配置时使用低置信度搜狗结果页。回退只用于发现来源，不表示 SearXNG “验证”或“修正”了豆包结果；MCP 输出、审计和遥测中始终保留实际命中的 provider 身份。
 - `research.web_read`：读取搜索所得的公开 HTTP(S) 页面并返回清洗正文；拒绝凭据 URL、本机/内网/保留地址和非文本内容，逐跳校验重定向，并限制超时、响应大小和最大字符数。它不是任意 HTTP 代理或文件下载器。
+- `file.parse`（T-235）：把用户上传的文档附件（PDF/Word/PPT/Excel/CSV/图片）解析为 Markdown 文本。传入附件上下文里的 `attachment_id`；文件上传到 MinerU 云端解析后返回 `markdown`。需配置 `MINERU_API_TOKEN`，未配置则工具拒绝并提示 AI 如实告知限制。替代 AI 现场写解析代码。
 - `portfolio.read`
 - `watchlist.read`
 - `plans.read`

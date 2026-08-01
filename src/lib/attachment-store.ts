@@ -25,6 +25,9 @@ const ALLOWED_DOCUMENT_MIME = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.ms-powerpoint",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/csv",
   "text/html",
   "text/markdown",
   "text/plain",
@@ -40,6 +43,9 @@ const EXTENSION_MIME: Record<string, string[]> = {
   ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
   ".ppt": ["application/vnd.ms-powerpoint"],
   ".pptx": ["application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  ".xls": ["application/vnd.ms-excel"],
+  ".xlsx": ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  ".csv": ["text/csv"],
   ".html": ["text/html"],
   ".htm": ["text/html"],
   ".md": ["text/markdown", "text/plain"],
@@ -382,11 +388,15 @@ function validateDocumentMagic(input: {
   }
   if (
     input.mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-    input.mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    input.mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+    input.mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   ) {
     if (input.detected.family !== "zip") throw new AttachmentStoreError("ATTACHMENT_MIME_MISMATCH", "invalid zip header");
   }
-  if (input.mimeType === "text/html" || input.mimeType === "text/markdown" || input.mimeType === "text/plain") {
+  if (input.mimeType === "application/vnd.ms-excel") {
+    if (input.detected.family !== "ole") throw new AttachmentStoreError("ATTACHMENT_MIME_MISMATCH", "invalid ole header");
+  }
+  if (input.mimeType === "text/html" || input.mimeType === "text/markdown" || input.mimeType === "text/plain" || input.mimeType === "text/csv") {
     if (!looksLikeUtf8Text(input.bytes)) {
       throw new AttachmentStoreError("ATTACHMENT_BINARY_TEXT", "text attachment looks binary");
     }
