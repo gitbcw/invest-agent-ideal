@@ -3,7 +3,8 @@
 - 任务：T-235（pdf、excel、word 等文件处理能力支持）
 - 项目：P-17 投研助手
 - 日期：2026-08-01
-- 状态：**已选定方案——MinerU 官方托管 MCP Server**（2026-08-01 用户确认）。数据上云权衡用户已接受。部署后置，先完成代码接入。Excel/CSV 白名单放开，微信端暂不动。
+- 状态：**已实施——service-tools 内置 file.parse 工具，直连 MinerU REST API**（2026-08-01）。
+  路径演进：最初选 MinerU 托管 MCP → 实测 mcp.mineru.net token scope 不通 + 托管 MCP 只支持 URL 不支持本地文件 → 改为 service-tools 内置工具直连 REST API（最轻量，你的 token 直接用，读本地附件，零额外部署）。数据上云已确认接受。Excel/CSV 白名单已放开，微信端暂不动。
 - 联动：本任务的挂载实施同时作为 T-243 Phase 3 的"真实工具验证"样本
 - worktree：`invest-agent-ideal-mcp-mount` / 分支 `feat/mcp-mount-standardization`
 

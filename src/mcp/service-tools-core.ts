@@ -20,6 +20,8 @@ import { researchReadCapability } from "../services/external-evidence-search.js"
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
 import { latestMarketWatchSnapshot } from "../services/market-watch-snapshot.js";
+import { parseAttachmentWithMineru, isMineruAvailable } from "../services/mineru-parse.js";
+import { readAttachmentBytes } from "../services/file-retention.js";
 import {
   applyConfirmedOnboardingStep,
   isOnboardingStep as isSharedOnboardingStep,
@@ -119,6 +121,44 @@ async function dispatchServiceTool(
   context: ServiceToolContext
 ): Promise<unknown> {
   switch (name) {
+    case "file.parse": {
+      const attachmentId = stringInput(input?.attachment_id);
+      if (!attachmentId) throw new Error("attachment_id is required");
+      const language = stringInput(input?.language) || "ch";
+      if (!isMineruAvailable()) {
+        throw new Error("file.parse 不可用:MINERU_API_TOKEN 未配置。请让用户通过其他方式提供文件内容,或联系运营配置 MinerU。");
+      }
+      // 读附件字节 (scope 绑定 userId/instanceId,防越权读取)
+      const { bytes, record } = await readAttachmentBytes({
+        attachmentId,
+        userId: context.userId,
+        instanceId: context.instanceId,
+      });
+      const result = await parseAttachmentWithMineru({
+        attachmentId,
+        userId: context.userId,
+        instanceId: context.instanceId,
+        fileName: record.fileName || `${attachmentId}.pdf`,
+        bytes,
+        language,
+      });
+      await audit(context, {
+        operation: "file.parse",
+        resourceType: "attachment",
+        resourceId: attachmentId,
+        requestBody: { attachmentId, language, fileName: record.fileName },
+        resultSummary: `chars=${result.markdown.length}; taskId=${result.taskId}`,
+      });
+      return {
+        ok: true,
+        userId: context.userId,
+        instanceId: context.instanceId,
+        attachmentId,
+        fileName: record.fileName,
+        markdown: result.markdown,
+        taskId: result.taskId,
+      };
+    }
     case "market_watch.snapshot": {
       const result = await latestMarketWatchSnapshot(context.userId, context.instanceId);
       await audit(context, {
