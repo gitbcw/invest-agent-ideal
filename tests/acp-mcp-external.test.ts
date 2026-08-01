@@ -15,6 +15,7 @@ import {
 import {
   buildMarketDataToolRegistration,
   buildQsseQlibRegistration,
+  buildMineruRegistration,
   buildExternalRegistrations,
 } from "../src/acp/external-mcp-registrations.js";
 import { resolveSessionMcpServers } from "../src/acp/mcp-session-manifest.js";
@@ -51,9 +52,9 @@ test("market-data-tool declares a remote HTTP endpoint and Bearer credential", (
   ]);
 });
 
-test("buildExternalRegistrations declares market-data-tool and qsse-qlib", () => {
+test("buildExternalRegistrations declares market-data-tool, qsse-qlib and mineru", () => {
   const regs = buildExternalRegistrations();
-  assert.deepEqual(regs.map((reg) => reg.id), ["market-data-tool", "qsse-qlib"]);
+  assert.deepEqual(regs.map((reg) => reg.id), ["market-data-tool", "qsse-qlib", "mineru"]);
 });
 
 // ─── 默认禁用 (零行为回归) ────────────────────────────────────────
@@ -207,6 +208,66 @@ test("qsse-qlib is excluded from scheduled and evaluation sessions", () => {
     mcpCapabilities: { http: true },
     });
     assert.ok(!servers.some((server) => server.name === "qsse-qlib"));
+  }
+});
+
+// ─── mineru 生产注册契约 (T-235) ───────────────────────────────────
+
+const MINERU_HEALTHY_ENV = {
+  INVEST_AGENT_PROJECT_ROOT: "/tmp/proj",
+  DB_PATH: "a.db",
+  WORKSPACE_ROOT: "w",
+  MINERU_MCP_URL: "https://mcp.mineru.net/mcp",
+  MINERU_API_TOKEN: "mineru-secret-token",
+};
+
+test("mineru registration is external-readonly, interactive-only, and valid", () => {
+  const reg = buildMineruRegistration();
+  assert.equal(validateRegistration(reg), null);
+  assert.equal(reg.id, "mineru");
+  assert.equal(reg.owner, "external");
+  assert.equal(reg.trustClass, "external-readonly");
+  assert.equal(reg.enabled, false); // 默认关闭
+  assert.deepEqual(reg.sessionKinds, ["interactive"]);
+  assert.ok(reg.activateIf, "mineru must declare activateIf (T-243 declarative activation)");
+  assert.deepEqual(reg.activateIf, { kind: "env-any-of", refs: ["INVEST_AGENT_MCP_MINERU_ENABLED"] });
+  if (reg.transport.kind !== "http") throw new Error("expected http");
+  assert.equal(reg.transport.url, "<env:MINERU_MCP_URL>");
+  assert.deepEqual(reg.transport.requiredEnvRefs, ["MINERU_MCP_URL", "MINERU_API_TOKEN"]);
+});
+
+test("mineru resolves the official endpoint and Bearer header without exposing the token", () => {
+  const resolved = resolveExternalHttpServer(buildMineruRegistration(), MINERU_HEALTHY_ENV);
+  assert.ok(resolved);
+  assert.equal(resolved.url, "https://mcp.mineru.net/mcp");
+  assert.deepEqual(resolved.headers, [{ name: "Authorization", value: "Bearer mineru-secret-token" }]);
+});
+
+test("mineru activation requires the dedicated exact-true flag", () => {
+  const off = createMcpRegistry([buildBuiltinServiceToolsRegistration()]);
+  registerExternalMcpServers(off, { INVEST_AGENT_MCP_MINERU_ENABLED: "TRUE" }); // 大小写敏感
+  assert.equal(off.getRegistration("mineru"), undefined);
+
+  const on = createMcpRegistry([buildBuiltinServiceToolsRegistration()]);
+  registerExternalMcpServers(on, { ...MINERU_HEALTHY_ENV, INVEST_AGENT_MCP_MINERU_ENABLED: "true" });
+  assert.equal(on.getRegistration("mineru")?.enabled, true);
+});
+
+test("mineru does not enter scheduled or evaluation sessions", () => {
+  const registry = createMcpRegistry([buildBuiltinServiceToolsRegistration()]);
+  registry.register(buildMineruRegistration());
+  registry.setEnabled("mineru", true);
+  for (const [taskType, sessionId] of [["scheduled-read", "s1"], ["evaluation", "e1"]] as const) {
+    const { servers } = resolveSessionMcpServers({
+      backendId: "codex",
+      cwd: "/tmp/ws",
+      env: MINERU_HEALTHY_ENV,
+      taskType,
+      sessionId,
+      registry,
+      mcpCapabilities: { http: true },
+    });
+    assert.ok(!servers.some((server) => server.name === "mineru"));
   }
 });
 

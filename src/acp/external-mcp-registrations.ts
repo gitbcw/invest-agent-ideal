@@ -81,6 +81,37 @@ export function buildQsseQlibRegistration(): McpServerRegistration {
 }
 
 /**
+ * MinerU 文档解析 MCP (T-235)。官方托管 MCP Server,把文档解析能力暴露为 MCP 工具,
+ * 支持 PDF/Word/PPT/Excel/图片/网页 URL 转 Markdown/JSON/LaTeX。
+ *
+ * 接入模式与 market-data-tool 同构 (HTTP MCP + Bearer token)。
+ * 端点 https://mcp.mineru.net/mcp,鉴权 MINERU_API_TOKEN 走 Authorization header。
+ *
+ * 数据上云权衡:文件会上传到 MinerU 云端服务器 (上海 AI Lab OpenDataLab,国内),
+ * 用户已确认接受 (T-235 方案确认)。默认关闭,需显式 env 开启。
+ * 仅进入交互会话 —— 文档解析是用户发起的即时需求,不在定时/复盘链路用。
+ */
+export function buildMineruRegistration(): McpServerRegistration {
+  return {
+    id: "mineru",
+    owner: "external",
+    enabled: false,
+    trustClass: "external-readonly",
+    transport: {
+      kind: "http",
+      url: "<env:MINERU_MCP_URL>",
+      headers: [{ name: "Authorization", envRef: "MINERU_API_TOKEN", prefix: "Bearer " }],
+      requiredEnvRefs: ["MINERU_MCP_URL", "MINERU_API_TOKEN"],
+    },
+    // MinerU 官方端点固定,提供默认值便于部署 (可被 env 覆盖)
+    versionPolicy: { expected: "1.0.0", allowedRange: "^1" },
+    sessionKinds: ["interactive"],
+    // 声明式激活 (T-243): dedicated 开关。
+    activateIf: { kind: "env-any-of", refs: ["INVEST_AGENT_MCP_MINERU_ENABLED"] },
+  };
+}
+
+/**
  * 判断一个外部注册项在当前 env 下是否应被注册并启用。
  *
  * 自 T-243 起按注册项声明的 activateIf 规则求值 (evaluateActivation)，
@@ -96,5 +127,5 @@ export function isExternalRegistrationActivated(
 
 /** 全部外部注册项。每项仍由自己的 activateIf 规则决定是否实际注册。 */
 export function buildExternalRegistrations(): McpServerRegistration[] {
-  return [buildMarketDataToolRegistration(), buildQsseQlibRegistration()];
+  return [buildMarketDataToolRegistration(), buildQsseQlibRegistration(), buildMineruRegistration()];
 }
