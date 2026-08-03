@@ -19,6 +19,7 @@ export const ARTIFACT_PREVIEWABLE_MIME_TYPES = [
   "text/plain",
   "text/markdown",
   "text/html",
+  "application/yaml",
   "application/json",
   "text/csv",
 ] as const;
@@ -34,6 +35,8 @@ const EXT_MIME_MAP: Record<string, string> = {
   ".markdown": "text/markdown",
   ".html": "text/html",
   ".htm": "text/html",
+  ".yaml": "application/yaml",
+  ".yml": "application/yaml",
   ".txt": "text/plain",
   ".json": "application/json",
   ".csv": "text/csv",
@@ -48,6 +51,7 @@ const MIME_PREVIEW_MODE: Record<string, ConversationArtifact["previewMode"]> = {
   "text/plain": "text",
   "text/markdown": "markdown",
   "text/html": "html",
+  "application/yaml": "text",
   "application/json": "text",
   "text/csv": "table",
 };
@@ -61,6 +65,7 @@ const KIND_BY_MIME: Record<string, ConversationArtifact["kind"]> = {
   "text/plain": "data",
   "text/markdown": "report",
   "text/html": "report",
+  "application/yaml": "data",
   "application/json": "data",
   "text/csv": "data",
 };
@@ -69,6 +74,7 @@ const TEXT_MIME_TYPES = new Set([
   "text/plain",
   "text/markdown",
   "text/html",
+  "application/yaml",
   "application/json",
   "text/csv",
   "image/svg+xml",
@@ -81,6 +87,7 @@ const MAX_INLINE_BYTES = 15 * 1024 * 1024;
 // shipping large applications or embedded datasets.
 const MAX_HTML_BYTES = 1 * 1024 * 1024;
 const REPORT_ROOT = "reports";
+const CONFIG_ROOT = "config";
 
 /**
  * Boundary for the durable library. A file at most this many bytes can be
@@ -317,24 +324,27 @@ export const ARTIFACT_SELECT_COLUMNS = [
 ].join(",\n           ");
 
 /**
- * Registers a workspace file as a first-class artifact. The file must already
- * live under the user's `reports/` directory; this function never accepts
- * absolute paths and does not write to the workspace.
+ * Registers a workspace file as a first-class artifact. During the internal
+ * development phase, files under `reports/` and `config/` are deliverable.
+ * This function never accepts absolute paths and does not write to the
+ * workspace.
  */
 export async function publishConversationArtifact(input: PublishArtifactInput): Promise<ConversationArtifactRecord> {
-  const relativePath = normalizeReportPath(input.relativePath);
+  const source = input.scope.source ?? "artifacts.publish";
+  const relativePath = source === "legacy_path"
+    ? normalizeReportPath(input.relativePath)
+    : normalizeArtifactPath(input.relativePath);
   const workspacePath = resolveWorkspacePath(input.userId);
-  const reportsPath = path.join(workspacePath, REPORT_ROOT);
   const targetPath = path.resolve(workspacePath, relativePath);
 
-  let realReportsPath: string;
+  let realWorkspacePath: string;
   let realTargetPath: string;
   try {
-    [realReportsPath, realTargetPath] = await Promise.all([realpath(reportsPath), realpath(targetPath)]);
+    [realWorkspacePath, realTargetPath] = await Promise.all([realpath(workspacePath), realpath(targetPath)]);
   } catch {
     throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", relativePath);
   }
-  if (!isWithin(realReportsPath, realTargetPath)) {
+  if (!isWithin(realWorkspacePath, realTargetPath)) {
     throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", relativePath);
   }
 
@@ -388,7 +398,7 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     assistantId: input.scope.assistantId,
     conversationId: scopeConversationId,
     messageId: input.scope.messageId ?? null,
-    source: input.scope.source ?? "artifacts.publish",
+    source,
   };
 
   // Compute retention once at write time. The library list and the read path
@@ -396,7 +406,7 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
   // on every call, so backfill only has to populate the columns once.
   const classification = classifyArtifactRetention({
     source: scope.source,
-    relativePath: normalizeReportPath(relativePath),
+    relativePath,
     sizeBytes,
     mimeType,
   });
@@ -413,7 +423,7 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     checksum,
     userId: input.userId,
     instanceId: input.instanceId,
-    relativePath: normalizeReportPath(relativePath),
+    relativePath,
     scope,
     turnId,
     origin: classification?.origin ?? null,
@@ -542,20 +552,20 @@ export async function readConversationArtifactPayload(input: {
     }
 
     const workspacePath = resolveWorkspacePath(record.userId);
-    const reportsPath = path.join(workspacePath, REPORT_ROOT);
-    const targetPath = path.resolve(workspacePath, record.relativePath);
-    let realReportsPath: string;
+    const relativePath = normalizeArtifactPath(record.relativePath);
+    const targetPath = path.resolve(workspacePath, relativePath);
+    let realWorkspacePath: string;
     let realTargetPath: string;
     try {
-      [realReportsPath, realTargetPath] = await Promise.all([realpath(reportsPath), realpath(targetPath)]);
+      [realWorkspacePath, realTargetPath] = await Promise.all([realpath(workspacePath), realpath(targetPath)]);
     } catch {
-      throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", record.relativePath);
+      throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", relativePath);
     }
-    if (!isWithin(realReportsPath, realTargetPath)) {
-      throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", record.relativePath);
+    if (!isWithin(realWorkspacePath, realTargetPath)) {
+      throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", relativePath);
     }
     const fileStat = await stat(realTargetPath);
-    if (!fileStat.isFile()) throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", record.relativePath);
+    if (!fileStat.isFile()) throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", relativePath);
     const maxInlineBytes = record.mimeType === "text/html" ? MAX_HTML_BYTES : MAX_INLINE_BYTES;
     if (fileStat.size > maxInlineBytes) {
       throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(fileStat.size));
@@ -1044,14 +1054,23 @@ function requireRecord(row: ConversationArtifactRecord | undefined): Conversatio
   return row;
 }
 
-function normalizeReportPath(value: string) {
+function normalizeArtifactPath(value: string) {
   const normalized = value.trim().replace(/\\/g, "/");
-  if (!normalized || path.posix.isAbsolute(normalized) || !normalized.startsWith(`${REPORT_ROOT}/`)) {
+  const root = normalized.split("/", 1)[0] ?? "";
+  if (!normalized || path.posix.isAbsolute(normalized) || ![REPORT_ROOT, CONFIG_ROOT].includes(root)) {
     throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", value || "empty");
   }
   const segments = normalized.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
     throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", value);
+  }
+  return normalized;
+}
+
+function normalizeReportPath(value: string) {
+  const normalized = normalizeArtifactPath(value);
+  if (!normalized.startsWith(`${REPORT_ROOT}/`)) {
+    throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", value || "empty");
   }
   return normalized;
 }

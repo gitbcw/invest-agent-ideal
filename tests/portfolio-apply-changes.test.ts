@@ -24,6 +24,8 @@ test("portfolio.apply_changes applies one confirmed, revision-bound portfolio tr
     const { ensureWorkspace, resolveWorkspacePath } = await import("../src/lib/workspace.js");
     const { WorkspaceStore } = await import("../src/lib/workspace-store.js");
     const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+    const { findArtifactsForTurn, readConversationArtifactPayload } = await import("../src/services/conversation-artifacts.js");
+    const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
 
     const userId = "portfolio-change-user";
     const instanceId = "invest-agent-portfolio-change-user";
@@ -137,18 +139,26 @@ test("portfolio.apply_changes applies one confirmed, revision-bound portfolio tr
       createdAt: new Date(Date.now() + 1_000).toISOString(),
     });
 
-    const result = await callServiceTool("portfolio.apply_changes", {
-      confirmedByUser: true,
-      confirmationId: requested.confirmationId,
-      ...payload,
-      summary: "移除赛轮轮胎，新增宁德时代10%仓位",
-    }, context) as {
+    const turnId = "portfolio-change-turn";
+    markTurnStart({ userId, instanceId, conversationId, turnId });
+    let result: {
       ok: boolean;
       revision: string;
       holdings: Array<{ code: string; weight?: number }>;
       watchlist: Array<{ code: string }>;
       cash: { ratio_percent: number };
+      artifact?: { artifactId: string; fileName: string; mimeType: string; relativePath?: string };
     };
+    try {
+      result = await callServiceTool("portfolio.apply_changes", {
+        confirmedByUser: true,
+        confirmationId: requested.confirmationId,
+        ...payload,
+        summary: "移除赛轮轮胎，新增宁德时代10%仓位",
+      }, context) as typeof result;
+    } finally {
+      markTurnEnd({ userId, instanceId, conversationId, turnId });
+    }
     assert.equal(result.ok, true);
     assert.equal(result.holdings.some((item) => item.code === "601058"), false);
     assert.equal(result.holdings.find((item) => item.code === "300750")?.weight, 10);
@@ -156,6 +166,18 @@ test("portfolio.apply_changes applies one confirmed, revision-bound portfolio tr
     assert.equal(result.cash.ratio_percent, 55);
     assert.equal((result.cash as { notes?: string }).notes, "现金仓位约 55%", "cash display note must not retain the old ratio");
     assert.notEqual(result.revision, revision);
+    assert.equal(result.artifact?.fileName, "portfolio.yaml");
+    assert.equal(result.artifact?.mimeType, "application/yaml");
+    const turnArtifacts = findArtifactsForTurn({ userId, instanceId, conversationId, turnId });
+    assert.equal(turnArtifacts.length, 1);
+    assert.equal(turnArtifacts[0].relativePath, "config/portfolio.yaml");
+    const artifactPayload = await readConversationArtifactPayload({
+      artifactId: turnArtifacts[0].artifactId,
+      userId,
+      instanceId,
+    });
+    assert.equal(artifactPayload.payload.mimeType, "application/yaml");
+    assert.match(Buffer.from(artifactPayload.payload.base64, "base64").toString("utf8"), /300750/);
 
     const saved = await store.readPortfolio();
     assert.equal(saved?.last_confirmation_id, requested.confirmationId);

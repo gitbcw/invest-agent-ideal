@@ -109,7 +109,7 @@ Artifact publication tool:
 
 - `artifacts.publish`
 
-`artifacts.publish` registers an already-created file under the scoped workspace `reports/` directory and returns a first-class artifact descriptor for Portal message metadata. An explicitly requested standalone webpage report uses `reports/html/<timestamp>-<slug>.html` and must be published in the same Agent turn; semantic daily, weekly, monthly and company reports keep their existing directories even when rendered as HTML. The Agent must not claim that a report is available unless publication succeeds. The tool rejects absolute paths, parent traversal, escaping symlinks, unsupported or forged MIME content, oversized files, unsafe SVG, and cross-scope reads. It does not create or edit the report file and cannot select another user scope.
+`artifacts.publish` registers an already-created file under the scoped workspace `reports/` directory, or under `config/` during the internal development phase, and returns a first-class artifact descriptor for Portal message metadata. Config artifacts are conversation-only raw workspace files and are not promoted into the curated library. An explicitly requested standalone webpage report uses `reports/html/<timestamp>-<slug>.html` and must be published in the same Agent turn; semantic daily, weekly, monthly and company reports keep their existing directories even when rendered as HTML. A successful `portfolio.apply_changes` also publishes `config/portfolio.yaml` automatically in the same turn. The Agent must not claim that a file is available unless publication succeeds. The tool rejects absolute paths, parent traversal, escaping symlinks, unsupported or forged MIME content, oversized files, unsafe SVG, and cross-scope reads. It does not create or edit the file and cannot select another user scope.
 
 ## Verification
 
@@ -136,5 +136,5 @@ Expected checks:
 - General web tools are discoverable through MCP, page reads cannot reach local/private addresses, and search/page results preserve final URL, fetch time, provider and warnings.
 - Durable writes reject missing, expired, replayed, cross-scope, payload-mismatched, or stale-revision confirmations. Portfolio writes also reject unresolved watchlist transitions and complete allocations that do not total 100%.
 - Scheduled `reviews.save` accepts only the trusted scheduler conversation scope, preserves full report and push brief separately, appends optional decision/source records, and keeps manual unconfirmed saves rejected.
-- `artifacts.publish` accepts only allowlisted `reports/` files and returns a scoped descriptor whose payload checksum matches the workspace bytes.
+- `artifacts.publish` accepts only allowlisted `reports/` files, plus development-phase `config/` files, and returns a scoped descriptor whose payload checksum matches the workspace bytes.
 - Final onboarding watch setup completes after an explicit skip or verified confirmed-rule creation without a redundant completion-only confirmation.

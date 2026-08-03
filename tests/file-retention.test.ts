@@ -99,7 +99,7 @@ test("registers uploads with a server-side 7-day expiresAt and reading does not 
     const file = path.join(fixture.workspaceUser, "attachments", "2026-07-25", "att_test-1_report.txt");
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, "hello");
-    const storedAt = new Date("2026-07-25T10:00:00Z");
+    const storedAt = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const record = fixture.retentionMod.registerAttachment({
       userId: "user-ret",
       instanceId: "user-ret",

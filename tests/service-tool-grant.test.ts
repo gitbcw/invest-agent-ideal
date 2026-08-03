@@ -10,7 +10,7 @@ import {
   isScheduledTaskType,
 } from "../src/mcp/service-tool-classification.js";
 
-// 实际注册的 43 个工具名（从 invest-agent-service-tools.ts registerJsonTool 提取）
+// 实际注册的工具名（从 invest-agent-service-tools.ts registerJsonTool 提取）
 const REGISTERED_TOOLS = [
   "market_watch.snapshot",
   "research.news_search", "research.web_search", "research.web_read",

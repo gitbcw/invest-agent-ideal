@@ -14,6 +14,11 @@ test("web channel teaches the proactive inline SVG selection policy", () => {
   assert.match(instruction, /纯词义解释、单一事实或简短行情问答/);
   assert.match(instruction, /只能使用下方的 `invest-svg` 内联图示/);
   assert.match(instruction, /最多 2 张/);
+  assert.match(instruction, /用户明确要求发送、提供链接或下载某个文件/);
+  assert.match(instruction, /本轮实际新建或生成了文件/);
+  assert.match(instruction, /本轮实际修改了用户 Workspace 中的文件/);
+  assert.match(instruction, /仅仅读取、引用、提到/);
+  assert.match(instruction, /按文件路径去重/);
   assert.doesNotMatch(instruction, /复杂话题可用 2-3 张/);
   assert.doesNotMatch(instruction, /最多 3 张/);
 });

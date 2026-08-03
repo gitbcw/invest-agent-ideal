@@ -34,7 +34,7 @@ The read-only Portal boundary is not an AI filesystem security boundary. Codex A
 
 ## Protocol And Lifecycle
 
-Conversation artifact descriptors may include an optional workspace-relative `workspacePath`. It is emitted only for Markdown, HTML and image artifacts that are eligible for Portal workspace browsing. Existing descriptors without the field remain valid.
+Conversation artifact descriptors may include an optional workspace-relative `workspacePath`. It is emitted only for Markdown, HTML and image artifacts that are eligible for Portal workspace browsing; conversation-only YAML/config artifacts are read through the scoped artifact channel. Existing descriptors without the field remain valid.
 
 Standalone webpage reports explicitly requested by a user are stored under `reports/html/` and published in the same Agent turn. They are permanent `durable_library` assets when they satisfy the existing MIME and 1 MiB limits. Existing semantic reports remain under their daily, weekly, monthly or company directories regardless of whether their rendering format is Markdown or HTML.
 

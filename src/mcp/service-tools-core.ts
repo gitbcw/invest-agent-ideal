@@ -2,7 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { alertRules, conversationMessages, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
 import { publishConversationArtifact, type ConversationArtifact } from "../services/conversation-artifacts.js";
-import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
+import { isWorkspaceBackend, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
@@ -548,7 +548,23 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
     requestBody: input,
     resultSummary: `confirmed portfolio holdings=${holdingInputs.length}; watchlist=${watchInputs.length}; current=style`,
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, state: nextState, holdings, watchlist: watchItems };
+  const publication = await publishWorkspaceArtifacts(
+    context,
+    [
+      { relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" },
+      { relativePath: "config/onboarding_state.yaml", kind: "data", title: "初始配置状态" },
+    ],
+    "onboarding.confirm_portfolio",
+  );
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    state: nextState,
+    holdings,
+    watchlist: watchItems,
+    ...artifactPublicationFields(publication),
+  };
 }
 
 const DRAFT_OPERATIONS = new Set([
@@ -698,7 +714,15 @@ async function confirmOnboardingStep(input: Record<string, unknown> | undefined,
     requestBody: input,
     resultSummary: `confirmed ${step}; status=${nextState.status}`,
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, state: nextState, message: nextState.status === "completed" ? "新手引导已完成" : `已确认 ${step}` };
+  const publication = await publishWorkspaceArtifacts(context, onboardingArtifactSpecs(step), "onboarding.confirm_step");
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    state: nextState,
+    message: nextState.status === "completed" ? "新手引导已完成" : `已确认 ${step}`,
+    ...artifactPublicationFields(publication),
+  };
 }
 
 async function completeOnboardingWatchSetup(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -806,7 +830,16 @@ async function completeOnboardingWatchSetup(input: Record<string, unknown> | und
     requestBody: { branch, ruleIds, summary: input?.summary },
     resultSummary: `completed watch setup branch=${branch}; rules=${ruleIds.length}`,
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, state: nextState, branch, ruleIds };
+  const publication = await publishWorkspaceArtifacts(context, onboardingArtifactSpecs("watch_rules"), "onboarding.complete_watch_setup");
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    state: nextState,
+    branch,
+    ruleIds,
+    ...artifactPublicationFields(publication),
+  };
 }
 
 async function addWatchlist(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -836,7 +869,22 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
     requestBody: input,
     resultSummary: `added ${stockName}(${stockCode})`,
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, message: `已添加 ${stockName}(${stockCode}) 到自选池`, stockCode, stockName };
+  const publication: WorkspaceArtifactPublication = isWorkspaceBackend()
+    ? await publishWorkspaceArtifacts(
+      context,
+      [{ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" }],
+      "watchlist.add",
+    )
+    : { artifacts: [], failures: [] };
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    message: `已添加 ${stockName}(${stockCode}) 到自选池`,
+    stockCode,
+    stockName,
+    ...artifactPublicationFields(publication),
+  };
 }
 
 async function setPlan(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -867,7 +915,20 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
     requestBody: input,
     resultSummary: `${existing ? "updated" : "created"} ${stockName}(${stockCode})`,
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, message: `${stockName}(${stockCode}) 预案已${existing ? "更新" : "创建"}` };
+  const publication: WorkspaceArtifactPublication = isWorkspaceBackend()
+    ? await publishWorkspaceArtifacts(
+      context,
+      [{ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" }],
+      "plans.set",
+    )
+    : { artifacts: [], failures: [] };
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    message: `${stockName}(${stockCode}) 预案已${existing ? "更新" : "创建"}`,
+    ...artifactPublicationFields(publication),
+  };
 }
 
 async function setPlanConditions(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -890,7 +951,14 @@ async function setPlanConditions(input: Record<string, unknown> | undefined, con
     requestBody: input,
     resultSummary: `updated ${result.conditionCount} conditions for ${result.stockName}(${result.stockCode})`,
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, ...result };
+  const publication: WorkspaceArtifactPublication = isWorkspaceBackend()
+    ? await publishWorkspaceArtifacts(
+      context,
+      [{ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" }],
+      "plans.watch_conditions",
+    )
+    : { artifacts: [], failures: [] };
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, ...result, ...artifactPublicationFields(publication) };
 }
 
 async function proposeMethodChange(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -1295,14 +1363,106 @@ async function applyPortfolioChanges(input: Record<string, unknown> | undefined,
     requestBody: input,
     resultSummary: `removedHoldings=${plan.removedHoldings.length}; upsertedHoldings=${plan.upsertedHoldings.length}; removedWatchlist=${plan.removedWatchlist.length}; totalPercent=${plan.allocation.totalPercent ?? "unknown"}`,
   });
+  const artifact = await publishPortfolioFileArtifact(context);
   return portfolioChangeResult(
     context,
     saved,
     plan.removedHoldings,
     plan.upsertedHoldings,
     plan.removedWatchlist,
-    plan.keptWatchlistCodes
+    plan.keptWatchlistCodes,
+    artifact,
   );
+}
+
+interface WorkspaceArtifactSpec {
+  relativePath: string;
+  title: string;
+  kind: ConversationArtifact["kind"];
+}
+
+interface WorkspaceArtifactPublication {
+  artifacts: ConversationArtifact[];
+  failures: Array<{ relativePath: string; message: string }>;
+}
+
+async function publishWorkspaceArtifacts(
+  context: ServiceToolContext,
+  specs: WorkspaceArtifactSpec[],
+  sourceOperation: string,
+): Promise<WorkspaceArtifactPublication> {
+  const artifacts: ConversationArtifact[] = [];
+  const failures: Array<{ relativePath: string; message: string }> = [];
+  const seenPaths = new Set<string>();
+  for (const spec of specs) {
+    if (seenPaths.has(spec.relativePath)) continue;
+    seenPaths.add(spec.relativePath);
+    try {
+      const published = await publishConversationArtifact({
+        userId: context.userId,
+        instanceId: context.instanceId,
+        relativePath: spec.relativePath,
+        kind: spec.kind,
+        title: spec.title,
+        scope: {
+          projectId: context.projectId || DEFAULT_PROJECT_ID,
+          assistantId: context.instanceId,
+          conversationId: context.conversationId ?? null,
+          source: "artifacts.publish",
+        },
+      });
+      artifacts.push(published);
+      await audit(context, {
+        operation: "artifacts.publish",
+        resourceType: "conversation_artifact",
+        resourceId: published.artifactId,
+        requestBody: { relativePath: spec.relativePath, automatic: true, sourceOperation },
+        resultSummary: `published automatic workspace artifact ${published.fileName}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push({ relativePath: spec.relativePath, message });
+      await audit(context, {
+        operation: "artifacts.publish",
+        resourceType: "conversation_artifact",
+        resourceId: spec.relativePath,
+        requestBody: { relativePath: spec.relativePath, automatic: true, sourceOperation },
+        resultSummary: `automatic workspace artifact skipped: ${message}`,
+        status: "error",
+      }).catch(() => undefined);
+    }
+  }
+  return { artifacts, failures };
+}
+
+function artifactPublicationFields(publication: WorkspaceArtifactPublication) {
+  return {
+    ...(publication.artifacts.length > 0 ? { artifacts: publication.artifacts } : {}),
+    ...(publication.failures.length > 0 ? { artifactPublishFailures: publication.failures } : {}),
+  };
+}
+
+async function publishPortfolioFileArtifact(context: ServiceToolContext): Promise<ConversationArtifact | undefined> {
+  const publication = await publishWorkspaceArtifacts(
+    context,
+    [{ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" }],
+    "portfolio.apply_changes",
+  );
+  return publication.artifacts[0];
+}
+
+function onboardingArtifactSpecs(step: string): WorkspaceArtifactSpec[] {
+  const specs: WorkspaceArtifactSpec[] = [
+    { relativePath: "config/onboarding_state.yaml", kind: "data", title: "初始配置状态" },
+  ];
+  if (step === "portfolio") specs.push({ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" });
+  if (step === "style") specs.push({ relativePath: "config/strategy.yaml", kind: "data", title: "投资策略配置" });
+  if (step === "review_schedule" || step === "market_watch_schedule") {
+    specs.push({ relativePath: "config/schedules.yaml", kind: "data", title: "任务与盯盘计划" });
+  }
+  if (step === "notification") specs.push({ relativePath: "config/notification.yaml", kind: "data", title: "通知偏好配置" });
+  if (step === "watch_rules") specs.push({ relativePath: "config/watch.yaml", kind: "data", title: "盯盘边界配置" });
+  return specs;
 }
 
 function portfolioChangeResult(
@@ -1311,7 +1471,8 @@ function portfolioChangeResult(
   removedHoldings: PortfolioHolding[],
   upsertedHoldings: PortfolioHolding[],
   removedWatchlist: PortfolioWatchItem[],
-  keptWatchlistCodes: string[]
+  keptWatchlistCodes: string[],
+  artifact?: ConversationArtifact,
 ) {
   return {
     ok: true,
@@ -1321,6 +1482,7 @@ function portfolioChangeResult(
     holdings: portfolio.holdings ?? [],
     watchlist: portfolio.watchlist ?? [],
     cash: portfolio.cash ?? null,
+    ...(artifact ? { artifact } : {}),
     applied: {
       removedHoldingCodes: removedHoldings.map((item) => item.code),
       upsertedHoldingCodes: upsertedHoldings.map((item) => item.code),

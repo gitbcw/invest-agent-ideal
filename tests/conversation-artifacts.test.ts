@@ -47,6 +47,7 @@ async function setupSharedFixture(): Promise<TestContext> {
   await mkdir(path.join(workspaceUserA, "reports", "daily"), { recursive: true });
   await mkdir(path.join(workspaceUserA, "reports", "html"), { recursive: true });
   await mkdir(path.join(workspaceUserA, "reports", "metrics"), { recursive: true });
+  await mkdir(path.join(workspaceUserA, "config"), { recursive: true });
   await mkdir(path.join(workspaceUserB, "reports", "daily"), { recursive: true });
   process.env.WORKSPACE_ROOT = workspaceRoot;
   process.env.DB_PATH = path.join(root, "test.db");
@@ -91,6 +92,30 @@ test("publishes and reads a valid mg-shaped markdown report", async () => {
   });
   assert.equal(read.payload.mimeType, "text/markdown");
   assert.equal(Buffer.from(read.payload.base64, "base64").toString("utf8"), VALID_MG_MARKDOWN);
+});
+
+test("publishes and reads a user-owned YAML config artifact without changing bytes", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const relativePath = "config/portfolio.yaml";
+  const content = "cash:\n  ratio_percent: 35\nholdings:\n  - code: '600000'\n    name: 测试标的\n";
+  await writeFile(path.join(workspaceUserA, relativePath), content, "utf8");
+  const record = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath,
+    scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "conv-config" },
+  });
+  assert.equal(record.mimeType, "application/yaml");
+  assert.equal(record.previewMode, "text");
+  assert.equal(record.visibility, "conversation_only");
+  const read = await mod.readConversationArtifactPayload({
+    artifactId: record.artifactId,
+    userId: "user-a",
+    instanceId: "user-a",
+  });
+  assert.equal(read.payload.mimeType, "application/yaml");
+  assert.equal(Buffer.from(read.payload.base64, "base64").toString("utf8"), content);
+  assert.equal(read.payload.checksum, record.checksum);
 });
 
 test("conversation reads enrich historical artifact metadata with a browsable workspace path", async () => {

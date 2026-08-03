@@ -124,6 +124,8 @@ Onboarding 写入遵守以下边界：
 
 用户明确要求“生成网页报告”时，将静态、自包含的 HTML 写入 `reports/html/`，并在同一回合调用 `artifacts.publish`。只有发布成功后才能告知用户报告已经可用；不要只回复绝对路径。日、周、月和公司报告即使采用 HTML 格式，也继续保留在各自的语义目录中。
 
+门户文件交付还覆盖所有当前同步完成的 Workspace 写入：服务层会自动发布本轮实际修改的 `config/` 文件，并在工具结果中返回一个或多个 artifact descriptor；必须使用所有成功返回的 descriptor，不要重复调用 `artifacts.publish`。如果 Agent 直接新建或修改 `reports/`、`config/` 文件，而对应工具没有自动发布，则必须对每个变更路径调用 `artifacts.publish`。发布失败、写入失败或修改未生效时，不得声称文件已经可用，也不得伪造链接。
+
 ## 写入长期记忆的确认规则
 
 以下变更必须二次确认：
