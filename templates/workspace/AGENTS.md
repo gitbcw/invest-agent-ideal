@@ -164,11 +164,15 @@ Onboarding 写入遵守以下边界：
   - `watchlist.add`
   - `plans.set` / `plans.watch_conditions`
   - `method_changes.propose`
+  - `method_changes.apply`
+  - `preferences.apply`
   - `reviews.save`
   - `watch_rules.validate` / `watch_rules.create` / `watch_rules.list` / `watch_rules.dry_run`
 - 持仓变更先读取当前 revision，再形成一份完整组合草案。若观察仓标的转为持仓，必须让用户明确选择保留或移出观察仓；已知持仓权重和现金比例时，变更后合计必须为 100%，不明确就先追问。草案完整后用 `confirmations.request` 登记 `portfolio.apply_changes` 的精确 payload，用户下一轮确认后再执行，并回读验证。
 - Onboarding 是例外流程：每一节先用 `onboarding.draft.upsert_step` 和 `onboarding.draft.request_confirmation` 展示精确草案，用户确认后用 `onboarding.draft.accept_step` 只定稿草稿，不写 Workspace。中间回复必须说“已加入初始配置草稿”或等价的未生效表述，禁止说“已保存”“已整理确认”。全部步骤确认后用 `onboarding.draft.enqueue_commit` 排队统一提交；立即告知用户正在完成初始配置，完成后由服务通知，不再要求“确认完成”。其他确定性状态写入必须在用户提出变更的当轮先用 `confirmations.request` 登记精确 operation/payload；`confirmations.request` 只是安全的预写入确认单登记，不会改变持仓、自选、预案或规则。用户下一轮明确确认后，才携带服务端 `confirmationId` 和 `confirmedByUser: true` 调用对应写入工具。`watchlist.add`、`plans.set`、`plans.watch_conditions`、`portfolio.apply_changes`、`watch_rules.create` 等都适用：给用户看确认草案前必须已经拿到服务端 confirmation，不允许只输出自然语言草案等待确认。`reviews.save` 是报告发布例外：定时日复盘无需交互式确认；用户主动要求生成复盘时，该请求本身授权保存本次报告，调用时标记 `confirmedByUser: true`，不要再要求二次确认。定时日复盘由 Agent 自主生成完整报告，通过 `reviews.save` 同时发布 `content` 与独立 `pushBrief`，成功后最终回复只发送该微信简报；服务层不替 Agent 生成或裁剪报告。
 - `portfolio.apply_changes` 已支持同一确认单内的持仓新增、更新、移除、观察仓保留/移除和现金比例调整。其他尚未开放的删除、关闭、主动推送和强制触发调度需求仍应明确说明不能执行，不得寻找隐藏接口绕过。
+- 方法变更分两阶段：`method_changes.propose` 只记录候选，不会修改当前策略。若用户准备正式采用，必须展示将写入 `config/strategy.yaml` 的精确结构化 patch，并用 `confirmations.request` 登记 `method_changes.apply`；用户后续明确确认后才调用 `method_changes.apply`。只有工具成功回读、候选变为 `confirmed` 并返回 artifact 后，才能说策略已生效，并必须使用返回的 `config/strategy.yaml` 文件卡片。
+- 复盘时间、盘中简报时间或通知偏好在 onboarding 完成后发生变化时，必须先读取当前配置并形成精确草案，再用 `confirmations.request` 登记 `preferences.apply`。用户下一轮明确确认后调用该工具；成功后只能依据回读结果说明已生效，并使用返回的 `config/schedules.yaml` 或 `config/notification.yaml` 文件卡片。
 
 ## 阶段二明确规则盯盘约束
 

@@ -13,6 +13,7 @@ import {
   type PortfolioHolding,
   type PortfolioWatchItem,
   type PortfolioYaml,
+  type StrategyYaml,
 } from "../lib/workspace-store.js";
 import { localDateString, saveSkillDailyReview, saveSkillPeriodicReview } from "../handlers/review.js";
 import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handlers/plan-conditions.js";
@@ -39,6 +40,7 @@ import {
 } from "../services/onboarding-drafts.js";
 import { mutationResourceKeysForOperation } from "../services/mutation-resource-keys.js";
 import { withResourceMutationLock } from "../services/resource-mutation-lock.js";
+import { applyUserPreferenceChange, planUserPreferenceChange, type UserPreferenceChangeInput } from "../services/user-preferences.js";
 
 export interface ServiceToolContext {
   userId: string;
@@ -48,6 +50,16 @@ export interface ServiceToolContext {
   conversationId?: string;
   expectedReviewKind?: "daily" | "weekly" | "monthly";
   expectedReviewKey?: string;
+}
+
+export interface ServiceToolFailureInjection {
+  artifactPublish?: (relativePath: string) => Error | undefined;
+}
+
+let serviceToolFailureInjection: ServiceToolFailureInjection = {};
+
+export function __setServiceToolFailureInjection(injection: ServiceToolFailureInjection = {}): void {
+  serviceToolFailureInjection = injection;
 }
 
 export function serviceToolContextFromEnv(env: NodeJS.ProcessEnv = process.env): ServiceToolContext {
@@ -335,6 +347,10 @@ async function dispatchServiceTool(
       return setPlanConditions(input, context);
     case "method_changes.propose":
       return proposeMethodChange(input, context);
+    case "method_changes.apply":
+      return applyMethodChange(input, context);
+    case "preferences.apply":
+      return applyUserPreferences(input, context);
     case "reviews.save":
       return saveReview(input, context);
     case "artifacts.publish":
@@ -983,7 +999,315 @@ async function proposeMethodChange(input: Record<string, unknown> | undefined, c
     requestBody: input,
     resultSummary: "proposed method change",
   });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, candidate: created };
+  const strategy = isWorkspaceBackend() ? await new WorkspaceStore(context.userId).readStrategy() : null;
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    candidate: created,
+    strategyRevision: strategy?.last_confirmed_at ?? null,
+  };
+}
+
+type StrategyPatch = {
+  profile?: NonNullable<StrategyYaml["profile"]>;
+  allocation?: Record<string, unknown>;
+  position_roles?: Record<string, unknown>;
+  buy_rules?: unknown[];
+  sell_rules?: unknown[];
+  rebalance_rules?: unknown[];
+  risk_rules?: unknown[];
+  do_not_do_rules?: string[];
+  decision_boundaries?: Record<string, unknown>;
+  notes?: string;
+};
+
+const STRATEGY_PATCH_KEYS = new Set([
+  "profile",
+  "allocation",
+  "positionRoles",
+  "buyRules",
+  "sellRules",
+  "rebalanceRules",
+  "riskRules",
+  "doNotDoRules",
+  "decisionBoundaries",
+  "notes",
+]);
+
+const STRATEGY_PROFILE_INPUT_KEYS: Record<string, string> = {
+  style: "style",
+  selectedStylePack: "selected_style_pack",
+  customStyleEnabled: "custom_style_enabled",
+  riskPreference: "risk_preference",
+  investmentHorizon: "investment_horizon",
+  markets: "markets",
+  userMode: "user_mode",
+  investorSegment: "investor_segment",
+  decisionCadence: "decision_cadence",
+  preferredAssets: "preferred_assets",
+};
+
+function strategyPatchRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`strategyPatch.${field} 必须是对象`);
+  }
+  return { ...(value as Record<string, unknown>) };
+}
+
+function strategyPatchArray(value: unknown, field: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`strategyPatch.${field} 必须是数组`);
+  return [...value];
+}
+
+function normalizeStrategyPatch(value: unknown): StrategyPatch {
+  const raw = asRecord(value);
+  const unknownKeys = Object.keys(raw).filter((key) => !STRATEGY_PATCH_KEYS.has(key));
+  if (unknownKeys.length > 0) throw new Error(`strategyPatch 包含不支持的字段: ${unknownKeys.join(", ")}`);
+  if (Object.keys(raw).length === 0) throw new Error("strategyPatch 不能为空");
+
+  const patch: StrategyPatch = {};
+  if (raw.profile !== undefined) {
+    const profile = strategyPatchRecord(raw.profile, "profile");
+    const unknownProfileKeys = Object.keys(profile).filter((key) => !STRATEGY_PROFILE_INPUT_KEYS[key]);
+    if (unknownProfileKeys.length > 0) {
+      throw new Error(`strategyPatch.profile 包含不支持的字段: ${unknownProfileKeys.join(", ")}`);
+    }
+    patch.profile = Object.fromEntries(
+      Object.entries(profile).map(([key, item]) => [STRATEGY_PROFILE_INPUT_KEYS[key], item]),
+    ) as NonNullable<StrategyYaml["profile"]>;
+  }
+  if (raw.allocation !== undefined) patch.allocation = strategyPatchRecord(raw.allocation, "allocation");
+  if (raw.positionRoles !== undefined) patch.position_roles = strategyPatchRecord(raw.positionRoles, "positionRoles");
+  if (raw.buyRules !== undefined) patch.buy_rules = strategyPatchArray(raw.buyRules, "buyRules");
+  if (raw.sellRules !== undefined) patch.sell_rules = strategyPatchArray(raw.sellRules, "sellRules");
+  if (raw.rebalanceRules !== undefined) patch.rebalance_rules = strategyPatchArray(raw.rebalanceRules, "rebalanceRules");
+  if (raw.riskRules !== undefined) patch.risk_rules = strategyPatchArray(raw.riskRules, "riskRules");
+  if (raw.doNotDoRules !== undefined) {
+    const rules = strategyPatchArray(raw.doNotDoRules, "doNotDoRules");
+    if (!rules.every((item) => typeof item === "string")) throw new Error("strategyPatch.doNotDoRules 必须是字符串数组");
+    patch.do_not_do_rules = rules as string[];
+  }
+  if (raw.decisionBoundaries !== undefined) {
+    patch.decision_boundaries = strategyPatchRecord(raw.decisionBoundaries, "decisionBoundaries");
+  }
+  if (raw.notes !== undefined) {
+    if (typeof raw.notes !== "string") throw new Error("strategyPatch.notes 必须是字符串");
+    patch.notes = raw.notes;
+  }
+  return patch;
+}
+
+function mergeStrategyPatch(
+  existing: StrategyYaml,
+  patch: StrategyPatch,
+  now: string,
+  confirmationId: string,
+  candidateId: string,
+): StrategyYaml {
+  const next: StrategyYaml = {
+    ...existing,
+    last_confirmed_at: now,
+    last_confirmed_by: "user",
+    last_confirmation_id: confirmationId,
+    last_method_change_candidate_id: candidateId,
+  };
+  if (patch.profile) next.profile = { ...(existing.profile ?? {}), ...patch.profile };
+  if (patch.allocation) next.allocation = { ...(existing.allocation ?? {}), ...patch.allocation };
+  if (patch.position_roles) next.position_roles = { ...(existing.position_roles ?? {}), ...patch.position_roles };
+  if (patch.buy_rules) next.buy_rules = patch.buy_rules;
+  if (patch.sell_rules) next.sell_rules = patch.sell_rules;
+  if (patch.rebalance_rules) next.rebalance_rules = patch.rebalance_rules;
+  if (patch.risk_rules) next.risk_rules = patch.risk_rules;
+  if (patch.do_not_do_rules) next.do_not_do_rules = patch.do_not_do_rules;
+  if (patch.decision_boundaries) {
+    next.decision_boundaries = { ...(existing.decision_boundaries ?? {}), ...patch.decision_boundaries };
+  }
+  if (patch.notes !== undefined) next.notes = patch.notes;
+  return next;
+}
+
+async function planMethodChangeApplication(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  if (!isWorkspaceBackend()) throw new Error("method_changes.apply 目前只支持 Workspace 策略后端");
+  const candidateId = stringInput(input?.candidateId);
+  if (!candidateId) throw new Error("candidateId 是必填项");
+  const candidate = await methodChangeBackend.get(context.userId, context.instanceId, candidateId);
+  if (!candidate) throw new Error("方法变更候选不存在");
+
+  const store = new WorkspaceStore(context.userId);
+  const current = await store.readStrategy();
+  if (!current) throw new Error("当前策略配置不存在，无法采用方法变更");
+  const patch = normalizeStrategyPatch(input?.strategyPatch);
+  const confirmationId = stringInput(input?.confirmationId);
+  if (candidate.status === "confirmed") {
+    if (
+      current.last_method_change_candidate_id === candidateId
+      && current.last_confirmation_id === confirmationId
+    ) {
+      return { candidate, current, patch, changedFields: Object.keys(patch), alreadyApplied: true };
+    }
+    throw new Error(`方法变更候选当前状态为 ${candidate.status}，不能重复采用`);
+  }
+  if (candidate.status !== "proposed") throw new Error(`方法变更候选当前状态为 ${candidate.status}，不能重复采用`);
+  const expectedRevision = input?.expectedLastConfirmedAt;
+  if (expectedRevision !== undefined && (expectedRevision ?? null) !== (current.last_confirmed_at ?? null)) {
+    throw new Error("策略配置已发生变化，请重新读取策略并生成采用草案");
+  }
+  return { candidate, current, patch, changedFields: Object.keys(patch), alreadyApplied: false };
+}
+
+async function applyMethodChange(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const confirmation = await prepareBoundConfirmation(input, context, "method_changes.apply");
+  const plan = await planMethodChangeApplication(input, context);
+  const candidateId = plan.candidate.id;
+  const now = new Date().toISOString();
+  const store = new WorkspaceStore(context.userId);
+  let saved = plan.current;
+  let confirmedCandidate = plan.candidate;
+  if (!plan.alreadyApplied) {
+    const next = mergeStrategyPatch(plan.current, plan.patch, now, confirmation.confirmationId, candidateId);
+    await store.writeStrategy(next);
+    const savedStrategy = await store.readStrategy();
+    if (
+      savedStrategy?.last_confirmed_at !== now
+      || savedStrategy.last_confirmation_id !== confirmation.confirmationId
+      || savedStrategy.last_method_change_candidate_id !== candidateId
+    ) {
+      await store.writeStrategy(plan.current);
+      throw new Error("策略写入后回读校验失败，已恢复原策略");
+    }
+    saved = savedStrategy;
+
+    try {
+      const decidedCandidate = await methodChangeBackend.decide({
+        userId: context.userId,
+        instanceId: context.instanceId,
+        id: candidateId,
+        status: "confirmed",
+        decisionNote: stringInput(input?.decisionNote) || "已采用并写入 config/strategy.yaml",
+      });
+      if (!decidedCandidate) throw new Error("方法变更候选不存在");
+      confirmedCandidate = decidedCandidate;
+    } catch (error) {
+      await store.writeStrategy(plan.current);
+      throw error;
+    }
+  }
+
+  const appliedRevision = saved.last_confirmed_at ?? now;
+  await store.appendChangeLogOnce({
+    ts: appliedRevision,
+    source: "mcp",
+    type: "method_change_applied",
+    summary: stringInput(input?.summary) || "用户确认采用方法变更",
+    details: {
+      candidate_id: candidateId,
+      operation_key: `method_changes.apply:${confirmation.confirmationId}`,
+      changed_fields: plan.changedFields,
+      confirmation_id: confirmation.confirmationId,
+      previous_strategy_revision: plan.current.last_confirmed_at ?? null,
+      strategy_revision: appliedRevision,
+    },
+  }, `method_changes.apply:${confirmation.confirmationId}`);
+  await audit(context, {
+    operation: "method_changes.apply",
+    resourceType: "method_change_candidate",
+    resourceId: candidateId,
+    requestBody: input,
+    resultSummary: `applied method change candidate fields=${plan.changedFields.join(",")}`,
+  });
+  const publication = await publishWorkspaceArtifacts(
+    context,
+    [{ relativePath: "config/strategy.yaml", kind: "data", title: "当前投资策略" }],
+    "method_changes.apply",
+    { required: true },
+  );
+  await confirmation.consume();
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    candidate: confirmedCandidate,
+    strategy: saved,
+    changedFields: plan.changedFields,
+    ...artifactPublicationFields(publication),
+  };
+}
+
+function userPreferenceChangeInput(input: Record<string, unknown> | undefined): UserPreferenceChangeInput {
+  if (input?.reviewSchedule !== undefined && (!input.reviewSchedule || typeof input.reviewSchedule !== "object" || Array.isArray(input.reviewSchedule))) {
+    throw new Error("reviewSchedule 必须是对象");
+  }
+  if (input?.marketWatchSchedule !== undefined && (!input.marketWatchSchedule || typeof input.marketWatchSchedule !== "object" || Array.isArray(input.marketWatchSchedule))) {
+    throw new Error("marketWatchSchedule 必须是对象");
+  }
+  if (input?.notificationPreference !== undefined && typeof input.notificationPreference !== "string" && (!input.notificationPreference || typeof input.notificationPreference !== "object" || Array.isArray(input.notificationPreference))) {
+    throw new Error("notificationPreference 必须是字符串或对象");
+  }
+  return {
+    reviewSchedule: input?.reviewSchedule && typeof input.reviewSchedule === "object" && !Array.isArray(input.reviewSchedule)
+      ? input.reviewSchedule as Record<string, unknown>
+      : undefined,
+    marketWatchSchedule: input?.marketWatchSchedule && typeof input.marketWatchSchedule === "object" && !Array.isArray(input.marketWatchSchedule)
+      ? input.marketWatchSchedule as Record<string, unknown>
+      : undefined,
+    notificationPreference: typeof input?.notificationPreference === "string"
+      ? input.notificationPreference
+      : input?.notificationPreference && typeof input.notificationPreference === "object" && !Array.isArray(input.notificationPreference)
+        ? input.notificationPreference as Record<string, unknown>
+        : undefined,
+    expectedLastConfirmedAt: input?.expectedLastConfirmedAt === undefined
+      ? undefined
+      : (input.expectedLastConfirmedAt as string | null),
+    confirmationId: stringInput(input?.confirmationId),
+  };
+}
+
+async function applyUserPreferences(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const confirmation = await prepareBoundConfirmation(input, context, "preferences.apply");
+  const store = new WorkspaceStore(context.userId);
+  const result = await applyUserPreferenceChange(store, userPreferenceChangeInput(input));
+  await store.appendChangeLogOnce({
+    ts: result.revision,
+    source: "mcp",
+    type: "user_preferences_applied",
+    summary: stringInput(input?.summary) || "用户确认修改偏好配置",
+    details: {
+      operation_key: `preferences.apply:${confirmation.confirmationId}`,
+      changed_paths: result.changedPaths,
+      confirmation_id: confirmation.confirmationId,
+      previous_revision: result.currentRevision,
+      revision: result.revision,
+    },
+  }, `preferences.apply:${confirmation.confirmationId}`);
+  await audit(context, {
+    operation: "preferences.apply",
+    resourceType: "user_preferences",
+    resourceId: context.instanceId,
+    requestBody: input,
+    resultSummary: `updated ${result.changedPaths.join(",")}`,
+  });
+  const publication = await publishWorkspaceArtifacts(
+    context,
+    result.changedPaths.map((relativePath) => ({
+      relativePath,
+      kind: "data" as const,
+      title: relativePath.endsWith("notification.yaml") ? "通知偏好配置" : "任务与盯盘计划",
+    })),
+    "preferences.apply",
+    { required: true },
+  );
+  await confirmation.consume();
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    revision: result.revision,
+    changedPaths: result.changedPaths,
+    schedules: result.schedules,
+    notification: result.notification,
+    ...artifactPublicationFields(publication),
+  };
 }
 
 async function saveReview(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -1390,6 +1714,7 @@ async function publishWorkspaceArtifacts(
   context: ServiceToolContext,
   specs: WorkspaceArtifactSpec[],
   sourceOperation: string,
+  options: { required?: boolean } = {},
 ): Promise<WorkspaceArtifactPublication> {
   const artifacts: ConversationArtifact[] = [];
   const failures: Array<{ relativePath: string; message: string }> = [];
@@ -1398,6 +1723,8 @@ async function publishWorkspaceArtifacts(
     if (seenPaths.has(spec.relativePath)) continue;
     seenPaths.add(spec.relativePath);
     try {
+      const injectedError = serviceToolFailureInjection.artifactPublish?.(spec.relativePath);
+      if (injectedError) throw injectedError;
       const published = await publishConversationArtifact({
         userId: context.userId,
         instanceId: context.instanceId,
@@ -1431,6 +1758,9 @@ async function publishWorkspaceArtifacts(
         status: "error",
       }).catch(() => undefined);
     }
+  }
+  if (options.required && failures.length > 0) {
+    throw new Error(`必须发布的工作空间文件未能全部发布: ${failures.map((failure) => `${failure.relativePath}: ${failure.message}`).join("; ")}`);
   }
   return { artifacts, failures };
 }
@@ -1588,6 +1918,8 @@ const CONFIRMED_WRITE_OPERATIONS = new Set([
   "plans.set",
   "plans.watch_conditions",
   "method_changes.propose",
+  "method_changes.apply",
+  "preferences.apply",
   "watch_rules.create",
 ]);
 
@@ -1642,6 +1974,23 @@ async function validateConfirmationDraft(
   if (operation === "portfolio.apply_changes") {
     return planPortfolioChanges(payload, context);
   }
+  if (operation === "method_changes.apply") {
+    const plan = await planMethodChangeApplication(payload, context);
+    return {
+      candidateId: plan.candidate.id,
+      candidateStatus: plan.candidate.status,
+      changedFields: plan.changedFields,
+      currentStrategyRevision: plan.current.last_confirmed_at ?? null,
+    };
+  }
+  if (operation === "preferences.apply") {
+    const plan = await planUserPreferenceChange(new WorkspaceStore(context.userId), userPreferenceChangeInput(payload));
+    return {
+      changedPaths: plan.changedPaths,
+      currentRevision: plan.currentRevision,
+      nextRevision: plan.schedules.last_confirmed_at ?? plan.notification.last_confirmed_at ?? null,
+    };
+  }
   return undefined;
 }
 
@@ -1682,6 +2031,8 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
     "plans.set": "stock_plan",
     "plans.watch_conditions": "stock_plan",
     "method_changes.propose": "method_change_candidate",
+    "method_changes.apply": "method_change_candidate",
+    "preferences.apply": "user_preferences",
     "watch_rules.create": "watch_rule",
   };
   const resourceType = resourceByOperation[operation];
@@ -1694,16 +2045,37 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
       ? stringInput(payload.step)
       : operation.startsWith("plans.")
         ? stringInput(payload.stockCode ?? payload.code)
+        : operation === "method_changes.apply"
+      ? stringInput(payload.candidateId)
+        : operation === "preferences.apply"
+          ? context.instanceId
         : undefined;
+  const requestBody = operation === "method_changes.apply"
+    ? stripMethodChangeConfirmationMetadata(payload)
+    : operation === "preferences.apply"
+      ? stripPreferencesConfirmationMetadata(payload)
+    : operation === "portfolio.apply_changes"
+      ? stripPortfolioConfirmationMetadata(payload)
+      : payload;
   return {
     operation,
     resourceType,
     resourceId,
-    requestBody: operation === "portfolio.apply_changes" ? stripPortfolioConfirmationMetadata(payload) : payload,
+    requestBody,
   };
 }
 
 function stripPortfolioConfirmationMetadata(payload: Record<string, unknown>) {
+  const { summary: _summary, ...boundPayload } = payload;
+  return boundPayload;
+}
+
+function stripMethodChangeConfirmationMetadata(payload: Record<string, unknown>) {
+  const { summary: _summary, decisionNote: _decisionNote, ...boundPayload } = payload;
+  return boundPayload;
+}
+
+function stripPreferencesConfirmationMetadata(payload: Record<string, unknown>) {
   const { summary: _summary, ...boundPayload } = payload;
   return boundPayload;
 }

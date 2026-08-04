@@ -101,6 +101,9 @@ export interface StrategyYaml {
   decision_boundaries?: Record<string, unknown>;
   notes?: string;
   last_confirmed_at?: string | null;
+  last_confirmed_by?: string | null;
+  last_confirmation_id?: string | null;
+  last_method_change_candidate_id?: string | null;
 }
 
 export interface WatchYaml {
@@ -827,6 +830,20 @@ export class WorkspaceStore {
   async appendChangeLog(record: unknown): Promise<void> {
     this.ensureReady();
     await appendJsonl(path.join(this.root, "memory/change_log.jsonl"), record);
+  }
+
+  async appendChangeLogOnce(record: unknown, operationKey: string): Promise<boolean> {
+    this.ensureReady();
+    const existing = await readJsonl<Record<string, unknown>>(path.join(this.root, "memory/change_log.jsonl"));
+    if (existing.some((entry) => {
+      const details = entry.details;
+      return details && typeof details === "object" && !Array.isArray(details)
+        && (details as Record<string, unknown>).operation_key === operationKey;
+    })) {
+      return false;
+    }
+    await this.appendChangeLog(record);
+    return true;
   }
 
   // ----- 路径(供 trace/sandbox 审计使用) -----

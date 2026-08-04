@@ -63,6 +63,10 @@ export function mutationResourceKeysForOperation(
     case "method_changes.propose":
     case "method_changes.decide":
       return ["method-changes"];
+    case "method_changes.apply":
+      return ["method-changes", "strategy"];
+    case "preferences.apply":
+      return ["schedules", "notification"];
     case "reviews.save":
       if (text(input?.kind) === "weekly" || text(input?.kind) === "monthly") {
         return [`${text(input?.kind)}-review:${text(input?.reportKey) || "invalid"}`];

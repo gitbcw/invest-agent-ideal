@@ -178,7 +178,7 @@ async function main() {
     "confirmations.request",
     "Safe pre-write step: call this in the same turn when the user asks to change durable state. It only registers an exact draft and returns a confirmationId; it does not perform the durable write. After this call, show the draft and wait for a later explicit user confirmation before calling the matching write tool.",
     {
-      operation: z.enum(["portfolio.apply_changes", "onboarding.confirm_portfolio", "onboarding.confirm_step", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "watch_rules.create"]),
+      operation: z.enum(["portfolio.apply_changes", "onboarding.confirm_portfolio", "onboarding.confirm_step", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create"]),
       payload: z.record(z.string(), z.unknown()),
       summary: z.string().optional(),
     },
@@ -351,7 +351,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "method_changes.propose",
-    "After explicit user confirmation, create a methodology change candidate for later review/decision.",
+    "After explicit user confirmation, create a methodology change candidate. This does not change the active strategy; ask the user whether to formally adopt it next.",
     {
       confirmedByUser: z.literal(true),
       confirmationId: z.string(),
@@ -360,6 +360,49 @@ async function main() {
       sourceReviewId: z.string().optional(),
       sourceType: z.string().optional(),
       affectedResource: z.string().optional(),
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "method_changes.apply",
+    "After a second explicit user confirmation, adopt one proposed method-change candidate into config/strategy.yaml. Pass only the exact structured strategy patch shown to the user; the service records the change, verifies the write, and publishes the strategy file artifact.",
+    {
+      confirmedByUser: z.literal(true),
+      confirmationId: z.string(),
+      candidateId: z.string(),
+      expectedLastConfirmedAt: z.string().nullable().optional(),
+      strategyPatch: z.object({
+        profile: z.record(z.string(), z.unknown()).optional(),
+        allocation: z.record(z.string(), z.unknown()).optional(),
+        positionRoles: z.record(z.string(), z.unknown()).optional(),
+        buyRules: z.array(z.unknown()).optional(),
+        sellRules: z.array(z.unknown()).optional(),
+        rebalanceRules: z.array(z.unknown()).optional(),
+        riskRules: z.array(z.unknown()).optional(),
+        doNotDoRules: z.array(z.string()).optional(),
+        decisionBoundaries: z.record(z.string(), z.unknown()).optional(),
+        notes: z.string().optional(),
+      }),
+      decisionNote: z.string().optional(),
+      summary: z.string().optional(),
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "preferences.apply",
+    "After explicit user confirmation, update review times, intraday brief schedule, or notification preference after onboarding. This is a named semantic configuration write, not arbitrary YAML editing; the service validates, writes, reads back, audits, and publishes the changed config files.",
+    {
+      confirmedByUser: z.literal(true),
+      confirmationId: z.string(),
+      expectedLastConfirmedAt: z.string().datetime().nullable().optional(),
+      reviewSchedule: z.record(z.string(), z.unknown()).optional(),
+      marketWatchSchedule: z.record(z.string(), z.unknown()).optional(),
+      notificationPreference: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
+      summary: z.string().optional(),
     },
     { readOnlyHint: false, destructiveHint: false }
   );

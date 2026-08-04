@@ -242,10 +242,10 @@ export const workspaceMethodChangeBackend: MethodChangeBackend = {
     return rec;
   },
 
-  async get(userId, _instanceId, id) {
+  async get(userId, instanceId, id) {
     const store = await ensureInitialized(userId);
     const all = await store.listMethodChanges<MethodChangeYamlRecord>({});
-    const hit = all.find((r) => r.candidate_id === id);
+    const hit = all.find((r) => r.candidate_id === id && r.user_id === userId && r.instance_id === instanceId);
     return hit ? fromYaml(hit) : null;
   },
 
@@ -266,16 +266,16 @@ export const workspaceMethodChangeBackend: MethodChangeBackend = {
     return updated;
   },
 
-  async list(userId, _instanceId, options) {
+  async list(userId, instanceId, options) {
     const store = await ensureInitialized(userId);
     const all = await store.listMethodChanges<MethodChangeYamlRecord>({
       status: options.status,
       limit: options.limit,
     });
-    let filtered = all;
+    let filtered = all.filter((r) => r.user_id === userId && r.instance_id === instanceId);
     if (options.maxAgeDays && options.maxAgeDays > 0) {
       const cutoff = Date.now() - options.maxAgeDays * 24 * 3600 * 1000;
-      filtered = all.filter((r) => new Date(r.created_at).getTime() >= cutoff);
+      filtered = filtered.filter((r) => new Date(r.created_at).getTime() >= cutoff);
     }
     return filtered.map(fromYaml);
   },

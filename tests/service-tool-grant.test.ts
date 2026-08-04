@@ -19,7 +19,7 @@ const REGISTERED_TOOLS = [
   "watch_rules.validate", "watch_rules.dry_run",
   "reviews.save",
   "portfolio.apply_changes", "watchlist.add", "plans.set", "plans.watch_conditions",
-  "method_changes.propose", "watch_rules.create",
+  "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create",
   "confirmations.request", "artifacts.publish",
   "onboarding.confirm_portfolio", "onboarding.confirm_step", "onboarding.complete_watch_setup",
   "onboarding.draft.get", "onboarding.draft.upsert_step", "onboarding.draft.request_confirmation",

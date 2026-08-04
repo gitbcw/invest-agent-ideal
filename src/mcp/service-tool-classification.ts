@@ -40,6 +40,8 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   "plans.set": "other-write",
   "plans.watch_conditions": "other-write",
   "method_changes.propose": "other-write",
+  "method_changes.apply": "other-write",
+  "preferences.apply": "other-write",
   "watch_rules.create": "other-write",
   // ── other-write: 确认与发布 (2) ──
   "confirmations.request": "other-write",
