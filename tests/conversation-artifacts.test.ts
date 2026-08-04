@@ -118,6 +118,47 @@ test("publishes and reads a user-owned YAML config artifact without changing byt
   assert.equal(read.payload.checksum, record.checksum);
 });
 
+test("retries an idempotent artifact publication without creating a second record", async () => {
+  const { workspaceUserA, mod, sqlite } = await getCtx();
+  const relativePath = "config/idempotent-publication.yaml";
+  const idempotencyKey = "preferences.apply:confirmation-1:config/idempotent-publication.yaml";
+  const target = path.join(workspaceUserA, relativePath);
+  await writeFile(target, "mode: active\n", "utf8");
+
+  const first = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath,
+    idempotencyKey,
+    scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "idempotent-first" },
+  });
+  const retry = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath,
+    idempotencyKey,
+    scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "idempotent-retry" },
+  });
+
+  assert.equal(retry.artifactId, first.artifactId);
+  assert.equal(
+    (sqlite.prepare("SELECT COUNT(*) AS count FROM conversation_artifacts WHERE user_id = ? AND instance_id = ? AND idempotency_key = ?").get("user-a", "user-a", idempotencyKey) as { count: number }).count,
+    1,
+  );
+
+  await writeFile(target, "mode: quiet\n", "utf8");
+  await assert.rejects(
+    () => mod.publishConversationArtifact({
+      userId: "user-a",
+      instanceId: "user-a",
+      relativePath,
+      idempotencyKey,
+      scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "idempotent-conflict" },
+    }),
+    (error: unknown) => expectErrorCode(error, "ARTIFACT_IDEMPOTENCY_CONFLICT"),
+  );
+});
+
 test("conversation reads enrich historical artifact metadata with a browsable workspace path", async () => {
   const { workspaceUserA, mod } = await getCtx();
   const relativePath = "reports/daily/historical-path.md";

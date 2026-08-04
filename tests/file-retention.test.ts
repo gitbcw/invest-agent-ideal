@@ -702,7 +702,7 @@ test("migration is idempotent: re-running initDb keeps the new columns and index
     initDb();
     const cols = fixture.sqlite.prepare(`PRAGMA table_info(conversation_artifacts)`).all() as Array<{ name: string }>;
     const names = new Set(cols.map((col) => col.name));
-    for (const expected of ["origin", "retention_class", "visibility", "expires_at", "deleted_at", "deleted_by", "delete_reason", "trash_relative_path", "purge_at"]) {
+    for (const expected of ["origin", "retention_class", "visibility", "expires_at", "deleted_at", "deleted_by", "delete_reason", "trash_relative_path", "purge_at", "idempotency_key"]) {
       assert.ok(names.has(expected), `missing column ${expected}`);
     }
     const attCols = fixture.sqlite.prepare(`PRAGMA table_info(conversation_attachments)`).all() as Array<{ name: string }>;
@@ -713,6 +713,7 @@ test("migration is idempotent: re-running initDb keeps the new columns and index
     assert.ok(indexNames.has("idx_conversation_artifacts_library"));
     assert.ok(indexNames.has("idx_conversation_artifacts_retention"));
     assert.ok(indexNames.has("idx_conversation_artifacts_purge"));
+    assert.ok(indexNames.has("idx_conversation_artifacts_idempotency_key"));
     const lifecycleTable = fixture.sqlite.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'file_lifecycle_events'`).get();
     const confirmationsTable = fixture.sqlite.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'artifact_delete_confirmations'`).get();
     assert.ok(lifecycleTable);

@@ -17,7 +17,7 @@ test("method_changes.apply adopts a confirmed candidate and publishes strategy",
 
   try {
     const { and, eq } = await import("drizzle-orm");
-    const { db, initDb } = await import("../src/db/index.js");
+    const { db, initDb, sqlite } = await import("../src/db/index.js");
     const { conversationMessages, conversationSessions, pendingSandboxConfirmations, sandboxAuditLogs } = await import("../src/db/schema.js");
     const { ensureWorkspace, resolveWorkspacePath } = await import("../src/lib/workspace.js");
     const { WorkspaceStore } = await import("../src/lib/workspace-store.js");
@@ -408,8 +408,8 @@ test("method_changes.apply adopts a confirmed candidate and publishes strategy",
       createdAt: new Date(Date.now() + 6_000).toISOString(),
     });
     __setServiceToolFailureInjection({
-      artifactPublish: (relativePath) => relativePath === "config/strategy.yaml"
-        ? new Error("injected artifact publish failure")
+      artifactPublishAfter: (relativePath) => relativePath === "config/strategy.yaml"
+        ? new Error("injected artifact publish failure after persistence")
         : undefined,
     });
     try {
@@ -425,6 +425,14 @@ test("method_changes.apply adopts a confirmed candidate and publishes strategy",
       __setServiceToolFailureInjection();
     }
     assert.equal((await methodChangeBackend.get(userId, instanceId, artifactCandidate.id))?.status, "confirmed");
+    assert.equal(
+      (sqlite.prepare("SELECT COUNT(*) AS count FROM conversation_artifacts WHERE user_id = ? AND instance_id = ? AND idempotency_key = ?").get(
+        userId,
+        instanceId,
+        `method_changes.apply:${artifactRequest.confirmationId}:config/strategy.yaml`,
+      ) as { count: number }).count,
+      1,
+    );
     const [pendingArtifact] = await db.select().from(pendingSandboxConfirmations).where(eq(
       pendingSandboxConfirmations.id,
       artifactRequest.confirmationId,
@@ -437,6 +445,14 @@ test("method_changes.apply adopts a confirmed candidate and publishes strategy",
     }, context) as { ok: boolean; artifacts?: Array<{ relativePath: string }> };
     assert.equal(artifactRecoveryResult.ok, true);
     assert.deepEqual(artifactRecoveryResult.artifacts?.map((artifact) => artifact.relativePath), ["config/strategy.yaml"]);
+    assert.equal(
+      (sqlite.prepare("SELECT COUNT(*) AS count FROM conversation_artifacts WHERE user_id = ? AND instance_id = ? AND idempotency_key = ?").get(
+        userId,
+        instanceId,
+        `method_changes.apply:${artifactRequest.confirmationId}:config/strategy.yaml`,
+      ) as { count: number }).count,
+      1,
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

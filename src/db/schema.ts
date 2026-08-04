@@ -688,6 +688,7 @@ export const conversationArtifacts = sqliteTable("conversation_artifacts", {
   relativePath: text("relative_path").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
   checksum: text("checksum"),
+  idempotencyKey: text("idempotency_key"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   // ---- Portal file-retention additive columns (added 2026-07-25) ----

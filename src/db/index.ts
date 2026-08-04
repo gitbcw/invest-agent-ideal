@@ -654,6 +654,7 @@ export function initDb() {
       relative_path TEXT NOT NULL,
       size_bytes INTEGER NOT NULL,
       checksum TEXT,
+      idempotency_key TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -759,6 +760,7 @@ export function initDb() {
   ensureColumn("conversation_messages", "idempotency_key", "TEXT");
   ensureColumn("conversation_messages", "metadata", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("conversation_artifacts", "turn_id", "TEXT");
+  ensureColumn("conversation_artifacts", "idempotency_key", "TEXT");
   // Portal file-retention governance (additive, nullable). Backfill assigns
   // these values; rows left NULL behave as they did before the migration.
   ensureColumn("conversation_artifacts", "origin", "TEXT");
@@ -930,6 +932,7 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_scope_message ON conversation_artifacts(user_id, instance_id, conversation_id, message_id);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_turn ON conversation_artifacts(user_id, instance_id, conversation_id, turn_id);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_assistant ON conversation_artifacts(assistant_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_artifacts_idempotency_key ON conversation_artifacts(user_id, instance_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_artifact ON conversation_artifact_events(artifact_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_scope_time ON conversation_artifact_events(user_id, instance_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_library ON conversation_artifacts(user_id, instance_id, visibility, retention_class, deleted_at, updated_at);

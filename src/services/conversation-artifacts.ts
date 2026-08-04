@@ -270,7 +270,8 @@ export class ConversationArtifactError extends Error {
       | "ARTIFACT_NOT_DELETABLE"
       | "ARTIFACT_DELETE_CONFIRMATION_REQUIRED"
       | "ARTIFACT_DELETE_CONFIRMATION_EXPIRED"
-      | "ARTIFACT_DELETE_CONFLICT",
+      | "ARTIFACT_DELETE_CONFLICT"
+      | "ARTIFACT_IDEMPOTENCY_CONFLICT",
     message: string,
   ) {
     super(`${code}:${message}`);
@@ -284,6 +285,7 @@ export interface PublishArtifactInput {
   relativePath: string;
   kind?: ConversationArtifact["kind"];
   title?: string;
+  idempotencyKey?: string;
   scope: Omit<ConversationArtifactScope, "source"> & { source?: ConversationArtifactScope["source"] };
 }
 
@@ -323,6 +325,61 @@ export const ARTIFACT_SELECT_COLUMNS = [
   "purge_at AS purgeAt",
 ].join(",\n           ");
 
+function existingArtifactForIdempotencyKey(input: {
+  userId: string;
+  instanceId: string;
+  idempotencyKey: string;
+}): ConversationArtifactRecord | undefined {
+  return sqlite
+    .prepare(
+      `SELECT ${ARTIFACT_SELECT_COLUMNS}
+       FROM conversation_artifacts
+       WHERE user_id = ? AND instance_id = ? AND idempotency_key = ?
+       LIMIT 1`
+    )
+    .get(input.userId, input.instanceId, input.idempotencyKey) as ConversationArtifactRecord | undefined;
+}
+
+function assertIdempotencyMatch(
+  existing: ConversationArtifactRecord,
+  input: {
+    userId: string;
+    instanceId: string;
+    projectId: string;
+    assistantId: string;
+    source: ConversationArtifactScope["source"];
+    relativePath: string;
+    mimeType: string;
+    checksum: string;
+    idempotencyKey: string;
+  },
+): void {
+  const row = existing as ConversationArtifactRecord & {
+    projectId?: string;
+    assistantId?: string;
+    source?: string;
+  };
+  if (
+    existing.userId !== input.userId
+    || existing.instanceId !== input.instanceId
+    || row.projectId !== input.projectId
+    || row.assistantId !== input.assistantId
+    || row.source !== input.source
+    || existing.relativePath !== input.relativePath
+    || existing.mimeType !== input.mimeType
+    || existing.checksum !== input.checksum
+  ) {
+    throw new ConversationArtifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", input.idempotencyKey);
+  }
+}
+
+function isUniqueConstraint(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && String((error as { code?: unknown }).code).startsWith("SQLITE_CONSTRAINT");
+}
+
 /**
  * Registers a workspace file as a first-class artifact. During the internal
  * development phase, files under `reports/` and `config/` are deliverable.
@@ -331,6 +388,10 @@ export const ARTIFACT_SELECT_COLUMNS = [
  */
 export async function publishConversationArtifact(input: PublishArtifactInput): Promise<ConversationArtifactRecord> {
   const source = input.scope.source ?? "artifacts.publish";
+  const idempotencyKey = input.idempotencyKey?.trim() || null;
+  if (idempotencyKey && idempotencyKey.length > 500) {
+    throw new ConversationArtifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "idempotency key is too long");
+  }
   const relativePath = source === "legacy_path"
     ? normalizeReportPath(input.relativePath)
     : normalizeArtifactPath(input.relativePath);
@@ -401,6 +462,28 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     source,
   };
 
+  if (idempotencyKey) {
+    const existing = existingArtifactForIdempotencyKey({
+      userId: input.userId,
+      instanceId: input.instanceId,
+      idempotencyKey,
+    });
+    if (existing) {
+      assertIdempotencyMatch(existing, {
+        userId: input.userId,
+        instanceId: input.instanceId,
+        projectId: scope.projectId,
+        assistantId: scope.assistantId,
+        source,
+        relativePath,
+        mimeType,
+        checksum,
+        idempotencyKey,
+      });
+      return existing;
+    }
+  }
+
   // Compute retention once at write time. The library list and the read path
   // consult these columns directly rather than re-inferring from source/size
   // on every call, so backfill only has to populate the columns once.
@@ -432,15 +515,22 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     expiresAt: classification?.expiresAt ?? null,
   };
 
-  sqlite
-    .prepare(
-      `INSERT INTO conversation_artifacts (
+  try {
+    sqlite
+      .prepare(
+        `INSERT INTO conversation_artifacts (
          artifact_id, user_id, instance_id, project_id, assistant_id,
          conversation_id, message_id, turn_id, source, kind, preview_mode,
-         title, file_name, mime_type, relative_path, size_bytes, checksum,
+         title, file_name, mime_type, relative_path, size_bytes, checksum, idempotency_key,
          created_at, updated_at,
          origin, retention_class, visibility, expires_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (
+         @artifactId, @userId, @instanceId, @projectId, @assistantId,
+         @conversationId, @messageId, @turnId, @source, @kind, @previewMode,
+         @title, @fileName, @mimeType, @relativePath, @sizeBytes, @checksum, @idempotencyKey,
+         @createdAt, @updatedAt,
+         @origin, @retentionClass, @visibility, @expiresAt
+       )
        ON CONFLICT(artifact_id) DO UPDATE SET
          updated_at = excluded.updated_at,
          title = excluded.title,
@@ -449,37 +539,63 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
          relative_path = excluded.relative_path,
          size_bytes = excluded.size_bytes,
          checksum = excluded.checksum,
+         idempotency_key = COALESCE(excluded.idempotency_key, conversation_artifacts.idempotency_key),
          turn_id = COALESCE(excluded.turn_id, conversation_artifacts.turn_id),
          origin = COALESCE(excluded.origin, conversation_artifacts.origin),
          retention_class = COALESCE(excluded.retention_class, conversation_artifacts.retention_class),
          visibility = COALESCE(excluded.visibility, conversation_artifacts.visibility),
          expires_at = COALESCE(excluded.expires_at, conversation_artifacts.expires_at)`
-    )
-    .run(
-      artifactId,
-      input.userId,
-      input.instanceId,
-      scope.projectId,
-      scope.assistantId,
-      scope.conversationId ?? null,
-      scope.messageId ?? null,
-      turnId,
-      scope.source,
-      kind,
-      previewMode,
-      title,
-      fileName,
-      mimeType,
-      record.relativePath,
-      sizeBytes,
-      checksum,
-      now,
-      now,
-      classification?.origin ?? null,
-      classification?.retentionClass ?? null,
-      classification?.visibility ?? null,
-      classification?.expiresAt ?? null,
-    );
+      )
+      .run({
+        artifactId,
+        userId: input.userId,
+        instanceId: input.instanceId,
+        projectId: scope.projectId,
+        assistantId: scope.assistantId,
+        conversationId: scope.conversationId ?? null,
+        messageId: scope.messageId ?? null,
+        turnId,
+        source: scope.source,
+        kind,
+        previewMode,
+        title,
+        fileName,
+        mimeType,
+        relativePath: record.relativePath,
+        sizeBytes,
+        checksum,
+        idempotencyKey,
+        createdAt: now,
+        updatedAt: now,
+        origin: classification?.origin ?? null,
+        retentionClass: classification?.retentionClass ?? null,
+        visibility: classification?.visibility ?? null,
+        expiresAt: classification?.expiresAt ?? null,
+      });
+  } catch (error) {
+    if (idempotencyKey && isUniqueConstraint(error)) {
+      const existing = existingArtifactForIdempotencyKey({
+        userId: input.userId,
+        instanceId: input.instanceId,
+        idempotencyKey,
+      });
+      if (existing) {
+        assertIdempotencyMatch(existing, {
+          userId: input.userId,
+          instanceId: input.instanceId,
+          projectId: scope.projectId,
+          assistantId: scope.assistantId,
+          source,
+          relativePath,
+          mimeType,
+          checksum,
+          idempotencyKey,
+        });
+        return existing;
+      }
+    }
+    throw error;
+  }
 
   if (classification) {
     recordFileLifecycleEvent({

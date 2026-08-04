@@ -46,3 +46,32 @@ Status: Pass with caveats
 - [ ] 后续可为 artifact 发布增加按 confirmation ID 的幂等键，避免重试产生重复 artifact 记录。
 - [ ] 产品确认后，单独实现交易策略实体、盯盘规则 update/delete 或投资模型的普通会话闭环。
 - [ ] 通过独立发布任务提交当前改动、创建干净 release snapshot，并执行生产只读验收。
+
+## 修复后复核（2026-08-04）
+
+Status: Pass with caveats
+
+已修复本报告中唯一的实现级遗留项：自动 artifact 发布现在使用“确认 ID + 相对路径”的幂等键，并在数据库建立用户/实例范围的唯一约束。首次发布已经写入 artifact 行、但后续审计或其他步骤失败时，重试会返回原 artifact descriptor，不会产生重复记录；同一幂等键对应不同文件内容或作用域时会明确拒绝。交易策略实体、盯盘规则 update/delete、投资模型运行时写入以及 style pack/observation pool 仍保持任务书定义的产品决策边界，不作为本次验收失败。
+
+### 修复证据
+
+| Area | Status | Evidence | Notes |
+| --- | --- | --- | --- |
+| Artifact 重试幂等 | Pass | `src/services/conversation-artifacts.ts`、`src/db/index.ts`、`tests/conversation-artifacts.test.ts` | 存储层按 user/instance/idempotency key 唯一；内容或 scope 不一致时拒绝。 |
+| `method_changes.apply` 部分发布恢复 | Pass | `src/mcp/service-tools-core.ts`、`tests/method-change-apply.test.ts` | 注入“artifact 已落库后失败”，重试后 artifact 记录数仍为 1。 |
+| `preferences.apply` artifact 契约 | Pass | `src/mcp/service-tools-core.ts`、`tests/preferences-apply.test.ts` | 每个配置文件使用确认 ID + 路径键，发布失败不返回成功。 |
+| 数据库升级兼容 | Pass | `src/db/index.ts`、`tests/file-retention.test.ts` | 旧库通过 `ensureColumn` 增加列，并重复初始化验证唯一索引。 |
+
+### 本轮验证
+
+- `npm run typecheck`：通过。
+- `node --import tsx --test --test-concurrency=1 tests/conversation-artifacts.test.ts tests/method-change-apply.test.ts tests/preferences-apply.test.ts`：43 tests passed。
+- `npm test`：340 tests passed，0 failed。
+- `npm run build`：通过。
+- `npm run test:boundary`：7 个 boundary suites passed。
+- `git diff --check`：通过。
+
+### 当前剩余边界
+
+- `config/trading_strategies.yaml`、已有盯盘规则 update/delete、`config/investment_models.yaml`、`config/style_packs.yaml` 和 `config/observation_pool.yaml` 仍按审计矩阵标记为后续产品决策或设计阶段；本任务不伪造普通对话写入能力。
+- 本轮修改尚未单独发布生产；此前已部署的 `1a651d3` 快照不包含本次 artifact 幂等修复，生产发布需另行走干净快照和只读验收流程。

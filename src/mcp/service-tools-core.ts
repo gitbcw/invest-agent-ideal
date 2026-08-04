@@ -54,6 +54,7 @@ export interface ServiceToolContext {
 
 export interface ServiceToolFailureInjection {
   artifactPublish?: (relativePath: string) => Error | undefined;
+  artifactPublishAfter?: (relativePath: string, artifact: ConversationArtifact) => Error | undefined;
 }
 
 let serviceToolFailureInjection: ServiceToolFailureInjection = {};
@@ -1220,7 +1221,7 @@ async function applyMethodChange(input: Record<string, unknown> | undefined, con
     context,
     [{ relativePath: "config/strategy.yaml", kind: "data", title: "当前投资策略" }],
     "method_changes.apply",
-    { required: true },
+    { required: true, idempotencyKey: `method_changes.apply:${confirmation.confirmationId}` },
   );
   await confirmation.consume();
   return {
@@ -1295,7 +1296,7 @@ async function applyUserPreferences(input: Record<string, unknown> | undefined, 
       title: relativePath.endsWith("notification.yaml") ? "通知偏好配置" : "任务与盯盘计划",
     })),
     "preferences.apply",
-    { required: true },
+    { required: true, idempotencyKey: `preferences.apply:${confirmation.confirmationId}` },
   );
   await confirmation.consume();
   return {
@@ -1714,7 +1715,7 @@ async function publishWorkspaceArtifacts(
   context: ServiceToolContext,
   specs: WorkspaceArtifactSpec[],
   sourceOperation: string,
-  options: { required?: boolean } = {},
+  options: { required?: boolean; idempotencyKey?: string } = {},
 ): Promise<WorkspaceArtifactPublication> {
   const artifacts: ConversationArtifact[] = [];
   const failures: Array<{ relativePath: string; message: string }> = [];
@@ -1737,7 +1738,12 @@ async function publishWorkspaceArtifacts(
           conversationId: context.conversationId ?? null,
           source: "artifacts.publish",
         },
+        idempotencyKey: options.idempotencyKey
+          ? `${options.idempotencyKey}:${spec.relativePath}`
+          : undefined,
       });
+      const injectedAfterPublishError = serviceToolFailureInjection.artifactPublishAfter?.(spec.relativePath, published);
+      if (injectedAfterPublishError) throw injectedAfterPublishError;
       artifacts.push(published);
       await audit(context, {
         operation: "artifacts.publish",
