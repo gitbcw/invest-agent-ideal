@@ -13,11 +13,10 @@ import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 
 const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
   Number(process.env.WEIXIN_DIRECT_ACP_TIMEOUT_MS) || 600_000;
-// Portal Relay treats an unanswered request as failed after ten minutes. End
-// the ACP turn earlier so the connector can persist a visible terminal reply
-// instead of leaving the Portal's user message pending after a long run.
+// The Portal Relay keeps a small buffer beyond this deadline so the connector
+// can persist the runtime's terminal timeout response.
 const PORTAL_DIRECT_ACP_TIMEOUT_MS =
-  Number(process.env.PORTAL_DIRECT_ACP_TIMEOUT_MS) || 480_000;
+  Number(process.env.PORTAL_DIRECT_ACP_TIMEOUT_MS) || 600_000;
 const ACP_EVALUATION_CASE_TIMEOUT_MS = Number(process.env.ACP_EVAL_CASE_TIMEOUT_MS) || 0;
 
 export interface AcpAgent {
