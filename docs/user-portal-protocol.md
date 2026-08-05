@@ -87,6 +87,16 @@ Connector 注册后，本地 runtime 以注册 scope 为权威。command payload
 | `attachment.get` | relay -> connector | `{ attachmentId }` | attachment 元数据，active 时含 base64 |
 | `workspace.file.list` | relay -> connector | `{}` | `{ items }` |
 | `workspace.file.get` | relay -> connector | `{ relativePath }` | workspace 文件 payload |
+| `automation.list` | relay -> connector | `{}` | `{ items }` |
+| `automation.get` | relay -> connector | `{ taskId }` | task definition, current revision and assets |
+| `automation.create` | relay -> connector | `{ name, description?, schedule, sourceAsset }` | paused task |
+| `automation.update` | relay -> connector | `{ taskId, expectedRevision?, name?, description?, schedule?, sourceAsset? }` | new paused revision |
+| `automation.activate` / `automation.pause` | relay -> connector | `{ taskId, expectedRevision? }` | updated task |
+| `automation.run_now` | relay -> connector | `{ taskId, idempotencyKey? }` | run, new conversation and result |
+| `automation.runs.list` | relay -> connector | `{ taskId, limit? }` | `{ items }` |
+| `automation.run.get` | relay -> connector | `{ runId }` | one scoped run |
+| `automation.asset.get` | relay -> connector | `{ assetId }` | task asset descriptor and base64 |
+| `automation.continue_in_chat` | relay -> connector | `{ runId }` | a new conversation bound to the run |
 
 注册时的 capability label 还包含 `conversation.sync` 和 `conversation.attachments`，它们描述镜像/附件能力，不代表存在同名 command。对接方不得发送表中没有列出的 `conversation.sync` command。
 
@@ -169,6 +179,17 @@ interface InlineSvgVisual {
 ```
 
 Portal 应将其作为静态图片数据呈现，不能把 SVG 当作同源 HTML/DOM 执行。
+
+## Automation Task Contract
+
+自动化 command 的 `userId`、`instanceId`、`projectId` 永远取自 connector 注册 scope，payload 中同名字段会被忽略。任务定义写入服务 SQLite，文件资产提升到用户 Workspace 的
+`automations/<task-id>/source|working/`，不引用 7 天 TTL 的 `conversation_attachments`。首期上传只接受 CSV/XLSX；`source` 不可覆盖，`working` 由服务校验真实路径、符号链接和 checksum 后原子替换。
+
+`automation.create` 和 `automation.update` 返回的任务都处于 `paused`；update 会创建不可变 revision，必须再次调用 `automation.activate` 才会按声明的 timezone 和 daily/weekdays/weekly 规则调度。`automation.run_now` 是真实运行：每次使用新的 `runId` 和新的 Portal conversation，session metadata 绑定 `taskId`、revision、`runId`、`origin=automation_manual`。计划运行只生成 `automation_task_runs` 历史，不生成普通 conversation；用户要继续讨论时必须显式调用 `automation.continue_in_chat`，该入口不会恢复后台上下文或自动再次写文件。
+
+运行和资产读取始终按注册 scope 强制隔离。运行错误、写入结果和 checksum 记录在自动化审计与运行历史中；旧 `scheduled_task_runs` 仍只服务现有复盘、盘中简报和规则巡检。
+
+若同一任务已有未过期的运行，`automation.run_now` 返回可重试的 `AUTOMATION_TASK_BUSY`（HTTP `409`）；租约在提交结果前失效则返回可重试的 `AUTOMATION_RUN_LEASE_LOST`。结构不合法的 CSV/XLSX 返回 `AUTOMATION_ASSET_INVALID_CONTENT`（HTTP `422`）。这些错误不会把工作文件提交为成功结果。
 
 ## Artifact 与 Attachment
 

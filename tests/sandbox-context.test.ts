@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSandboxToken, verifySandboxToken } from "../src/lib/sandbox-context.js";
+import { createSandboxToken, sandboxContextFromUserContext, verifySandboxToken } from "../src/lib/sandbox-context.js";
 
 const context = {
   userId: "sandbox-test-user",
@@ -28,4 +28,23 @@ test("sandbox tokens preserve scope and reject tampering or expiry", () => {
   assert.throws(() => verifySandboxToken(`${token.slice(0, -1)}x`), /SANDBOX_TOKEN_INVALID/);
   const expired = createSandboxToken({ ...context, permissions: [...context.permissions] }, -1);
   assert.throws(() => verifySandboxToken(expired), /SANDBOX_TOKEN_EXPIRED/);
+});
+
+test("scheduled automation receives read-only sandbox permissions by default", () => {
+  const scheduled = sandboxContextFromUserContext({
+    userId: "automation-sandbox-user",
+    projectId: "invest-agent",
+    instanceId: "automation-sandbox-instance",
+    channel: "web",
+    taskType: "scheduled-automation",
+  });
+  assert.deepEqual(scheduled.permissions, ["read:self"]);
+
+  const interactive = sandboxContextFromUserContext({
+    userId: "interactive-sandbox-user",
+    projectId: "invest-agent",
+    instanceId: "interactive-sandbox-instance",
+    channel: "web",
+  });
+  assert.ok(interactive.permissions.includes("write:self"));
 });

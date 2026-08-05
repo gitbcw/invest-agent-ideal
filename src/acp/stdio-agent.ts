@@ -188,6 +188,7 @@ function inferTaskType(userContext?: UserContext, env: NodeJS.ProcessEnv = proce
   if (env.ACP_EVAL_DISABLE_ALL_MCP === "true" || env.ACP_EVAL_MCP_ALLOWED_TOOLS) {
     return "evaluation";
   }
+  if (userContext?.taskType) return userContext.taskType;
   const conversationId = userContext?.conversationId || "";
   if (conversationId.startsWith("scheduler:")) return "scheduled-read";
   return "interactive";

@@ -41,6 +41,9 @@
 | `push_jobs` | 微信推送队列、过期会话下的待补送内容 | 系统调度器职责；`message_kind`、`expires_at`、`origin_task_key`、受控 `retry_policy` 与 `terminal_reason` 是服务层权威状态；`awaiting_user` 等状态等待用户重新发起微信会话 |
 | `weixin_delivery_attempts` | 微信投递尝试、会话活性和手动探测证据 | 需要跨进程保留“距最近入站多久仍可投递”的可审计样本 |
 | `scheduled_task_runs` | 定时任务运行记录 | scheduler claim / 去重 / 状态审计；生成重试预算、租约、有效期、错误类别与稳定产物引用属于服务层，不写入 Workspace |
+| `automation_tasks` / `automation_task_revisions` | 用户自动化任务定义与不可变版本 | 服务层按 user/project/instance scope 权威保存；更新只追加 revision，启停和 next run 由服务控制 |
+| `automation_task_assets` | 自动化任务 source/working 资产索引 | 服务层索引；字节位于 Workspace `automations/<task-id>/source|working/`，不依赖 conversation attachment TTL |
+| `automation_task_runs` / `automation_task_audit_logs` | 用户自动化运行历史与审计 | 服务层；手动 run 可绑定 Portal conversation，计划 run 不创建普通 conversation |
 | `indicator_definitions` | 指标定义库(系统级) | 平台元数据,owner=system |
 | `alert_rules` | stage2 watch-rule 规则实例(用户配置 + 调度器高频读) | 运行时规则巡检只执行 `relation_to_plan=stage2_watch_rule` 的规则实例;需要 SQL 索引;watch.yaml 的 `exception_rules` 是协议层文本,不作为机器规则源 |
 | `alert_events` | 已触发提醒事件 | 系统调度器写入(`alert-check.ts`),数据量大(每交易日数百条),cooldown 去重查询需要 SQL 索引;用户 feedback 字段补丁通过 UPDATE 完成,迁移到 jsonl 需 read-modify-write 大文件(WP4.10 决策保留) |

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { sqlite } from "../db/index.js";
 import { createAgent } from "../acp/agent.js";
-import type { AcpMessage } from "../acp/protocol.js";
+import type { AcpMessage, AcpResponse } from "../acp/protocol.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser, type UserContext } from "../lib/user-context.js";
 import { ensureDefaultAiInstanceForUser } from "../lib/user-identity.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
@@ -16,6 +18,19 @@ import {
 import { findArtifactsForMessage, findArtifactsForTurn, type ConversationArtifactRecord } from "./conversation-artifacts.js";
 import { markTurnStart, markTurnEnd } from "./conversation-turns.js";
 import { registerAttachment, ATTACHMENT_RETENTION_MS } from "./file-retention.js";
+import {
+  AutomationTaskError,
+  assertAutomationTaskRunLease,
+  claimAutomationTaskRun,
+  finishAutomationTaskRun,
+  getAutomationTask,
+  getAutomationTaskRun,
+  readAutomationTaskAsset,
+  writeAutomationTaskWorkingAsset,
+  type AutomationScope,
+  type AutomationTaskRecord,
+} from "./automation-tasks.js";
+import { writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
 
 export type ConversationChannel = "web" | "weixin-mobile";
 export type ConversationRole = "user" | "assistant" | "system";
@@ -70,6 +85,20 @@ export class ConversationScopeError extends Error {
 
 const pendingPortalChats = new Map<string, Promise<ConversationChatResult>>();
 const conversationChatTails = new Map<string, Promise<void>>();
+
+type AutomationConversationBinding = {
+  taskId: string;
+  runId: string;
+  origin: "automation_manual" | "automation_continue";
+};
+
+type PreparedAutomationConversation = {
+  workspacePath: string;
+  task: AutomationTaskRecord;
+  complete(response: AcpResponse): Promise<void>;
+  fail(error: unknown): Promise<void>;
+  cleanup(): Promise<void>;
+};
 
 /**
  * ACP currently allows only one active turn per conversation. Keep the
@@ -173,6 +202,34 @@ function ensureSession(input: {
   if (!existing || existing.userId !== input.scope.userId || existing.projectId !== input.scope.projectId || existing.instanceId !== input.scope.instanceId || existing.assistantId !== input.scope.assistantId) {
     throw new ConversationScopeError();
   }
+}
+
+/** Create an empty, scope-bound Portal conversation before its first message. */
+export function createConversationSession(input: {
+  scope?: Partial<ConversationScope>;
+  conversationId: string;
+  channel?: ConversationChannel;
+  title: string;
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+}): ConversationSummary {
+  const scope = normalizeConversationScope(input.scope);
+  const createdAt = input.createdAt || nowIso();
+  ensureSession({
+    scope,
+    conversationId: input.conversationId,
+    channel: input.channel || "web",
+    title: input.title.trim() || "新对话",
+    metadata: input.metadata,
+    now: createdAt,
+  });
+  const row = sqlite.prepare(`
+    SELECT conversation_id AS conversationId, title, channel, last_message_preview AS lastMessagePreview,
+      message_count AS messageCount, created_at AS createdAt, updated_at AS updatedAt
+    FROM conversation_sessions WHERE conversation_id = ? AND user_id = ? AND instance_id = ?
+  `).get(input.conversationId, scope.userId, scope.instanceId) as ConversationSummary | undefined;
+  if (!row) throw new ConversationScopeError();
+  return row;
 }
 
 function refreshSession(input: {
@@ -525,6 +582,147 @@ export async function chatViaConversationLog(input: {
   }
 }
 
+function automationConversationBinding(input: {
+  scope: ConversationScope;
+  conversationId: string;
+}): AutomationConversationBinding | null {
+  const row = sqlite.prepare(`
+    SELECT metadata
+    FROM conversation_sessions
+    WHERE conversation_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND assistant_id = ?
+  `).get(
+    input.conversationId,
+    input.scope.userId,
+    input.scope.projectId,
+    input.scope.instanceId,
+    input.scope.assistantId,
+  ) as { metadata?: string } | undefined;
+  const metadata = parseMetadata(row?.metadata);
+  const taskId = typeof metadata?.taskId === "string" ? metadata.taskId : "";
+  const runId = typeof metadata?.runId === "string" ? metadata.runId : "";
+  const origin = metadata?.origin;
+  if (!taskId || !runId || (origin !== "automation_manual" && origin !== "automation_continue")) return null;
+  return { taskId, runId, origin };
+}
+
+function automationScope(scope: ConversationScope): AutomationScope {
+  return { userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId };
+}
+
+function assertAutomationAcpSucceeded(response: AcpResponse) {
+  if (response.data?.executionStatus !== "failed") return;
+  const code = typeof response.data.executionErrorCode === "string"
+    ? response.data.executionErrorCode
+    : "ACP_TURN_FAILED";
+  throw new Error(code);
+}
+
+/**
+ * A chat created from an automation run must not silently regain the whole
+ * user Workspace. Each explicit follow-up gets a fresh two-file staging area
+ * and only a validated working-file replacement can leave that area.
+ */
+async function prepareAutomationConversation(input: {
+  scope: ConversationScope;
+  binding: AutomationConversationBinding;
+  conversationId: string;
+  idempotencyKey: string;
+}): Promise<PreparedAutomationConversation> {
+  const scoped = automationScope(input.scope);
+  const task = await getAutomationTask({ ...scoped, taskId: input.binding.taskId });
+  if (!task?.sourceAsset || !task.workingAsset) throw new ConversationScopeError();
+  const sourceRun = await getAutomationTaskRun({ ...scoped, runId: input.binding.runId });
+  if (!sourceRun || sourceRun.taskId !== task.taskId) throw new ConversationScopeError();
+  const claimed = await claimAutomationTaskRun({
+    ...scoped,
+    taskId: task.taskId,
+    origin: "manual",
+    conversationId: input.conversationId,
+    idempotencyKey: input.idempotencyKey,
+  });
+  if (!claimed.claimed) {
+    throw new AutomationTaskError(
+      "AUTOMATION_TASK_BUSY",
+      "当前任务已有运行中的执行，请等待完成后再试。",
+    );
+  }
+  const followUpRun = claimed.run;
+
+  const workspace = await ensureWorkspace({ userId: scoped.userId, tenantId: scoped.userId, projectId: scoped.projectId });
+  const workspaceRoot = workspace.path || resolveWorkspacePath(scoped.userId);
+  const stagingPath = await mkdtemp(path.join(workspaceRoot, ".automation-conversation-"));
+  const sourceDirectory = path.join(stagingPath, "source");
+  const workingDirectory = path.join(stagingPath, "working");
+  try {
+    await Promise.all([
+      mkdir(sourceDirectory, { mode: 0o700 }),
+      mkdir(workingDirectory, { mode: 0o700 }),
+    ]);
+    const [source, working] = await Promise.all([
+      readAutomationTaskAsset({ ...scoped, assetId: task.sourceAsset.assetId }),
+      readAutomationTaskAsset({ ...scoped, assetId: task.workingAsset.assetId }),
+    ]);
+    const workingPath = path.join(workingDirectory, working.fileName);
+    await Promise.all([
+      writeFile(path.join(sourceDirectory, source.fileName), source.bytes, { flag: "wx", mode: 0o600 }),
+      writeFile(workingPath, working.bytes, { flag: "wx", mode: 0o600 }),
+    ]);
+    await writeAutomationSpreadsheetHelper(stagingPath);
+    return {
+      workspacePath: stagingPath,
+      task,
+      async complete(response) {
+        assertAutomationAcpSucceeded(response);
+        const outputStat = await lstat(workingPath).catch(() => null);
+        if (!outputStat || outputStat.isSymbolicLink() || !outputStat.isFile()) {
+          throw new Error("AUTOMATION_WORKING_OUTPUT_MISSING");
+        }
+        const bytes = await readFile(workingPath);
+        await assertAutomationTaskRunLease({ ...scoped, runId: followUpRun.runId, leaseToken: followUpRun.leaseToken });
+        const output = bytes.equals(working.bytes) ? task.workingAsset : await writeAutomationTaskWorkingAsset({
+          ...scoped,
+          taskId: task.taskId,
+          revisionId: task.currentRevisionId || undefined,
+          asset: { fileName: working.fileName, mimeType: working.mimeType, bytes },
+        });
+        await finishAutomationTaskRun({
+          ...scoped,
+          runId: followUpRun.runId,
+          leaseToken: followUpRun.leaseToken,
+          status: "succeeded",
+          resultSummary: response.content.text || "自动化后续操作完成。",
+          outputAssetId: output?.assetId,
+          outputChecksum: output?.checksum,
+          traceId: followUpRun.runId,
+        });
+      },
+      async fail(error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await finishAutomationTaskRun({
+          ...scoped,
+          runId: followUpRun.runId,
+          leaseToken: followUpRun.leaseToken,
+          status: "failed",
+          errorMessage,
+          traceId: followUpRun.runId,
+        }).catch(() => undefined);
+      },
+      cleanup: () => rm(stagingPath, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await finishAutomationTaskRun({
+      ...scoped,
+      runId: followUpRun.runId,
+      leaseToken: followUpRun.leaseToken,
+      status: "failed",
+      errorMessage: error instanceof Error ? error.message : String(error),
+      traceId: followUpRun.runId,
+    }).catch(() => undefined);
+    await rm(stagingPath, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 async function chatViaConversationLogOnce(input: {
   userId?: string;
   assistantId?: string;
@@ -561,17 +759,39 @@ async function chatViaConversationLogOnce(input: {
   }
 
   await ensureConversationRuntime(scope);
+  const automationBinding = automationConversationBinding({ scope, conversationId: input.conversationId });
+  if (automationBinding && (input.attachments?.length ?? 0) > 0) {
+    throw new Error("AUTOMATION_CONVERSATION_ATTACHMENTS_UNSUPPORTED");
+  }
   const runtime = await getProjectRuntimeContext(scope.instanceId).catch(() => null);
   const workspace = await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
+  const requestId = `portal-${randomUUID()}`;
+  const automationConversation = automationBinding
+    ? await prepareAutomationConversation({
+      scope,
+      binding: automationBinding,
+      conversationId: input.conversationId,
+      idempotencyKey: `automation-chat:${input.conversationId}:${requestId}`,
+    })
+    : null;
   const storedAttachments = await storePortalAttachments({
     workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
     attachments: input.attachments,
   });
-  const userTextForAgent = buildPortalUserText(input.text, storedAttachments);
+  const userTextForAgent = automationConversation
+    ? [
+      "这是一次受控自动化任务的后续互动。",
+      `任务名称：${automationConversation.task.revision.name}`,
+      `任务说明：${automationConversation.task.revision.description || "（未提供额外说明）"}`,
+      `源文件：source/${automationConversation.task.sourceAsset?.fileName || "source"}`,
+      `工作文件：working/${automationConversation.task.workingAsset?.fileName || "working"}`,
+      "只能读取 source/ 与 working/ 的当前任务文件；不得修改 source/，不得访问其他文件或确定性投资状态。XLSX 使用当前目录的 automation-sheet.mjs 结构化读取/写入，不能按纯文本拼接。若用户要求修改任务的规则、时间、文件绑定或启停，说明必须回到自动化任务编辑页，而不要静默修改。",
+      `用户本次要求：${String(input.text || "请说明本次运行结果")}`,
+    ].join("\n")
+    : buildPortalUserText(input.text, storedAttachments);
   const userMetadata = storedAttachments.length > 0
     ? { attachments: storedAttachments.map((stored) => toPublicAttachmentDescriptorWithExpiry(stored)) }
     : undefined;
-  const requestId = `portal-${randomUUID()}`;
   const userMessage = appendConversationMessage({
     scope,
     conversationId: input.conversationId,
@@ -615,7 +835,8 @@ async function chatViaConversationLogOnce(input: {
       projectId: runtime?.projectId || scope.projectId,
       instanceId: runtime?.instanceId || scope.instanceId,
       instanceExpansionPath: runtime?.instanceExpansionPath,
-      workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
+      workspacePath: automationConversation?.workspacePath || workspace.path || resolveWorkspacePath(scope.userId),
+      ...(automationConversation ? { taskType: "scheduled-automation" } : {}),
       attachments: storedAttachments,
     },
   };
@@ -630,11 +851,23 @@ async function chatViaConversationLogOnce(input: {
     conversationId: input.conversationId,
   };
   markTurnStart({ ...turnScope, turnId: requestId });
-  let response;
+  let response: AcpResponse;
+  let automationFailure = false;
   try {
     response = await agent.handleMessage(acpMessage);
+    if (automationConversation) await automationConversation.complete(response);
+  } catch (error) {
+    if (!automationConversation) throw error;
+    automationFailure = true;
+    const errorCode = error instanceof Error ? error.message : "ACP_TURN_FAILED";
+    response = {
+      content: { type: "text", text: "这次自动化后续操作失败了，工作文件没有被修改。请查看运行详情后重试。" },
+      finished: true,
+      data: { executionStatus: "failed", executionErrorCode: errorCode },
+    };
   } finally {
     markTurnEnd({ ...turnScope, turnId: requestId });
+    await automationConversation?.cleanup();
   }
   const assistantText = response.content.text ?? "处理完成，但没有生成文本回复。";
   const inlineVisuals = Array.isArray(response.data?.inlineVisuals) ? response.data.inlineVisuals : undefined;
@@ -649,6 +882,7 @@ async function chatViaConversationLogOnce(input: {
     channel: "web",
     role: "assistant",
     content: assistantText,
+    ...(automationFailure ? { status: "failed" as const } : {}),
     requestId,
     metadata: inlineVisuals && inlineVisuals.length > 0 ? { inlineVisuals } : undefined,
   });
@@ -849,3 +1083,9 @@ function buildPortalUserText(text: string | undefined, attachments: StoredAttach
   }
   return "";
 }
+
+/** Test-only hooks for the automation conversation isolation boundary. */
+export const __test__ = {
+  automationConversationBinding,
+  prepareAutomationConversation,
+};

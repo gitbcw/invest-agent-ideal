@@ -66,6 +66,10 @@ export function createAgent(): AcpAgent {
           instanceId: message.context?.instanceId ? String(message.context.instanceId) : undefined,
           instanceExpansionPath: message.context?.instanceExpansionPath ? String(message.context.instanceExpansionPath) : undefined,
           workspacePath: message.context?.workspacePath ? String(message.context.workspacePath) : undefined,
+          taskType: message.context?.taskType ? String(message.context.taskType) : undefined,
+          mcpAllowedTools: Array.isArray(message.context?.mcpAllowedTools)
+            ? message.context.mcpAllowedTools.filter((item): item is string => typeof item === "string")
+            : undefined,
           channel: userChannel,
           backend: activeBackend,
           conversationId,
@@ -134,6 +138,11 @@ export function createAgent(): AcpAgent {
         logger.error("转发 ACP 后端失败:", error);
         const errorMessage = formatUnknownError(error);
         const isBusy = errorMessage.includes("ACP_TURN_BUSY") || errorMessage.includes("turn.agent_busy");
+        const executionErrorCode = isBusy
+          ? "ACP_TURN_BUSY"
+          : errorMessage.includes("超时")
+            ? "ACP_TURN_TIMEOUT"
+            : "ACP_TURN_FAILED";
         await recordAcpTrace({
           userId,
           projectId: message.context?.projectId ? String(message.context.projectId) : undefined,
@@ -150,12 +159,24 @@ export function createAgent(): AcpAgent {
           acpModel: config.codex.model,
         });
         if (isBusy) {
-          return textResponse("上一条消息还在处理中，我处理完会直接回复。你可以稍等一下再发下一条。");
+          return textResponse(
+            "上一条消息还在处理中，我处理完会直接回复。你可以稍等一下再发下一条。",
+            true,
+            { executionStatus: "failed", executionErrorCode },
+          );
         }
         if (errorMessage.includes("超时")) {
-          return textResponse("这次分析生成超时了，请稍后再试。我已记录本次异常，方便继续排查。");
+          return textResponse(
+            "这次分析生成超时了，请稍后再试。我已记录本次异常，方便继续排查。",
+            true,
+            { executionStatus: "failed", executionErrorCode },
+          );
         }
-        return textResponse("这次回复生成失败了，请稍后重试。我已记录本次异常，方便继续排查。");
+        return textResponse(
+          "这次回复生成失败了，请稍后重试。我已记录本次异常，方便继续排查。",
+          true,
+          { executionStatus: "failed", executionErrorCode },
+        );
       }
     },
   };

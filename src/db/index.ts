@@ -725,6 +725,98 @@ export function initDb() {
       completed_at TEXT,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS automation_tasks (
+      task_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'paused',
+      current_revision INTEGER NOT NULL DEFAULT 1,
+      current_revision_id TEXT,
+      next_run_at TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      active_run_id TEXT,
+      active_run_lease_token TEXT,
+      active_run_lease_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS automation_task_revisions (
+      revision_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      schedule_json TEXT NOT NULL,
+      source_asset_id TEXT,
+      working_asset_id TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(task_id, revision)
+    );
+    CREATE TABLE IF NOT EXISTS automation_task_assets (
+      asset_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      revision_id TEXT,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      asset_role TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      extension TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      checksum TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(task_id, asset_role, relative_path)
+    );
+    CREATE TABLE IF NOT EXISTS automation_task_runs (
+      run_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      revision_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      idempotency_base_key TEXT,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      scheduled_for TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      claimed_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      input_asset_id TEXT,
+      output_asset_id TEXT,
+      output_checksum TEXT,
+      result_summary TEXT,
+      error_message TEXT,
+      trace_id TEXT,
+      conversation_id TEXT,
+      lease_token TEXT,
+      lease_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(task_id, idempotency_key)
+    );
+    CREATE TABLE IF NOT EXISTS automation_task_audit_logs (
+      audit_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      revision_id TEXT,
+      run_id TEXT,
+      asset_id TEXT,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      status TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
   `);
   ensureDefaultUser();
   ensureDefaultAiInstance();
@@ -761,6 +853,18 @@ export function initDb() {
   ensureColumn("conversation_messages", "metadata", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("conversation_artifacts", "turn_id", "TEXT");
   ensureColumn("conversation_artifacts", "idempotency_key", "TEXT");
+  ensureColumn("automation_tasks", "next_run_at", "TEXT");
+  ensureColumn("automation_tasks", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0");
+  // Persistent execution lease fields are additive so old production DBs can
+  // initialize in place without replacing user data.
+  ensureColumn("automation_tasks", "active_run_id", "TEXT");
+  ensureColumn("automation_tasks", "active_run_lease_token", "TEXT");
+  ensureColumn("automation_tasks", "active_run_lease_expires_at", "TEXT");
+  ensureColumn("automation_task_runs", "conversation_id", "TEXT");
+  ensureColumn("automation_task_runs", "idempotency_base_key", "TEXT");
+  ensureColumn("automation_task_runs", "attempt", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("automation_task_runs", "lease_token", "TEXT");
+  ensureColumn("automation_task_runs", "lease_expires_at", "TEXT");
   // Portal file-retention governance (additive, nullable). Backfill assigns
   // these values; rows left NULL behave as they did before the migration.
   ensureColumn("conversation_artifacts", "origin", "TEXT");
@@ -945,6 +1049,16 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_file_lifecycle_events_entity ON file_lifecycle_events(entity_type, entity_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_artifact_delete_confirmations_scope ON artifact_delete_confirmations(user_id, instance_id, artifact_id, status);
     CREATE INDEX IF NOT EXISTS idx_artifact_delete_confirmations_expiry ON artifact_delete_confirmations(expires_at, status);
+    CREATE INDEX IF NOT EXISTS idx_automation_tasks_scope_status ON automation_tasks(user_id, instance_id, project_id, status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_revisions_scope_task ON automation_task_revisions(user_id, instance_id, project_id, task_id, revision);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_task_assets_scope_path ON automation_task_assets(user_id, instance_id, project_id, task_id, asset_role, relative_path);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_assets_scope_task ON automation_task_assets(user_id, instance_id, project_id, task_id, updated_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_task_runs_idempotency ON automation_task_runs(task_id, idempotency_key);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_runs_scope_time ON automation_task_runs(user_id, instance_id, project_id, task_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_runs_status_time ON automation_task_runs(status, scheduled_for, created_at);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_runs_task_lease ON automation_task_runs(task_id, status, lease_expires_at, claimed_at);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_audit_scope_time ON automation_task_audit_logs(user_id, instance_id, project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_audit_task_time ON automation_task_audit_logs(task_id, created_at);
   `);
   logger.info("数据库初始化完成");
 }

@@ -26,6 +26,19 @@ import {
   WorkspaceFileError,
 } from "../services/workspace-files.js";
 import { ConcurrentTaskLimiter, portalConcurrentTaskLimit } from "./concurrent-task-limiter.js";
+import {
+  AutomationTaskError,
+  activateAutomationTask,
+  createAutomationTask,
+  updateAutomationTask,
+  pauseAutomationTask,
+  listAutomationTasks,
+  getAutomationTask,
+  listAutomationTaskRuns,
+  getAutomationTaskRun,
+  downloadAutomationTaskAsset,
+} from "../services/automation-tasks.js";
+import { continueAutomationRunInChat, runAutomationTaskNow } from "../services/automation-runner.js";
 
 const PROTOCOL_VERSION = "2026-07-04";
 const TYPES = {
@@ -42,6 +55,17 @@ const TYPES = {
   ATTACHMENT_GET: "attachment.get",
   WORKSPACE_FILE_LIST: "workspace.file.list",
   WORKSPACE_FILE_GET: "workspace.file.get",
+  AUTOMATION_LIST: "automation.list",
+  AUTOMATION_GET: "automation.get",
+  AUTOMATION_CREATE: "automation.create",
+  AUTOMATION_UPDATE: "automation.update",
+  AUTOMATION_ACTIVATE: "automation.activate",
+  AUTOMATION_PAUSE: "automation.pause",
+  AUTOMATION_RUN_NOW: "automation.run_now",
+  AUTOMATION_RUNS_LIST: "automation.runs.list",
+  AUTOMATION_RUN_GET: "automation.run.get",
+  AUTOMATION_ASSET_GET: "automation.asset.get",
+  AUTOMATION_CONTINUE_IN_CHAT: "automation.continue_in_chat",
 } as const;
 
 type PortalEnvelope = {
@@ -169,6 +193,20 @@ function localPayloadScope(scope: ConnectorScope, payload: any) {
   };
 }
 
+function automationScope(scope: ConnectorScope) {
+  return { userId: scope.userId, instanceId: scope.instanceId, projectId: scope.projectId };
+}
+
+function decodeAutomationAsset(payload: any) {
+  const asset = payload?.sourceAsset || payload?.asset;
+  if (!asset || typeof asset.fileName !== "string" || typeof asset.base64 !== "string") {
+    throw new AutomationTaskError("AUTOMATION_ASSET_REQUIRED", "fileName and base64 are required");
+  }
+  const bytes = Buffer.from(asset.base64, "base64");
+  if (bytes.length === 0) throw new AutomationTaskError("AUTOMATION_ASSET_REQUIRED", "empty asset");
+  return { fileName: asset.fileName, mimeType: typeof asset.mimeType === "string" ? asset.mimeType : undefined, bytes };
+}
+
 function isArtifactEventName(value: string): value is "open" | "success" | "failure" | "download" {
   return value === "open" || value === "success" || value === "failure" || value === "download";
 }
@@ -208,6 +246,82 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         idempotencyKey: message.payload?.idempotencyKey,
         clientSentAt: message.payload?.clientSentAt,
       })));
+    case TYPES.AUTOMATION_LIST:
+      if (message.payload && Object.keys(message.payload).length > 0) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "automation.list does not accept filters"));
+      }
+      return finish(ok(message.type, message.requestId, { items: await listAutomationTasks(automationScope(scope)) }));
+    case TYPES.AUTOMATION_GET: {
+      const taskId = String(message.payload?.taskId || "");
+      if (!taskId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "taskId is required"));
+      const task = await getAutomationTask({ ...automationScope(scope), taskId });
+      if (!task) return finish(fail(message.type, message.requestId, "AUTOMATION_TASK_NOT_FOUND", taskId));
+      return finish(ok(message.type, message.requestId, task));
+    }
+    case TYPES.AUTOMATION_CREATE: {
+      const task = await createAutomationTask({
+        ...automationScope(scope),
+        name: String(message.payload?.name || ""),
+        description: typeof message.payload?.description === "string" ? message.payload.description : undefined,
+        schedule: message.payload?.schedule,
+        sourceAsset: decodeAutomationAsset(message.payload),
+      });
+      return finish(ok(message.type, message.requestId, task));
+    }
+    case TYPES.AUTOMATION_UPDATE: {
+      const taskId = String(message.payload?.taskId || "");
+      if (!taskId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "taskId is required"));
+      const rawAsset = message.payload?.sourceAsset || message.payload?.asset;
+      const task = await updateAutomationTask({
+        ...automationScope(scope),
+        taskId,
+        expectedRevision: typeof message.payload?.expectedRevision === "number" ? message.payload.expectedRevision : undefined,
+        name: typeof message.payload?.name === "string" ? message.payload.name : undefined,
+        description: typeof message.payload?.description === "string" || message.payload?.description === null ? message.payload.description : undefined,
+        schedule: message.payload?.schedule,
+        ...(rawAsset ? { sourceAsset: decodeAutomationAsset(message.payload) } : {}),
+      });
+      return finish(ok(message.type, message.requestId, task));
+    }
+    case TYPES.AUTOMATION_ACTIVATE: {
+      const taskId = String(message.payload?.taskId || "");
+      if (!taskId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "taskId is required"));
+      return finish(ok(message.type, message.requestId, await activateAutomationTask({ ...automationScope(scope), taskId, expectedRevision: message.payload?.expectedRevision })));
+    }
+    case TYPES.AUTOMATION_PAUSE: {
+      const taskId = String(message.payload?.taskId || "");
+      if (!taskId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "taskId is required"));
+      return finish(ok(message.type, message.requestId, await pauseAutomationTask({ ...automationScope(scope), taskId, expectedRevision: message.payload?.expectedRevision })));
+    }
+    case TYPES.AUTOMATION_RUN_NOW: {
+      const taskId = String(message.payload?.taskId || "");
+      if (!taskId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "taskId is required"));
+      const result = await runAutomationTaskNow({ scope: automationScope(scope), taskId, origin: "manual", idempotencyKey: String(message.payload?.idempotencyKey || `portal:${message.requestId}`) });
+      return finish(ok(message.type, message.requestId, result));
+    }
+    case TYPES.AUTOMATION_RUNS_LIST: {
+      const taskId = String(message.payload?.taskId || "");
+      if (!taskId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "taskId is required"));
+      return finish(ok(message.type, message.requestId, { items: await listAutomationTaskRuns({ ...automationScope(scope), taskId, limit: message.payload?.limit }) }));
+    }
+    case TYPES.AUTOMATION_RUN_GET: {
+      const runId = String(message.payload?.runId || "");
+      if (!runId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "runId is required"));
+      const run = await getAutomationTaskRun({ ...automationScope(scope), runId });
+      if (!run) return finish(fail(message.type, message.requestId, "AUTOMATION_RUN_NOT_FOUND", runId));
+      return finish(ok(message.type, message.requestId, run));
+    }
+    case TYPES.AUTOMATION_ASSET_GET: {
+      const assetId = String(message.payload?.assetId || "");
+      if (!assetId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "assetId is required"));
+      const asset = await downloadAutomationTaskAsset({ ...automationScope(scope), assetId });
+      return finish(ok(message.type, message.requestId, { ...asset.descriptor, base64: asset.base64, checksum: asset.checksum }));
+    }
+    case TYPES.AUTOMATION_CONTINUE_IN_CHAT: {
+      const runId = String(message.payload?.runId || "");
+      if (!runId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "runId is required"));
+      return finish(ok(message.type, message.requestId, await continueAutomationRunInChat({ scope: automationScope(scope), runId })));
+    }
     case TYPES.REPORT_ASSET_GET:
       return finish(ok(message.type, message.requestId, await readWorkspaceReportAsset({
         userId: scope.userId,
@@ -407,6 +521,8 @@ function isWorkspaceBrowsableArtifact(previewMode: string): boolean {
   return previewMode === "markdown" || previewMode === "html" || previewMode === "image";
 }
 
+export const __test__ = { handleCommand };
+
 function scopeFromEnv(): ConnectorScope {
   const userId = env("PORTAL_USER_ID", DEFAULT_USER_ID)!;
   const instanceId = env("PORTAL_INSTANCE_ID", DEFAULT_INSTANCE_ID)!;
@@ -507,7 +623,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get"],
+        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {
@@ -561,7 +677,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
           }
           return;
         }
-        const isChatTask = message.type === TYPES.CONVERSATION_CHAT;
+        const isChatTask = message.type === TYPES.CONVERSATION_CHAT || message.type === TYPES.AUTOMATION_RUN_NOW;
         if (isChatTask && !taskLimiter.tryAcquire()) {
           send(socket, fail(
             message.type,
@@ -591,6 +707,16 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
           }
           if (error instanceof ConversationArtifactError) {
             send(socket, fail(message.type, message.requestId, error.code, error.message, false));
+            return;
+          }
+          if (error instanceof AutomationTaskError) {
+            send(socket, fail(
+              message.type,
+              message.requestId,
+              error.code,
+              error.message,
+              error.code === "AUTOMATION_TASK_BUSY" || error.code === "AUTOMATION_RUN_LEASE_LOST",
+            ));
             return;
           }
           send(socket, fail(message.type, message.requestId, "ACP_FAILED", (error as Error).message, true));

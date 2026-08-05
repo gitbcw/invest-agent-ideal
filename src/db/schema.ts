@@ -765,3 +765,114 @@ export const artifactDeleteConfirmations = sqliteTable("artifact_delete_confirma
   completedAt: text("completed_at"),
   updatedAt: text("updated_at").notNull(),
 });
+
+/**
+ * User-owned automation task identity and mutable lifecycle state.
+ *
+ * The task definition itself lives in `automation_task_revisions`; this row
+ * only points at the current immutable revision and records whether the task
+ * may be picked up by a future automation scheduler.
+ */
+export const automationTasks = sqliteTable("automation_tasks", {
+  taskId: text("task_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  status: text("status").notNull().default("paused"),
+  currentRevision: integer("current_revision").notNull().default(1),
+  currentRevisionId: text("current_revision_id"),
+  nextRunAt: text("next_run_at"),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  /** DB-enforced cross-origin execution mutex. */
+  activeRunId: text("active_run_id"),
+  activeRunLeaseToken: text("active_run_lease_token"),
+  activeRunLeaseExpiresAt: text("active_run_lease_expires_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/**
+ * Append-only task definitions. Updating a task inserts a new row instead of
+ * mutating an existing definition, so a run can always be reconstructed from
+ * the revision it claimed.
+ */
+export const automationTaskRevisions = sqliteTable("automation_task_revisions", {
+  revisionId: text("revision_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  revision: integer("revision").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  scheduleJson: text("schedule_json").notNull(),
+  sourceAssetId: text("source_asset_id"),
+  workingAssetId: text("working_asset_id"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Stable metadata for the source and working files owned by an automation. */
+export const automationTaskAssets = sqliteTable("automation_task_assets", {
+  assetId: text("asset_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  revisionId: text("revision_id"),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  assetRole: text("asset_role").notNull(),
+  fileName: text("file_name").notNull(),
+  relativePath: text("relative_path").notNull(),
+  mimeType: text("mime_type").notNull(),
+  extension: text("extension").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** A user automation run, deliberately separate from the review scheduler's runs. */
+export const automationTaskRuns = sqliteTable("automation_task_runs", {
+  runId: text("run_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  revisionId: text("revision_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  origin: text("origin").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  /** Original caller key; idempotencyKey remains physically unique for stale archival attempts. */
+  idempotencyBaseKey: text("idempotency_base_key"),
+  attempt: integer("attempt").notNull().default(1),
+  scheduledFor: text("scheduled_for"),
+  status: text("status").notNull().default("running"),
+  claimedAt: text("claimed_at").notNull(),
+  startedAt: text("started_at"),
+  finishedAt: text("finished_at"),
+  inputAssetId: text("input_asset_id"),
+  outputAssetId: text("output_asset_id"),
+  outputChecksum: text("output_checksum"),
+  resultSummary: text("result_summary"),
+  errorMessage: text("error_message"),
+  traceId: text("trace_id"),
+  conversationId: text("conversation_id"),
+  leaseToken: text("lease_token"),
+  leaseExpiresAt: text("lease_expires_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Immutable audit trail for task lifecycle, run claims and asset access. */
+export const automationTaskAuditLogs = sqliteTable("automation_task_audit_logs", {
+  auditId: text("audit_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  revisionId: text("revision_id"),
+  runId: text("run_id"),
+  assetId: text("asset_id"),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  action: text("action").notNull(),
+  status: text("status").notNull(),
+  detailsJson: text("details_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
+});

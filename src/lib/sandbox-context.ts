@@ -44,6 +44,11 @@ type SandboxTokenPayload = SandboxContext & {
 };
 
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
+// Automation file maintenance writes through its task-owned asset path. Its
+// ACP session must not inherit the normal interactive sandbox write/push
+// permissions, otherwise a prompt-level restriction could be bypassed by a
+// service endpoint that mutates investment state.
+const AUTOMATION_SANDBOX_PERMISSIONS: SandboxPermission[] = ["read:self"];
 const localSandboxSecret = loadLocalSandboxSecret();
 const secret = process.env.INVEST_AGENT_SANDBOX_SECRET || localSandboxSecret;
 
@@ -148,6 +153,9 @@ export function sandboxContextFromUserContext(
   userContext: UserContext,
   permissions?: SandboxPermission[]
 ): SandboxContext {
+  const defaultPermissions = userContext.taskType === "scheduled-automation"
+    ? AUTOMATION_SANDBOX_PERMISSIONS
+    : DEFAULT_SANDBOX_PERMISSIONS;
   return {
     userId: userContext.userId,
     projectId: userContext.projectId || DEFAULT_PROJECT_ID,
@@ -159,7 +167,7 @@ export function sandboxContextFromUserContext(
     conversationId: userContext.conversationId,
     externalUserId: userContext.externalUserId,
     channelAccountId: userContext.channelAccountId,
-    permissions: permissions || [...DEFAULT_SANDBOX_PERMISSIONS],
+    permissions: permissions || [...defaultPermissions],
   };
 }
 

@@ -1,5 +1,6 @@
 import { startReviewScheduler, stopReviewScheduler, getReviewPushTime, triggerReviewNow, type ReviewScope } from "./review.js";
 import { startDataQualityScheduler, stopDataQualityScheduler } from "./data-quality.js";
+import { startAutomationScheduler, stopAutomationScheduler } from "./automation.js";
 import { logger } from "../lib/logger.js";
 import { db } from "../db/index.js";
 import { aiInstances, alertRules, channelIdentities, channelIdentityInstances, settings, users } from "../db/schema.js";
@@ -342,6 +343,7 @@ export async function startScheduler() {
 
   // 收盘后平台级数据质量汇总
   await startDataQualityScheduler();
+  await startAutomationScheduler();
 
   const pushTime = await getReviewPushTime();
   logger.info(`定时任务已启动（每分钟扫描 workspace 配置；Onboarding 草稿提交 5s；盘中定时简报并发 ${MARKET_WATCH_CONCURRENCY}；规则巡检默认间隔 ${intervalMin}min；复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}；数据质量 15:30）`);
@@ -361,6 +363,7 @@ export function stopScheduler() {
   marketWatchQueue.length = 0;
   stopReviewScheduler();
   stopDataQualityScheduler();
+  stopAutomationScheduler();
   logger.info("定时任务已停止");
 }
 
