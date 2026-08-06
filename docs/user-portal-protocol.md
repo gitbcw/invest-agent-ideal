@@ -69,6 +69,7 @@ interface ConnectorHeartbeatPayload {
 ```
 
 Connector 注册后，本地 runtime 以注册 scope 为权威。command payload 中即使带有 `userId`、`assistantId`、`instanceId` 或 `projectId`，也不能覆盖注册值。每个读取与聊天操作都必须绑定当前 connector 的 user/instance。
+对话消息持久化必须在同一会话内保持 project scope 不变。兼容历史会话时，只允许复用该 connector 当前业务 project 或当前 instance runtime project；user、instance、assistant 任一不匹配仍返回 `CONVERSATION_SCOPE_MISMATCH`。自动化与资产命令继续使用 connector 注册的业务 project scope。
 
 ## 当前 Commands
 

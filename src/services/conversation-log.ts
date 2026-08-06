@@ -169,6 +169,30 @@ export async function ensureConversationRuntime(scope: ConversationScope) {
   await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
 }
 
+function resolveConversationPersistenceScope(input: {
+  scope: ConversationScope;
+  conversationId: string;
+  runtimeProjectId?: string;
+}): ConversationScope {
+  const existing = sqlite.prepare(`
+    SELECT user_id AS userId, project_id AS projectId, instance_id AS instanceId, assistant_id AS assistantId
+    FROM conversation_sessions WHERE conversation_id = ?
+  `).get(input.conversationId) as ConversationScope | undefined;
+  if (!existing) return input.scope;
+  if (
+    existing.userId !== input.scope.userId
+    || existing.instanceId !== input.scope.instanceId
+    || existing.assistantId !== input.scope.assistantId
+  ) {
+    throw new ConversationScopeError();
+  }
+  const allowedProjectIds = new Set(
+    [input.scope.projectId, input.runtimeProjectId].filter((value): value is string => Boolean(value)),
+  );
+  if (!allowedProjectIds.has(existing.projectId)) throw new ConversationScopeError();
+  return { ...input.scope, projectId: existing.projectId };
+}
+
 function ensureSession(input: {
   scope: ConversationScope;
   conversationId: string;
@@ -759,16 +783,21 @@ async function chatViaConversationLogOnce(input: {
   }
 
   await ensureConversationRuntime(scope);
-  const automationBinding = automationConversationBinding({ scope, conversationId: input.conversationId });
+  const runtime = await getProjectRuntimeContext(scope.instanceId).catch(() => null);
+  const persistenceScope = resolveConversationPersistenceScope({
+    scope,
+    conversationId: input.conversationId,
+    runtimeProjectId: runtime?.projectId,
+  });
+  const automationBinding = automationConversationBinding({ scope: persistenceScope, conversationId: input.conversationId });
   if (automationBinding && (input.attachments?.length ?? 0) > 0) {
     throw new Error("AUTOMATION_CONVERSATION_ATTACHMENTS_UNSUPPORTED");
   }
-  const runtime = await getProjectRuntimeContext(scope.instanceId).catch(() => null);
   const workspace = await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
   const requestId = `portal-${randomUUID()}`;
   const automationConversation = automationBinding
     ? await prepareAutomationConversation({
-      scope,
+      scope: persistenceScope,
       binding: automationBinding,
       conversationId: input.conversationId,
       idempotencyKey: `automation-chat:${input.conversationId}:${requestId}`,
@@ -793,7 +822,7 @@ async function chatViaConversationLogOnce(input: {
     ? { attachments: storedAttachments.map((stored) => toPublicAttachmentDescriptorWithExpiry(stored)) }
     : undefined;
   const userMessage = appendConversationMessage({
-    scope,
+    scope: persistenceScope,
     conversationId: input.conversationId,
     channel: "web",
     role: "user",
@@ -872,12 +901,7 @@ async function chatViaConversationLogOnce(input: {
   const assistantText = response.content.text ?? "处理完成，但没有生成文本回复。";
   const inlineVisuals = Array.isArray(response.data?.inlineVisuals) ? response.data.inlineVisuals : undefined;
   const assistantMessage = appendConversationMessage({
-    scope: {
-      ...scope,
-      projectId: runtime?.projectId || scope.projectId,
-      instanceId: runtime?.instanceId || scope.instanceId,
-      assistantId: runtime?.instanceId || scope.assistantId,
-    },
+    scope: persistenceScope,
     conversationId: input.conversationId,
     channel: "web",
     role: "assistant",
@@ -1090,4 +1114,5 @@ function buildPortalUserText(text: string | undefined, attachments: StoredAttach
 export const __test__ = {
   automationConversationBinding,
   prepareAutomationConversation,
+  resolveConversationPersistenceScope,
 };
