@@ -310,14 +310,15 @@ test("classifyArtifactRetention promotes 1,048,576-byte files to durable and 1,0
   });
   assert.equal(legacy?.retentionClass, "reference_only");
   assert.equal(legacy?.visibility, "conversation_only");
-  // Files outside the curated dirs are transient even when small.
+  // Formal artifacts.publish reports are durable even outside the fixed review dirs.
   const outside = classifyArtifactRetention({
     source: "artifacts.publish",
-    relativePath: "reports/random/scratch.md",
+    relativePath: "reports/tables/generated.csv",
     sizeBytes: 10,
-    mimeType: "text/markdown",
+    mimeType: "text/csv",
   });
-  assert.equal(outside?.retentionClass, "transient_generated");
+  assert.equal(outside?.retentionClass, "durable_library");
+  assert.equal(outside?.visibility, "library");
   const webpage = classifyArtifactRetention({
     source: "artifacts.publish",
     relativePath: "reports/html/2026-07-25-portfolio-risk.html",

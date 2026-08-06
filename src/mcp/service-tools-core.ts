@@ -1,7 +1,12 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { alertRules, conversationArtifacts, conversationMessages, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
-import { publishConversationArtifact, type ConversationArtifact } from "../services/conversation-artifacts.js";
+import {
+  publishConversationArtifact,
+  readConversationArtifactPayload,
+  type ConversationArtifact,
+  type ConversationArtifactRecord,
+} from "../services/conversation-artifacts.js";
 import {
   createUserAsset,
   getUserAsset,
@@ -1667,7 +1672,7 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
         source: "reviews.save",
       },
     });
-    artifact = published;
+    artifact = await attachPublishedArtifactToUserFiles(published, context);
   } catch (error) {
     await audit(context, {
       operation: "reviews.save",
@@ -1709,19 +1714,86 @@ async function publishArtifact(input: Record<string, unknown> | undefined, conte
       source: "artifacts.publish",
     },
   });
+  const available = await attachPublishedArtifactToUserFiles(published, context);
   await audit(context, {
     operation: "artifacts.publish",
     resourceType: "conversation_artifact",
-    resourceId: published.artifactId,
+    resourceId: available.artifactId,
     requestBody: { relativePath, kind, title },
-    resultSummary: `published ${published.kind}/${published.previewMode} ${published.fileName}`,
+    resultSummary: `published ${available.kind}/${available.previewMode} ${available.fileName}; assetId=${available.assetId ?? "none"}`,
   });
   return {
     ok: true,
     userId: context.userId,
     instanceId: context.instanceId,
-    artifact: published,
+    artifact: available,
   };
+}
+
+async function attachPublishedArtifactToUserFiles(
+  published: ConversationArtifactRecord,
+  context: ServiceToolContext,
+): Promise<ConversationArtifactRecord> {
+  if (published.assetId && published.versionId) return published;
+  if (published.retentionClass !== "durable_library" || published.visibility !== "library") return published;
+
+  return withResourceMutationLock(
+    { userId: published.userId, instanceId: published.instanceId },
+    `artifact-user-file:${published.relativePath}`,
+    async () => {
+      const [previous] = await db.select({ assetId: conversationArtifacts.assetId })
+        .from(conversationArtifacts)
+        .where(and(
+          eq(conversationArtifacts.userId, published.userId),
+          eq(conversationArtifacts.projectId, published.scope.projectId),
+          eq(conversationArtifacts.instanceId, published.instanceId),
+          eq(conversationArtifacts.relativePath, published.relativePath),
+          isNotNull(conversationArtifacts.assetId),
+        ))
+        .orderBy(desc(conversationArtifacts.updatedAt))
+        .limit(1);
+      const { payload } = await readConversationArtifactPayload({
+        artifactId: published.artifactId,
+        userId: published.userId,
+        instanceId: published.instanceId,
+      });
+      const save = (assetId?: string) => saveConversationArtifactAsUserAsset({
+        userId: published.userId,
+        projectId: published.scope.projectId,
+        instanceId: published.instanceId,
+        assetId,
+        name: published.title,
+        fileName: payload.fileName,
+        mimeType: payload.mimeType,
+        bytes: Buffer.from(payload.base64, "base64"),
+        confirmedByUser: true,
+        conversationId: context.conversationId ?? published.scope.conversationId ?? null,
+        idempotencyKey: `artifact-user-file:${published.artifactId}`,
+      });
+
+      let saved;
+      try {
+        saved = await save(previous?.assetId ?? undefined);
+      } catch (error) {
+        if (!previous?.assetId || !(error instanceof UserAssetError) || !["ASSET_ARCHIVED", "ASSET_NOT_FOUND"].includes(error.code)) {
+          throw error;
+        }
+        saved = await save();
+      }
+      const versionId = saved.currentVersionId;
+      if (!versionId) throw new UserAssetError("ASSET_COMMIT_FAILED", "published artifact has no current version");
+
+      await db.update(conversationArtifacts)
+        .set({ assetId: saved.assetId, versionId })
+        .where(and(
+          eq(conversationArtifacts.artifactId, published.artifactId),
+          eq(conversationArtifacts.userId, published.userId),
+          eq(conversationArtifacts.projectId, published.scope.projectId),
+          eq(conversationArtifacts.instanceId, published.instanceId),
+        ));
+      return { ...published, assetId: saved.assetId, versionId };
+    },
+  );
 }
 
 function isArtifactKind(value: string | undefined): value is ConversationArtifact["kind"] {

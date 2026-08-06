@@ -198,6 +198,8 @@ Portal 应将其作为静态图片数据呈现，不能把 SVG 当作同源 HTML
 
 `artifact.event.event` 仅接受 `open`、`success`、`failure`、`download`。`artifact.library.list` payload 只接受 `cursor` 和 `limit`，多余字段返回 `INVALID_REQUEST`。`artifact.publish.legacy` 仅用于既有相对路径兼容；新产物应由服务/MCP 的正式发布流程登记。
 
+通过 `artifacts.publish` 或 `reviews.save` 正式发布且被判定为 `durable_library` 的受支持文件，服务会同步登记到 `user_assets`。首次发布创建文件，同一 Workspace 相对路径的后续发布追加版本；artifact descriptor 的 `assetId`、`versionId` 与“我的文件”中的当前文件版本保持一致。该衔接由服务层执行，不依赖 Agent 再调用一次保存工具。
+
 Artifact payload 的公共字段包括：
 
 ```ts

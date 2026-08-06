@@ -187,10 +187,12 @@ export function classifyArtifactRetention(input: {
     };
   }
   const origin: ArtifactOrigin = input.source === "reviews.save" || input.source === "artifacts.publish" ? "assistant" : "system";
-  const withinCuratedDir = isWithinCuratedLibraryDirectory(input.relativePath);
+  const normalizedPath = input.relativePath.replace(/^\/+/, "");
+  const withinCuratedDir = isWithinCuratedLibraryDirectory(normalizedPath);
+  const formallyPublishedReport = input.source === "artifacts.publish" && normalizedPath.startsWith("reports/");
   const mimeAllowed = DURABLE_LIBRARY_MIME_TYPES.has(input.mimeType);
   const withinDurableSize = input.sizeBytes <= DURABLE_LIBRARY_MAX_BYTES;
-  if (withinCuratedDir && mimeAllowed && withinDurableSize) {
+  if ((withinCuratedDir || formallyPublishedReport) && mimeAllowed && withinDurableSize) {
     return {
       origin,
       retentionClass: "durable_library",
@@ -198,9 +200,8 @@ export function classifyArtifactRetention(input: {
       expiresAt: null,
     };
   }
-  // Oversized or non-curated formal artifacts fall through to transient: the
-  // file stays readable in the original conversation for 7 days but never
-  // enters the permanent file tree.
+  // Artifacts that miss the permanent-library path, MIME, or size gates stay
+  // readable in the original conversation for 7 days but never enter My Files.
   const expiresAt = new Date(now.getTime() + TRANSIENT_ARTIFACT_RETENTION_MS).toISOString();
   return {
     origin,

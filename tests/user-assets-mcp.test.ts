@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -134,4 +134,41 @@ test("MCP asset tools reject a cross-scope read", async () => {
     }),
     (error: unknown) => (error as { code?: string }).code === "ASSET_SCOPE_MISMATCH",
   );
+});
+
+test("published AI artifacts appear in My Files and reuse versions by report path", async () => {
+  const { db, assets, tools } = await fixture;
+  seedConversation(db);
+  const reportDirectory = path.join(root, "workspaces", scope.userId, "reports", "tables");
+  const reportPath = path.join(reportDirectory, "weekly-inventory.csv");
+  await mkdir(reportDirectory, { recursive: true });
+  await writeFile(reportPath, "source,inventory_change\nsmm,-1200\nmysteel,-900\n");
+
+  const first = await tools.callServiceTool("artifacts.publish", {
+    relativePath: "reports/tables/weekly-inventory.csv",
+    kind: "data",
+    title: "碳酸锂去库跟踪表",
+  }, scope) as any;
+  const firstAssets = (await assets.listUserAssets(scope)).filter((asset) => asset.name === "碳酸锂去库跟踪表");
+
+  assert.equal(first.ok, true);
+  assert.equal(firstAssets.length, 1);
+  assert.equal(firstAssets[0].name, "碳酸锂去库跟踪表");
+  assert.equal(firstAssets[0].currentVersion?.source, "conversation");
+  assert.equal(first.artifact.assetId, firstAssets[0].assetId);
+  assert.equal(first.artifact.versionId, firstAssets[0].currentVersionId);
+
+  await writeFile(reportPath, "source,inventory_change\nsmm,-1300\nmysteel,-950\n");
+  const second = await tools.callServiceTool("artifacts.publish", {
+    relativePath: "reports/tables/weekly-inventory.csv",
+    kind: "data",
+    title: "碳酸锂去库跟踪表",
+  }, scope) as any;
+  const secondAssets = (await assets.listUserAssets(scope)).filter((asset) => asset.name === "碳酸锂去库跟踪表");
+
+  assert.equal(secondAssets.length, 1);
+  assert.equal(secondAssets[0].assetId, firstAssets[0].assetId);
+  assert.equal(secondAssets[0].currentVersion?.versionNumber, 2);
+  assert.equal(second.artifact.assetId, firstAssets[0].assetId);
+  assert.notEqual(second.artifact.versionId, first.artifact.versionId);
 });
