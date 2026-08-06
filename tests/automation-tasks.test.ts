@@ -88,6 +88,86 @@ test("creates paused task with immutable revision and source/working assets", as
   assert.ok((await automation.listAutomationTaskAuditLogs({ ...scopeA, taskId: task.taskId })).length >= 3);
 });
 
+test("archived tasks are read-only, hidden from due work, and cannot claim runs", async () => {
+  const { automation } = await fixture();
+  const task = await createTask();
+  await automation.activateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision });
+  const archived = await automation.archiveAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision });
+
+  assert.equal(archived.status, "archived");
+  assert.equal(archived.nextRunAt, null);
+  assert.equal((await automation.listAutomationTasks(scopeA)).some((item) => item.taskId === task.taskId), false);
+  assert.equal((await automation.listAutomationTasks(scopeA, { statuses: ["archived"] })).some((item) => item.taskId === task.taskId), true);
+  assert.equal((await automation.listDueAutomationTasks(new Date("2999-01-01T00:00:00.000Z"))).some((item) => item.taskId === task.taskId), false);
+
+  await assert.rejects(
+    () => automation.updateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision, name: "不应修改" }),
+    (error: unknown) => (error as { code?: string }).code === "AUTOMATION_TASK_ARCHIVED",
+  );
+  await assert.rejects(
+    () => automation.claimAutomationTaskRun({ ...scopeA, taskId: task.taskId, origin: "manual", idempotencyKey: `archived-${task.taskId}` }),
+    (error: unknown) => (error as { code?: string }).code === "AUTOMATION_TASK_ARCHIVED",
+  );
+});
+
+test("global run history keeps the revision name and records recovered attempts", async () => {
+  const { automation, db } = await fixture();
+  const task = await createTask();
+  const historical = await automation.claimAutomationTaskRun({ ...scopeA, taskId: task.taskId, origin: "manual", idempotencyKey: `historical-${task.taskId}` });
+  await automation.finishAutomationTaskRun({ ...scopeA, runId: historical.run.runId, leaseToken: historical.run.leaseToken, status: "succeeded", resultSummary: "旧版本完成" });
+  await automation.updateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision, name: "后来改名的任务" });
+
+  const history = await automation.listAutomationTaskRuns({ ...scopeA, query: "维护任务" });
+  const historicalRow = history.find((run) => run.runId === historical.run.runId);
+  assert.equal(historicalRow?.taskName, task.revision.name);
+  assert.equal(historicalRow?.revision, 1);
+
+  const retryTask = await createTask();
+  const firstAttempt = await automation.claimAutomationTaskRun({ ...scopeA, taskId: retryTask.taskId, origin: "manual", idempotencyKey: `recovery-${retryTask.taskId}` });
+  db.sqlite.prepare("UPDATE automation_task_runs SET lease_expires_at = ?, claimed_at = ? WHERE run_id = ?").run("2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z", firstAttempt.run.runId);
+  db.sqlite.prepare("UPDATE automation_tasks SET active_run_lease_expires_at = ? WHERE task_id = ?").run("2000-01-01T00:00:00.000Z", retryTask.taskId);
+  const recovered = await automation.claimAutomationTaskRun({ ...scopeA, taskId: retryTask.taskId, origin: "manual", idempotencyKey: `recovery-${retryTask.taskId}` });
+  assert.equal(recovered.claimed, true);
+  assert.equal(recovered.run.attempt, 2);
+  await automation.finishAutomationTaskRun({ ...scopeA, runId: recovered.run.runId, leaseToken: recovered.run.leaseToken, status: "succeeded", resultSummary: "恢复后完成" });
+  const retryHistory = await automation.listAutomationTaskRuns({ ...scopeA, taskId: retryTask.taskId });
+  assert.equal(retryHistory[0]?.attempt, 2);
+  assert.equal(retryHistory[0]?.status, "succeeded");
+  assert.equal(retryHistory[1]?.status, "failed");
+});
+
+test("defaults an omitted automation timezone to Asia/Shanghai", async () => {
+  const { automation } = await fixture();
+  sequence += 1;
+  const task = await automation.createAutomationTask({
+    ...scopeA,
+    taskId: `automation-default-timezone-${sequence}`,
+    name: "默认时区任务",
+    schedule: { frequency: "daily", time: "07:30" },
+    sourceAsset: {
+      fileName: "default-timezone.csv",
+      mimeType: "text/csv",
+      bytes: Buffer.from("code,price\\n600519,1500\\n"),
+    },
+  });
+  assert.equal(task.revision.schedule.timezone, "Asia/Shanghai");
+});
+
+test("schedules trading-day tasks after A-share market closures", async () => {
+  const { automation } = await fixture();
+  const next = automation.nextAutomationRunAt(
+    { frequency: "trading_days", time: "09:00", timezone: "Asia/Shanghai" },
+    new Date("2026-10-01T00:00:00.000Z"),
+  );
+  assert.equal(next, "2026-10-08T01:00:00.000Z");
+
+  const legacyNext = automation.nextAutomationRunAt(
+    { frequency: "weekdays", time: "09:00", timezone: "Asia/Shanghai" },
+    new Date("2026-10-01T00:00:00.000Z"),
+  );
+  assert.equal(legacyNext, "2026-10-08T01:00:00.000Z");
+});
+
 test("updates task definition by appending a revision and pauses the new version", async () => {
   const { automation } = await fixture();
   const task = await createTask();
@@ -104,6 +184,9 @@ test("updates task definition by appending a revision and pauses the new version
   assert.equal(updated.currentRevision, 2);
   assert.equal(updated.revision.name, "新版维护任务");
   assert.equal(updated.revision.schedule.time, "08:00");
+  assert.equal(updated.sourceAsset?.assetId, task.sourceAsset?.assetId);
+  assert.equal(updated.workingAsset?.assetId, task.workingAsset?.assetId);
+  assert.deepEqual(updated.revision.inputs, []);
 
   const revisions = await automation.listAutomationTaskRevisions({ ...scopeA, taskId: task.taskId });
   assert.deepEqual(revisions.map((item) => item.revision), [2, 1]);
@@ -327,7 +410,13 @@ test("moves an active task to needs_attention after three failures and advances 
   assert.equal(attention?.consecutiveFailures, 3);
   assert.equal(attention?.nextRunAt, null);
 
-  const reactivated = await automation.activateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision });
+  await assert.rejects(
+    () => automation.activateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision }),
+    (error: unknown) => (error as { code?: string }).code === "AUTOMATION_TASK_NEEDS_ATTENTION",
+  );
+  const repaired = await automation.updateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision, description: "修复失败原因后继续执行" });
+  assert.equal(repaired.status, "paused");
+  const reactivated = await automation.activateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: repaired.currentRevision });
   assert.equal(reactivated.status, "active");
   assert.equal(reactivated.consecutiveFailures, 0);
   assert.ok(reactivated.nextRunAt);

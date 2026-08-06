@@ -64,6 +64,7 @@ Read tools:
 - `watch_rules.list`
 - `watch_rules.validate`
 - `watch_rules.dry_run`
+- `assets.version.read`：按当前服务 scope 读取用户产物的当前或指定不可变版本；返回受控字节和 descriptor，不返回 Workspace 路径。
 
 Confirmation workflow tool:
 
@@ -100,6 +101,8 @@ Confirmed write tools:
 - `preferences.apply`
 - `reviews.save`
 - `watch_rules.create`
+- `assets.version.commit`：在明确用户确认或受控自动化 run scope 下，将校验后的 staging 字节提交为既有产物的新版本；校验 expected version、checksum、MIME 和幂等键。
+- `assets.conversation.save`：把当前对话或受控自动化生成物保存为产物库资产；普通对话需要 `confirmedByUser=true`，失败不会声称已保存。
 
 `portfolio.apply_changes` is a portfolio-domain transaction, not a file-field CRUD surface. The Agent first reads the current portfolio revision, resolves all holding identities, decides every watched-stock keep/remove action with the user, and supplies an explicit cash ratio when known weights would otherwise stop totaling 100%. `confirmations.request` previews and validates the exact change set before a confirmation is created. A later confirmed call rejects stale revisions, writes the complete portfolio once, preserves completed onboarding state, appends the change log, records service audit, and returns the saved state for read-back verification.
 

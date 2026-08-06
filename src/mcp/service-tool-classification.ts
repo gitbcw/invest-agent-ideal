@@ -22,6 +22,7 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   "research.news_search": "read",
   "research.web_search": "read",
   "research.web_read": "read",
+  "assets.version.read": "read",
   // ── read: 用户状态与上下文 (9) ──
   "portfolio.read": "read",
   "watchlist.read": "read",
@@ -46,6 +47,8 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   // ── other-write: 确认与发布 (2) ──
   "confirmations.request": "other-write",
   "artifacts.publish": "other-write",
+  "assets.version.commit": "other-write",
+  "assets.conversation.save": "other-write",
   // ── other-write: onboarding 族 (10) ──
   "onboarding.confirm_portfolio": "other-write",
   "onboarding.confirm_step": "other-write",
@@ -92,6 +95,10 @@ const SCHEDULED_FINAL_ACTIONS: Record<string, string[]> = {
   "scheduled-daily-review": ["reviews.save"],
   "scheduled-weekly-review": ["reviews.save"],
   "scheduled-monthly-review": ["reviews.save"],
+  // The runner, not ACP, owns version submission. ACP may read its declared
+  // inputs; write tools would allow a direct commit before structured output
+  // validation and break the output/run atomicity boundary.
+  "scheduled-automation": ["assets.version.read"],
 };
 
 /**

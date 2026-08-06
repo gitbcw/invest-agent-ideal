@@ -35,12 +35,33 @@ function command(scope: typeof scopeA, type: string, payload: Record<string, unk
   return { protocolVersion: "2026-07-04", requestId: `req-${Math.random()}`, type, sentAt: new Date().toISOString(), payload };
 }
 
+test("Portal connector preserves the registered instance's owning project scope", async () => {
+  const { connector } = await fixture;
+  const scope = connector.__test__.scopeFromProject({
+    instanceId: "invest-agent-112",
+    projectId: "invest-agent-112",
+    legacyProjectId: "invest-agent",
+    ownerUserId: "112",
+    name: "112",
+  } as never);
+
+  assert.equal(scope.instanceId, "invest-agent-112");
+  assert.equal(scope.projectId, "invest-agent");
+  assert.equal(scope.userId, "112");
+});
+
 test("Portal automation commands use registered scope and expose task/asset contracts", async () => {
   const { connector } = await fixture;
-  const created = await connector.__test__.handleCommand(scopeA, command(scopeA, "automation.create", {
-    // A malicious payload scope must be ignored; the connector scope remains authoritative.
+  const malicious = await connector.__test__.handleCommand(scopeA, command(scopeA, "automation.create", {
     userId: scopeB.userId,
     instanceId: scopeB.instanceId,
+    name: "Portal 任务",
+    schedule: { frequency: "daily", time: "07:30", timezone: "Asia/Shanghai" },
+    sourceAsset: { fileName: "portal.csv", mimeType: "text/csv", base64: Buffer.from("a,b\n1,2\n").toString("base64") },
+  }) as any);
+  assert.equal(malicious.ok, false);
+  assert.equal(malicious.error.code, "INVALID_REQUEST");
+  const created = await connector.__test__.handleCommand(scopeA, command(scopeA, "automation.create", {
     name: "Portal 任务",
     schedule: { frequency: "daily", time: "07:30", timezone: "Asia/Shanghai" },
     sourceAsset: { fileName: "portal.csv", mimeType: "text/csv", base64: Buffer.from("a,b\n1,2\n").toString("base64") },

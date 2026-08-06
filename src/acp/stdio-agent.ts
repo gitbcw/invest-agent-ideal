@@ -17,7 +17,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { eq } from "drizzle-orm";
@@ -1029,6 +1029,7 @@ export async function ensureCodexRuntimeForWorkspace(workspacePath: string): Pro
 
 async function ensureCodexHome(codexHome: string): Promise<void> {
   mkdirSync(codexHome, { recursive: true });
+  const sourceHome = resolveCodexRuntimeSourceHome(config.codex.sourceHome);
   const evaluationIsolation = process.env.ACP_EVAL_DISABLE_ALL_MCP === "true" || process.env.ACP_EVAL_DISABLE_INHERITED_MCP === "true";
   // config.toml can define both model providers and MCP servers. Evaluation
   // needs the former, but must remove the latter rather than fall back to a
@@ -1037,7 +1038,7 @@ async function ensureCodexHome(codexHome: string): Promise<void> {
     ? ["config.toml"]
     : ["config.toml", "mcp.json"];
   for (const file of inheritedConfigFiles) {
-    const source = path.join(config.codex.sourceHome, file);
+    const source = path.join(sourceHome, file);
     const target = path.join(codexHome, file);
     if (!existsSync(source)) continue;
     try {
@@ -1073,15 +1074,43 @@ async function ensureCodexHome(codexHome: string): Promise<void> {
       logger.warn(`Codex config symlink failed file=${file}: ${(error as Error).message}`);
     }
   }
-  const authSource = path.join(config.codex.sourceHome, "auth.json");
+  const authSource = path.join(sourceHome, "auth.json");
   const authTarget = path.join(codexHome, "auth.json");
-  if (existsSync(authSource) && !existsSync(authTarget)) {
-    try {
-      copyFileSync(authSource, authTarget);
-    } catch (error) {
-      logger.warn(`Codex auth copy failed: ${(error as Error).message}`);
-    }
+  try {
+    syncRuntimeAuthFile(authSource, authTarget);
+  } catch (error) {
+    logger.warn(`Codex auth sync failed: ${(error as Error).message}`);
   }
+}
+
+export function resolveCodexRuntimeSourceHome(configuredSourceHome: string, homeDirectory = process.env.HOME || ""): string {
+  if (existsSync(configuredSourceHome)) return configuredSourceHome;
+  const fallback = path.join(homeDirectory, ".codex");
+  if (existsSync(fallback)) {
+    logger.warn(`Configured Codex source home is unavailable; using current runtime home instead`);
+    return fallback;
+  }
+  return configuredSourceHome;
+}
+
+/**
+ * Workspace ACP homes isolate mutable session state, but authentication must
+ * follow the currently authenticated runtime. The previous copy-once behavior
+ * left a workspace permanently on an expired credential after re-authentication.
+ */
+export function syncRuntimeAuthFile(source: string, target: string): boolean {
+  if (!existsSync(source)) return false;
+  const sourceContents = readFileSync(source);
+  if (existsSync(target) && readFileSync(target).equals(sourceContents)) return false;
+
+  const temporaryTarget = `${target}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    writeFileSync(temporaryTarget, sourceContents, { mode: 0o600 });
+    renameSync(temporaryTarget, target);
+  } finally {
+    if (existsSync(temporaryTarget)) rmSync(temporaryTarget, { force: true });
+  }
+  return true;
 }
 
 export function stripCodexMcpConfigForEvaluation(source: string): string {

@@ -1,11 +1,46 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import test from "node:test";
-import { buildInvestAgentMcpServers, stripCodexMcpConfigForEvaluation } from "../src/acp/stdio-agent.js";
+import {
+  buildInvestAgentMcpServers,
+  resolveCodexRuntimeSourceHome,
+  stripCodexMcpConfigForEvaluation,
+  syncRuntimeAuthFile,
+} from "../src/acp/stdio-agent.js";
+
+test("Codex workspace runtime refreshes a stale authentication file", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "invest-agent-codex-auth-"));
+  const source = path.join(tempRoot, "source-auth.json");
+  const target = path.join(tempRoot, "workspace-auth.json");
+  try {
+    await writeFile(source, '{"OPENAI_API_KEY":"current"}', "utf8");
+    await writeFile(target, '{"OPENAI_API_KEY":"stale"}', "utf8");
+
+    assert.equal(syncRuntimeAuthFile(source, target), true);
+    assert.equal(await readFile(target, "utf8"), '{"OPENAI_API_KEY":"current"}');
+    assert.equal(syncRuntimeAuthFile(source, target), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Codex workspace runtime falls back when its configured source home was removed", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "invest-agent-codex-source-home-"));
+  const missingSource = path.join(tempRoot, "removed-model-profile");
+  const currentHome = path.join(tempRoot, "current-user-home");
+  const fallback = path.join(currentHome, ".codex");
+  try {
+    await writeFile(path.join(tempRoot, "placeholder"), "", "utf8");
+    await mkdir(fallback, { recursive: true });
+    assert.equal(resolveCodexRuntimeSourceHome(missingSource, currentHome), fallback);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("evaluation config preserves model routing but strips inherited MCP servers", () => {
   const filtered = stripCodexMcpConfigForEvaluation(`model = "gpt-5.6-sol"

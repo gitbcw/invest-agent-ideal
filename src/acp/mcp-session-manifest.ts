@@ -107,6 +107,7 @@ interface ResolvedIdentity {
   allowedTools: string[];
   expectedReviewKind?: string;
   expectedReviewKey?: string;
+  runId?: string;
 }
 
 function inferSessionKind(taskType: string): McpSessionKind | null {
@@ -182,6 +183,7 @@ function resolveServiceScopeEnv(
     { name: "INVEST_AGENT_MCP_INSTANCE_ID", value: identity.instanceId },
     { name: "INVEST_AGENT_MCP_WORKSPACE_PATH", value: identity.workspacePath },
     { name: "INVEST_AGENT_MCP_CONVERSATION_ID", value: identity.conversationId },
+    ...(identity.runId ? [{ name: "INVEST_AGENT_MCP_RUN_ID", value: identity.runId }] : []),
     ...(identity.allowedTools.length
       ? [{ name: "INVEST_AGENT_MCP_ALLOWED_TOOLS", value: identity.allowedTools.join(",") }]
       : []),
@@ -288,6 +290,7 @@ export function resolveSessionMcpServers(input: ResolveSessionInput): ResolveSes
     allowedTools,
     expectedReviewKind: userContext?.expectedReviewKind,
     expectedReviewKey: userContext?.expectedReviewKey,
+    runId,
   };
   const projectRoot = path.resolve(env.INVEST_AGENT_PROJECT_ROOT || process.cwd());
 

@@ -228,6 +228,8 @@ export interface ConversationArtifact {
   previewMode: "markdown" | "html" | "image" | "pdf" | "text" | "table" | "unsupported";
   createdAt: string;
   checksum?: string;
+  assetId?: string | null;
+  versionId?: string | null;
 }
 
 export interface ConversationArtifactRecord extends ConversationArtifact {
@@ -245,6 +247,8 @@ export interface ConversationArtifactRecord extends ConversationArtifact {
   deleteReason?: string | null;
   trashRelativePath?: string | null;
   purgeAt?: string | null;
+  assetId?: string | null;
+  versionId?: string | null;
 }
 
 export interface ConversationArtifactScope {
@@ -286,6 +290,8 @@ export interface PublishArtifactInput {
   kind?: ConversationArtifact["kind"];
   title?: string;
   idempotencyKey?: string;
+  assetId?: string | null;
+  versionId?: string | null;
   scope: Omit<ConversationArtifactScope, "source"> & { source?: ConversationArtifactScope["source"] };
 }
 
@@ -313,6 +319,8 @@ export const ARTIFACT_SELECT_COLUMNS = [
   "relative_path AS relativePath",
   "size_bytes AS sizeBytes",
   "checksum",
+  "asset_id AS assetId",
+  "version_id AS versionId",
   "created_at AS createdAt",
   "origin",
   "retention_class AS retentionClass",
@@ -509,6 +517,8 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     relativePath,
     scope,
     turnId,
+    assetId: input.assetId ?? null,
+    versionId: input.versionId ?? null,
     origin: classification?.origin ?? null,
     retentionClass: classification?.retentionClass ?? null,
     visibility: classification?.visibility ?? null,
@@ -521,13 +531,13 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
         `INSERT INTO conversation_artifacts (
          artifact_id, user_id, instance_id, project_id, assistant_id,
          conversation_id, message_id, turn_id, source, kind, preview_mode,
-         title, file_name, mime_type, relative_path, size_bytes, checksum, idempotency_key,
+         title, file_name, mime_type, relative_path, size_bytes, checksum, asset_id, version_id, idempotency_key,
          created_at, updated_at,
          origin, retention_class, visibility, expires_at
        ) VALUES (
          @artifactId, @userId, @instanceId, @projectId, @assistantId,
          @conversationId, @messageId, @turnId, @source, @kind, @previewMode,
-         @title, @fileName, @mimeType, @relativePath, @sizeBytes, @checksum, @idempotencyKey,
+         @title, @fileName, @mimeType, @relativePath, @sizeBytes, @checksum, @assetId, @versionId, @idempotencyKey,
          @createdAt, @updatedAt,
          @origin, @retentionClass, @visibility, @expiresAt
        )
@@ -539,6 +549,8 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
          relative_path = excluded.relative_path,
          size_bytes = excluded.size_bytes,
          checksum = excluded.checksum,
+         asset_id = COALESCE(excluded.asset_id, conversation_artifacts.asset_id),
+         version_id = COALESCE(excluded.version_id, conversation_artifacts.version_id),
          idempotency_key = COALESCE(excluded.idempotency_key, conversation_artifacts.idempotency_key),
          turn_id = COALESCE(excluded.turn_id, conversation_artifacts.turn_id),
          origin = COALESCE(excluded.origin, conversation_artifacts.origin),
@@ -564,6 +576,8 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
         relativePath: record.relativePath,
         sizeBytes,
         checksum,
+        assetId: input.assetId ?? null,
+        versionId: input.versionId ?? null,
         idempotencyKey,
         createdAt: now,
         updatedAt: now,

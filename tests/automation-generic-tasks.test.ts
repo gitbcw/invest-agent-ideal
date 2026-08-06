@@ -1,0 +1,275 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+const root = mkdtempSync(path.join(os.tmpdir(), "invest-agent-automation-generic-"));
+process.env.NODE_ENV = "test";
+process.env.DB_PATH = path.join(root, "automation.db");
+process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
+process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+mkdirSync(path.join(root, "workspaces"), { recursive: true });
+process.once("exit", () => rmSync(root, { recursive: true, force: true }));
+
+const fixture = (async () => {
+  const db = await import("../src/db/index.js");
+  db.initDb();
+  const automation = await import("../src/services/automation-tasks.js");
+  const assets = await import("../src/services/user-assets.js");
+  const connector = await import("../src/portal/connector.js");
+  return { db, automation, assets, connector };
+})();
+
+const scope = { userId: "generic-user", projectId: "invest-agent", instanceId: "generic-instance" };
+
+function schedule() {
+  return { frequency: "daily" as const, time: "07:30", timezone: "Asia/Shanghai" };
+}
+
+function command(type: string, payload: Record<string, unknown> = {}) {
+  return { protocolVersion: "2026-08-05", requestId: `generic-${Math.random()}`, type, sentAt: new Date().toISOString(), payload };
+}
+
+test("creates and activates an asset-free push task", async () => {
+  const { automation } = await fixture;
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-push-task",
+    name: "每日摘要",
+    instruction: "整理今天的重要市场摘要。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "wechat_summary" },
+  });
+  assert.equal(task.status, "paused");
+  assert.deepEqual(task.revision.inputs, []);
+  assert.deepEqual(task.revision.output, { mode: "none" });
+  assert.deepEqual(task.revision.delivery, { mode: "wechat_summary" });
+  const active = await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  assert.equal(active.status, "active");
+});
+
+test("validates create Markdown output and preserves immutable generic revisions", async () => {
+  const { automation } = await fixture;
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-markdown-task",
+    name: "生成研究笔记",
+    instruction: "生成一份结构化的 Markdown 研究笔记。",
+    schedule: schedule(),
+    output: { mode: "create", format: "markdown", fileName: "daily-note.md" },
+    delivery: { mode: "none" },
+  });
+  assert.equal(task.revision.output.mode, "create");
+  assert.equal(task.revision.output.fileName, "daily-note.md");
+  const updated = await automation.updateAutomationTask({
+    ...scope,
+    taskId: task.taskId,
+    expectedRevision: 1,
+    instruction: "生成一份更详细的 Markdown 研究笔记。",
+    output: { mode: "create", format: "markdown", fileName: "detailed-note.md" },
+  });
+  assert.equal(updated.status, "paused");
+  assert.equal(updated.currentRevision, 2);
+  assert.equal(updated.revision.output.fileName, "detailed-note.md");
+  assert.deepEqual((await automation.listAutomationTaskRevisions({ ...scope, taskId: task.taskId })).map((item) => item.revision), [2, 1]);
+  assert.ok((await automation.listAutomationTasks(scope, { outputModes: ["create"] })).some((item) => item.taskId === task.taskId));
+  assert.equal((await automation.listAutomationTasks(scope, { outputModes: ["none"] })).some((item) => item.taskId === task.taskId), false);
+  await assert.rejects(
+    () => automation.createAutomationTask({ ...scope, taskId: "generic-invalid-file", name: "bad", instruction: "bad", schedule: schedule(), output: { mode: "create", format: "markdown", fileName: "bad.csv" } }),
+    (error: unknown) => (error as { code?: string }).code === "AUTOMATION_INVALID_OUTPUT_POLICY",
+  );
+});
+
+test("binds an active CSV update target and rejects archived/cross-scope targets", async () => {
+  const { automation, assets, db } = await fixture;
+  const target = await assets.createUserAsset({ ...scope, name: "tracking", fileName: "tracking.csv", mimeType: "text/csv", bytes: Buffer.from("code,price\n600519,1500\n") });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-update-task",
+    name: "维护跟踪表",
+    instruction: "按最新数据维护跟踪表。",
+    schedule: schedule(),
+    inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }],
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest", expectedVersionId: target.currentVersionId! },
+  });
+  assert.equal(task.revision.output.mode, "update");
+  assert.equal(task.revision.inputs[0]?.assetId, target.assetId);
+  const bindings = db.sqlite.prepare("SELECT role, version_policy AS versionPolicy FROM automation_task_asset_bindings WHERE task_id = ? ORDER BY role").all(task.taskId) as Array<{ role: string; versionPolicy: string }>;
+  assert.deepEqual(bindings, [{ role: "input", versionPolicy: "latest" }, { role: "update_target", versionPolicy: "latest" }]);
+
+  await assets.archiveUserAsset({ ...scope, assetId: target.assetId });
+  await assert.rejects(
+    () => automation.updateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1, instruction: "再次维护", output: { mode: "update", assetId: target.assetId, versionPolicy: "latest" } }),
+    (error: unknown) => (error as { code?: string }).code === "AUTOMATION_ASSET_BINDING_INVALID",
+  );
+  await assert.rejects(
+    () => automation.createAutomationTask({ ...scope, taskId: "generic-cross-scope", name: "bad", instruction: "bad", schedule: schedule(), inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }], output: { mode: "none" } }),
+    (error: unknown) => (error as { code?: string }).code === "AUTOMATION_SCOPE_MISMATCH" || (error as { code?: string }).code === "AUTOMATION_ASSET_BINDING_INVALID",
+  );
+});
+
+test("connector creates generic tasks without a file and rejects malformed base64", async () => {
+  const { connector } = await fixture;
+  const scopeWithConnector = { ...scope, assistantId: scope.instanceId, connectorId: "generic-connector", displayName: "generic" };
+  const created = await connector.__test__.handleCommand(scopeWithConnector, command("automation.create", {
+    name: "connector push",
+    instruction: "发送每日摘要。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "wechat_summary" },
+  })) as any;
+  assert.equal(created.ok, true);
+  assert.equal(created.data.revision.output.mode, "none");
+  const invalid = await connector.__test__.handleCommand(scopeWithConnector, command("asset.upload", { fileName: "bad.md", base64: "not-base64!" })) as any;
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error.code, "INVALID_REQUEST");
+});
+
+test("batch lifecycle actions are scope-bound, revision-aware, and partially successful", async () => {
+  const { automation } = await fixture;
+  const create = (taskId: string) => automation.createAutomationTask({
+    ...scope,
+    taskId,
+    name: taskId,
+    instruction: "按说明执行任务。",
+    schedule: schedule(),
+    output: { mode: "none" },
+  });
+  const successfulTask = await create("generic-batch-success");
+  const conflictTask = await create("generic-batch-conflict");
+  const result = await automation.batchAutomationTaskAction({
+    ...scope,
+    action: "pause",
+    items: [
+      { taskId: successfulTask.taskId, expectedRevision: successfulTask.currentRevision },
+      { taskId: conflictTask.taskId, expectedRevision: conflictTask.currentRevision + 1 },
+    ],
+    idempotencyKey: "generic-batch-partial-1",
+  });
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results.filter((item) => item.ok).length, 1);
+  assert.equal(result.results.filter((item) => !item.ok).length, 1);
+  assert.equal(result.results.find((item) => item.taskId === successfulTask.taskId)?.ok, true);
+  assert.equal(result.results.find((item) => item.taskId === conflictTask.taskId)?.ok, false);
+  const audits = await automation.listAutomationTaskAuditLogs({ ...scope, taskId: successfulTask.taskId });
+  assert.equal(audits.some((audit) => audit.details.correlationId === result.correlationId), true);
+  const conflictAudits = await automation.listAutomationTaskAuditLogs({ ...scope, taskId: conflictTask.taskId });
+  assert.equal(conflictAudits.some((audit) => audit.status === "failed" && audit.details.correlationId === result.correlationId), true);
+});
+
+test("generic runner commits one Markdown version and keeps run output references", async () => {
+  const { automation } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-create",
+    name: "生成运行产物",
+    instruction: "生成 Markdown 结果。",
+    schedule: schedule(),
+    output: { mode: "create", format: "markdown", fileName: "run-result.md" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-create-once",
+    executor: async () => ({
+      content: { type: "text" as const, text: "已生成结果" },
+      finished: true,
+      data: { summary: "结构化结果摘要", stagedOutput: { fileName: "run-result.md", mimeType: "text/markdown", base64: Buffer.from("# result\n").toString("base64") } },
+    }),
+  });
+  assert.equal(result.run.status, "succeeded");
+  assert.ok(result.run.outputAssetId);
+  assert.ok(result.run.outputVersionId);
+  assert.equal(result.run.deliveryStatus, "not_requested");
+  const output = await (await import("../src/services/user-assets.js")).readCurrentUserAsset({ ...scope, assetId: result.run.outputAssetId! });
+  assert.equal(output.bytes.toString(), "# result\n");
+  assert.equal(output.descriptor.versionId, result.run.outputVersionId);
+  assert.equal((await automation.listAutomationTaskRuns({ ...scope, hasOutput: true })).some((run) => run.runId === result.run.runId), true);
+  assert.equal((await automation.listAutomationTaskRuns({ ...scope, hasOutput: false })).some((run) => run.runId === result.run.runId), false);
+
+  const replay = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-create-once",
+    executor: async () => { throw new Error("replay must not execute"); },
+  });
+  assert.equal(replay.run.runId, result.run.runId);
+  assert.equal((await (await import("../src/services/user-assets.js")).listUserAssets(scope)).filter((item) => item.assetId === result.run.outputAssetId).length, 1);
+});
+
+test("generic runner pushes idempotently and does not commit malformed output", async () => {
+  const { automation } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-push",
+    name: "推送运行结果",
+    instruction: "生成一条摘要。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "wechat_on_condition", conditionVersion: 1 },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const pushed = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-push-once",
+    executor: async () => ({ content: { type: "text" as const, text: "fallback" }, finished: true, data: { summary: "发送摘要", shouldNotify: true } }),
+  });
+  assert.equal(pushed.run.status, "succeeded");
+  assert.equal(pushed.run.deliveryStatus, "pending");
+  assert.ok(pushed.run.pushJobId);
+  const pushCount = (await import("../src/db/index.js")).sqlite.prepare("SELECT COUNT(*) AS count FROM push_jobs WHERE idempotency_key = ?").get(`automation:${pushed.run.runId}:delivery`) as { count: number };
+  assert.equal(pushCount.count, 1);
+  const pushQueue = await import("../src/services/push-queue.js");
+  await pushQueue.processDuePushJobs(async () => true, { limit: 20 });
+  const delivered = await automation.getAutomationTaskRun({ ...scope, runId: pushed.run.runId });
+  assert.equal(delivered?.deliveryStatus, "sent");
+
+  const badTask = await automation.createAutomationTask({ ...scope, taskId: "generic-run-bad-output", name: "坏输出", instruction: "生成结果。", schedule: schedule(), output: { mode: "create", format: "markdown", fileName: "bad-result.md" } });
+  await automation.activateAutomationTask({ ...scope, taskId: badTask.taskId, expectedRevision: 1 });
+  const bad = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: badTask.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-bad-output-once",
+    executor: async () => ({ content: { type: "text" as const, text: "看起来完成了" }, finished: true }),
+  });
+  assert.equal(bad.run.status, "failed");
+  assert.equal(bad.run.outputAssetId, null);
+  assert.equal((await (await import("../src/services/user-assets.js")).listUserAssets({ ...scope, search: "坏输出" })).length, 0);
+});
+
+test("generic latest update uses the head read at run start and advances it once", async () => {
+  const { automation, assets } = await fixture;
+  const target = await assets.createUserAsset({ ...scope, name: "generic-update-target", fileName: "generic-update.csv", mimeType: "text/csv", bytes: Buffer.from("code,price\n600519,1500\n") });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-update-conflict",
+    name: "冲突更新",
+    instruction: "更新 CSV。",
+    schedule: schedule(),
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest", expectedVersionId: target.currentVersionId! },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const changed = await assets.uploadUserAssetVersion({ ...scope, assetId: target.assetId, fileName: "generic-update.csv", mimeType: "text/csv", bytes: Buffer.from("code,price\n600519,1510\n"), expectedVersionId: target.currentVersionId!, source: "conversation" });
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-update-conflict-once",
+    executor: async () => ({ content: { type: "text" as const, text: "generated" }, finished: true, data: { stagedOutput: { fileName: "generic-update.csv", mimeType: "text/csv", base64: Buffer.from("code,price\n600519,1520\n").toString("base64") } } }),
+  });
+  assert.equal(result.run.status, "succeeded");
+  const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
+  assert.notEqual(current.descriptor.versionId, changed.currentVersionId);
+  assert.equal(current.bytes.toString(), "code,price\n600519,1520\n");
+});

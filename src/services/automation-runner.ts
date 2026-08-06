@@ -27,6 +27,7 @@ import {
   type AutomationTaskRunRecord,
 } from "./automation-tasks.js";
 import { writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
+import { runGenericAutomationTaskNow } from "./generic-automation-runner.js";
 
 export type AutomationRunResult = {
   run: AutomationTaskRunRecord;
@@ -150,6 +151,15 @@ export async function runAutomationTaskNow(input: {
 }): Promise<AutomationRunResult> {
   const task = await getAutomationTask({ ...input.scope, taskId: input.taskId });
   if (!task) throw new Error(`AUTOMATION_TASK_NOT_FOUND:${input.taskId}`);
+  if (!task.sourceAsset && !task.workingAsset) {
+    return runGenericAutomationTaskNow({
+      scope: input.scope,
+      taskId: input.taskId,
+      origin: input.origin,
+      idempotencyKey: input.idempotencyKey,
+      scheduledFor: input.scheduledFor,
+    }) as unknown as AutomationRunResult;
+  }
   const claimed = await claimAutomationTaskRun({
     ...input.scope,
     taskId: input.taskId,

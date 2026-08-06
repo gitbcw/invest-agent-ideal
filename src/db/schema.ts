@@ -526,6 +526,7 @@ export const pushJobs = sqliteTable("push_jobs", {
   messageKind: text("message_kind"),
   expiresAt: text("expires_at"),
   originTaskKey: text("origin_task_key"),
+  originRunId: text("origin_run_id"),
   retryPolicy: text("retry_policy"),
   terminalReason: text("terminal_reason"),
   message: text("message").notNull(),
@@ -688,6 +689,8 @@ export const conversationArtifacts = sqliteTable("conversation_artifacts", {
   relativePath: text("relative_path").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
   checksum: text("checksum"),
+  assetId: text("asset_id"),
+  versionId: text("version_id"),
   idempotencyKey: text("idempotency_key"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
@@ -766,6 +769,44 @@ export const artifactDeleteConfirmations = sqliteTable("artifact_delete_confirma
   updatedAt: text("updated_at").notNull(),
 });
 
+/** Canonical long-lived user asset identity. Bytes are versioned below. */
+export const userAssets = sqliteTable("user_assets", {
+  assetId: text("asset_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  name: text("name").notNull(),
+  status: text("status").notNull().default("active"),
+  currentVersionId: text("current_version_id"),
+  archivedAt: text("archived_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Immutable bytes and provenance for one logical user asset. */
+export const userAssetVersions = sqliteTable("user_asset_versions", {
+  versionId: text("version_id").primaryKey(),
+  assetId: text("asset_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  versionNumber: integer("version_number").notNull().default(1),
+  fileName: text("file_name").notNull(),
+  format: text("format").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum").notNull(),
+  storagePath: text("storage_path").notNull(),
+  source: text("source").notNull(),
+  conversationId: text("conversation_id"),
+  taskId: text("task_id"),
+  runId: text("run_id"),
+  parentVersionId: text("parent_version_id"),
+  idempotencyKey: text("idempotency_key"),
+  idempotencyFingerprint: text("idempotency_fingerprint"),
+  createdAt: text("created_at").notNull(),
+});
+
 /**
  * User-owned automation task identity and mutable lifecycle state.
  *
@@ -805,7 +846,12 @@ export const automationTaskRevisions = sqliteTable("automation_task_revisions", 
   revision: integer("revision").notNull(),
   name: text("name").notNull(),
   description: text("description"),
+  /** Generic revisions keep their instruction and policy snapshots here. */
+  instruction: text("instruction"),
   scheduleJson: text("schedule_json").notNull(),
+  inputsJson: text("inputs_json"),
+  outputJson: text("output_json"),
+  deliveryJson: text("delivery_json"),
   sourceAssetId: text("source_asset_id"),
   workingAssetId: text("working_asset_id"),
   createdAt: text("created_at").notNull(),
@@ -849,8 +895,12 @@ export const automationTaskRuns = sqliteTable("automation_task_runs", {
   startedAt: text("started_at"),
   finishedAt: text("finished_at"),
   inputAssetId: text("input_asset_id"),
+  inputVersionsJson: text("input_versions_json"),
   outputAssetId: text("output_asset_id"),
+  outputVersionId: text("output_version_id"),
   outputChecksum: text("output_checksum"),
+  deliveryStatus: text("delivery_status"),
+  pushJobId: text("push_job_id"),
   resultSummary: text("result_summary"),
   errorMessage: text("error_message"),
   traceId: text("trace_id"),
@@ -874,5 +924,20 @@ export const automationTaskAuditLogs = sqliteTable("automation_task_audit_logs",
   action: text("action").notNull(),
   status: text("status").notNull(),
   detailsJson: text("details_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** General task-to-asset binding; legacy automation_task_assets remains intact. */
+export const automationTaskAssetBindings = sqliteTable("automation_task_asset_bindings", {
+  bindingId: text("binding_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  revisionId: text("revision_id").notNull(),
+  assetId: text("asset_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  role: text("role").notNull(),
+  versionPolicy: text("version_policy").notNull().default("latest"),
+  versionId: text("version_id"),
   createdAt: text("created_at").notNull(),
 });

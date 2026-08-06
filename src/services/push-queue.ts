@@ -22,6 +22,7 @@ export interface PushJobInput {
   messageKind?: string;
   expiresAt?: string;
   originTaskKey?: string;
+  originRunId?: string;
   retryPolicy?: string;
   message: string;
   maxAttempts?: number;
@@ -67,6 +68,7 @@ export async function enqueuePushJob(input: PushJobInput) {
     messageKind: input.messageKind,
     expiresAt: input.expiresAt,
     originTaskKey: input.originTaskKey,
+    originRunId: input.originRunId,
     retryPolicy: input.retryPolicy,
     terminalReason: null,
     message: input.channel === undefined || input.channel === "weixin-mobile"
@@ -126,6 +128,7 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
 
     if (isExpired(job.expiresAt, now)) {
       await markExpired(job.id, "expired_before_delivery", now);
+      await syncAutomationDelivery(job, "failed");
       expired += 1;
       continue;
     }
@@ -172,6 +175,7 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
             updatedAt: attemptAt,
           })
           .where(eq(pushJobs.id, job.id));
+        await syncAutomationDelivery(job, "sent");
         sent += 1;
         continue;
       }
@@ -191,6 +195,7 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
       if (outcome === "dead") dead += 1;
       else if (outcome === "expired") expired += 1;
       else retried += 1;
+      await syncAutomationDelivery(job, outcome === "retry" ? "pending" : "failed");
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       await recordWeixinDeliveryAttempt({
@@ -211,6 +216,7 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
       if (outcome === "dead") dead += 1;
       else if (outcome === "expired") expired += 1;
       else retried += 1;
+      await syncAutomationDelivery(job, outcome === "retry" ? "pending" : "failed");
     }
   }
 
@@ -317,4 +323,20 @@ async function markAwaitingUser(id: string, attempts: number, errorMessage: stri
       updatedAt: now,
     })
     .where(eq(pushJobs.id, id));
+}
+
+async function syncAutomationDelivery(
+  job: { originRunId?: string | null; userId: string; projectId: string; instanceId: string },
+  status: "pending" | "sent" | "failed",
+): Promise<void> {
+  if (!job.originRunId) return;
+  try {
+    const { updateAutomationTaskRunDelivery } = await import("./automation-tasks.js");
+    await updateAutomationTaskRunDelivery({
+      userId: job.userId, projectId: job.projectId, instanceId: job.instanceId,
+      runId: job.originRunId, status,
+    });
+  } catch (error) {
+    logger.warn(`automation delivery status sync failed run=${job.originRunId}: ${(error as Error).message}`);
+  }
 }

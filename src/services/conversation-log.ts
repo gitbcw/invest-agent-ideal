@@ -933,6 +933,8 @@ function toPublicArtifactDescriptor(artifact: ConversationArtifactRecord) {
     previewMode: artifact.previewMode,
     createdAt: artifact.createdAt,
     checksum: artifact.checksum,
+    assetId: artifact.assetId ?? null,
+    versionId: artifact.versionId ?? null,
     workspacePath: browsableArtifactWorkspacePath(artifact),
   };
 }

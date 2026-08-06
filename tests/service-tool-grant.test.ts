@@ -14,6 +14,8 @@ import {
 const REGISTERED_TOOLS = [
   "market_watch.snapshot",
   "research.news_search", "research.web_search", "research.web_read",
+  "assets.version.read",
+  "assets.version.commit", "assets.conversation.save",
   "portfolio.read", "watchlist.read", "plans.read", "conversation.history",
   "confirmations.pending", "watch_rules.catalog", "watch_rules.list",
   "watch_rules.validate", "watch_rules.dry_run",

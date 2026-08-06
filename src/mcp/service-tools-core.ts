@@ -1,7 +1,19 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { alertRules, conversationMessages, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
+import { alertRules, conversationArtifacts, conversationMessages, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
 import { publishConversationArtifact, type ConversationArtifact } from "../services/conversation-artifacts.js";
+import {
+  createUserAsset,
+  getUserAsset,
+  listUserAssetReferences,
+  listUserAssetVersions,
+  readCurrentUserAsset,
+  readUserAssetVersion,
+  saveConversationArtifactAsUserAsset,
+  uploadUserAssetVersion,
+  UserAssetError,
+} from "../services/user-assets.js";
+import { getAutomationTask, getAutomationTaskRun, listAutomationTaskRevisions } from "../services/automation-tasks.js";
 import { isWorkspaceBackend, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
@@ -48,6 +60,7 @@ export interface ServiceToolContext {
   workspacePath?: string;
   projectId?: string;
   conversationId?: string;
+  runId?: string;
   expectedReviewKind?: "daily" | "weekly" | "monthly";
   expectedReviewKey?: string;
 }
@@ -68,6 +81,7 @@ export function serviceToolContextFromEnv(env: NodeJS.ProcessEnv = process.env):
   const instanceId = (env.INVEST_AGENT_MCP_INSTANCE_ID || defaultInstanceIdForUser(userId)).trim();
   const workspacePath = env.INVEST_AGENT_MCP_WORKSPACE_PATH?.trim() || undefined;
   const conversationId = env.INVEST_AGENT_MCP_CONVERSATION_ID?.trim() || undefined;
+  const runId = env.INVEST_AGENT_MCP_RUN_ID?.trim() || undefined;
   const rawExpectedKind = env.INVEST_AGENT_MCP_EXPECTED_REVIEW_KIND?.trim();
   const expectedReviewKind = rawExpectedKind === "daily" || rawExpectedKind === "weekly" || rawExpectedKind === "monthly"
     ? rawExpectedKind
@@ -79,6 +93,7 @@ export function serviceToolContextFromEnv(env: NodeJS.ProcessEnv = process.env):
     workspacePath,
     projectId: DEFAULT_PROJECT_ID,
     conversationId,
+    runId,
     expectedReviewKind,
     expectedReviewKey,
   };
@@ -110,7 +125,7 @@ export async function callServiceTool(
       ? await withResourceMutationLock(context, resourceKeys, () => dispatchServiceTool(name, input, context))
       : await dispatchServiceTool(name, input, context);
   } catch (error) {
-    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read") {
+    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read" || name.startsWith("assets.")) {
       await audit(context, {
         operation: name,
         resourceType: "service_tool",
@@ -314,6 +329,12 @@ async function dispatchServiceTool(
     }
     case "conversation.history":
       return readConversationHistory(input, context);
+    case "assets.version.read":
+      return readAssetVersionTool(input, context);
+    case "assets.version.commit":
+      return submitAssetVersionTool(input, context);
+    case "assets.conversation.save":
+      return saveConversationAssetTool(input, context);
     case "confirmations.pending":
       return readPendingConfirmations(input, context);
     case "confirmations.request":
@@ -394,6 +415,228 @@ async function dispatchServiceTool(
     default:
       throw new Error(`Unknown service tool: ${name}`);
   }
+}
+
+async function readAssetVersionTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const assetId = stringInput(input?.assetId);
+  if (!assetId) throw new UserAssetError("ASSET_NOT_FOUND", "assetId is required");
+  const scope = assetScope(context);
+  await assertAssetReadAuthorized(scope, context, assetId, stringInput(input?.versionId));
+  const result = stringInput(input?.versionId)
+    ? await readUserAssetVersion({ ...scope, assetId, versionId: stringInput(input?.versionId)! })
+    : await readCurrentUserAsset({ ...scope, assetId });
+  await audit(context, {
+    operation: "assets.version.read",
+    resourceType: "user_asset_version",
+    resourceId: result.descriptor.versionId,
+    requestBody: { assetId, versionId: input?.versionId ?? null },
+    resultSummary: "format=" + result.descriptor.format + "; sizeBytes=" + result.bytes.length,
+  });
+  return {
+    ok: true,
+    asset: publicAssetDescriptor(await getUserAsset({ ...scope, assetId })),
+    version: publicAssetVersion(result.descriptor),
+    base64: result.bytes.toString("base64"),
+  };
+}
+
+async function submitAssetVersionTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const assetId = stringInput(input?.assetId);
+  const fileName = stringInput(input?.fileName);
+  const base64 = stringInput(input?.base64);
+  if (!assetId || !fileName || !base64) throw new UserAssetError("ASSET_INVALID_CONTENT", "assetId, fileName and base64 are required");
+  const run = await automationAssetRun(context);
+  let confirmation: Awaited<ReturnType<typeof prepareBoundConfirmation>> | undefined;
+  if (run) {
+    assertAutomationOutputTarget(run, assetId, "commit");
+  } else {
+    if (input?.confirmedByUser !== true || !stringInput(input?.confirmationId)) {
+      throw new UserAssetError("ASSET_CONFIRMATION_REQUIRED", "confirmationId and confirmedByUser=true are required");
+    }
+    confirmation = await prepareBoundConfirmation(input, context, "assets.version.commit");
+  }
+  const scope = assetScope(context);
+  const saved = await uploadUserAssetVersion({
+    ...scope,
+    assetId,
+    fileName,
+    mimeType: stringInput(input?.mimeType),
+    bytes: decodeAssetBase64(base64),
+    expectedVersionId: typeof input?.expectedVersionId === "string"
+      ? input.expectedVersionId
+      : run?.run.outputVersionId ?? undefined,
+    source: run ? "automation" : "conversation",
+    conversationId: context.conversationId ?? null,
+    taskId: run?.taskId ?? null,
+    runId: context.runId ?? null,
+    idempotencyKey: stringInput(input?.idempotencyKey),
+  });
+  if (confirmation) await confirmation.consume();
+  await audit(context, {
+    operation: "assets.version.commit",
+    resourceType: "user_asset",
+    resourceId: saved.assetId,
+    requestBody: { assetId, fileName, expectedVersionId: input?.expectedVersionId ?? null, runId: context.runId ?? null },
+    resultSummary: "versionId=" + (saved.currentVersionId || "") + "; source=" + (run ? "automation" : "conversation"),
+  });
+  return { ok: true, asset: publicAssetDescriptor(saved), version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null };
+}
+
+async function saveConversationAssetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const fileName = stringInput(input?.fileName);
+  const base64 = stringInput(input?.base64);
+  if (!fileName || !base64) throw new UserAssetError("ASSET_INVALID_CONTENT", "fileName and base64 are required");
+  const run = await automationAssetRun(context);
+  let confirmation: Awaited<ReturnType<typeof prepareBoundConfirmation>> | undefined;
+  if (run) {
+    assertAutomationOutputTarget(run, stringInput(input?.assetId), "save");
+  } else {
+    if (input?.confirmedByUser !== true || !stringInput(input?.confirmationId)) {
+      throw new UserAssetError("ASSET_CONFIRMATION_REQUIRED", "confirmationId and confirmedByUser=true are required");
+    }
+    confirmation = await prepareBoundConfirmation(input, context, "assets.conversation.save");
+  }
+  const saved = await saveConversationArtifactAsUserAsset({
+    ...assetScope(context),
+    name: stringInput(input?.name),
+    fileName,
+    mimeType: stringInput(input?.mimeType),
+    bytes: decodeAssetBase64(base64),
+    assetId: stringInput(input?.assetId),
+    confirmedByUser: Boolean(run || input?.confirmedByUser === true),
+    conversationId: context.conversationId ?? null,
+    taskId: run?.taskId ?? null,
+    runId: context.runId ?? null,
+    idempotencyKey: stringInput(input?.idempotencyKey),
+  });
+  if (confirmation) await confirmation.consume();
+  await audit(context, {
+    operation: "assets.conversation.save",
+    resourceType: "user_asset",
+    resourceId: saved.assetId,
+    requestBody: { assetId: input?.assetId ?? null, fileName, runId: context.runId ?? null },
+    resultSummary: "versionId=" + (saved.currentVersionId || "") + "; source=" + (run ? "automation" : "conversation"),
+  });
+  return { ok: true, asset: publicAssetDescriptor(saved), version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null };
+}
+
+type AutomationAssetRunContext = {
+  taskId: string;
+  run: NonNullable<Awaited<ReturnType<typeof getAutomationTaskRun>>>;
+  revision: NonNullable<Awaited<ReturnType<typeof listAutomationTaskRevisions>>>[number];
+};
+
+async function automationAssetRun(context: ServiceToolContext): Promise<AutomationAssetRunContext | null> {
+  if (!context.runId) return null;
+  const run = await getAutomationTaskRun({
+    userId: context.userId,
+    projectId: context.projectId || DEFAULT_PROJECT_ID,
+    instanceId: context.instanceId,
+    runId: context.runId,
+  });
+  if (!run || run.status !== "running") throw new UserAssetError("ASSET_LEASE_LOST", "automation run is not active");
+  const task = await getAutomationTask({
+    userId: context.userId,
+    projectId: context.projectId || DEFAULT_PROJECT_ID,
+    instanceId: context.instanceId,
+    taskId: run.taskId,
+  });
+  if (!task) throw new UserAssetError("ASSET_LEASE_LOST", "automation task is unavailable");
+  const revisions = await listAutomationTaskRevisions({
+    userId: context.userId,
+    projectId: context.projectId || DEFAULT_PROJECT_ID,
+    instanceId: context.instanceId,
+    taskId: run.taskId,
+  });
+  const revision = revisions.find((item) => item.revisionId === run.revisionId);
+  if (!revision) throw new UserAssetError("ASSET_LEASE_LOST", "automation revision is unavailable");
+  return { taskId: run.taskId, run, revision };
+}
+
+async function assertAssetReadAuthorized(
+  scope: ReturnType<typeof assetScope>,
+  context: ServiceToolContext,
+  assetId: string,
+  versionId: string | undefined,
+): Promise<void> {
+  const run = await automationAssetRun(context);
+  if (run) {
+    const inputVersion = run.run.inputVersions?.find((item) => item.assetId === assetId);
+    const outputVersion = run.run.outputAssetId === assetId
+      ? { assetId, versionId: run.run.outputVersionId }
+      : undefined;
+    const bound = inputVersion || outputVersion;
+    if (!bound || (versionId && bound.versionId && versionId !== bound.versionId)) {
+      throw new UserAssetError("ASSET_SCOPE_MISMATCH", assetId);
+    }
+    if (!versionId && bound.versionId) {
+      const current = await readCurrentUserAsset({ ...scope, assetId });
+      if (current.descriptor.versionId !== bound.versionId) {
+        throw new UserAssetError("ASSET_VERSION_CONFLICT", assetId);
+      }
+    }
+    return;
+  }
+  if (!context.conversationId) throw new UserAssetError("ASSET_SCOPE_MISMATCH", assetId);
+  const rows = await db.select({ versionId: conversationArtifacts.versionId })
+    .from(conversationArtifacts)
+    .where(and(
+      eq(conversationArtifacts.userId, scope.userId),
+      eq(conversationArtifacts.projectId, scope.projectId),
+      eq(conversationArtifacts.instanceId, scope.instanceId),
+      eq(conversationArtifacts.conversationId, context.conversationId),
+      eq(conversationArtifacts.assetId, assetId),
+    ))
+    .limit(20);
+  if (!rows.some((row) => !versionId || !row.versionId || row.versionId === versionId)) {
+    throw new UserAssetError("ASSET_SCOPE_MISMATCH", assetId);
+  }
+}
+
+function assertAutomationOutputTarget(run: AutomationAssetRunContext, assetId: string | undefined, operation: "commit" | "save"): void {
+  const output = run.revision.output;
+  if (output.mode === "update") {
+    if (!assetId || output.assetId !== assetId || run.run.outputAssetId !== assetId) {
+      throw new UserAssetError("AUTOMATION_ASSET_BINDING_INVALID", `${operation} target is not bound to the run`);
+    }
+    return;
+  }
+  if (operation === "commit" || assetId) {
+    throw new UserAssetError("AUTOMATION_ASSET_BINDING_INVALID", `${operation} requires the declared output policy`);
+  }
+}
+
+function assetScope(context: ServiceToolContext) {
+  return { userId: context.userId, projectId: context.projectId || DEFAULT_PROJECT_ID, instanceId: context.instanceId };
+}
+
+function decodeAssetBase64(value: string): Buffer {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 === 1) {
+    throw new UserAssetError("ASSET_INVALID_CONTENT", "base64 payload is invalid");
+  }
+  const bytes = Buffer.from(value, "base64");
+  if (!bytes.length) throw new UserAssetError("ASSET_INVALID_CONTENT", "asset is empty");
+  return bytes;
+}
+
+function publicAssetDescriptor(asset: Awaited<ReturnType<typeof getUserAsset>> | Awaited<ReturnType<typeof createUserAsset>>): unknown {
+  if (!asset) return null;
+  return {
+    assetId: asset.assetId,
+    name: asset.name,
+    status: asset.status,
+    currentVersionId: asset.currentVersionId,
+    currentVersion: asset.currentVersion ? publicAssetVersion(asset.currentVersion) : null,
+    createdAt: asset.createdAt,
+    updatedAt: asset.updatedAt,
+    archivedAt: asset.archivedAt,
+  };
+}
+
+function publicAssetVersion(version: Awaited<ReturnType<typeof readCurrentUserAsset>>["descriptor"]): unknown {
+  const safe = { ...version } as Record<string, unknown>;
+  delete safe.storagePath;
+  return safe;
 }
 
 async function readConversationHistory(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -1927,6 +2170,8 @@ const CONFIRMED_WRITE_OPERATIONS = new Set([
   "method_changes.apply",
   "preferences.apply",
   "watch_rules.create",
+  "assets.version.commit",
+  "assets.conversation.save",
 ]);
 
 async function requestConfirmation(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -2040,6 +2285,8 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
     "method_changes.apply": "method_change_candidate",
     "preferences.apply": "user_preferences",
     "watch_rules.create": "watch_rule",
+    "assets.version.commit": "user_asset_version",
+    "assets.conversation.save": "user_asset",
   };
   const resourceType = resourceByOperation[operation];
   if (!resourceType) throw new Error("operation is not confirmable");
@@ -2053,8 +2300,10 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
         ? stringInput(payload.stockCode ?? payload.code)
         : operation === "method_changes.apply"
       ? stringInput(payload.candidateId)
-        : operation === "preferences.apply"
+      : operation === "preferences.apply"
           ? context.instanceId
+        : operation === "assets.version.commit" || operation === "assets.conversation.save"
+          ? stringInput(payload.assetId) || context.instanceId
         : undefined;
   const requestBody = operation === "method_changes.apply"
     ? stripMethodChangeConfirmationMetadata(payload)

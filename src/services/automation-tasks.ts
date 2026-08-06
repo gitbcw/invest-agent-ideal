@@ -3,14 +3,23 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs
 import path from "node:path";
 
 import { sqlite } from "../db/index.js";
+import { isAshareTradingDay } from "../lib/market-calendar.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { AutomationSpreadsheetValidationError, validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
+import {
+  assetFormatForFileName,
+  getUserAsset,
+  readUserAssetVersion,
+  UserAssetError,
+  type AssetFormat,
+} from "./user-assets.js";
 
 const DEFAULT_ASSET_MAX_BYTES = 25 * 1024 * 1024;
 const MAX_ASSET_BYTES = positiveInteger(process.env.AUTOMATION_TASK_ASSET_MAX_BYTES, DEFAULT_ASSET_MAX_BYTES);
 const MAX_TASK_NAME_LENGTH = 200;
 const MAX_DESCRIPTION_LENGTH = 12_000;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 500;
+const DEFAULT_AUTOMATION_TIMEZONE = "Asia/Shanghai";
 /**
  * A run owns the task execution lease for this long.  The lease is persisted
  * in SQLite, rather than kept in the scheduler process, so a different
@@ -24,6 +33,24 @@ export type AutomationTaskStatus = "paused" | "active" | "needs_attention" | "ar
 export type AutomationTaskRunOrigin = "manual" | "scheduled";
 export type AutomationTaskRunStatus = "running" | "succeeded" | "failed" | "skipped" | "cancelled";
 export type AutomationTaskAssetRole = "source" | "working";
+export type AutomationTaskVersionPolicy = "latest" | "fixed";
+
+export interface AutomationTaskAssetBinding {
+  assetId: string;
+  role: "input" | "update_target";
+  versionPolicy: AutomationTaskVersionPolicy;
+  versionId?: string;
+}
+
+export type AutomationTaskOutputPolicy =
+  | { mode: "none" }
+  | { mode: "create"; format: AssetFormat; fileName: string; titleTemplate?: string }
+  | { mode: "update"; assetId: string; versionPolicy: "latest"; expectedVersionId?: string };
+
+export type AutomationTaskDeliveryPolicy =
+  | { mode: "none" }
+  | { mode: "wechat_summary" }
+  | { mode: "wechat_on_condition"; conditionVersion: 1 };
 
 export interface AutomationScope {
   userId: string;
@@ -32,7 +59,7 @@ export interface AutomationScope {
 }
 
 export interface AutomationSchedule {
-  frequency: "daily" | "weekdays" | "weekly";
+  frequency: "daily" | "trading_days" | "weekdays" | "weekly";
   time: string;
   timezone: string;
   weekdays?: number[];
@@ -66,7 +93,11 @@ export interface AutomationTaskRevisionRecord extends AutomationScope {
   revision: number;
   name: string;
   description?: string | null;
+  instruction: string;
   schedule: AutomationSchedule;
+  inputs: AutomationTaskAssetBinding[];
+  output: AutomationTaskOutputPolicy;
+  delivery: AutomationTaskDeliveryPolicy;
   sourceAssetId?: string | null;
   workingAssetId?: string | null;
   createdAt: string;
@@ -86,6 +117,20 @@ export interface AutomationTaskRecord extends AutomationScope {
   updatedAt: string;
 }
 
+export interface AutomationListQuery {
+  query?: string;
+  statuses?: AutomationTaskStatus[];
+  frequencies?: AutomationSchedule["frequency"][];
+  deliveryModes?: AutomationTaskDeliveryPolicy["mode"][];
+  outputModes?: AutomationTaskOutputPolicy["mode"][];
+  cursor?: string;
+  limit?: number;
+}
+
+export interface AutomationTaskSummary extends AutomationTaskRecord {
+  latestRun?: Pick<AutomationTaskRunRecord, "runId" | "status" | "origin" | "finishedAt" | "resultSummary" | "errorMessage" | "attempt">;
+}
+
 export interface AutomationTaskRunRecord extends AutomationScope {
   runId: string;
   taskId: string;
@@ -94,6 +139,8 @@ export interface AutomationTaskRunRecord extends AutomationScope {
   idempotencyKey: string;
   /** Monotonic attempt number for recovery of an expired lease. */
   attempt: number;
+  /** Revision number captured by this run; unlike the task's current revision, this never changes later. */
+  revision: number;
   /** Opaque ownership token used to fence an old ACP process after recovery. */
   leaseToken?: string | null;
   leaseExpiresAt?: string | null;
@@ -103,12 +150,18 @@ export interface AutomationTaskRunRecord extends AutomationScope {
   startedAt?: string | null;
   finishedAt?: string | null;
   inputAssetId?: string | null;
+  inputVersions?: Array<{ assetId: string; versionId: string }>;
   outputAssetId?: string | null;
+  outputVersionId?: string | null;
   outputChecksum?: string | null;
+  deliveryStatus?: "not_requested" | "pending" | "sent" | "suppressed" | "failed" | null;
+  pushJobId?: string | null;
   resultSummary?: string | null;
   errorMessage?: string | null;
   traceId?: string | null;
   conversationId?: string | null;
+  /** Task name captured from the run's revision for global run history. */
+  taskName?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -130,6 +183,10 @@ export interface CreateAutomationTaskInput extends AutomationScope {
   name: string;
   description?: string | null;
   schedule: AutomationSchedule | Record<string, unknown>;
+  instruction?: string;
+  inputs?: AutomationTaskAssetBinding[];
+  output?: AutomationTaskOutputPolicy | Record<string, unknown>;
+  delivery?: AutomationTaskDeliveryPolicy | Record<string, unknown>;
   /** The first revision must have one uploaded source file. */
   sourceAsset?: AutomationTaskAssetInput;
   /** Alias kept for callers that model the upload simply as `asset`. */
@@ -142,6 +199,10 @@ export interface UpdateAutomationTaskInput extends AutomationScope {
   name?: string;
   description?: string | null;
   schedule?: AutomationSchedule | Record<string, unknown>;
+  instruction?: string;
+  inputs?: AutomationTaskAssetBinding[];
+  output?: AutomationTaskOutputPolicy | Record<string, unknown>;
+  delivery?: AutomationTaskDeliveryPolicy | Record<string, unknown>;
   /** A new source is stored as a new immutable source file; it never replaces an old one. */
   sourceAsset?: AutomationTaskAssetInput;
   asset?: AutomationTaskAssetInput;
@@ -152,8 +213,40 @@ export interface AutomationTaskLookup extends AutomationScope {
 }
 
 export interface AutomationTaskRunListInput extends AutomationScope {
-  taskId: string;
+  taskId?: string;
+  query?: string;
+  statuses?: AutomationTaskRunStatus[];
+  origins?: AutomationTaskRunOrigin[];
+  deliveryStatuses?: string[];
+  hasOutput?: boolean;
+  from?: string;
+  to?: string;
+  cursor?: string;
   limit?: number;
+}
+
+export interface AutomationRunSummary extends AutomationTaskRunRecord {
+  taskName: string;
+}
+
+export interface AutomationBatchActionItem {
+  taskId: string;
+  expectedRevision: number;
+}
+
+export interface AutomationBatchActionInput extends AutomationScope {
+  action: "pause" | "activate" | "archive";
+  items: AutomationBatchActionItem[];
+  idempotencyKey: string;
+}
+
+export type AutomationBatchActionResultItem =
+  | { taskId: string; ok: true; task: AutomationTaskRecord }
+  | { taskId: string; ok: false; error: { code: string; message: string; retryable: boolean } };
+
+export interface AutomationBatchActionResult {
+  results: AutomationBatchActionResultItem[];
+  correlationId: string;
 }
 
 export interface AutomationTaskRunLookup extends AutomationScope {
@@ -182,6 +275,7 @@ export interface FinishAutomationTaskRunInput extends AutomationScope {
   resultSummary?: string | null;
   errorMessage?: string | null;
   outputAssetId?: string | null;
+  outputVersionId?: string | null;
   outputChecksum?: string | null;
   traceId?: string | null;
 }
@@ -189,6 +283,17 @@ export interface FinishAutomationTaskRunInput extends AutomationScope {
 export interface AutomationTaskRunLeaseInput extends AutomationScope {
   runId: string;
   leaseToken?: string | null;
+}
+
+export interface AutomationTaskRunBindingInput extends AutomationTaskRunLeaseInput {
+  inputs: Array<{ assetId: string; versionId: string }>;
+  outputAssetId?: string | null;
+  outputVersionId?: string | null;
+}
+
+export interface AutomationTaskRunDeliveryInput extends AutomationTaskRunLookup {
+  status: NonNullable<AutomationTaskRunRecord["deliveryStatus"]>;
+  pushJobId?: string | null;
 }
 
 export interface CreateAutomationTaskAssetInput extends AutomationScope {
@@ -227,6 +332,8 @@ export class AutomationTaskError extends Error {
       | "AUTOMATION_INVALID_NAME"
       | "AUTOMATION_INVALID_DESCRIPTION"
       | "AUTOMATION_INVALID_SCHEDULE"
+      | "AUTOMATION_INVALID_OUTPUT_POLICY"
+      | "AUTOMATION_ASSET_BINDING_INVALID"
       | "AUTOMATION_ASSET_REQUIRED"
       | "AUTOMATION_ASSET_INVALID_PATH"
       | "AUTOMATION_ASSET_UNSUPPORTED_TYPE"
@@ -244,8 +351,14 @@ export class AutomationTaskError extends Error {
       | "AUTOMATION_RUN_ALREADY_FINISHED"
       | "AUTOMATION_RUN_STATUS_INVALID"
       | "AUTOMATION_RUN_LEASE_LOST"
+      | "AUTOMATION_RUN_INVALID_RESULT"
+      | "ASSET_SUBMISSION_FAILED"
       | "AUTOMATION_TASK_BUSY"
       | "AUTOMATION_TASK_NOT_ACTIVE"
+      | "AUTOMATION_TASK_NEEDS_ATTENTION"
+      | "AUTOMATION_TASK_ARCHIVED"
+      | "AUTOMATION_BATCH_INVALID"
+      | "AUTOMATION_INVALID_CURSOR"
       | "AUTOMATION_DATA_CORRUPT",
     message: string,
     public readonly details: Record<string, unknown> = {},
@@ -286,9 +399,27 @@ type DbRevisionRow = {
   revision: number;
   name: string;
   description: string | null;
+  instruction: string | null;
   scheduleJson: string;
+  inputsJson: string | null;
+  outputJson: string | null;
+  deliveryJson: string | null;
   sourceAssetId: string | null;
   workingAssetId: string | null;
+  createdAt: string;
+};
+
+type DbBindingRow = {
+  bindingId: string;
+  taskId: string;
+  revisionId: string;
+  assetId: string;
+  userId: string;
+  projectId: string;
+  instanceId: string;
+  role: string;
+  versionPolicy: string;
+  versionId: string | null;
   createdAt: string;
 };
 
@@ -322,18 +453,24 @@ type DbRunRow = {
   idempotencyBaseKey: string | null;
   idempotencyKey: string;
   attempt: number;
+  revisionNumber: number;
   scheduledFor: string | null;
   status: string;
   claimedAt: string;
   startedAt: string | null;
   finishedAt: string | null;
   inputAssetId: string | null;
+  inputVersionsJson: string | null;
   outputAssetId: string | null;
+  outputVersionId: string | null;
   outputChecksum: string | null;
+  deliveryStatus: string | null;
+  pushJobId: string | null;
   resultSummary: string | null;
   errorMessage: string | null;
   traceId: string | null;
   conversationId: string | null;
+  taskName?: string | null;
   leaseToken: string | null;
   leaseExpiresAt: string | null;
   createdAt: string;
@@ -369,7 +506,11 @@ const REVISION_SELECT = `
   revision,
   name,
   description,
+  instruction,
   schedule_json AS scheduleJson,
+  inputs_json AS inputsJson,
+  output_json AS outputJson,
+  delivery_json AS deliveryJson,
   source_asset_id AS sourceAssetId,
   working_asset_id AS workingAssetId,
   created_at AS createdAt
@@ -394,33 +535,39 @@ const ASSET_SELECT = `
 `;
 
 const RUN_SELECT = `
-  run_id AS runId,
-  task_id AS taskId,
-  revision_id AS revisionId,
-  user_id AS userId,
-  project_id AS projectId,
-  instance_id AS instanceId,
-  origin,
-  idempotency_key AS physicalIdempotencyKey,
-  idempotency_base_key AS idempotencyBaseKey,
-  COALESCE(idempotency_base_key, idempotency_key) AS idempotencyKey,
-  attempt,
-  scheduled_for AS scheduledFor,
-  status,
-  claimed_at AS claimedAt,
-  started_at AS startedAt,
-  finished_at AS finishedAt,
-  input_asset_id AS inputAssetId,
-  output_asset_id AS outputAssetId,
-  output_checksum AS outputChecksum,
-  result_summary AS resultSummary,
-  error_message AS errorMessage,
-  trace_id AS traceId,
-  conversation_id AS conversationId,
-  lease_token AS leaseToken,
-  lease_expires_at AS leaseExpiresAt,
-  created_at AS createdAt,
-  updated_at AS updatedAt
+  automation_task_runs.run_id AS runId,
+  automation_task_runs.task_id AS taskId,
+  automation_task_runs.revision_id AS revisionId,
+  automation_task_runs.user_id AS userId,
+  automation_task_runs.project_id AS projectId,
+  automation_task_runs.instance_id AS instanceId,
+  automation_task_runs.origin,
+  automation_task_runs.idempotency_key AS physicalIdempotencyKey,
+  automation_task_runs.idempotency_base_key AS idempotencyBaseKey,
+  COALESCE(automation_task_runs.idempotency_base_key, automation_task_runs.idempotency_key) AS idempotencyKey,
+  automation_task_runs.attempt,
+  (SELECT revision FROM automation_task_revisions revision_row WHERE revision_row.revision_id = automation_task_runs.revision_id LIMIT 1) AS revisionNumber,
+  automation_task_runs.scheduled_for AS scheduledFor,
+  automation_task_runs.status,
+  automation_task_runs.claimed_at AS claimedAt,
+  automation_task_runs.started_at AS startedAt,
+  automation_task_runs.finished_at AS finishedAt,
+  automation_task_runs.input_asset_id AS inputAssetId,
+  automation_task_runs.input_versions_json AS inputVersionsJson,
+  automation_task_runs.output_asset_id AS outputAssetId,
+  automation_task_runs.output_version_id AS outputVersionId,
+  automation_task_runs.output_checksum AS outputChecksum,
+  automation_task_runs.delivery_status AS deliveryStatus,
+  automation_task_runs.push_job_id AS pushJobId,
+  automation_task_runs.result_summary AS resultSummary,
+  automation_task_runs.error_message AS errorMessage,
+  automation_task_runs.trace_id AS traceId,
+  automation_task_runs.conversation_id AS conversationId,
+  (SELECT name FROM automation_task_revisions revision_row WHERE revision_row.revision_id = automation_task_runs.revision_id LIMIT 1) AS taskName,
+  automation_task_runs.lease_token AS leaseToken,
+  automation_task_runs.lease_expires_at AS leaseExpiresAt,
+  automation_task_runs.created_at AS createdAt,
+  automation_task_runs.updated_at AS updatedAt
 `;
 
 export function normalizeAutomationScope(input: AutomationScope): AutomationScope {
@@ -454,6 +601,10 @@ export async function createAutomationTask(input: CreateAutomationTaskInput): Pr
   const description = normalizeDescription(input.description);
   const schedule = normalizeAutomationSchedule(input.schedule);
   const sourceInput = input.sourceAsset ?? input.asset;
+  if (isGenericTaskInput(input, sourceInput)) {
+    if (sourceInput) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "generic task cannot mix legacy sourceAsset");
+    return createGenericAutomationTask({ scope, input, name, description, schedule });
+  }
   if (!sourceInput) throw new AutomationTaskError("AUTOMATION_ASSET_REQUIRED", "sourceAsset");
 
   const taskId = input.taskId ? normalizeTaskId(input.taskId) : `at_${randomUUID()}`;
@@ -568,10 +719,15 @@ export async function updateAutomationTask(input: UpdateAutomationTaskInput): Pr
   const scope = assertAutomationScope(input);
   const taskId = normalizeTaskId(input.taskId);
   const task = requireTaskRow(taskId, scope);
+  if (task.status === "archived") throw new AutomationTaskError("AUTOMATION_TASK_ARCHIVED", taskId);
   if (input.expectedRevision !== undefined && input.expectedRevision !== task.currentRevision) {
     throw new AutomationTaskError("AUTOMATION_REVISION_CONFLICT", String(input.expectedRevision));
   }
   const currentRevision = revisionRecordFromRow(requireRevisionForTask(task, scope));
+  const hasGenericFields = input.instruction !== undefined || input.inputs !== undefined || input.output !== undefined || input.delivery !== undefined;
+  if (hasGenericFields || currentRevision.inputs.length > 0 || currentRevision.output.mode !== "none" || (currentRevision.instruction.length > 0 && !currentRevision.sourceAssetId)) {
+    return updateGenericAutomationTask({ scope, input, task, currentRevision });
+  }
   const revision = task.currentRevision + 1;
   const revisionId = `atr_${randomUUID()}`;
   const name = normalizeTaskName(input.name ?? currentRevision.name);
@@ -681,6 +837,221 @@ export async function updateAutomationTask(input: UpdateAutomationTaskInput): Pr
   return requireAutomationTask({ ...scope, taskId });
 }
 
+function isGenericTaskInput(input: { instruction?: string; inputs?: AutomationTaskAssetBinding[]; output?: unknown; delivery?: unknown }, sourceInput: unknown): boolean {
+  return !sourceInput || input.instruction !== undefined || input.inputs !== undefined || input.output !== undefined || input.delivery !== undefined;
+}
+
+async function createGenericAutomationTask(input: {
+  scope: AutomationScope;
+  input: CreateAutomationTaskInput;
+  name: string;
+  description: string | null;
+  schedule: AutomationSchedule;
+}): Promise<AutomationTaskRecord> {
+  const definition = await normalizeGenericDefinition(input.scope, input.input);
+  const taskId = input.input.taskId ? normalizeTaskId(input.input.taskId) : `at_${randomUUID()}`;
+  if (readTaskRow(taskId)) throw new AutomationTaskError("AUTOMATION_TASK_EXISTS", taskId);
+  const revisionId = `atr_${randomUUID()}`;
+  const now = nowIso();
+  const transaction = sqlite.transaction(() => {
+    sqlite.prepare(`
+      INSERT INTO automation_tasks (
+        task_id, user_id, project_id, instance_id, status,
+        current_revision, current_revision_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'paused', 1, ?, ?, ?)
+    `).run(taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId, revisionId, now, now);
+    insertGenericRevision({
+      revisionId, taskId, scope: input.scope, revision: 1, name: input.name,
+      description: input.description, schedule: input.schedule, definition, createdAt: now,
+    });
+    insertGenericBindings({ taskId, revisionId, scope: input.scope, bindings: genericBindings(definition), createdAt: now });
+    insertAuditRow({ taskId, revisionId, scope: input.scope, action: "task.created", status: "success", details: { revision: 1, status: "paused", kind: "generic" }, createdAt: now });
+  });
+  transaction();
+  return requireAutomationTask({ ...input.scope, taskId });
+}
+
+async function updateGenericAutomationTask(input: {
+  scope: AutomationScope;
+  input: UpdateAutomationTaskInput;
+  task: DbTaskRow;
+  currentRevision: AutomationTaskRevisionRecord;
+}): Promise<AutomationTaskRecord> {
+  if (input.input.sourceAsset || input.input.asset) {
+    throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "generic tasks cannot use legacy sourceAsset");
+  }
+  const definition = await normalizeGenericDefinition(input.scope, {
+    ...input.input,
+    instruction: input.input.instruction ?? input.currentRevision.instruction,
+    inputs: input.input.inputs ?? input.currentRevision.inputs,
+    output: input.input.output ?? input.currentRevision.output,
+    delivery: input.input.delivery ?? input.currentRevision.delivery,
+  });
+  const revision = input.task.currentRevision + 1;
+  const revisionId = `atr_${randomUUID()}`;
+  const name = normalizeTaskName(input.input.name ?? input.currentRevision.name);
+  const description = input.input.description === undefined
+    ? input.currentRevision.description ?? null
+    : normalizeDescription(input.input.description);
+  const schedule = normalizeAutomationSchedule(input.input.schedule ?? input.currentRevision.schedule);
+  const now = nowIso();
+  const transaction = sqlite.transaction(() => {
+    sqlite.prepare(`
+      INSERT INTO automation_task_revisions (
+        revision_id, task_id, user_id, project_id, instance_id, revision,
+        name, description, instruction, schedule_json, inputs_json, output_json, delivery_json,
+        source_asset_id, working_asset_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+    `).run(
+      revisionId, input.task.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+      revision, name, description, definition.instruction, JSON.stringify(schedule),
+      JSON.stringify(definition.inputs), JSON.stringify(definition.output), JSON.stringify(definition.delivery), now,
+    );
+    insertGenericBindings({ taskId: input.task.taskId, revisionId, scope: input.scope, bindings: genericBindings(definition), createdAt: now });
+    sqlite.prepare(`
+      UPDATE automation_tasks
+      SET status = 'paused', current_revision = ?, current_revision_id = ?, next_run_at = NULL,
+          consecutive_failures = 0, updated_at = ?
+      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+    `).run(revision, revisionId, now, input.task.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId);
+    insertAuditRow({ taskId: input.task.taskId, revisionId, scope: input.scope, action: "task.revision_created", status: "success", details: { revision, status: "paused", kind: "generic" }, createdAt: now });
+  });
+  transaction();
+  return requireAutomationTask({ ...input.scope, taskId: input.task.taskId });
+}
+
+type NormalizedGenericDefinition = {
+  instruction: string;
+  inputs: AutomationTaskAssetBinding[];
+  output: AutomationTaskOutputPolicy;
+  delivery: AutomationTaskDeliveryPolicy;
+};
+
+async function normalizeGenericDefinition(scope: AutomationScope, input: {
+  instruction?: string;
+  inputs?: AutomationTaskAssetBinding[];
+  output?: AutomationTaskOutputPolicy | Record<string, unknown>;
+  delivery?: AutomationTaskDeliveryPolicy | Record<string, unknown>;
+}): Promise<NormalizedGenericDefinition> {
+  const instruction = String(input.instruction ?? "").trim();
+  if (!instruction || instruction.length > MAX_DESCRIPTION_LENGTH) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "instruction must be 1..12000 characters");
+  const rawInputs = input.inputs ?? [];
+  if (!Array.isArray(rawInputs) || rawInputs.length > 8) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "inputs must contain 0..8 bindings");
+  const inputs: AutomationTaskAssetBinding[] = [];
+  for (const raw of rawInputs) {
+    if (!raw || typeof raw !== "object") throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "invalid input binding");
+    const binding = normalizeAssetBinding(raw as unknown as Record<string, unknown>);
+    const asset = await getUserAsset({ ...scope, assetId: binding.assetId });
+    if (!asset) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", binding.assetId);
+    if (asset.status !== "active" || !asset.currentVersion) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "asset must be active");
+    if (binding.versionPolicy === "fixed") {
+      try {
+        await readUserAssetVersion({ ...scope, assetId: binding.assetId, versionId: binding.versionId! });
+      } catch (error) {
+        if (error instanceof UserAssetError) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", binding.assetId);
+        throw error;
+      }
+    }
+    inputs.push(binding);
+  }
+  const output = normalizeOutputPolicy(input.output);
+  for (const binding of inputs) {
+    if (binding.role === "update_target" && (output.mode !== "update" || binding.assetId !== output.assetId || binding.versionPolicy !== "latest")) {
+      throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "update_target must match update output");
+    }
+  }
+  await validateOutputPolicy(scope, output);
+  const delivery = normalizeDeliveryPolicy(input.delivery);
+  return { instruction, inputs, output, delivery };
+}
+
+function normalizeAssetBinding(raw: Record<string, unknown>): AutomationTaskAssetBinding {
+  const assetId = normalizeOpaqueId(String(raw.assetId ?? ""), "assetId");
+  const role = raw.role === "update_target" ? "update_target" : raw.role === "input" ? "input" : null;
+  const versionPolicy = raw.versionPolicy === "fixed" ? "fixed" : raw.versionPolicy === "latest" ? "latest" : null;
+  if (!role || !versionPolicy) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "role/versionPolicy");
+  const versionId = raw.versionId === undefined ? undefined : normalizeOpaqueId(String(raw.versionId), "versionId");
+  if (versionPolicy === "latest" && versionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "latest cannot carry versionId");
+  if (versionPolicy === "fixed" && !versionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "fixed requires versionId");
+  return { assetId, role, versionPolicy, ...(versionId ? { versionId } : {}) };
+}
+
+function normalizeOutputPolicy(raw: AutomationTaskOutputPolicy | Record<string, unknown> | undefined): AutomationTaskOutputPolicy {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { mode: "none" };
+  const value = raw as Record<string, unknown>;
+  const mode = value.mode;
+  if (mode === "none") return { mode: "none" };
+  if (mode === "create") {
+    const format = String(value.format || "") as AssetFormat;
+    const fileName = normalizeAssetFileNameForOutput(String(value.fileName || ""));
+    if (!isAssetFormat(format) || assetFormatForFileName(fileName) !== format) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "create format/fileName mismatch");
+    const titleTemplate = value.titleTemplate === undefined ? undefined : String(value.titleTemplate);
+    if (titleTemplate && titleTemplate.length > 500) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "titleTemplate too long");
+    return { mode: "create", format, fileName, ...(titleTemplate ? { titleTemplate } : {}) };
+  }
+  if (mode === "update") {
+    const assetId = normalizeOpaqueId(String(value.assetId || ""), "assetId");
+    if (value.versionPolicy !== "latest") throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "update requires latest versionPolicy");
+    const expectedVersionId = value.expectedVersionId === undefined ? undefined : normalizeOpaqueId(String(value.expectedVersionId), "expectedVersionId");
+    return { mode: "update", assetId, versionPolicy: "latest", ...(expectedVersionId ? { expectedVersionId } : {}) };
+  }
+  throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "unsupported output mode");
+}
+
+function normalizeDeliveryPolicy(raw: AutomationTaskDeliveryPolicy | Record<string, unknown> | undefined): AutomationTaskDeliveryPolicy {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { mode: "none" };
+  const value = raw as Record<string, unknown>;
+  if (value.mode === "none" || value.mode === "wechat_summary") return { mode: value.mode };
+  if (value.mode === "wechat_on_condition" && value.conditionVersion === 1) return { mode: "wechat_on_condition", conditionVersion: 1 };
+  throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "unsupported delivery policy");
+}
+
+async function validateOutputPolicy(scope: AutomationScope, output: AutomationTaskOutputPolicy): Promise<void> {
+  if (output.mode !== "update") return;
+  const asset = await getUserAsset({ ...scope, assetId: output.assetId });
+  if (!asset || asset.status !== "active" || !asset.currentVersion) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", output.assetId);
+  if (!(asset.currentVersion.format === "markdown" || asset.currentVersion.format === "csv" || asset.currentVersion.format === "xlsx")) {
+    throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "update supports markdown/csv/xlsx only");
+  }
+}
+
+function genericBindings(definition: NormalizedGenericDefinition): Array<AutomationTaskAssetBinding & { role: "input" | "update_target" }> {
+  const bindings = [...definition.inputs];
+  const output = definition.output;
+  if (output.mode === "update" && !bindings.some((binding) => binding.role === "update_target" && binding.assetId === output.assetId)) {
+    bindings.push({ assetId: output.assetId, role: "update_target", versionPolicy: "latest" });
+  }
+  return bindings;
+}
+
+function insertGenericRevision(input: {
+  revisionId: string; taskId: string; scope: AutomationScope; revision: number; name: string; description: string | null;
+  schedule: AutomationSchedule; definition: NormalizedGenericDefinition; createdAt: string;
+}): void {
+  sqlite.prepare(`
+    INSERT INTO automation_task_revisions (
+      revision_id, task_id, user_id, project_id, instance_id, revision,
+      name, description, instruction, schedule_json, inputs_json, output_json, delivery_json,
+      source_asset_id, working_asset_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+  `).run(
+    input.revisionId, input.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+    input.revision, input.name, input.description, input.definition.instruction, JSON.stringify(input.schedule),
+    JSON.stringify(input.definition.inputs), JSON.stringify(input.definition.output), JSON.stringify(input.definition.delivery), input.createdAt,
+  );
+}
+
+function insertGenericBindings(input: { taskId: string; revisionId: string; scope: AutomationScope; bindings: AutomationTaskAssetBinding[]; createdAt: string }): void {
+  const insert = sqlite.prepare(`
+    INSERT INTO automation_task_asset_bindings (
+      binding_id, task_id, revision_id, asset_id, user_id, project_id, instance_id, role, version_policy, version_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const binding of input.bindings) {
+    insert.run(`atbind_${randomUUID()}`, input.taskId, input.revisionId, binding.assetId, input.scope.userId, input.scope.projectId, input.scope.instanceId, binding.role, binding.versionPolicy, binding.versionId ?? null, input.createdAt);
+  }
+}
+
 export async function activateAutomationTask(input: AutomationTaskLookup & { expectedRevision?: number }): Promise<AutomationTaskRecord> {
   return setAutomationTaskStatus(input, "active");
 }
@@ -689,19 +1060,49 @@ export async function pauseAutomationTask(input: AutomationTaskLookup & { expect
   return setAutomationTaskStatus(input, "paused");
 }
 
+export async function archiveAutomationTask(input: AutomationTaskLookup & { expectedRevision?: number }): Promise<AutomationTaskRecord> {
+  return setAutomationTaskStatus(input, "archived");
+}
+
 /** Readable aliases for Portal adapters that use enable/disable wording. */
 export const enableAutomationTask = activateAutomationTask;
 export const disableAutomationTask = pauseAutomationTask;
 
-export async function listAutomationTasks(input: AutomationScope): Promise<AutomationTaskRecord[]> {
+export async function listAutomationTasks(input: AutomationScope, query: AutomationListQuery = {}): Promise<AutomationTaskSummary[]> {
+  return (await listAutomationTaskPage(input, query)).items;
+}
+
+export async function listAutomationTaskPage(input: AutomationScope, query: AutomationListQuery = {}): Promise<{ items: AutomationTaskSummary[]; nextCursor?: string }> {
   const scope = assertAutomationScope(input);
   const rows = sqlite.prepare(`
     SELECT ${TASK_SELECT}
     FROM automation_tasks
     WHERE user_id = ? AND project_id = ? AND instance_id = ?
-    ORDER BY updated_at DESC, task_id ASC
   `).all(scope.userId, scope.projectId, scope.instanceId) as DbTaskRow[];
-  return rows.map((row) => taskRecordFromRow(row, scope));
+  const defaultStatuses: AutomationTaskStatus[] = ["needs_attention", "active", "paused"];
+  const statuses = query.statuses?.length ? query.statuses : defaultStatuses;
+  const search = query.query?.trim().toLocaleLowerCase();
+  const frequencySet = query.frequencies?.length ? new Set(query.frequencies) : null;
+  const deliverySet = query.deliveryModes?.length ? new Set(query.deliveryModes) : null;
+  const outputSet = query.outputModes?.length ? new Set(query.outputModes) : null;
+  const latestRuns = latestRunsByTask(scope);
+  const all = rows
+    .map((row) => taskRecordFromRow(row, scope))
+    .filter((task) => statuses.includes(task.status))
+    .filter((task) => !search || `${task.revision.name}\n${task.revision.description ?? ""}`.toLocaleLowerCase().includes(search))
+    .filter((task) => !frequencySet || frequencySet.has(task.revision.schedule.frequency))
+    .filter((task) => !deliverySet || deliverySet.has(task.revision.delivery.mode))
+    .filter((task) => !outputSet || outputSet.has(task.revision.output.mode))
+    .map((task) => {
+      const latest = latestRuns.get(task.taskId);
+      return latest ? { ...task, latestRun: latest } : task;
+    })
+    .sort(compareTaskSummaries);
+  const start = cursorIndex(all, query.cursor, taskCursorKey);
+  const limit = normalizeListLimit(query.limit);
+  const items = all.slice(start, start + limit);
+  const last = items.at(-1);
+  return { items, ...(last && start + limit < all.length ? { nextCursor: encodeListCursor(taskCursorKey(last)) } : {}) };
 }
 
 export async function getAutomationTask(input: AutomationTaskLookup): Promise<AutomationTaskRecord | null> {
@@ -747,10 +1148,45 @@ export async function assertAutomationTaskRunLease(input: AutomationTaskRunLease
   return runRecordFromRow(row);
 }
 
+export async function bindAutomationTaskRunAssets(input: AutomationTaskRunBindingInput): Promise<AutomationTaskRunRecord> {
+  const scope = assertAutomationScope(input);
+  const runId = normalizeOpaqueId(input.runId, "runId");
+  const inputs = input.inputs.map((item) => ({
+    assetId: normalizeOpaqueId(item.assetId, "assetId"),
+    versionId: normalizeOpaqueId(item.versionId, "versionId"),
+  }));
+  const now = nowIso();
+  const result = sqlite.prepare(`
+    UPDATE automation_task_runs
+    SET input_asset_id = ?, input_versions_json = ?, output_asset_id = ?, output_version_id = ?, updated_at = ?
+    WHERE run_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'running'
+      AND lease_token = ? AND lease_expires_at > ?
+  `).run(
+    inputs[0]?.assetId ?? null, JSON.stringify(inputs), input.outputAssetId ?? null, input.outputVersionId ?? null,
+    now, runId, scope.userId, scope.projectId, scope.instanceId, input.leaseToken ?? null, now,
+  );
+  if (result.changes !== 1) throw new AutomationTaskError("AUTOMATION_RUN_LEASE_LOST", runId);
+  return runRecordFromRow(requireRunRow(runId, scope));
+}
+
+export async function updateAutomationTaskRunDelivery(input: AutomationTaskRunDeliveryInput): Promise<AutomationTaskRunRecord> {
+  const scope = assertAutomationScope(input);
+  const runId = normalizeOpaqueId(input.runId, "runId");
+  if (!["not_requested", "pending", "sent", "suppressed", "failed"].includes(input.status)) {
+    throw new AutomationTaskError("AUTOMATION_RUN_STATUS_INVALID", input.status);
+  }
+  sqlite.prepare(`
+    UPDATE automation_task_runs SET delivery_status = ?, push_job_id = COALESCE(?, push_job_id), updated_at = ?
+    WHERE run_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+  `).run(input.status, input.pushJobId ?? null, nowIso(), runId, scope.userId, scope.projectId, scope.instanceId);
+  return runRecordFromRow(requireRunRow(runId, scope));
+}
+
 export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput): Promise<ClaimAutomationTaskRunResult> {
   const scope = assertAutomationScope(input);
   const taskId = normalizeTaskId(input.taskId);
   const task = requireTaskRow(taskId, scope);
+  if (task.status === "archived") throw new AutomationTaskError("AUTOMATION_TASK_ARCHIVED", taskId);
   const origin = input.origin ?? "manual";
   if (origin !== "manual" && origin !== "scheduled") {
     throw new AutomationTaskError("AUTOMATION_RUN_STATUS_INVALID", String(origin));
@@ -1104,7 +1540,12 @@ function assertAutomationTaskRunLeaseSync(
   }
 }
 
-export async function finishAutomationTaskRun(input: FinishAutomationTaskRunInput): Promise<AutomationTaskRunRecord> {
+/**
+ * Complete a run while an outer SQLite transaction is already open. Generic
+ * asset output commits use this hook so the version head and run terminal
+ * state cannot become visible independently.
+ */
+export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTaskRunInput): AutomationTaskRunRecord {
   const scope = assertAutomationScope(input);
   const runId = normalizeOpaqueId(input.runId, "runId");
   if (!["succeeded", "failed", "skipped", "cancelled"].includes(input.status)) {
@@ -1116,8 +1557,14 @@ export async function finishAutomationTaskRun(input: FinishAutomationTaskRunInpu
     throw new AutomationTaskError("AUTOMATION_RUN_ALREADY_FINISHED", runId);
   }
   if (input.outputAssetId) {
-    const output = requireAssetRow(input.outputAssetId, scope);
-    if (output.taskId !== existing.taskId) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", input.outputAssetId);
+    const revision = requireRevisionById(existing.revisionId, scope, existing.taskId);
+    if (revision.outputJson !== null) {
+      const output = sqlite.prepare(`SELECT asset_id FROM user_assets WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?`).get(input.outputAssetId, scope.userId, scope.projectId, scope.instanceId);
+      if (!output) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", input.outputAssetId);
+    } else {
+      const output = requireAssetRow(input.outputAssetId, scope);
+      if (output.taskId !== existing.taskId) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", input.outputAssetId);
+    }
   }
   const now = nowIso();
   const resultSummary = clipNullable(input.resultSummary, 4_000);
@@ -1127,104 +1574,269 @@ export async function finishAutomationTaskRun(input: FinishAutomationTaskRunInpu
   const task = requireTaskRow(existing.taskId, scope);
   const revision = requireRevisionById(existing.revisionId, scope, existing.taskId);
   const leaseToken = input.leaseToken ?? existing.leaseToken;
-  const transaction = sqlite.transaction(() => {
-    const updated = sqlite.prepare(`
-      UPDATE automation_task_runs
-      SET status = ?, finished_at = ?, output_asset_id = ?, output_checksum = ?,
-          result_summary = ?, error_message = ?, trace_id = ?, lease_expires_at = NULL, updated_at = ?
-      WHERE run_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'running'
-        AND EXISTS (
-          SELECT 1 FROM automation_tasks t
-          WHERE t.task_id = ? AND t.user_id = ? AND t.project_id = ? AND t.instance_id = ?
-            AND t.active_run_id = ?
-            AND t.active_run_lease_expires_at > ?
-            AND (? IS NULL OR t.active_run_lease_token = ?)
-        )
-    `).run(
-      input.status,
-      now,
-      input.outputAssetId ?? null,
-      outputChecksum,
-      resultSummary,
-      errorMessage,
-      traceId,
-      now,
-      runId,
-      scope.userId,
-      scope.projectId,
-      scope.instanceId,
-      existing.taskId,
-      scope.userId,
-      scope.projectId,
-      scope.instanceId,
-      runId,
-      now,
-      leaseToken,
-      leaseToken,
-    );
-    if (updated.changes === 0) throw new AutomationTaskError("AUTOMATION_RUN_LEASE_LOST", runId);
-    sqlite.prepare(`
-      UPDATE automation_tasks
-      SET active_run_id = NULL, active_run_lease_token = NULL,
-          active_run_lease_expires_at = NULL, updated_at = ?
-      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
-        AND active_run_id = ?
-        AND (? IS NULL OR active_run_lease_token = ?)
-    `).run(
-      now,
-      existing.taskId,
-      scope.userId,
-      scope.projectId,
-      scope.instanceId,
-      runId,
-      leaseToken,
-      leaseToken,
-    );
-    insertAuditRow({
-      taskId: existing.taskId,
-      revisionId: existing.revisionId,
-      runId,
-      scope,
-      action: "run.finished",
-      status: "success",
-      details: { runStatus: input.status, hasOutputAsset: Boolean(input.outputAssetId), attempt: existing.attempt },
-      createdAt: now,
-    });
-    const schedule = parseScheduleJson(revision.scheduleJson);
-    if (input.status === "succeeded" || input.status === "skipped" || input.status === "cancelled") {
-      const nextRunAt = task.status === "active" ? nextAutomationRunAt(schedule, new Date(now)) : task.nextRunAt;
-      sqlite.prepare(`
-        UPDATE automation_tasks SET next_run_at = ?, consecutive_failures = 0, updated_at = ?
-        WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
-      `).run(nextRunAt ?? null, now, existing.taskId, scope.userId, scope.projectId, scope.instanceId);
-    } else if (input.status === "failed") {
-      const failures = Number(task.consecutiveFailures || 0) + 1;
-      const needsAttention = failures >= 3;
-      const nextRunAt = task.status === "active" && !needsAttention ? nextAutomationRunAt(schedule, new Date(now)) : null;
-      sqlite.prepare(`
-        UPDATE automation_tasks SET consecutive_failures = ?, status = CASE WHEN ? = 1 THEN 'needs_attention' ELSE status END,
-          next_run_at = ?, updated_at = ?
-        WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
-      `).run(failures, needsAttention ? 1 : 0, nextRunAt, now, existing.taskId, scope.userId, scope.projectId, scope.instanceId);
-    }
+  const updated = sqlite.prepare(`
+    UPDATE automation_task_runs
+    SET status = ?, finished_at = ?, output_asset_id = ?, output_checksum = ?,
+        output_version_id = ?, result_summary = ?, error_message = ?, trace_id = ?, lease_expires_at = NULL, updated_at = ?
+    WHERE run_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'running'
+      AND EXISTS (
+        SELECT 1 FROM automation_tasks t
+        WHERE t.task_id = ? AND t.user_id = ? AND t.project_id = ? AND t.instance_id = ?
+          AND t.active_run_id = ?
+          AND t.active_run_lease_expires_at > ?
+          AND (? IS NULL OR t.active_run_lease_token = ?)
+      )
+  `).run(
+    input.status, now, input.outputAssetId ?? null, outputChecksum, input.outputVersionId ?? null,
+    resultSummary, errorMessage, traceId, now, runId, scope.userId, scope.projectId, scope.instanceId,
+    existing.taskId, scope.userId, scope.projectId, scope.instanceId, runId, now, leaseToken, leaseToken,
+  );
+  if (updated.changes === 0) throw new AutomationTaskError("AUTOMATION_RUN_LEASE_LOST", runId);
+  sqlite.prepare(`
+    UPDATE automation_tasks
+    SET active_run_id = NULL, active_run_lease_token = NULL,
+        active_run_lease_expires_at = NULL, updated_at = ?
+    WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+      AND active_run_id = ? AND (? IS NULL OR active_run_lease_token = ?)
+  `).run(now, existing.taskId, scope.userId, scope.projectId, scope.instanceId, runId, leaseToken, leaseToken);
+  insertAuditRow({
+    taskId: existing.taskId, revisionId: existing.revisionId, runId, scope,
+    action: "run.finished", status: "success",
+    details: { runStatus: input.status, hasOutputAsset: Boolean(input.outputAssetId), attempt: existing.attempt },
+    createdAt: now,
   });
-  transaction();
+  const schedule = parseScheduleJson(revision.scheduleJson);
+  if (input.status === "succeeded" || input.status === "skipped" || input.status === "cancelled") {
+    const nextRunAt = task.status === "active" ? nextAutomationRunAt(schedule, new Date(now)) : task.nextRunAt;
+    sqlite.prepare(`
+      UPDATE automation_tasks SET next_run_at = ?, consecutive_failures = 0, updated_at = ?
+      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+    `).run(nextRunAt ?? null, now, existing.taskId, scope.userId, scope.projectId, scope.instanceId);
+  } else if (input.status === "failed") {
+    const failures = Number(task.consecutiveFailures || 0) + 1;
+    const needsAttention = failures >= 3;
+    const nextRunAt = task.status === "active" && !needsAttention ? nextAutomationRunAt(schedule, new Date(now)) : null;
+    sqlite.prepare(`
+      UPDATE automation_tasks SET consecutive_failures = ?, status = CASE WHEN ? = 1 THEN 'needs_attention' ELSE status END,
+        next_run_at = ?, updated_at = ?
+      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+    `).run(failures, needsAttention ? 1 : 0, nextRunAt, now, existing.taskId, scope.userId, scope.projectId, scope.instanceId);
+  }
   return runRecordFromRow(requireRunRow(runId, scope));
 }
 
-export async function listAutomationTaskRuns(input: AutomationTaskRunListInput): Promise<AutomationTaskRunRecord[]> {
-  const scope = assertAutomationScope(input);
-  const taskId = normalizeTaskId(input.taskId);
-  requireTaskRow(taskId, scope);
-  const limit = Math.min(Math.max(Math.trunc(input.limit ?? 50), 1), 200);
+export async function finishAutomationTaskRun(input: FinishAutomationTaskRunInput): Promise<AutomationTaskRunRecord> {
+  return sqlite.transaction(() => finalizeAutomationTaskRunInTransaction(input))();
+}
+
+function latestRunsByTask(scope: AutomationScope): Map<string, NonNullable<AutomationTaskSummary["latestRun"]>> {
   const rows = sqlite.prepare(`
     SELECT ${RUN_SELECT}
     FROM automation_task_runs
-    WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+    WHERE user_id = ? AND project_id = ? AND instance_id = ?
     ORDER BY created_at DESC, run_id DESC
+  `).all(scope.userId, scope.projectId, scope.instanceId) as DbRunRow[];
+  const latest = new Map<string, NonNullable<AutomationTaskSummary["latestRun"]>>();
+  for (const row of rows) {
+    if (latest.has(row.taskId)) continue;
+    const run = runRecordFromRow(row);
+    latest.set(row.taskId, {
+      runId: run.runId,
+      status: run.status,
+      origin: run.origin,
+      finishedAt: run.finishedAt,
+      resultSummary: run.resultSummary,
+      errorMessage: run.errorMessage,
+      attempt: run.attempt,
+    });
+  }
+  return latest;
+}
+
+function taskStatusRank(status: AutomationTaskStatus): number {
+  return status === "needs_attention" ? 0 : status === "active" ? 1 : status === "paused" ? 2 : 3;
+}
+
+function taskCursorKey(task: AutomationTaskRecord): string {
+  const primary = task.status === "active" ? (task.nextRunAt ?? "9999-12-31T23:59:59.999Z") : task.updatedAt;
+  return `${taskStatusRank(task.status)}|${primary}|${task.taskId}`;
+}
+
+function compareTaskSummaries(left: AutomationTaskSummary, right: AutomationTaskSummary): number {
+  const rankDifference = taskStatusRank(left.status) - taskStatusRank(right.status);
+  if (rankDifference !== 0) return rankDifference;
+  if (left.status === "active") {
+    const nextDifference = (left.nextRunAt ?? "9999-12-31T23:59:59.999Z").localeCompare(right.nextRunAt ?? "9999-12-31T23:59:59.999Z");
+    if (nextDifference !== 0) return nextDifference;
+  } else {
+    const updatedDifference = right.updatedAt.localeCompare(left.updatedAt);
+    if (updatedDifference !== 0) return updatedDifference;
+  }
+  return left.taskId.localeCompare(right.taskId);
+}
+
+function normalizeListLimit(value: number | undefined): number {
+  return Math.min(Math.max(Math.trunc(value ?? 50), 1), 100);
+}
+
+function encodeListCursor(key: string): string {
+  return Buffer.from(JSON.stringify({ key }), "utf8").toString("base64url");
+}
+
+function decodeListCursor(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as { key?: unknown };
+    if (typeof parsed.key === "string" && parsed.key.length > 0) return parsed.key;
+  } catch {
+    // Fall through to the stable public error below.
+  }
+  throw new AutomationTaskError("AUTOMATION_INVALID_CURSOR", "cursor");
+}
+
+function cursorIndex<T>(items: T[], cursor: string | undefined, keyOf: (item: T) => string): number {
+  const decoded = decodeListCursor(cursor);
+  if (!decoded) return 0;
+  const index = items.findIndex((item) => keyOf(item as T) === decoded);
+  return index < 0 ? 0 : index + 1;
+}
+
+function encodeRunCursor(run: AutomationTaskRunRecord): string {
+  return Buffer.from(JSON.stringify({ createdAt: run.createdAt, attempt: run.attempt, runId: run.runId }), "utf8").toString("base64url");
+}
+
+function decodeRunCursor(value: string | undefined): { createdAt: string; attempt: number; runId: string } | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as { createdAt?: unknown; attempt?: unknown; runId?: unknown };
+    if (typeof parsed.createdAt === "string" && typeof parsed.runId === "string" && parsed.runId.length > 0) {
+      const attempt = Number.isInteger(parsed.attempt) && Number(parsed.attempt) > 0 ? Number(parsed.attempt) : 1;
+      return { createdAt: parsed.createdAt, attempt, runId: parsed.runId };
+    }
+  } catch {
+    // Fall through to the stable public error below.
+  }
+  throw new AutomationTaskError("AUTOMATION_INVALID_CURSOR", "cursor");
+}
+
+export async function listAutomationTaskRuns(input: AutomationTaskRunListInput): Promise<AutomationRunSummary[]> {
+  return (await listAutomationTaskRunsPage(input)).items;
+}
+
+export async function listAutomationTaskRunsPage(input: AutomationTaskRunListInput): Promise<{ items: AutomationRunSummary[]; nextCursor?: string }> {
+  const scope = assertAutomationScope(input);
+  const where = ["automation_task_runs.user_id = ?", "automation_task_runs.project_id = ?", "automation_task_runs.instance_id = ?"];
+  const params: unknown[] = [scope.userId, scope.projectId, scope.instanceId];
+  if (input.taskId) {
+    const taskId = normalizeTaskId(input.taskId);
+    requireTaskRow(taskId, scope);
+    where.push("automation_task_runs.task_id = ?");
+    params.push(taskId);
+  }
+  if (input.query?.trim()) {
+    const like = `%${input.query.trim()}%`;
+    where.push("(revision.name LIKE ? OR COALESCE(automation_task_runs.result_summary, '') LIKE ? OR COALESCE(automation_task_runs.error_message, '') LIKE ?)");
+    params.push(like, like, like);
+  }
+  if (input.statuses?.length) {
+    where.push(`automation_task_runs.status IN (${input.statuses.map(() => "?").join(",")})`);
+    params.push(...input.statuses);
+  }
+  if (input.origins?.length) {
+    where.push(`automation_task_runs.origin IN (${input.origins.map(() => "?").join(",")})`);
+    params.push(...input.origins);
+  }
+  if (input.deliveryStatuses?.length) {
+    where.push(`automation_task_runs.delivery_status IN (${input.deliveryStatuses.map(() => "?").join(",")})`);
+    params.push(...input.deliveryStatuses);
+  }
+  if (input.hasOutput !== undefined) {
+    where.push(input.hasOutput ? "automation_task_runs.output_asset_id IS NOT NULL" : "automation_task_runs.output_asset_id IS NULL");
+  }
+  if (input.from) {
+    where.push("automation_task_runs.created_at >= ?");
+    params.push(input.from);
+  }
+  if (input.to) {
+    where.push("automation_task_runs.created_at < ?");
+    params.push(input.to);
+  }
+  const cursor = decodeRunCursor(input.cursor);
+  if (cursor) {
+    where.push("(automation_task_runs.created_at < ? OR (automation_task_runs.created_at = ? AND (automation_task_runs.attempt < ? OR (automation_task_runs.attempt = ? AND automation_task_runs.run_id < ?))))");
+    params.push(cursor.createdAt, cursor.createdAt, cursor.attempt, cursor.attempt, cursor.runId);
+  }
+  const limit = normalizeListLimit(input.limit);
+  const rows = sqlite.prepare(`
+    SELECT ${RUN_SELECT}
+    FROM automation_task_runs
+    JOIN automation_task_revisions revision ON revision.revision_id = automation_task_runs.revision_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY automation_task_runs.created_at DESC, automation_task_runs.attempt DESC, automation_task_runs.run_id DESC
     LIMIT ?
-  `).all(taskId, scope.userId, scope.projectId, scope.instanceId, limit) as DbRunRow[];
-  return rows.map(runRecordFromRow);
+  `).all(...params, limit + 1) as DbRunRow[];
+  const items = rows.slice(0, limit).map((row) => {
+    const run = runRecordFromRow(row);
+    return { ...run, taskName: run.taskName ?? "自动化任务" };
+  });
+  const last = items.at(-1);
+  return { items, ...(rows.length > limit && last ? { nextCursor: encodeRunCursor(last) } : {}) };
+}
+
+export async function batchAutomationTaskAction(input: AutomationBatchActionInput): Promise<AutomationBatchActionResult> {
+  const scope = assertAutomationScope(input);
+  if (!["pause", "activate", "archive"].includes(input.action)) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "action");
+  if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 100) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "items must contain 1..100 tasks");
+  if (typeof input.idempotencyKey !== "string" || !input.idempotencyKey.trim() || input.idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "idempotencyKey");
+  const seen = new Set<string>();
+  for (const item of input.items) {
+    const taskId = normalizeTaskId(item.taskId);
+    if (seen.has(taskId) || !Number.isInteger(item.expectedRevision) || item.expectedRevision < 1) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "duplicate task or invalid revision");
+    seen.add(taskId);
+  }
+  const correlationId = `atbatch_${randomUUID()}`;
+  const results: AutomationBatchActionResultItem[] = [];
+  for (const item of input.items) {
+    const taskId = normalizeTaskId(item.taskId);
+    try {
+      const current = requireTaskRow(taskId, scope);
+      if (input.action === "activate" && current.status === "needs_attention") {
+        throw new AutomationTaskError("AUTOMATION_TASK_NEEDS_ATTENTION", taskId);
+      }
+      if (input.action !== "pause" && hasRunningAutomationTaskRun(taskId, scope)) {
+        throw new AutomationTaskError("AUTOMATION_TASK_BUSY", taskId);
+      }
+      const task = input.action === "pause"
+        ? await setAutomationTaskStatus({ ...scope, taskId, expectedRevision: item.expectedRevision }, "paused", correlationId)
+        : input.action === "activate"
+          ? await setAutomationTaskStatus({ ...scope, taskId, expectedRevision: item.expectedRevision }, "active", correlationId)
+          : await setAutomationTaskStatus({ ...scope, taskId, expectedRevision: item.expectedRevision }, "archived", correlationId);
+      results.push({ taskId, ok: true, task });
+    } catch (error) {
+      if (error instanceof AutomationTaskError) {
+        const current = readTaskRow(taskId);
+        if (current && current.userId === scope.userId && current.projectId === scope.projectId && current.instanceId === scope.instanceId) {
+          try {
+            insertAuditRow({
+              taskId,
+              revisionId: current.currentRevisionId,
+              scope,
+              action: input.action === "activate" ? "task.activated" : input.action === "archive" ? "task.archived" : "task.paused",
+              status: "failed",
+              details: { revision: current.currentRevision, correlationId, errorCode: error.code },
+              createdAt: nowIso(),
+            });
+          } catch {
+            // A failed audit must never hide the original per-item result.
+          }
+        }
+        results.push({ taskId, ok: false, error: { code: error.code, message: error.message.replace(`${error.code}:`, ""), retryable: error.code === "AUTOMATION_TASK_BUSY" } });
+      } else {
+        results.push({ taskId, ok: false, error: { code: "INTERNAL_ERROR", message: "批量操作失败", retryable: true } });
+      }
+    }
+  }
+  return { results, correlationId };
 }
 
 export async function getAutomationTaskRun(input: AutomationTaskRunLookup): Promise<AutomationTaskRunRecord | null> {
@@ -1412,6 +2024,20 @@ export async function listAutomationTaskAuditLogs(input: AutomationTaskLookup): 
   return rows.map(auditRecordFromRow);
 }
 
+export function recordAutomationTaskAudit(input: {
+  taskId: string;
+  revisionId?: string | null;
+  runId?: string | null;
+  assetId?: string | null;
+  scope: AutomationScope;
+  action: string;
+  status: string;
+  details?: Record<string, unknown>;
+  createdAt?: string;
+}): void {
+  insertAuditRow({ ...input, createdAt: input.createdAt ?? nowIso() });
+}
+
 /** Return the next wall-clock occurrence in the task's declared timezone. */
 export function nextAutomationRunAt(schedule: AutomationSchedule | Record<string, unknown>, from = new Date()): string {
   const normalized = normalizeAutomationSchedule(schedule);
@@ -1429,7 +2055,7 @@ export function nextAutomationRunAt(schedule: AutomationSchedule | Record<string
     const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(String(values.weekday));
     const [hour, minute] = normalized.time.split(":").map(Number);
     if (Number(values.hour) !== hour || Number(values.minute) !== minute) continue;
-    if (normalized.frequency === "weekdays" && (weekday < 1 || weekday > 5)) continue;
+    if ((normalized.frequency === "trading_days" || normalized.frequency === "weekdays") && !isAshareTradingDay(candidate)) continue;
     if (normalized.frequency === "weekly" && !normalized.weekdays?.includes(weekday)) continue;
     return candidate.toISOString();
   }
@@ -1462,13 +2088,18 @@ type DbAuditRow = {
   createdAt: string;
 };
 
-async function setAutomationTaskStatus(input: AutomationTaskLookup & { expectedRevision?: number }, status: AutomationTaskStatus): Promise<AutomationTaskRecord> {
+async function setAutomationTaskStatus(input: AutomationTaskLookup & { expectedRevision?: number }, status: AutomationTaskStatus, correlationId?: string): Promise<AutomationTaskRecord> {
   const scope = assertAutomationScope(input);
   const taskId = normalizeTaskId(input.taskId);
   const task = requireTaskRow(taskId, scope);
   if (input.expectedRevision !== undefined && input.expectedRevision !== task.currentRevision) {
     throw new AutomationTaskError("AUTOMATION_REVISION_CONFLICT", String(input.expectedRevision));
   }
+  if (status === "active" && task.status === "needs_attention") {
+    throw new AutomationTaskError("AUTOMATION_TASK_NEEDS_ATTENTION", taskId);
+  }
+  if (status !== "archived" && task.status === "archived") throw new AutomationTaskError("AUTOMATION_TASK_ARCHIVED", taskId);
+  if (status === "archived" && task.status === "archived") return requireAutomationTask({ ...scope, taskId });
   const now = nowIso();
   const revision = requireRevisionForTask(task, scope);
   const nextRunAt = status === "active" ? nextAutomationRunAt(parseScheduleJson(revision.scheduleJson), new Date(now)) : null;
@@ -1481,14 +2112,24 @@ async function setAutomationTaskStatus(input: AutomationTaskLookup & { expectedR
       taskId,
       revisionId: task.currentRevisionId,
       scope,
-      action: status === "active" ? "task.activated" : "task.paused",
+      action: status === "active" ? "task.activated" : status === "archived" ? "task.archived" : "task.paused",
       status: "success",
-      details: { revision: task.currentRevision, status, nextRunAt },
+      details: { revision: task.currentRevision, status, nextRunAt, ...(correlationId ? { correlationId } : {}) },
       createdAt: now,
     });
   });
   transaction();
   return requireAutomationTask({ ...scope, taskId });
+}
+
+function hasRunningAutomationTaskRun(taskId: string, scope: AutomationScope): boolean {
+  const row = sqlite.prepare(`
+    SELECT run_id
+    FROM automation_task_runs
+    WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'running'
+    LIMIT 1
+  `).get(taskId, scope.userId, scope.projectId, scope.instanceId) as { run_id?: string } | undefined;
+  return Boolean(row?.run_id);
 }
 
 function taskRecordFromRow(row: DbTaskRow, scope: AutomationScope): AutomationTaskRecord {
@@ -1512,6 +2153,7 @@ function taskRecordFromRow(row: DbTaskRow, scope: AutomationScope): AutomationTa
 }
 
 function revisionRecordFromRow(row: DbRevisionRow): AutomationTaskRevisionRecord {
+  const generic = row.instruction !== null || row.inputsJson !== null || row.outputJson !== null || row.deliveryJson !== null;
   return {
     userId: row.userId,
     projectId: row.projectId,
@@ -1521,11 +2163,36 @@ function revisionRecordFromRow(row: DbRevisionRow): AutomationTaskRevisionRecord
     revision: row.revision,
     name: row.name,
     description: row.description,
+    instruction: row.instruction ?? "",
     schedule: parseScheduleJson(row.scheduleJson),
+    inputs: generic ? parseBindingJson(row.inputsJson) : [],
+    output: generic ? parseOutputJson(row.outputJson) : { mode: "none" },
+    delivery: generic ? parseDeliveryJson(row.deliveryJson) : { mode: "none" },
     sourceAssetId: row.sourceAssetId,
     workingAssetId: row.workingAssetId,
     createdAt: row.createdAt,
   };
+}
+
+function parseBindingJson(value: string | null): AutomationTaskAssetBinding[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) throw new Error("bindings");
+    return parsed.map((item) => normalizeAssetBinding(item as Record<string, unknown>));
+  } catch {
+    throw new AutomationTaskError("AUTOMATION_DATA_CORRUPT", "inputs");
+  }
+}
+
+function parseOutputJson(value: string | null): AutomationTaskOutputPolicy {
+  try { return normalizeOutputPolicy(value ? JSON.parse(value) : undefined); }
+  catch { throw new AutomationTaskError("AUTOMATION_DATA_CORRUPT", "output"); }
+}
+
+function parseDeliveryJson(value: string | null): AutomationTaskDeliveryPolicy {
+  try { return normalizeDeliveryPolicy(value ? JSON.parse(value) : undefined); }
+  catch { throw new AutomationTaskError("AUTOMATION_DATA_CORRUPT", "delivery"); }
 }
 
 function assetRecordFromRow(row: DbAssetRow): AutomationTaskAssetRecord {
@@ -1549,6 +2216,15 @@ function assetRecordFromRow(row: DbAssetRow): AutomationTaskAssetRecord {
 }
 
 function runRecordFromRow(row: DbRunRow): AutomationTaskRunRecord {
+  let inputVersions: Array<{ assetId: string; versionId: string }> = [];
+  if (row.inputVersionsJson) {
+    try {
+      const parsed = JSON.parse(row.inputVersionsJson);
+      if (Array.isArray(parsed)) inputVersions = parsed.filter((item) => item && typeof item.assetId === "string" && typeof item.versionId === "string");
+    } catch {
+      throw new AutomationTaskError("AUTOMATION_DATA_CORRUPT", "input_versions_json");
+    }
+  }
   return {
     userId: row.userId,
     projectId: row.projectId,
@@ -1559,6 +2235,7 @@ function runRecordFromRow(row: DbRunRow): AutomationTaskRunRecord {
     origin: parseRunOrigin(row.origin),
     idempotencyKey: row.idempotencyKey,
     attempt: Number.isInteger(row.attempt) && row.attempt > 0 ? row.attempt : 1,
+    revision: Number.isInteger(row.revisionNumber) && row.revisionNumber > 0 ? row.revisionNumber : 1,
     leaseToken: row.leaseToken,
     leaseExpiresAt: row.leaseExpiresAt,
     scheduledFor: row.scheduledFor,
@@ -1567,12 +2244,17 @@ function runRecordFromRow(row: DbRunRow): AutomationTaskRunRecord {
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
     inputAssetId: row.inputAssetId,
+    inputVersions,
     outputAssetId: row.outputAssetId,
+    outputVersionId: row.outputVersionId,
     outputChecksum: row.outputChecksum,
+    deliveryStatus: row.deliveryStatus as AutomationTaskRunRecord["deliveryStatus"],
+    pushJobId: row.pushJobId,
     resultSummary: row.resultSummary,
     errorMessage: row.errorMessage,
     traceId: row.traceId,
     conversationId: row.conversationId,
+    ...(row.taskName ? { taskName: row.taskName } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -1941,6 +2623,15 @@ function normalizeAssetFileName(value: string): string {
   return trimmed;
 }
 
+function normalizeAssetFileNameForOutput(value: string): string {
+  try { return normalizeAssetFileName(value); }
+  catch { throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "invalid output fileName"); }
+}
+
+function isAssetFormat(value: string): value is AssetFormat {
+  return ["markdown", "html", "csv", "xlsx", "pdf", "png", "jpeg", "webp", "svg"].includes(value);
+}
+
 function automationAssetRelativePath(taskId: string, assetRole: AutomationTaskAssetRole, fileName: string): string {
   const safeTaskId = normalizeTaskId(taskId);
   const safeFileName = normalizeAssetFileName(fileName);
@@ -1966,8 +2657,9 @@ function normalizeAutomationSchedule(input: AutomationSchedule | Record<string, 
   const raw = value as Record<string, unknown>;
   const frequency = String(raw.frequency ?? raw.cadence ?? raw.kind ?? "").trim() as AutomationSchedule["frequency"];
   const time = String(raw.time ?? raw.timeOfDay ?? raw.at ?? "").trim();
-  const timezone = String(raw.timezone ?? raw.tz ?? "").trim();
-  if (!["daily", "weekdays", "weekly"].includes(frequency)) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "unsupported frequency");
+  const timezoneValue = raw.timezone ?? raw.tz;
+  const timezone = String(timezoneValue === undefined ? DEFAULT_AUTOMATION_TIMEZONE : timezoneValue).trim();
+  if (!["daily", "trading_days", "weekdays", "weekly"].includes(frequency)) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "unsupported frequency");
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "time must be HH:mm");
   if (!timezone) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "timezone required");
   try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(); } catch { throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", `invalid timezone ${timezone}`); }

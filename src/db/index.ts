@@ -519,6 +519,7 @@ export function initDb() {
       message_kind TEXT,
       expires_at TEXT,
       origin_task_key TEXT,
+      origin_run_id TEXT,
       retry_policy TEXT,
       terminal_reason TEXT,
       message TEXT NOT NULL,
@@ -654,6 +655,8 @@ export function initDb() {
       relative_path TEXT NOT NULL,
       size_bytes INTEGER NOT NULL,
       checksum TEXT,
+      asset_id TEXT,
+      version_id TEXT,
       idempotency_key TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -725,6 +728,40 @@ export function initDb() {
       completed_at TEXT,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS user_assets (
+      asset_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      current_version_id TEXT,
+      archived_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS user_asset_versions (
+      version_id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      version_number INTEGER NOT NULL DEFAULT 1,
+      file_name TEXT NOT NULL,
+      format TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      checksum TEXT NOT NULL,
+      storage_path TEXT NOT NULL,
+      source TEXT NOT NULL,
+      conversation_id TEXT,
+      task_id TEXT,
+      run_id TEXT,
+      parent_version_id TEXT,
+      idempotency_key TEXT,
+      idempotency_fingerprint TEXT,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS automation_tasks (
       task_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -750,7 +787,11 @@ export function initDb() {
       revision INTEGER NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
+      instruction TEXT,
       schedule_json TEXT NOT NULL,
+      inputs_json TEXT,
+      output_json TEXT,
+      delivery_json TEXT,
       source_asset_id TEXT,
       working_asset_id TEXT,
       created_at TEXT NOT NULL,
@@ -791,8 +832,12 @@ export function initDb() {
       started_at TEXT,
       finished_at TEXT,
       input_asset_id TEXT,
+      input_versions_json TEXT,
       output_asset_id TEXT,
+      output_version_id TEXT,
       output_checksum TEXT,
+      delivery_status TEXT,
+      push_job_id TEXT,
       result_summary TEXT,
       error_message TEXT,
       trace_id TEXT,
@@ -815,6 +860,19 @@ export function initDb() {
       action TEXT NOT NULL,
       status TEXT NOT NULL,
       details_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS automation_task_asset_bindings (
+      binding_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      revision_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      version_policy TEXT NOT NULL DEFAULT 'latest',
+      version_id TEXT,
       created_at TEXT NOT NULL
     );
   `);
@@ -853,6 +911,8 @@ export function initDb() {
   ensureColumn("conversation_messages", "metadata", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("conversation_artifacts", "turn_id", "TEXT");
   ensureColumn("conversation_artifacts", "idempotency_key", "TEXT");
+  ensureColumn("conversation_artifacts", "asset_id", "TEXT");
+  ensureColumn("conversation_artifacts", "version_id", "TEXT");
   ensureColumn("automation_tasks", "next_run_at", "TEXT");
   ensureColumn("automation_tasks", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0");
   // Persistent execution lease fields are additive so old production DBs can
@@ -860,11 +920,23 @@ export function initDb() {
   ensureColumn("automation_tasks", "active_run_id", "TEXT");
   ensureColumn("automation_tasks", "active_run_lease_token", "TEXT");
   ensureColumn("automation_tasks", "active_run_lease_expires_at", "TEXT");
+  ensureColumn("automation_task_revisions", "instruction", "TEXT");
+  ensureColumn("automation_task_revisions", "inputs_json", "TEXT");
+  ensureColumn("automation_task_revisions", "output_json", "TEXT");
+  ensureColumn("automation_task_revisions", "delivery_json", "TEXT");
   ensureColumn("automation_task_runs", "conversation_id", "TEXT");
+  ensureColumn("automation_task_runs", "input_versions_json", "TEXT");
+  ensureColumn("automation_task_runs", "output_version_id", "TEXT");
+  ensureColumn("automation_task_runs", "delivery_status", "TEXT");
+  ensureColumn("automation_task_runs", "push_job_id", "TEXT");
   ensureColumn("automation_task_runs", "idempotency_base_key", "TEXT");
   ensureColumn("automation_task_runs", "attempt", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("automation_task_runs", "lease_token", "TEXT");
   ensureColumn("automation_task_runs", "lease_expires_at", "TEXT");
+  ensureColumn("push_jobs", "origin_run_id", "TEXT");
+  ensureColumn("user_asset_versions", "version_number", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("user_asset_versions", "parent_version_id", "TEXT");
+  ensureColumn("user_asset_versions", "idempotency_fingerprint", "TEXT");
   // Portal file-retention governance (additive, nullable). Backfill assigns
   // these values; rows left NULL behave as they did before the migration.
   ensureColumn("conversation_artifacts", "origin", "TEXT");
@@ -876,6 +948,7 @@ export function initDb() {
   ensureColumn("conversation_artifacts", "delete_reason", "TEXT");
   ensureColumn("conversation_artifacts", "trash_relative_path", "TEXT");
   ensureColumn("conversation_artifacts", "purge_at", "TEXT");
+  ensureUserAssetLibraryMigration();
   ensureColumn("daily_plans", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("daily_plans", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("investment_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
@@ -954,6 +1027,7 @@ export function initDb() {
   backfillHistoricalInstanceAssignments();
   migrateConversationIdempotencyScope();
   backfillOnboardingDraftHandoffs();
+  ensureGenericAutomationTaskMigration();
   dropLegacyAlertsTable();
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_username ON platform_users(username);
@@ -1059,6 +1133,17 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_automation_task_runs_task_lease ON automation_task_runs(task_id, status, lease_expires_at, claimed_at);
     CREATE INDEX IF NOT EXISTS idx_automation_task_audit_scope_time ON automation_task_audit_logs(user_id, instance_id, project_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_automation_task_audit_task_time ON automation_task_audit_logs(task_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_user_assets_scope_status_updated ON user_assets(user_id, project_id, instance_id, status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_user_assets_scope_name ON user_assets(user_id, project_id, instance_id, name);
+    CREATE INDEX IF NOT EXISTS idx_user_asset_versions_scope_asset_created ON user_asset_versions(user_id, project_id, instance_id, asset_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_user_asset_versions_scope_checksum ON user_asset_versions(user_id, project_id, instance_id, checksum);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_asset_versions_scope_idempotency
+      ON user_asset_versions(user_id, project_id, instance_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_automation_task_asset_bindings_scope_revision
+      ON automation_task_asset_bindings(user_id, project_id, instance_id, revision_id, role);
+    CREATE INDEX IF NOT EXISTS idx_automation_task_asset_bindings_scope_asset
+      ON automation_task_asset_bindings(user_id, project_id, instance_id, asset_id, role);
   `);
   logger.info("数据库初始化完成");
 }
@@ -1532,6 +1617,22 @@ function markMigration(key: string) {
   sqlite
     .prepare("INSERT OR REPLACE INTO schema_migrations (key, applied_at) VALUES (?, ?)")
     .run(key, new Date().toISOString());
+}
+
+function ensureUserAssetLibraryMigration() {
+  const migrationKey = "user_asset_library_v1";
+  if (hasMigration(migrationKey)) return;
+  // The tables are created additively above. This is only an operator-visible
+  // checkpoint; it does not rewrite existing rows or files.
+  markMigration(migrationKey);
+}
+
+function ensureGenericAutomationTaskMigration() {
+  const migrationKey = "automation_generic_tasks_v1";
+  if (hasMigration(migrationKey)) return;
+  // Generic revision columns are additive. Existing CSV/XLSX revisions keep
+  // their legacy source/working fields and remain readable by old callers.
+  markMigration(migrationKey);
 }
 
 function dropLegacyAlertsTable() {
