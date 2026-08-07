@@ -50,6 +50,26 @@ test("creates and activates an asset-free push task", async () => {
   assert.equal(active.status, "active");
 });
 
+test("generic tasks default to intelligent file handling", async () => {
+  const { automation } = await fixture;
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-agent-default",
+    name: "智能处理任务",
+    instruction: "根据任务需要处理文件并汇报结果。",
+    schedule: schedule(),
+  });
+  assert.deepEqual(task.revision.output, { mode: "agent" });
+});
+
+test("generic automation prompt defaults to provisional public values and avoids meaningless no-data rows", async () => {
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.match(runnerSource, /默认按可用数据完成任务/);
+  assert.match(runnerSource, /即使尚未完成第二次独立核验/);
+  assert.match(runnerSource, /不得为了证明执行过而写入空值、零值、估算值或无意义状态行/);
+});
+
 test("validates create Markdown output and preserves immutable generic revisions", async () => {
   const { automation } = await fixture;
   const task = await automation.createAutomationTask({
@@ -203,6 +223,47 @@ test("generic runner commits one Markdown version and keeps run output reference
   assert.equal((await (await import("../src/services/user-assets.js")).listUserAssets(scope)).filter((item) => item.assetId === result.run.outputAssetId).length, 1);
 });
 
+test("agent-managed attachment may be read without changes or update its own latest version", async () => {
+  const { automation, assets } = await fixture;
+  const target = await assets.createUserAsset({
+    ...scope,
+    name: "煤价跟踪表",
+    fileName: "coal-tracker.csv",
+    mimeType: "text/csv",
+    bytes: Buffer.from("week,price\n2026-W31,700\n"),
+  });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-agent-managed",
+    name: "维护煤价跟踪表",
+    instruction: "核验公开数据；需要时维护附件表格，否则只汇报。",
+    schedule: schedule(),
+    inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }],
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const unchanged = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-agent-managed-read",
+    executor: async () => ({ content: { type: "text" as const, text: "无须变更" }, finished: true, data: { summary: "已核验，未更新文件。" } }),
+  });
+  assert.equal(unchanged.run.status, "succeeded");
+  assert.equal(unchanged.run.outputAssetId, null);
+  assert.deepEqual(unchanged.run.inputVersions, [{ assetId: target.assetId, versionId: target.currentVersionId, fileName: "coal-tracker.csv" }]);
+
+  const updated = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-agent-managed-update",
+    executor: async () => ({ content: { type: "text" as const, text: "已更新" }, finished: true, data: {
+      summary: "已补充本周煤价。",
+      stagedOutput: { operation: "update", assetId: target.assetId, fileName: "coal-tracker.csv", mimeType: "text/csv", base64: Buffer.from("week,price\n2026-W31,700\n2026-W32,705\n").toString("base64") },
+    } }),
+  });
+  assert.equal(updated.run.status, "succeeded");
+  assert.equal(updated.run.outputAssetId, target.assetId);
+  const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
+  assert.equal(current.bytes.toString(), "week,price\n2026-W31,700\n2026-W32,705\n");
+});
+
 test("generic runner pushes idempotently and does not commit malformed output", async () => {
   const { automation } = await fixture;
   const runner = await import("../src/services/generic-automation-runner.js");
@@ -266,10 +327,72 @@ test("generic latest update uses the head read at run start and advances it once
     taskId: task.taskId,
     origin: "scheduled",
     idempotencyKey: "generic-run-update-conflict-once",
-    executor: async () => ({ content: { type: "text" as const, text: "generated" }, finished: true, data: { stagedOutput: { fileName: "generic-update.csv", mimeType: "text/csv", base64: Buffer.from("code,price\n600519,1520\n").toString("base64") } } }),
+    executor: async () => ({ content: { type: "text" as const, text: "generated" }, finished: true, data: { stagedOutput: { assetId: target.assetId, fileName: "generic-update.csv", mimeType: "text/csv", base64: Buffer.from("code,price\n600519,1520\n").toString("base64") } } }),
   });
   assert.equal(result.run.status, "succeeded");
   const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
   assert.notEqual(current.descriptor.versionId, changed.currentVersionId);
   assert.equal(current.bytes.toString(), "code,price\n600519,1520\n");
+});
+
+test("bound update task may finish without changing its file and exposes its exact target to the executor", async () => {
+  const { automation, assets } = await fixture;
+  const target = await assets.createUserAsset({ ...scope, name: "海运模板", fileName: "shipping.csv", mimeType: "text/csv", bytes: Buffer.from("date,index\n") });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-update-unchanged",
+    name: "维护海运模板",
+    instruction: "有数据时维护文件，没有数据时说明原因。",
+    schedule: schedule(),
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-update-unchanged-once",
+    executor: async (input) => {
+      assert.deepEqual(input.writableTargets, [{ assetId: target.assetId, versionId: target.currentVersionId, fileName: "shipping.csv", mimeType: "text/csv" }]);
+      return { content: { type: "text" as const, text: "暂无可核验报价。" }, finished: true, data: { summary: "暂无可核验报价，未更新文件。" } };
+    },
+  });
+  assert.equal(result.run.status, "succeeded");
+  assert.equal(result.run.outputAssetId, null);
+  const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
+  assert.equal(current.descriptor.versionId, target.currentVersionId);
+});
+
+test("generic runner preserves a retryable ACP capacity failure", async () => {
+  const { automation } = await fixture;
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-model-capacity",
+    name: "模型容量测试",
+    instruction: "生成摘要。",
+    schedule: schedule(),
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-model-capacity-once",
+    executor: async () => ({
+      content: { type: "text" as const, text: "模型服务暂时繁忙。" },
+      finished: true,
+      data: {
+        executionStatus: "failed",
+        executionErrorCode: "TASK_MODEL_CAPACITY",
+        executionErrorCategory: "transient",
+        executionRetryable: true,
+      },
+    }),
+  });
+  assert.equal(result.run.status, "failed");
+  assert.equal(result.run.errorCategory, "transient");
+  assert.equal(result.run.retryable, true);
+  assert.match(result.run.errorMessage || "", /模型服务暂时繁忙/);
 });

@@ -6,13 +6,7 @@ import type { AcpMessage, AcpResponse } from "../acp/protocol.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { enqueuePushJob } from "./push-queue.js";
 import {
-  appendConversationMessage,
-  createConversationSession,
-  type ConversationMessageRecord,
-} from "./conversation-log.js";
-import {
   assertAutomationTaskRunLease,
-  bindAutomationTaskRunConversation,
   bindAutomationTaskRunAssets,
   claimAutomationTaskRun,
   finalizeAutomationTaskRunInTransaction,
@@ -24,6 +18,7 @@ import {
   type AutomationTaskRecord,
   type AutomationTaskRunRecord,
 } from "./automation-tasks.js";
+import { classifyTaskError, executionResponseError, type TaskErrorInfo } from "./task-execution.js";
 import {
   createUserAsset,
   getUserAsset,
@@ -39,16 +34,29 @@ export type GenericAutomationExecutor = (input: {
   run: AutomationTaskRunRecord;
   stagingPath: string;
   inputs: UserAssetBytes[];
+  writableTargets: Array<NonNullable<ResolvedOutput>>;
 }) => Promise<AcpResponse>;
 
 export type GenericAutomationRunResult = {
   run: AutomationTaskRunRecord;
   conversationId?: string;
-  assistantMessage?: ConversationMessageRecord;
   task: AutomationTaskRecord;
 };
 
 type ResolvedOutput = { assetId: string; versionId: string; fileName: string; mimeType: string } | null;
+type ResolvedBindings = {
+  inputs: UserAssetBytes[];
+  output: ResolvedOutput;
+  agentUpdateTargets: Map<string, NonNullable<ResolvedOutput>>;
+  writableTargets: Array<NonNullable<ResolvedOutput>>;
+};
+
+class AutomationExecutionFailure extends Error {
+  constructor(readonly taskError: TaskErrorInfo) {
+    super(taskError.internalReason);
+    this.name = "AutomationExecutionFailure";
+  }
+}
 
 export async function runGenericAutomationTaskNow(input: {
   scope: AutomationScope;
@@ -73,32 +81,16 @@ export async function runGenericAutomationTaskNow(input: {
     return { run, conversationId: run.conversationId || undefined, task };
   }
 
-  const conversationId = input.origin === "manual" ? `automation-${run.runId}` : undefined;
-  if (conversationId) {
-    createConversationSession({
-      scope: { ...input.scope, assistantId: input.scope.instanceId },
-      conversationId,
-      channel: "web",
-      title: `自动化：${task.revision.name} - 手动运行`,
-      metadata: { taskId: task.taskId, taskRevision: task.currentRevision, runId: run.runId, origin: "automation_manual" },
-    });
-    bindAutomationTaskRunConversation({ ...input.scope, runId: run.runId, conversationId });
-    appendConversationMessage({
-      scope: { ...input.scope, assistantId: input.scope.instanceId },
-      conversationId,
-      channel: "web",
-      role: "system",
-      content: `这是一次用户主动发起的通用自动化运行。任务：${task.revision.name}。输入资产和输出策略已绑定到本次运行。`,
-      metadata: { taskId: task.taskId, taskRevision: task.currentRevision, runId: run.runId, origin: "automation_manual" },
-    });
-  }
+  // Running a task for testing is not an instruction to add it to chat
+  // history. The explicit continue-in-chat command owns that transition.
+  const conversationId = undefined;
   try {
     const resolved = await resolveBindings(input.scope, task);
     const boundRun = await bindAutomationTaskRunAssets({
       ...input.scope,
       runId: run.runId,
       leaseToken: run.leaseToken,
-      inputs: resolved.inputs.map((item) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId })),
+      inputs: resolved.inputs.map((item) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, fileName: item.descriptor.fileName })),
       outputAssetId: resolved.output?.assetId ?? null,
       outputVersionId: resolved.output?.versionId ?? null,
     });
@@ -113,11 +105,12 @@ export async function runGenericAutomationTaskNow(input: {
         run: boundRun,
         stagingPath,
         inputs: resolved.inputs,
+        writableTargets: resolved.writableTargets,
       });
       assertAcpSucceeded(response);
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
-      const result = normalizeStructuredResult(response, task, resolved.output);
-      const output = await commitOutput(input.scope, task, run, result, resolved.output);
+      const result = normalizeStructuredResult(response, task, resolved);
+      const output = await commitOutput(input.scope, task, run, result, resolved);
       const finished = await finishAutomationTaskRun({
         ...input.scope,
         runId: run.runId,
@@ -131,29 +124,19 @@ export async function runGenericAutomationTaskNow(input: {
       });
       const delivered = await deliverResult(input.scope, task, finished, result);
       const finalRun = delivered.run;
-      const assistantMessage = conversationId
-        ? appendConversationMessage({
-            scope: { ...input.scope, assistantId: input.scope.instanceId },
-            conversationId,
-            channel: "web",
-            role: "assistant",
-            content: result.summary,
-            traceId: run.runId,
-            requestId: run.runId,
-            metadata: { taskId: task.taskId, taskRevision: task.currentRevision, runId: run.runId, origin: "automation_manual", outputAssetId: finalRun.outputAssetId },
-          })
-        : undefined;
       return {
         run: finalRun,
         conversationId,
-        assistantMessage,
         task,
       };
     } finally {
       await rm(stagingPath, { recursive: true, force: true });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const classified = error instanceof AutomationExecutionFailure ? error.taskError : classifyTaskError(error);
+    const message = error instanceof AutomationExecutionFailure
+      ? classified.userMessage
+      : error instanceof Error ? error.message : String(error);
     let failed: AutomationTaskRunRecord;
     try {
       failed = await finishAutomationTaskRun({
@@ -162,43 +145,53 @@ export async function runGenericAutomationTaskNow(input: {
         leaseToken: run.leaseToken,
         status: "failed",
         errorMessage: message,
+        errorCategory: classified.category,
+        retryable: classified.retryable,
         traceId: run.runId,
       });
     } catch {
       const current = await (await import("./automation-tasks.js")).getAutomationTaskRun({ ...input.scope, runId: run.runId });
       failed = current || run;
     }
-    if (conversationId) {
-      appendConversationMessage({
-        scope: { ...input.scope, assistantId: input.scope.instanceId },
-        conversationId,
-        channel: "web",
-        role: "assistant",
-        content: "这次通用自动化运行失败了，请查看运行详情中的错误并重试。",
-        status: "failed",
-        traceId: run.runId,
-        requestId: run.runId,
-        metadata: { taskId: task.taskId, taskRevision: task.currentRevision, runId: run.runId, origin: "automation_manual", error: message.slice(0, 500) },
-      });
-    }
     return { run: failed, conversationId, task };
   }
 }
 
-async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecord): Promise<{ inputs: UserAssetBytes[]; output: ResolvedOutput }> {
+async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecord): Promise<ResolvedBindings> {
   const inputs: UserAssetBytes[] = [];
+  const agentUpdateTargets = new Map<string, NonNullable<ResolvedOutput>>();
   for (const binding of task.revision.inputs) {
     const asset = await getUserAsset({ ...scope, assetId: binding.assetId });
     if (!asset || asset.status !== "active" || !asset.currentVersionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", binding.assetId);
     const versionId = binding.versionPolicy === "fixed" ? binding.versionId! : asset.currentVersionId;
     try {
-      inputs.push(await readUserAssetVersion({ ...scope, assetId: asset.assetId, versionId }));
+      const input = await readUserAssetVersion({ ...scope, assetId: asset.assetId, versionId });
+      inputs.push(input);
+      if (
+        task.revision.output.mode === "agent" &&
+        binding.versionPolicy === "latest" &&
+        ["markdown", "csv", "xlsx"].includes(input.descriptor.format)
+      ) {
+        agentUpdateTargets.set(asset.assetId, {
+          assetId: asset.assetId,
+          versionId: input.descriptor.versionId,
+          fileName: input.descriptor.fileName,
+          mimeType: input.descriptor.mimeType,
+        });
+      }
     } catch (error) {
       if (error instanceof UserAssetError) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", binding.assetId);
       throw error;
     }
   }
-  if (task.revision.output.mode !== "update") return { inputs, output: null };
+  if (task.revision.output.mode !== "update") {
+    return {
+      inputs,
+      output: null,
+      agentUpdateTargets,
+      writableTargets: [...agentUpdateTargets.values()],
+    };
+  }
   const asset = await getUserAsset({ ...scope, assetId: task.revision.output.assetId });
   if (!asset || asset.status !== "active" || !asset.currentVersion) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", task.revision.output.assetId);
   // `latest` means every run takes the head it actually read as its CAS
@@ -206,7 +199,8 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
   // future runs to an obsolete head after the first successful commit.
   const versionId = asset.currentVersionId;
   if (!versionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", asset.assetId);
-  return { inputs, output: { assetId: asset.assetId, versionId, fileName: asset.currentVersion.fileName, mimeType: asset.currentVersion.mimeType } };
+  const output = { assetId: asset.assetId, versionId, fileName: asset.currentVersion.fileName, mimeType: asset.currentVersion.mimeType };
+  return { inputs, output, agentUpdateTargets, writableTargets: [output] };
 }
 
 async function createStagingPath(scope: AutomationScope): Promise<string> {
@@ -227,9 +221,11 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       text: [
         "执行一个受控的通用自动化任务。",
         `任务说明：${input.task.revision.instruction}`,
-        `输入资产数量：${input.inputs.length}。输入仅位于受控 inputs 目录。`,
-        `输出策略：${JSON.stringify(input.task.revision.output)}`,
-        "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{fileName,mimeType,base64}, shouldNotify?:boolean}。output 不是 none 时 stagedOutput 必填；不得返回物理路径或调用写入工具。",
+        `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
+        `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
+        "需要读取绑定文件时，直接使用上述 assetId 调用 assets.version.read；不要用 assets.list 猜测或替换任务对象。其他“我的文件”仅可作为参考，绝不能作为本次更新输出目标。",
+        "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
+        "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64}, shouldNotify?:boolean}。更新绑定文件时提供 operation='update'、对应 assetId 和完整文件内容；仅在任务确有必要新建文件时提供 operation='create'。不得返回物理路径或调用写入工具。",
       ].join("\n"),
     },
     context: {
@@ -269,15 +265,14 @@ function parseStructuredAcpResponse(response: AcpResponse): AcpResponse {
 }
 
 function assertAcpSucceeded(response: AcpResponse): void {
-  if (response.data?.executionStatus === "failed") {
-    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", String(response.data.executionErrorCode || "ACP_TURN_FAILED"));
-  }
+  const error = executionResponseError(response);
+  if (error) throw new AutomationExecutionFailure(error);
 }
 
-function normalizeStructuredResult(response: AcpResponse, task: AutomationTaskRecord, output: ResolvedOutput): {
+function normalizeStructuredResult(response: AcpResponse, task: AutomationTaskRecord, resolved: ResolvedBindings): {
   summary: string;
   shouldNotify: boolean;
-  stagedOutput?: { fileName: string; mimeType?: string; base64: string };
+  stagedOutput?: { operation: "create" | "update"; assetId?: string; fileName: string; mimeType?: string; base64: string };
 } {
   const data = response.data && typeof response.data === "object" ? response.data : {};
   const summaryValue = typeof data.summary === "string" ? data.summary : response.content.text;
@@ -293,25 +288,47 @@ function normalizeStructuredResult(response: AcpResponse, task: AutomationTaskRe
     if (stagedRaw !== undefined) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "none output cannot include stagedOutput");
     return { summary: summary || "自动化运行完成。", shouldNotify };
   }
-  if (!stagedRaw || typeof stagedRaw !== "object") throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput is required");
+  if (!stagedRaw || typeof stagedRaw !== "object") {
+    if (task.revision.output.mode === "create") {
+      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput is required for a required file");
+    }
+    return { summary: summary || "自动化运行完成，未修改文件。", shouldNotify };
+  }
   const staged = stagedRaw as Record<string, unknown>;
   const fileName = String(staged.fileName || "").trim();
   const base64 = typeof staged.base64 === "string" ? staged.base64 : typeof staged.bytesBase64 === "string" ? staged.bytesBase64 : "";
   if (!fileName || !isStrictBase64(base64)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput fileName/base64 is invalid");
+  const operation = task.revision.output.mode === "agent"
+    ? staged.operation
+    : task.revision.output.mode;
+  if (operation !== "create" && operation !== "update") {
+    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput operation is invalid");
+  }
+  const assetId = typeof staged.assetId === "string" ? staged.assetId : undefined;
   if (task.revision.output.mode === "create" && fileName !== task.revision.output.fileName) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput fileName does not match output policy");
-  if (task.revision.output.mode === "update" && (!output || fileName !== output.fileName)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput fileName does not match update target");
-  return { summary: summary || "自动化运行完成。", shouldNotify, stagedOutput: { fileName, mimeType: typeof staged.mimeType === "string" ? staged.mimeType : undefined, base64 } };
+  if (task.revision.output.mode === "update" && (!resolved.output || assetId !== resolved.output.assetId || fileName !== resolved.output.fileName)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
+  if (task.revision.output.mode === "agent" && operation === "update") {
+    const target = assetId ? resolved.agentUpdateTargets.get(assetId) : undefined;
+    if (!target || fileName !== target.fileName) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
+  }
+  return { summary: summary || "自动化运行完成。", shouldNotify, stagedOutput: { operation, ...(assetId ? { assetId } : {}), fileName, mimeType: typeof staged.mimeType === "string" ? staged.mimeType : undefined, base64 } };
 }
 
-async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: ReturnType<typeof normalizeStructuredResult>, resolved: ResolvedOutput): Promise<{ assetId: string; versionId: string; checksum: string } | null> {
+async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: ReturnType<typeof normalizeStructuredResult>, resolved: ResolvedBindings): Promise<{ assetId: string; versionId: string; checksum: string } | null> {
   if (!result.stagedOutput || task.revision.output.mode === "none") return null;
   const bytes = Buffer.from(result.stagedOutput.base64, "base64");
   const idempotencyKey = `automation:${run.runId}:output`;
   try {
-    const descriptor = task.revision.output.mode === "create"
+    const isCreate = task.revision.output.mode === "create" || result.stagedOutput.operation === "create";
+    const target = task.revision.output.mode === "update"
+      ? resolved.output
+      : result.stagedOutput.assetId
+        ? resolved.agentUpdateTargets.get(result.stagedOutput.assetId)
+        : undefined;
+    const descriptor = isCreate
       ? await createUserAsset({
           ...scope,
-          name: task.revision.output.titleTemplate || task.revision.name,
+          name: task.revision.output.mode === "create" ? task.revision.output.titleTemplate || task.revision.name : task.revision.name,
           fileName: result.stagedOutput.fileName,
           mimeType: result.stagedOutput.mimeType,
           bytes,
@@ -328,11 +345,11 @@ async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, 
         })
       : await uploadUserAssetVersion({
           ...scope,
-          assetId: task.revision.output.assetId,
+          assetId: target!.assetId,
           fileName: result.stagedOutput.fileName,
           mimeType: result.stagedOutput.mimeType,
           bytes,
-          expectedVersionId: resolved?.versionId,
+          expectedVersionId: target!.versionId,
           source: "automation",
           taskId: task.taskId,
           runId: run.runId,
