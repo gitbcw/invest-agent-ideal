@@ -9,6 +9,9 @@ import { recordArtifactEvent, recordArtifactLibraryListEvent } from "./artifact-
 import { withArtifactPathLock } from "./artifact-path-lock.js";
 import { getCurrentTurnId } from "./conversation-turns.js";
 import { recordFileLifecycleEvent } from "./file-lifecycle-audit.js";
+import { registerReportAssetMappingUnderScopeLock } from "./report-asset-mappings.js";
+import { withResourceMutationLock } from "./resource-mutation-lock.js";
+import { scopeStorageLockKey } from "./user-storage-quota.js";
 
 export const ARTIFACT_PREVIEWABLE_MIME_TYPES = [
   "image/svg+xml",
@@ -88,6 +91,8 @@ const MAX_INLINE_BYTES = 15 * 1024 * 1024;
 const MAX_HTML_BYTES = 1 * 1024 * 1024;
 const REPORT_ROOT = "reports";
 const CONFIG_ROOT = "config";
+/** Service-delivery staging area. It is never a user-managed library. */
+const DELIVERY_ROOT = "deliveries";
 
 /**
  * Boundary for the durable library. A file at most this many bytes can be
@@ -166,8 +171,9 @@ export interface ArtifactRetentionClassification {
 
 /**
  * Determines retention for a freshly published artifact from deterministic
- * service-layer signals only: source, relative path, size, MIME and the
- * curated directory list. Never asks the model. Returns `null` when the row
+ * service-layer signals only: source, explicit persistence intent, path, size,
+ * and MIME. A workspace path alone must not turn an ordinary chat deliverable
+ * into a permanent user file. Returns `null` when the row
  * should keep its pre-migration behaviour (e.g. legacy_path records).
  */
 export function classifyArtifactRetention(input: {
@@ -175,6 +181,7 @@ export function classifyArtifactRetention(input: {
   relativePath: string;
   sizeBytes: number;
   mimeType: string;
+  saveToMyFiles?: boolean;
   now?: Date;
 }): ArtifactRetentionClassification | null {
   const now = input.now ?? new Date();
@@ -189,10 +196,14 @@ export function classifyArtifactRetention(input: {
   const origin: ArtifactOrigin = input.source === "reviews.save" || input.source === "artifacts.publish" ? "assistant" : "system";
   const normalizedPath = input.relativePath.replace(/^\/+/, "");
   const withinCuratedDir = isWithinCuratedLibraryDirectory(normalizedPath);
-  const formallyPublishedReport = input.source === "artifacts.publish" && normalizedPath.startsWith("reports/");
+  const formallyPublishedReport = input.source === "reviews.save"
+    || (input.source === "artifacts.publish" && input.saveToMyFiles === true)
+    // Backfill is migration-only handling for records that predate explicit
+    // save intent; it must not change new chat publication semantics.
+    || (input.source === "workspace_backfill" && withinCuratedDir);
   const mimeAllowed = DURABLE_LIBRARY_MIME_TYPES.has(input.mimeType);
   const withinDurableSize = input.sizeBytes <= DURABLE_LIBRARY_MAX_BYTES;
-  if ((withinCuratedDir || formallyPublishedReport) && mimeAllowed && withinDurableSize) {
+  if (formallyPublishedReport && mimeAllowed && withinDurableSize) {
     return {
       origin,
       retentionClass: "durable_library",
@@ -236,6 +247,11 @@ export interface ConversationArtifact {
 export interface ConversationArtifactRecord extends ConversationArtifact {
   userId: string;
   instanceId: string;
+  projectId: string;
+  assistantId: string;
+  conversationId: string | null;
+  messageId: string | null;
+  source: ConversationArtifactScope["source"];
   relativePath: string;
   scope: ConversationArtifactScope;
   turnId?: string | null;
@@ -290,6 +306,8 @@ export interface PublishArtifactInput {
   relativePath: string;
   kind?: ConversationArtifact["kind"];
   title?: string;
+  /** Explicit user-requested promotion into My Files. Normal chat deliverables stay transient. */
+  saveToMyFiles?: boolean;
   idempotencyKey?: string;
   assetId?: string | null;
   versionId?: string | null;
@@ -501,6 +519,7 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     relativePath,
     sizeBytes,
     mimeType,
+    saveToMyFiles: input.saveToMyFiles,
   });
 
   const record: ConversationArtifactRecord = {
@@ -515,6 +534,11 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     checksum,
     userId: input.userId,
     instanceId: input.instanceId,
+    projectId: scope.projectId,
+    assistantId: scope.assistantId,
+    conversationId: scope.conversationId ?? null,
+    messageId: scope.messageId ?? null,
+    source: scope.source,
     relativePath,
     scope,
     turnId,
@@ -526,8 +550,7 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
     expiresAt: classification?.expiresAt ?? null,
   };
 
-  try {
-    sqlite
+  const insertArtifact = () => sqlite
       .prepare(
         `INSERT INTO conversation_artifacts (
          artifact_id, user_id, instance_id, project_id, assistant_id,
@@ -587,6 +610,30 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
         visibility: classification?.visibility ?? null,
         expiresAt: classification?.expiresAt ?? null,
       });
+
+  const isMappedReport = classification?.retentionClass === "durable_library" && kind === "report";
+  try {
+    if (isMappedReport) {
+      const storageScope = { userId: input.userId, projectId: scope.projectId, instanceId: input.instanceId };
+      await withResourceMutationLock(storageScope, scopeStorageLockKey(storageScope), async () => {
+        sqlite.transaction(() => {
+          insertArtifact();
+          registerReportAssetMappingUnderScopeLock({
+            ...storageScope,
+            reportId: artifactId,
+            title,
+            fileName,
+            mimeType,
+            sizeBytes,
+            backingAssetId: input.assetId ?? null,
+            backingVersionId: input.versionId ?? null,
+            readPath: relativePath,
+          });
+        })();
+      });
+    } else {
+      insertArtifact();
+    }
   } catch (error) {
     if (idempotencyKey && isUniqueConstraint(error)) {
       const existing = existingArtifactForIdempotencyKey({
@@ -1188,7 +1235,7 @@ function requireRecord(row: ConversationArtifactRecord | undefined): Conversatio
 function normalizeArtifactPath(value: string) {
   const normalized = value.trim().replace(/\\/g, "/");
   const root = normalized.split("/", 1)[0] ?? "";
-  if (!normalized || path.posix.isAbsolute(normalized) || ![REPORT_ROOT, CONFIG_ROOT].includes(root)) {
+  if (!normalized || path.posix.isAbsolute(normalized) || ![REPORT_ROOT, CONFIG_ROOT, DELIVERY_ROOT].includes(root)) {
     throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", value || "empty");
   }
   const segments = normalized.split("/");

@@ -1,5 +1,7 @@
 # 用户自动化任务交互设计
 
+> 状态：已实现的 CSV/XLSX 文件维护首期设计。新的上位方向是[用户产物库与通用自动化设计](./user-asset-library-and-general-automation-design.md)：自动化不再强制绑定文件，长期用户产物由独立资产库管理。本文件保留为旧任务兼容和既有实现的参考，不应作为新自动化能力的唯一设计输入。
+
 ## 背景与目标
 
 本设计新增独立的用户自动化任务能力，不改变现有日、周、月复盘及其 `reviews.save`、推送和留存契约。
@@ -70,24 +72,22 @@ Excel/CSV 不依赖当前 Workspace 浏览器展示。自动化详情直接提�
 1. 用户填写任务名称、执行时间和任务说明，上传一份文件。
 2. 用户点击“创建任务”。服务创建 `paused` 的任务版本，持久化到数据库，并将上传附件复制到任务目录的 `source/` 与 `working/`。
 3. Portal 进入任务详情页。用户可以点击“立即运行一次”。
-4. 实际运行成功后，Portal 显示工作文件、修改摘要与本次会话入口。用户确认结果符合预期后点击“启用定时执行”。
+4. 实际运行成功后，Portal 在运行详情中显示工作文件、修改摘要与“在对话中继续”入口。用户确认结果符合预期后点击“启用定时执行”。
 5. 启用后的自动运行不需要每次再次确认；编辑任务后生成新版本，并要求用户重新启用该版本。
 
 失败并不自动启用任务。任务详情明确显示失败原因和“再次立即运行”的入口。
 
-## 手动运行：执行会话
+## 测试运行：运行历史，不创建普通会话
 
-点击“立即运行一次”必须创建一个新的 Portal 会话，而不是在当前聊天或某个隐藏后台会话中执行。
+点击“立即运行一次”只创建一条运行记录，不在 Portal 普通会话列表中创建会话。这样测试运行、计划运行和微信投递都不会污染用户的聊天历史。
 
-- 会话标题：`自动化：<任务名称> - 手动运行`。
-- 会话 metadata 绑定 `taskId`、`taskRevision`、`runId`、`origin=automation_manual`。
-- 首条可见消息说明这是一次用户主动的实际运行，并附任务说明、输入文件与目标工作文件的简洁描述。
-- 助手在此会话中执行任务，回复本次结果、已更新文件和可继续处理的事项。文件产物以卡片或下载入口附在助手结果上。
-- 用户可以在该会话继续问结果、要求解释、要求调整当前工作文件；但“修改定时任务的规则、时间、文件绑定或启停”必须回到任务编辑页，生成新的任务版本，不能从聊天文本自动生效。
+- 运行详情显示本次任务、文件产物、结果摘要、错误与投递状态。
+- 用户可在运行详情中选择“在对话中继续”，该操作才创建一条新会话。
+- 在该会话中，用户可以继续问结果、要求解释、要求调整当前工作文件；但“修改定时任务的规则、时间、文件绑定或启停”必须回到任务编辑页，生成新的任务版本，不能从聊天文本自动生效。
 
 Portal 可以展示少量确定性执行状态，例如“正在读取文件”“正在生成更新”“已写入工作文件”“运行失败”。不得把模型的内部推理、完整工具调用、token 或服务路径当作聊天内容展示。
 
-手动会话的价值是互动，而不是充当任务的永久记忆。每次用户点击“立即运行一次”都创建新会话，保证结果能绑定到单一的输入文件版本和任务版本。
+运行记录是任务执行的永久事实；交互会话是用户主动选择的后续讨论入口。两者通过同一个 `runId` 关联，但只在用户显式继续对话后才创建会话。
 
 ## 自动运行：运行历史，不创建普通会话
 
@@ -113,7 +113,7 @@ Portal 可以展示少量确定性执行状态，例如“正在读取文件”�
 - 用户难以区分“查看一次历史执行”与“继续对话并可能产生新副作用”。
 - 后台最小权限会话与交互式会话的权限边界变得模糊。
 
-因此推荐的映射是：**一次手动运行对应一个可对话会话；一次自动运行对应一条可展开的运行记录。** 两者均绑定同一个 `runId`，互相可跳转，但不是同一种对象。
+因此推荐的映射是：**每次运行对应一条可展开的运行记录；只有用户选择继续时，才创建一个可对话会话。** 两者均绑定同一个 `runId`，但不是同一种对象。
 
 ## 运行状态
 
@@ -166,11 +166,11 @@ Cloud Portal 只负责交互，不能直接访问本地 Workspace 或充当任�
 
 Executor prompt:
 
-Implement the automation-task capability described in this document. Preserve the current review scheduler and publication contract. Make the database task/run records, Portal connector contract, task-owned Workspace asset lifecycle, run-now conversation bridge, and scheduled-run history agree on one `taskId`, version, and `runId`. Treat every cross-user or path escape as a hard failure. Add contract tests for the acceptance criteria.
+Implement the automation-task capability described in this document. Preserve the current review scheduler and publication contract. Make the database task/run records, Portal connector contract, task-owned Workspace asset lifecycle, explicit continue-in-chat bridge, and scheduled-run history agree on one `taskId`, version, and `runId`. Treat every cross-user or path escape as a hard failure. Add contract tests for the acceptance criteria.
 
 Reviewer prompt:
 
-Review the implementation against this document. Verify especially that manual runs open a bound interactive conversation while scheduled runs only create run history, task assets survive attachment cleanup, task definition changes are versioned and explicit, and existing review scheduling remains unchanged.
+Review the implementation against this document. Verify especially that every run only creates run history until the user explicitly continues in chat, task assets survive attachment cleanup, task definition changes are versioned and explicit, and existing review scheduling remains unchanged.
 
 ### 验收 v1 · 2026-08-05
 - 验收范围：本设计“验收标准”的全部九项，以及其声明的首期边界。

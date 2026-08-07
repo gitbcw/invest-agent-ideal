@@ -94,6 +94,61 @@ test("publishes and reads a valid mg-shaped markdown report", async () => {
   assert.equal(Buffer.from(read.payload.base64, "base64").toString("utf8"), VALID_MG_MARKDOWN);
 });
 
+test("daily, weekly and monthly reports atomically create quota-counted mappings", async () => {
+  const { workspaceRoot, mod, sqlite } = await getCtx();
+  const userId = "mapped-report-user";
+  const instanceId = "mapped-report-instance";
+  const projectId = "mapped-report-project";
+  const contents = ["# daily\n", "# weekly\n", "# monthly\n"];
+  const paths = ["reports/daily/2026-08-06.md", "reports/weekly/2026-W32.md", "reports/monthly/2026-08.md"];
+  const sources = ["reviews.save", "artifacts.publish", "artifacts.publish"] as const;
+  for (let index = 0; index < paths.length; index += 1) {
+    const target = path.join(workspaceRoot, userId, paths[index]);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, contents[index]);
+    await mod.publishConversationArtifact({
+      userId,
+      instanceId,
+      relativePath: paths[index],
+      saveToMyFiles: sources[index] === "artifacts.publish",
+      scope: { projectId, assistantId: instanceId, source: sources[index] },
+    });
+  }
+  const mappings = sqlite.prepare(
+    "SELECT report_id AS reportId, size_bytes AS sizeBytes, read_path AS readPath FROM report_asset_mappings WHERE user_id = ? AND project_id = ? AND instance_id = ? ORDER BY read_path",
+  ).all(userId, projectId, instanceId) as Array<{ reportId: string; sizeBytes: number; readPath: string }>;
+  assert.deepEqual(mappings.map((item) => item.readPath), [...paths].sort());
+  assert.equal(mappings.reduce((sum, item) => sum + item.sizeBytes, 0), contents.reduce((sum, item) => sum + Buffer.byteLength(item), 0));
+});
+
+test("report quota failure rolls back the artifact row, mapping and reservation", async () => {
+  const { workspaceRoot, mod, sqlite } = await getCtx();
+  const userId = "mapped-report-full-user";
+  const instanceId = "mapped-report-full-instance";
+  const projectId = "mapped-report-full-project";
+  const relativePath = "reports/daily/over-quota.md";
+  const target = path.join(workspaceRoot, userId, relativePath);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "# over quota\n");
+  sqlite.prepare(
+    `INSERT INTO user_asset_versions (version_id,asset_id,user_id,project_id,instance_id,version_number,file_name,format,mime_type,size_bytes,checksum,storage_path,source,created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run("version_report_full", "asset_report_full", userId, projectId, instanceId, 1, "full.md", "markdown", "text/markdown", 200 * 1024 * 1024, "checksum", "assets/full.md", "system", new Date().toISOString());
+  await assert.rejects(
+    () => mod.publishConversationArtifact({
+      userId,
+      instanceId,
+      relativePath,
+      saveToMyFiles: true,
+      scope: { projectId, assistantId: instanceId, source: "artifacts.publish" },
+    }),
+    (error: unknown) => (error as { code?: string }).code === "USER_STORAGE_QUOTA_EXCEEDED",
+  );
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS count FROM conversation_artifacts WHERE user_id = ? AND instance_id = ?").get(userId, instanceId) as { count: number }).count, 0);
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS count FROM report_asset_mappings WHERE user_id = ? AND project_id = ? AND instance_id = ?").get(userId, projectId, instanceId) as { count: number }).count, 0);
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS count FROM user_storage_reservations WHERE user_id = ? AND project_id = ? AND instance_id = ? AND status = 'active'").get(userId, projectId, instanceId) as { count: number }).count, 0);
+});
+
 test("publishes and reads a user-owned YAML config artifact without changing bytes", async () => {
   const { workspaceUserA, mod } = await getCtx();
   const relativePath = "config/portfolio.yaml";
@@ -703,6 +758,7 @@ test("publishes and reads a safe HTML document with html preview mode and stable
     userId: "user-a",
     instanceId: "user-a",
     relativePath,
+    saveToMyFiles: true,
     scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "conv-html" },
   });
   assert.equal(record.mimeType, "text/html");
@@ -935,6 +991,9 @@ async function publishLibraryMarkdown(
     userId: input.userId,
     instanceId: input.instanceId,
     relativePath: input.relativePath,
+    // The library fixture represents a user-persisted artifact. Legacy rows
+    // deliberately remain excluded from the library.
+    saveToMyFiles: input.source !== "legacy_path",
     scope: {
       projectId: "invest-agent",
       assistantId: input.instanceId,
@@ -1028,19 +1087,19 @@ test("library list admits images, pdf, text and table as downloadable/lightbox i
   const workspace = path.join(ctx.workspaceRoot, userId);
   const svgTarget = path.join(workspace, "reports", "daily", "chart.svg");
   await writeFile(svgTarget, VALID_SVG);
-  const svg = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/chart.svg", scope });
+  const svg = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/chart.svg", saveToMyFiles: true, scope });
 
   const pdfTarget = path.join(workspace, "reports", "daily", "doc.pdf");
   await writeFile(pdfTarget, Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\n"));
-  const pdf = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/doc.pdf", scope });
+  const pdf = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/doc.pdf", saveToMyFiles: true, scope });
 
   const txtTarget = path.join(workspace, "reports", "daily", "notes.txt");
   await writeFile(txtTarget, "plain text");
-  const txt = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/notes.txt", scope });
+  const txt = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/notes.txt", saveToMyFiles: true, scope });
 
   const csvTarget = path.join(workspace, "reports", "daily", "table.csv");
   await writeFile(csvTarget, "a,b\n1,2\n");
-  const csv = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/table.csv", scope });
+  const csv = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/table.csv", saveToMyFiles: true, scope });
 
   const result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
   const ids = result.items.map((item) => item.artifactId).sort();

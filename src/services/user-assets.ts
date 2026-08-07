@@ -7,6 +7,18 @@ import { resolveWorkspacePath } from "../lib/workspace.js";
 import { withResourceMutationLock } from "./resource-mutation-lock.js";
 import { validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
 import { recordFileLifecycleEvent } from "./file-lifecycle-audit.js";
+import {
+  assertCommittedBytesWithinQuota,
+  commitStorageReservation,
+  recordStorageCommit,
+  releaseStorageReservation,
+  reserveStorage,
+  scopeStorageLockKey,
+  USER_ASSET_MAX_BYTES,
+} from "./user-storage-quota.js";
+import { normalizeImageBytes } from "./image-normalization.js";
+import { UserAssetError } from "./user-asset-error.js";
+export { UserAssetError } from "./user-asset-error.js";
 
 export type AssetFormat = "markdown" | "html" | "csv" | "xlsx" | "pdf" | "png" | "jpeg" | "webp" | "svg";
 export type UserAssetStatus = "active" | "archived";
@@ -61,17 +73,6 @@ export type UserAssetMutationSource = {
   finalizeRun?: FinalizeAutomationRun;
 };
 
-export class UserAssetError extends Error {
-  readonly code: string;
-  readonly details?: Record<string, unknown>;
-  constructor(code: string, message: string, details?: Record<string, unknown>) {
-    super(code + ":" + message);
-    this.name = "UserAssetError";
-    this.code = code;
-    this.details = details;
-  }
-}
-
 type AssetRow = {
   assetId: string; userId: string; projectId: string; instanceId: string; name: string;
   status: string; currentVersionId: string | null; archivedAt: string | null;
@@ -110,9 +111,9 @@ const VERSION_COLUMNS = [
   "idempotency_fingerprint AS idempotencyFingerprint", "created_at AS createdAt",
 ].join(", ");
 const MAX_BYTES: Record<AssetFormat, number> = {
-  markdown: 15 * 1024 * 1024, html: 1 * 1024 * 1024, csv: 25 * 1024 * 1024,
-  xlsx: 25 * 1024 * 1024, pdf: 15 * 1024 * 1024, png: 15 * 1024 * 1024,
-  jpeg: 15 * 1024 * 1024, webp: 15 * 1024 * 1024, svg: 15 * 1024 * 1024,
+  markdown: USER_ASSET_MAX_BYTES, html: USER_ASSET_MAX_BYTES, csv: USER_ASSET_MAX_BYTES,
+  xlsx: USER_ASSET_MAX_BYTES, pdf: USER_ASSET_MAX_BYTES, png: USER_ASSET_MAX_BYTES,
+  jpeg: USER_ASSET_MAX_BYTES, webp: USER_ASSET_MAX_BYTES, svg: USER_ASSET_MAX_BYTES,
 };
 const MIME_BY_FORMAT: Record<AssetFormat, string[]> = {
   markdown: ["text/markdown", "text/plain"], html: ["text/html"],
@@ -145,26 +146,30 @@ export async function createUserAsset(input: AssetScope & {
   const idempotencyFingerprint = fingerprint("asset.create", {
     name, fileName: normalized.fileName, mimeType: normalized.mimeType, checksum: normalized.checksum, source,
   });
+  // Pre-lock fast path: a genuine replay can return without contending for the
+  // scope lock. This read is racy under concurrency, so an authoritative
+  // recheck is repeated inside the lock below before any write.
   if (idempotencyKey) {
-    const old = sqlite.prepare(
-      "SELECT asset_id AS assetId, checksum, source, file_name AS fileName, idempotency_fingerprint AS idempotencyFingerprint FROM user_asset_versions " +
-      "WHERE user_id = ? AND project_id = ? AND instance_id = ? AND idempotency_key = ?",
-    ).get(scope.userId, scope.projectId, scope.instanceId, idempotencyKey) as { assetId?: string; checksum?: string; source?: string; fileName?: string; idempotencyFingerprint?: string | null } | undefined;
-    if (old?.assetId) {
-      if ((old.idempotencyFingerprint && old.idempotencyFingerprint !== idempotencyFingerprint)
-        || (!old.idempotencyFingerprint && (old.checksum !== normalized.checksum || old.source !== source || old.fileName !== normalized.fileName))) {
-        throw new UserAssetError("ASSET_IDEMPOTENCY_CONFLICT", "idempotency key conflict");
-      }
-      return hydrate(requireAsset({ ...scope, assetId: old.assetId }), scope);
-    }
+    const replayed = await resolveIdempotentCreate(scope, idempotencyKey, idempotencyFingerprint, normalized, source);
+    if (replayed) return replayed;
   }
-  const assetId = "asset_" + randomUUID().replaceAll("-", "");
-  return withResourceMutationLock(scope, "user-asset:" + assetId, async () => {
+  return withResourceMutationLock(scope, scopeStorageLockKey(scope), async () => {
+    // Authoritative idempotency recheck inside the scope storage lock. Two
+    // concurrent createUserAsset calls with the same key serialize here: the
+    // loser finds the winner's version and replays it, so both return the same
+    // asset and quota is charged exactly once (no unique-index violation).
+    if (idempotencyKey) {
+      const replayed = await resolveIdempotentCreate(scope, idempotencyKey, idempotencyFingerprint, normalized, source);
+      if (replayed) return replayed;
+    }
+    const assetId = "asset_" + randomUUID().replaceAll("-", "");
     const now = nowIso();
     const versionId = "version_" + randomUUID().replaceAll("-", "");
     const storagePath = assetStoragePath(assetId, versionId, normalized.fileName);
-    const absolute = await stageAndCommit(scope, storagePath, normalized.bytes);
+    const token = reserveStorage(scope, normalized.bytes.length);
+    let staged: string | null = null;
     try {
+      staged = await stageAndCommit(scope, storagePath, normalized.bytes);
       sqlite.transaction(() => {
         assertAutomationMutationLease(scope, source, input);
         sqlite.prepare(
@@ -173,17 +178,48 @@ export async function createUserAsset(input: AssetScope & {
           "VALUES (?,?,?,?,?,'active',?,NULL,?,?)",
         ).run(assetId, scope.userId, scope.projectId, scope.instanceId, name, versionId, now, now);
         insertVersion({ versionId, versionNumber: 1, assetId, scope, normalized, storagePath, source, input, idempotencyKey, idempotencyFingerprint, createdAt: now });
+        assertCommittedBytesWithinQuota(scope, normalized.bytes.length);
+        recordStorageCommit(scope, normalized.bytes.length);
+        commitStorageReservation(scope, token);
         input.finalizeRun?.({ assetId, versionId, checksum: normalized.checksum });
       })();
     } catch (error) {
-      await rm(absolute, { force: true }).catch(() => undefined);
+      if (staged) await rm(staged, { force: true }).catch(() => undefined);
+      releaseStorageReservation(scope, token);
       if (error instanceof UserAssetError) throw error;
       throw new UserAssetError("ASSET_COMMIT_FAILED", "asset creation failed", { cause: errorMessage(error) });
+    } finally {
+      releaseStorageReservation(scope, token);
     }
     const result = await hydrate(requireAsset({ ...scope, assetId }), scope);
     recordAssetLifecycle(scope, assetId, "asset.created", "success", { versionId, source, sizeBytes: normalized.bytes.length });
     return result;
   });
+}
+
+/**
+ * Read-side idempotency resolver shared by the pre-lock fast path and the
+ * in-lock authoritative recheck. Returns the existing asset when an asset
+ * version already holds `idempotencyKey` for this scope, throws on a
+ * fingerprint conflict, and returns null when there is nothing to replay.
+ */
+async function resolveIdempotentCreate(
+  scope: AssetScope,
+  idempotencyKey: string,
+  idempotencyFingerprint: string,
+  normalized: NormalizedInput,
+  source: UserAssetSource,
+): Promise<UserAssetDescriptor | null> {
+  const old = sqlite.prepare(
+    "SELECT asset_id AS assetId, checksum, source, file_name AS fileName, idempotency_fingerprint AS idempotencyFingerprint FROM user_asset_versions " +
+    "WHERE user_id = ? AND project_id = ? AND instance_id = ? AND idempotency_key = ?",
+  ).get(scope.userId, scope.projectId, scope.instanceId, idempotencyKey) as { assetId?: string; checksum?: string; source?: string; fileName?: string; idempotencyFingerprint?: string | null } | undefined;
+  if (!old?.assetId) return null;
+  if ((old.idempotencyFingerprint && old.idempotencyFingerprint !== idempotencyFingerprint)
+    || (!old.idempotencyFingerprint && (old.checksum !== normalized.checksum || old.source !== source || old.fileName !== normalized.fileName))) {
+    throw new UserAssetError("ASSET_IDEMPOTENCY_CONFLICT", "idempotency key conflict");
+  }
+  return hydrate(requireAsset({ ...scope, assetId: old.assetId }), scope);
 }
 
 export async function uploadUserAssetVersion(input: AssetScope & {
@@ -198,7 +234,7 @@ export async function uploadUserAssetVersion(input: AssetScope & {
     assetId, fileName: normalized.fileName, mimeType: normalized.mimeType, checksum: normalized.checksum,
     source, expectedVersionId: input.expectedVersionId ?? null, parentVersionId: input.parentVersionId ?? null,
   });
-  return withResourceMutationLock(scope, "user-asset:" + assetId, async () => {
+  return withResourceMutationLock(scope, ["user-asset:" + assetId, scopeStorageLockKey(scope)], async () => {
     const asset = requireAsset({ ...scope, assetId });
     if (asset.status !== "active") throw new UserAssetError("ASSET_ARCHIVED", assetId);
     if (idempotencyKey) {
@@ -225,8 +261,10 @@ export async function uploadUserAssetVersion(input: AssetScope & {
     ).get(assetId, scope.userId, scope.projectId, scope.instanceId) as { maxVersion?: number }).maxVersion || 0) + 1;
     const versionId = "version_" + randomUUID().replaceAll("-", "");
     const storagePath = assetStoragePath(assetId, versionId, normalized.fileName);
-    const absolute = await stageAndCommit(scope, storagePath, normalized.bytes);
+    const token = reserveStorage(scope, normalized.bytes.length);
+    let staged: string | null = null;
     try {
+      staged = await stageAndCommit(scope, storagePath, normalized.bytes);
       sqlite.transaction(() => {
         const current = requireAsset({ ...scope, assetId });
         if (current.status !== "active") throw new UserAssetError("ASSET_ARCHIVED", assetId);
@@ -235,17 +273,23 @@ export async function uploadUserAssetVersion(input: AssetScope & {
         }
         assertAutomationMutationLease(scope, source, input);
         insertVersion({ versionId, versionNumber: nextVersionNumber, assetId, scope, normalized, storagePath, source, input, idempotencyKey, idempotencyFingerprint, createdAt: now });
+        assertCommittedBytesWithinQuota(scope, normalized.bytes.length);
+        recordStorageCommit(scope, normalized.bytes.length);
         const result = sqlite.prepare(
           "UPDATE user_assets SET current_version_id = ?, updated_at = ? " +
           "WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
         ).run(versionId, now, assetId, scope.userId, scope.projectId, scope.instanceId);
         if (result.changes !== 1) throw new UserAssetError("ASSET_COMMIT_FAILED", "asset head update failed");
+        commitStorageReservation(scope, token);
         input.finalizeRun?.({ assetId, versionId, checksum: normalized.checksum });
       })();
     } catch (error) {
-      await rm(absolute, { force: true }).catch(() => undefined);
+      if (staged) await rm(staged, { force: true }).catch(() => undefined);
+      releaseStorageReservation(scope, token);
       if (error instanceof UserAssetError) throw error;
       throw new UserAssetError("ASSET_COMMIT_FAILED", "asset version commit failed", { cause: errorMessage(error) });
+    } finally {
+      releaseStorageReservation(scope, token);
     }
     const result = await hydrate(requireAsset({ ...scope, assetId }), scope);
     recordAssetLifecycle(scope, assetId, source === "restore" ? "asset.version_restored" : "asset.version_committed", "success", {
@@ -304,7 +348,7 @@ export async function saveConversationArtifactAsUserAsset(input: AssetScope & {
 }
 
 export async function listUserAssets(input: AssetScope & {
-  status?: UserAssetStatus | "all"; search?: string; format?: AssetFormat; limit?: number;
+  status?: UserAssetStatus | "all"; search?: string; format?: AssetFormat; source?: UserAssetSource; limit?: number;
 }): Promise<UserAssetDescriptor[]> {
   const scope = normalizeScope(input);
   const limit = clampLimit(input.limit);
@@ -321,6 +365,10 @@ export async function listUserAssets(input: AssetScope & {
     if (!Object.prototype.hasOwnProperty.call(MAX_BYTES, input.format)) throw new UserAssetError("ASSET_UNSUPPORTED_FORMAT", String(input.format));
     clauses.push("current_version_id IN (SELECT version_id FROM user_asset_versions WHERE format = ?)");
     params.push(input.format);
+  }
+  if (input.source) {
+    if (!SOURCES.has(input.source)) throw new UserAssetError("ASSET_INVALID_SCOPE", "invalid source");
+    clauses.push("current_version_id IN (SELECT version_id FROM user_asset_versions WHERE source = ?)"); params.push(input.source);
   }
   const rows = sqlite.prepare(
     "SELECT " + ASSET_COLUMNS + " FROM user_assets WHERE " + clauses.join(" AND ") +
@@ -401,6 +449,45 @@ export async function archiveUserAsset(input: AssetScope & { assetId: string }):
   });
 }
 
+export async function deleteUserAsset(input: AssetScope & { assetId: string }): Promise<{ assetId: string; deletedVersions: number }> {
+  const scope = normalizeScope(input);
+  const assetId = normalizeOpaqueId(input.assetId, "assetId");
+  return withResourceMutationLock(scope, ["user-asset:" + assetId, scopeStorageLockKey(scope)], async () => {
+    requireAsset({ ...scope, assetId });
+    const binding = sqlite.prepare(
+      "SELECT task_id AS taskId FROM automation_task_asset_bindings " +
+      "WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
+    ).get(assetId, scope.userId, scope.projectId, scope.instanceId) as { taskId?: string } | undefined;
+    if (binding?.taskId) {
+      throw new UserAssetError("ASSET_IN_USE", "该文件正在被自动化任务使用，请先修改或删除对应任务", { taskId: binding.taskId });
+    }
+    const versions = sqlite.prepare(
+      "SELECT " + VERSION_COLUMNS + " FROM user_asset_versions " +
+      "WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
+    ).all(assetId, scope.userId, scope.projectId, scope.instanceId) as VersionRow[];
+    const root = await workspaceRoot(scope);
+    const targets = versions.map((version) => path.resolve(root, version.storagePath));
+    for (const target of targets) {
+      if (!isWithin(root, target)) throw new UserAssetError("ASSET_PATH_UNSAFE", target);
+    }
+    sqlite.transaction(() => {
+      sqlite.prepare(
+        "DELETE FROM report_asset_mappings WHERE backing_asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
+      ).run(assetId, scope.userId, scope.projectId, scope.instanceId);
+      sqlite.prepare(
+        "DELETE FROM user_asset_versions WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
+      ).run(assetId, scope.userId, scope.projectId, scope.instanceId);
+      const result = sqlite.prepare(
+        "DELETE FROM user_assets WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
+      ).run(assetId, scope.userId, scope.projectId, scope.instanceId);
+      if (result.changes !== 1) throw new UserAssetError("ASSET_NOT_FOUND", assetId);
+    })();
+    await Promise.all(targets.map((target) => rm(target, { force: true })));
+    recordAssetLifecycle(scope, assetId, "asset.deleted", "success", { deletedVersions: versions.length });
+    return { assetId, deletedVersions: versions.length };
+  });
+}
+
 export async function listUserAssetReferences(input: AssetScope & { assetId: string }): Promise<{
   taskBindings: Array<{ bindingId: string; taskId: string; revisionId: string; role: string; versionPolicy: string; versionId: string | null; createdAt: string }>;
   provenance: UserAssetVersionDescriptor[];
@@ -427,11 +514,16 @@ export function assetFormatForFileName(fileName: string): AssetFormat {
 async function normalizeInput(fileNameValue: string, mimeValue: string | undefined, value: Uint8Array): Promise<NormalizedInput> {
   const fileName = normalizeFileName(fileNameValue);
   const format = assetFormatForFileName(fileName);
-  const bytes = Buffer.from(value || new Uint8Array());
+  let bytes = Buffer.from(value || new Uint8Array());
   if (!bytes.length) throw new UserAssetError("ASSET_INVALID_CONTENT", "asset is empty");
   if (bytes.length > MAX_BYTES[format]) throw new UserAssetError("ASSET_TOO_LARGE", String(bytes.length), { limitBytes: MAX_BYTES[format] });
   const mime = normalizeMime(mimeValue);
   if (mime && !MIME_BY_FORMAT[format].includes(mime)) throw new UserAssetError("ASSET_MIME_MISMATCH", fileName + ":" + mime);
+  if (format === "png" || format === "jpeg" || format === "webp") {
+    try { bytes = Buffer.from((await normalizeImageBytes(format, bytes)).bytes); }
+    catch (error) { throw new UserAssetError("ASSET_TOO_LARGE", errorMessage(error), { limitBytes: USER_ASSET_MAX_BYTES }); }
+  }
+  if (bytes.length > USER_ASSET_MAX_BYTES) throw new UserAssetError("ASSET_TOO_LARGE", String(bytes.length), { limitBytes: USER_ASSET_MAX_BYTES });
   await validateContent(format, bytes);
   return { fileName, format, mimeType: CANONICAL_MIME[format], bytes, checksum: sha256(bytes) };
 }

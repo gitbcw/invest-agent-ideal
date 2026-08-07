@@ -87,6 +87,8 @@ async function publishMarkdownAs(fixture: Fixture, userId: string, relativePath:
     userId,
     instanceId: userId,
     relativePath,
+    // These helpers build long-lived library entries for lifecycle tests.
+    saveToMyFiles: true,
     scope: { projectId: "invest-agent", assistantId: userId, conversationId: "conv-1", source },
   });
 }
@@ -310,20 +312,22 @@ test("classifyArtifactRetention promotes 1,048,576-byte files to durable and 1,0
   });
   assert.equal(legacy?.retentionClass, "reference_only");
   assert.equal(legacy?.visibility, "conversation_only");
-  // Formal artifacts.publish reports are durable even outside the fixed review dirs.
-  const outside = classifyArtifactRetention({
+  // Chat publications stay transient even if their workspace file lives under reports/.
+  const chatDelivery = classifyArtifactRetention({
     source: "artifacts.publish",
     relativePath: "reports/tables/generated.csv",
     sizeBytes: 10,
     mimeType: "text/csv",
   });
-  assert.equal(outside?.retentionClass, "durable_library");
-  assert.equal(outside?.visibility, "library");
+  assert.equal(chatDelivery?.retentionClass, "transient_generated");
+  assert.equal(chatDelivery?.visibility, "conversation_only");
+  // Formal reports require an explicit persistence request.
   const webpage = classifyArtifactRetention({
     source: "artifacts.publish",
     relativePath: "reports/html/2026-07-25-portfolio-risk.html",
     sizeBytes: 10,
     mimeType: "text/html",
+    saveToMyFiles: true,
   });
   assert.equal(webpage?.retentionClass, "durable_library");
   assert.equal(webpage?.visibility, "library");
@@ -661,7 +665,7 @@ test("workspace backfill registers curated reports once and is idempotent on re-
 test("artifact retention classification backfill tags existing rows deterministically", async () => {
   const fixture = await getFixture();
   try {
-    const record = await publishMarkdown(fixture, "reports/daily/unclear.md", "# x");
+    const record = await publishMarkdown(fixture, "reports/daily/unclear.md", "# x", "reviews.save");
     // Wipe the classification to simulate a pre-backfill row.
     fixture.sqlite
       .prepare(`UPDATE conversation_artifacts SET origin = NULL, retention_class = NULL, visibility = NULL, expires_at = NULL WHERE artifact_id = ?`)

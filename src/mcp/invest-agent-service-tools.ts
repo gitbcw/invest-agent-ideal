@@ -34,6 +34,48 @@ const onboardingStyleProfileSchema = z.object({
   executionPrice: z.string().optional(),
 }).catchall(z.unknown()).describe("Style profile. Provide at least a style/name or notes/summary/strategySummary so the confirmed strategy can be persisted.");
 
+const automationScheduleSchema = z.object({
+  frequency: z.enum(["daily", "trading_days", "weekdays", "weekly"]),
+  time: z.string().regex(/^\d{2}:\d{2}$/),
+  timezone: z.string().min(1).max(100),
+  weekdays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+});
+
+const automationAssetBindingSchema = z.object({
+  assetId: z.string().min(1),
+  role: z.enum(["input", "update_target"]),
+  versionPolicy: z.enum(["latest", "fixed"]),
+  versionId: z.string().min(1).optional(),
+});
+
+const automationOutputSchema = z.union([
+  z.object({ mode: z.literal("none") }),
+  z.object({ mode: z.literal("agent") }),
+  z.object({
+    mode: z.literal("create"),
+    format: z.enum(["markdown", "html", "csv", "xlsx", "pdf", "png", "jpeg", "webp", "svg"]),
+    fileName: z.string().min(1).max(240),
+    titleTemplate: z.string().max(500).optional(),
+  }),
+  z.object({
+    mode: z.literal("update"),
+    assetId: z.string().min(1),
+    versionPolicy: z.literal("latest"),
+    expectedVersionId: z.string().min(1).optional(),
+  }),
+]);
+
+const automationDeliverySchema = z.union([
+  z.object({ mode: z.literal("none") }),
+  z.object({ mode: z.literal("wechat_summary") }),
+  z.object({ mode: z.literal("wechat_on_condition"), conditionVersion: z.literal(1) }),
+]);
+
+const automationStatusFields = {
+  status: z.enum(["active", "paused"]).optional().describe("Desired task state. Defaults to active for direct creation."),
+  enabled: z.boolean().optional().describe("Alias for status: true activates, false pauses."),
+};
+
 const projectRoot =
   process.env.INVEST_AGENT_PROJECT_ROOT ||
   resolve(__dirname, "../..");
@@ -107,6 +149,97 @@ async function main() {
 
   registerJsonTool(
     { server, callServiceTool, context },
+    "assets.list",
+    "List active user assets that are authorized for the current user, project, and instance. Use this to choose an existing table or document for an automation task; the service never accepts caller-supplied scope.",
+    {
+      status: z.enum(["active", "archived", "all"]).optional(),
+      search: z.string().max(200).optional(),
+      format: z.enum(["markdown", "html", "csv", "xlsx", "pdf", "png", "jpeg", "webp", "svg"]).optional(),
+      source: z.enum(["upload", "conversation", "automation", "restore", "system"]).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    },
+    { readOnlyHint: true }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "automation.list",
+    "List automation tasks in the current service scope. Filters are optional and never change the user, project, or instance scope.",
+    {
+      query: z.string().max(200).optional(),
+      statuses: z.array(z.enum(["paused", "active", "needs_attention", "archived"])).max(4).optional(),
+      frequencies: z.array(z.enum(["daily", "trading_days", "weekdays", "weekly"])).max(4).optional(),
+      deliveryModes: z.array(z.enum(["none", "wechat_summary", "wechat_on_condition"])).max(3).optional(),
+      outputModes: z.array(z.enum(["none", "agent", "create", "update"])).max(4).optional(),
+      cursor: z.string().optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    },
+    { readOnlyHint: true }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "automation.get",
+    "Get one automation task in the current service scope by task id.",
+    { taskId: z.string().min(1) },
+    { readOnlyHint: true }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "automation.create",
+    "Create and enable a complete generic automation task in one call. Existing user assets can be bound through inputs or an update output target. Set status=paused or enabled=false only when the task should remain paused. Scope is always derived from the current service context and no confirmation is required.",
+    {
+      taskId: z.string().min(1).max(200).optional(),
+      name: z.string().min(1).max(200),
+      description: z.string().max(12000).nullable().optional(),
+      instruction: z.string().min(1).max(12000),
+      schedule: automationScheduleSchema,
+      inputs: z.array(automationAssetBindingSchema).max(8).optional(),
+      output: automationOutputSchema.optional(),
+      delivery: automationDeliverySchema.optional(),
+      ...automationStatusFields,
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "automation.update",
+    "Create a new automation revision. An active task remains active after the update unless status=paused or enabled=false is explicitly requested; no confirmation is required. Scope is always derived from the current service context.",
+    {
+      taskId: z.string().min(1),
+      expectedRevision: z.number().int().positive().optional(),
+      name: z.string().min(1).max(200).optional(),
+      description: z.string().max(12000).nullable().optional(),
+      instruction: z.string().min(1).max(12000).optional(),
+      schedule: automationScheduleSchema.optional(),
+      inputs: z.array(automationAssetBindingSchema).max(8).optional(),
+      output: automationOutputSchema.optional(),
+      delivery: automationDeliverySchema.optional(),
+      ...automationStatusFields,
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "automation.activate",
+    "Enable an automation task in the current service scope without confirmation.",
+    { taskId: z.string().min(1), expectedRevision: z.number().int().positive().optional() },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "automation.pause",
+    "Pause an automation task in the current service scope without confirmation. History, revisions, and task assets are retained.",
+    { taskId: z.string().min(1), expectedRevision: z.number().int().positive().optional() },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
     "assets.version.read",
     "Read the current or explicitly selected version of an authorized user asset. The service checks the current MCP scope and returns bytes without any filesystem path.",
     {
@@ -119,7 +252,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "assets.version.commit",
-    "Submit validated bytes as a new version of an existing user asset. Ordinary conversation calls require explicit confirmation; scheduled automation calls are bound to the injected run context.",
+    "Submit validated bytes as a new version of an existing same-scope user asset. Pass expectedVersionId to enforce compare-and-swap. Scheduled automation calls remain bound to the injected run output target.",
     {
       assetId: z.string().min(1),
       fileName: z.string().min(1),
@@ -127,8 +260,6 @@ async function main() {
       base64: z.string().min(1),
       expectedVersionId: z.string().nullable().optional(),
       idempotencyKey: z.string().max(500).optional(),
-      confirmationId: z.string().min(1).max(300).optional(),
-      confirmedByUser: z.literal(true).optional(),
     },
     { readOnlyHint: false, destructiveHint: false }
   );
@@ -136,7 +267,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "assets.conversation.save",
-    "Save current-turn generated bytes to the user asset library. Ordinary conversation calls require confirmedByUser=true; scheduled runs are bound to the service-injected run.",
+    "Save generated bytes to the current user, project, and instance asset library, creating an asset or adding a version when assetId is supplied. Scheduled runs remain bound to the injected run output target.",
     {
       assetId: z.string().min(1).optional(),
       name: z.string().max(200).optional(),
@@ -144,10 +275,36 @@ async function main() {
       mimeType: z.string().optional(),
       base64: z.string().min(1),
       idempotencyKey: z.string().max(500).optional(),
-      confirmationId: z.string().min(1).max(300).optional(),
-      confirmedByUser: z.literal(true).optional(),
     },
     { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "assets.rename",
+    "Rename an active same-scope user asset without changing its versions or file bytes.",
+    { assetId: z.string().min(1), name: z.string().min(1).max(200) },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "assets.archive",
+    "Archive a same-scope user asset. Archived assets and versions are retained but cannot receive new versions.",
+    { assetId: z.string().min(1) },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
+    "assets.delete",
+    "Permanently delete a same-scope user asset and its versions after explicit user confirmation. Use confirmations.request for assets.delete first.",
+    {
+      assetId: z.string().min(1),
+      confirmationId: z.string().min(1).max(300),
+      confirmedByUser: z.literal(true),
+    },
+    { readOnlyHint: false, destructiveHint: true }
   );
 
   registerJsonTool(
@@ -474,11 +631,12 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "artifacts.publish",
-    "Register an already-existing workspace file (under reports/ or config/) as a first-class artifact and return its descriptor. Use it for a Portal file delivery only when the user explicitly requests the file/link/download, or when the current turn actually created or modified that file. Do not publish files merely because you read, referenced, mentioned, or found them in the workspace or conversation history. During the internal development phase, the user's own config/ files are deliverable as raw workspace files; portfolio.apply_changes automatically publishes config/portfolio.yaml after a successful write, so do not publish that same file a second time. For an explicitly requested standalone webpage report, write a static self-contained HTML file under reports/html/ and call artifacts.publish in the same turn; do not claim that the report is available unless this tool returns successfully. Existing semantic reports may remain under reports/daily, reports/weekly, reports/monthly, or reports/company even when their format is HTML. Do not use it for a Portal request to draw, explain, visualize, diagram, or chart something: those are handled by the Portal's inline SVG response protocol, not an artifact. Image artifacts (SVG/PNG/JPEG/WebP) published during the current turn render inline inside the Portal conversation message; Markdown, HTML, and YAML artifacts open in the Portal side-panel preview instead. Never accept absolute paths or paths outside the user's reports/ or config/ directory.",
+    "Register an already-existing workspace file as a first-class artifact and return its descriptor. Use it for a Portal file delivery only when the user explicitly requests the file/link/download, or when the current turn actually created or modified that file. Do not publish files merely because you read, referenced, mentioned, or found them in the workspace or conversation history. Ordinary chat deliverables must be written under deliveries/ and remain temporary; set saveToMyFiles only when the user explicitly asks for a formal report or asks to retain the file in My Files. reports/ is reserved for Workspace-native reports, not ordinary Portal delivery. During the internal development phase, the user's own config/ files are deliverable as raw workspace files; portfolio.apply_changes automatically publishes config/portfolio.yaml after a successful write, so do not publish that same file a second time. Do not use it for a Portal request to draw, explain, visualize, diagram, or chart something: those are handled by the Portal's inline SVG response protocol, not an artifact. Image artifacts (SVG/PNG/JPEG/WebP) published during the current turn render inline inside the Portal conversation message; Markdown, HTML, and YAML artifacts open in the Portal side-panel preview instead. Never accept absolute paths or paths outside the user's deliveries/, reports/, or config/ directory.",
     {
-      relativePath: z.string().min(1).describe("Workspace-relative path that begins with reports/ or config/, e.g. reports/daily/2026-07-24.md, reports/html/2026-07-24-portfolio-risk.html, or config/portfolio.yaml."),
+      relativePath: z.string().min(1).describe("Workspace-relative path under deliveries/, reports/, or config/. Use deliveries/ for normal Portal file delivery."),
       kind: z.enum(["report", "chart", "data", "document"]).optional(),
       title: z.string().max(200).optional(),
+      saveToMyFiles: z.boolean().optional().describe("Set true only when the user explicitly requests a formal report or asks to retain this file in My Files. Otherwise omit it so the chat card offers Save."),
     },
     { readOnlyHint: false, destructiveHint: false }
   );

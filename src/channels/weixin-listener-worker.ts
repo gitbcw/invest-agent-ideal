@@ -8,6 +8,7 @@ type IncomingMedia = {
 type ChatRequest = {
   conversationId: string;
   text: string;
+  messageId?: string;
   contextToken?: string;
   media?: IncomingMedia;
 };

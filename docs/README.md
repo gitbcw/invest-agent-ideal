@@ -10,7 +10,8 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | --- | --- |
 | [02-investment-methodology.md](./02-investment-methodology.md) | User investment methodology reference |
 | [04-core-workflows.md](./04-core-workflows.md) | Core loops across monitoring, alerts, reviews, screening, and feedback |
-| [best-effort-answering-design.md](./best-effort-answering-design.md) | Evidence-bounded best-effort answering, graceful degradation, capability-gap handling, and rollout acceptance |
+| [best-effort-answering-design.md](./best-effort-answering-design.md) | Accepted default-data and evidence-bounded answering principle: graceful degradation, explicit methodology, strict-request boundary, capability-gap handling, and rollout acceptance |
+| [default-data-methodology-implementation-brief.md](./default-data-methodology-implementation-brief.md) | Execution brief for default usable data and explicit methodology across chat, reports, files, automations, and Portal |
 | [investment-model-design.md](./investment-model-design.md) | Investment model as user-facing configuration center |
 | [trading-strategy-design.md](./trading-strategy-design.md) | Implemented strategy entity and plan linkage, two-gate confirmation, and explicit unimplemented workflow boundary |
 | [personas/README.md](./personas/README.md) | Persona index |
@@ -48,6 +49,9 @@ For scheduled-task or push-delivery operations, use the project-only skill `.cod
 | --- | --- |
 | [user-portal.md](./user-portal.md) | Current ownership, workspace browser, interaction, HTTP and deployment contract |
 | [user-portal-protocol.md](./user-portal-protocol.md) | Exact current relay envelope, commands, payloads, scope rules, attachments, artifacts, and workspace file protocol |
+| [user-asset-library-and-general-automation-design.md](./user-asset-library-and-general-automation-design.md) | Proposed user asset-library and general-automation product/system design |
+| [user-asset-library-and-general-automation-tasks.md](./user-asset-library-and-general-automation-tasks.md) | Execution-ready work packages and acceptance handoff for the asset-library/automation design |
+| [automation-portal-list-template-management-design.md](./automation-portal-list-template-management-design.md) | Portal task/run views, search, templates, batch lifecycle actions, responsive behavior, and API increments |
 
 Initial Portal design, completed work packages and acceptance records are under `archive/portal/2026-07/` and are not implementation inputs.
 
@@ -88,6 +92,14 @@ Repeatable operational actions are kept as project-only skills under `.codex/ski
 Long runbooks that were formerly under `docs/` have been moved into the corresponding skill `references/` directory so the execution path and detailed operating notes stay together.
 
 火山云当前操作入口是 `.codex/skills/volcano-ops/references/server-deployment.md`。普通版本只走代码发布；真实 Workspace 的模板差异只读报告，不自动覆盖。明确采用具体模板资产时，需同时遵循 [workspace-compatibility.md](./workspace-compatibility.md) 的逐用户、逐文件确认、备份和单点验收。
+
+### User Evidence And Acceptance
+
+| Document | Use It For |
+|---|---|
+| [mg-data-capability-gap-statistics.md](./mg-data-capability-gap-statistics.md) | 火山云 mg 用户对话提取出的平台数据能力缺口、证据索引和优先级 |
+| [mg-platform-capability-gap-test-cases.md](./mg-platform-capability-gap-test-cases.md) | 针对数据服务、来源质量、回测和送达闭环的可验收平台测试 |
+| [mg-classic-user-requirement-test-cases.md](./mg-classic-user-requirement-test-cases.md) | 从 mg 经典自然语言需求抽取的端到端用户场景测试 |
 
 ### Intent Pack
 

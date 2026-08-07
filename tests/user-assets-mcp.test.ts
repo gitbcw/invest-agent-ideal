@@ -45,16 +45,7 @@ function addUserConfirmation(db: any, messageId: string, content: string) {
   `).run(messageId, scope.conversationId, scope.userId, scope.projectId, scope.instanceId, scope.instanceId, content, new Date(Date.now() + 1_000).toISOString());
 }
 
-function bindConversationAsset(db: any, assetId: string, versionId: string) {
-  const now = new Date().toISOString();
-  db.sqlite.prepare(`
-    INSERT INTO conversation_artifacts
-      (artifact_id, user_id, instance_id, project_id, assistant_id, conversation_id, source, kind, preview_mode, title, file_name, mime_type, relative_path, size_bytes, checksum, asset_id, version_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'conversation', 'document', 'text', 'Bound asset', 'bound.md', 'text/markdown', 'reports/bound.md', 1, ?, ?, ?, ?, ?)
-  `).run(`artifact_${assetId}`, scope.userId, scope.instanceId, scope.projectId, scope.instanceId, scope.conversationId, "0".repeat(64), assetId, versionId, now, now);
-}
-
-test("MCP asset tools are scope-bound, confirmation-gated, and path-free", async () => {
+test("MCP asset tools permit same-scope CRUD while keeping delete confirmation-bound", async () => {
   const { db, assets, tools } = await fixture;
   seedConversation(db);
   const created = await assets.createUserAsset({
@@ -63,36 +54,17 @@ test("MCP asset tools are scope-bound, confirmation-gated, and path-free", async
     mimeType: "text/markdown",
     bytes: Buffer.from("# original\n"),
   });
-  bindConversationAsset(db, created.assetId, created.currentVersionId!);
+  // This asset is intentionally not attached to the current conversation.
   const read = await tools.callServiceTool("assets.version.read", { assetId: created.assetId }, scope);
   assert.equal((read as any).ok, true);
   assert.equal(Buffer.from((read as any).base64, "base64").toString(), "# original\n");
   assert.equal("storagePath" in ((read as any).version || {}), false);
   assert.equal("userId" in ((read as any).asset || {}), false);
 
-  await assert.rejects(
-    () => tools.callServiceTool("assets.conversation.save", {
-      fileName: "saved.md",
-      mimeType: "text/markdown",
-      base64: Buffer.from("# saved\n").toString("base64"),
-    }, scope),
-    (error: unknown) => (error as { code?: string }).code === "ASSET_CONFIRMATION_REQUIRED",
-  );
-
-  const savePayload = {
+  const saved = await tools.callServiceTool("assets.conversation.save", {
     fileName: "saved.md",
     mimeType: "text/markdown",
     base64: Buffer.from("# saved\n").toString("base64"),
-  };
-  const saveConfirmation = await tools.callServiceTool("confirmations.request", {
-    operation: "assets.conversation.save",
-    payload: savePayload,
-  }, scope) as any;
-  addUserConfirmation(db, "asset-mcp-save-confirmation", "确认保存");
-  const saved = await tools.callServiceTool("assets.conversation.save", {
-    ...savePayload,
-    confirmationId: saveConfirmation.confirmationId,
-    confirmedByUser: true,
   }, scope) as any;
   assert.equal(saved.ok, true);
   assert.equal(saved.asset.currentVersion.source, "conversation");
@@ -105,18 +77,42 @@ test("MCP asset tools are scope-bound, confirmation-gated, and path-free", async
     base64: Buffer.from("# updated\n").toString("base64"),
     expectedVersionId: created.currentVersionId,
   };
-  const commitConfirmation = await tools.callServiceTool("confirmations.request", {
-    operation: "assets.version.commit",
-    payload: commitPayload,
-  }, scope) as any;
-  addUserConfirmation(db, "asset-mcp-commit-confirmation", "确认提交");
   const submitted = await tools.callServiceTool("assets.version.commit", {
     ...commitPayload,
-    confirmationId: commitConfirmation.confirmationId,
-    confirmedByUser: true,
   }, scope) as any;
   assert.equal(submitted.ok, true);
   assert.notEqual(submitted.asset.currentVersionId, created.currentVersionId);
+
+  await assert.rejects(
+    () => tools.callServiceTool("assets.version.commit", { ...commitPayload, expectedVersionId: created.currentVersionId }, scope),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_VERSION_CONFLICT",
+  );
+
+  const renamed = await tools.callServiceTool("assets.rename", {
+    assetId: created.assetId,
+    name: "Renamed asset",
+  }, scope) as any;
+  assert.equal(renamed.asset.name, "Renamed asset");
+
+  const archived = await tools.callServiceTool("assets.archive", { assetId: created.assetId }, scope) as any;
+  assert.equal(archived.asset.status, "archived");
+
+  await assert.rejects(
+    () => tools.callServiceTool("assets.delete", { assetId: created.assetId }, scope),
+    /confirmedByUser|confirmationId/i,
+  );
+  const deleteConfirmation = await tools.callServiceTool("confirmations.request", {
+    operation: "assets.delete",
+    payload: { assetId: created.assetId },
+  }, scope) as any;
+  addUserConfirmation(db, "asset-mcp-delete-confirmation", "确认删除");
+  const deleted = await tools.callServiceTool("assets.delete", {
+    assetId: created.assetId,
+    confirmationId: deleteConfirmation.confirmationId,
+    confirmedByUser: true,
+  }, scope) as any;
+  assert.equal(deleted.ok, true);
+  assert.equal(await assets.getUserAsset({ ...scope, assetId: created.assetId }), null);
 });
 
 test("MCP asset tools reject a cross-scope read", async () => {
@@ -136,7 +132,40 @@ test("MCP asset tools reject a cross-scope read", async () => {
   );
 });
 
-test("published AI artifacts appear in My Files and reuse versions by report path", async () => {
+test("MCP automation tools create active tasks without confirmation and enforce scope", async () => {
+  const { tools } = await fixture;
+  const task = await tools.callServiceTool("automation.create", {
+    name: "每日信息表更新",
+    instruction: "收集当天的重要行业信息并更新目标表格。",
+    schedule: { frequency: "daily", time: "20:00", timezone: "Asia/Shanghai" },
+    output: { mode: "none" },
+  }, scope) as any;
+  assert.equal(task.ok, true);
+  assert.equal(task.task.status, "active");
+
+  const listed = await tools.callServiceTool("automation.list", {}, scope) as any;
+  assert.equal(listed.items.some((item: any) => item.taskId === task.task.taskId), true);
+
+  const revised = await tools.callServiceTool("automation.update", {
+    taskId: task.task.taskId,
+    expectedRevision: task.task.currentRevision,
+    instruction: "收集当天的重要行业信息并更新目标表格，保留来源和日期。",
+  }, scope) as any;
+  assert.equal(revised.ok, true);
+  assert.equal(revised.task.status, "active");
+  assert.equal(revised.task.currentRevision, task.task.currentRevision + 1);
+
+  await assert.rejects(
+    () => tools.callServiceTool("automation.get", { taskId: task.task.taskId }, {
+      ...scope,
+      userId: "other-mcp-user",
+      instanceId: "other-mcp-instance",
+    }),
+    /not found|scope/i,
+  );
+});
+
+test("explicitly persistent AI artifacts appear in My Files and reuse versions by report path", async () => {
   const { db, assets, tools } = await fixture;
   seedConversation(db);
   const reportDirectory = path.join(root, "workspaces", scope.userId, "reports", "tables");
@@ -148,6 +177,7 @@ test("published AI artifacts appear in My Files and reuse versions by report pat
     relativePath: "reports/tables/weekly-inventory.csv",
     kind: "data",
     title: "碳酸锂去库跟踪表",
+    saveToMyFiles: true,
   }, scope) as any;
   const firstAssets = (await assets.listUserAssets(scope)).filter((asset) => asset.name === "碳酸锂去库跟踪表");
 
@@ -163,6 +193,7 @@ test("published AI artifacts appear in My Files and reuse versions by report pat
     relativePath: "reports/tables/weekly-inventory.csv",
     kind: "data",
     title: "碳酸锂去库跟踪表",
+    saveToMyFiles: true,
   }, scope) as any;
   const secondAssets = (await assets.listUserAssets(scope)).filter((asset) => asset.name === "碳酸锂去库跟踪表");
 

@@ -64,6 +64,7 @@ type WeixinListenerMessage =
     request: {
       conversationId: string;
       text: string;
+      messageId?: string;
       contextToken?: string;
       media?: IncomingMediaAttachment;
     };

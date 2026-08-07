@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -40,7 +40,7 @@ function command(type: string, payload: Record<string, unknown> = {}) {
   };
 }
 
-test("Portal asset commands expose upload/version/restore/archive without paths", async () => {
+test("Portal asset commands expose upload/version/restore/archive/delete without paths", async () => {
   const { connector } = await fixture;
   const malicious = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
     userId: scopeB.userId,
@@ -92,6 +92,39 @@ test("Portal asset commands expose upload/version/restore/archive without paths"
   const versions = await connector.__test__.handleCommand(scopeA, command("asset.versions.list", { assetId: asset.assetId })) as any;
   assert.equal(versions.data.items.length, 2);
   assert.equal(versions.data.items.some((item: any) => item.versionId === firstVersionId), true);
+
+  const deleted = await connector.__test__.handleCommand(scopeA, command("asset.delete", { assetId: asset.assetId })) as any;
+  assert.equal(deleted.ok, true);
+  assert.equal(deleted.data.assetId, asset.assetId);
+  assert.equal(deleted.data.deletedVersions, 2);
+  assert.equal("storagePath" in deleted.data, false);
+});
+
+test("Portal saves a conversation artifact to My Files", async () => {
+  const { connector } = await fixture;
+  const artifacts = await import("../src/services/conversation-artifacts.js");
+  const workspace = path.join(root, "workspaces", scopeA.userId);
+  await mkdir(path.join(workspace, "deliveries"), { recursive: true });
+  await writeFile(path.join(workspace, "deliveries", "saved-from-chat.csv"), "日期,运价\n");
+  const artifact = await artifacts.publishConversationArtifact({
+    userId: scopeA.userId,
+    instanceId: scopeA.instanceId,
+    relativePath: "deliveries/saved-from-chat.csv",
+    scope: {
+      projectId: scopeA.projectId,
+      assistantId: scopeA.assistantId,
+      conversationId: "conversation-save-test",
+      source: "artifacts.publish",
+    },
+  });
+
+  const saved = await connector.__test__.handleCommand(scopeA, command("asset.conversation.save", {
+    artifactId: artifact.artifactId,
+    idempotencyKey: `save-artifact:${artifact.artifactId}`,
+  })) as any;
+  assert.equal(saved.ok, true);
+  assert.equal(saved.data.name, artifact.title);
+  assert.equal(saved.data.currentVersion.source, "conversation");
 });
 
 test("Portal asset commands enforce registered connector scope", async () => {
@@ -118,4 +151,78 @@ test("Portal asset list rejects an unknown status instead of defaulting to activ
   const response = await connector.__test__.handleCommand(scopeA, command("asset.list", { status: "deleted" })) as any;
   assert.equal(response.ok, false);
   assert.equal(response.error.code, "INVALID_REQUEST");
+});
+
+test("Portal batch upload validates every payload before writes and returns per-file results", async () => {
+  const { connector } = await fixture;
+  const before = await connector.__test__.handleCommand(scopeA, command("asset.list")) as any;
+  const malformed = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
+    files: [
+      { fileName: "valid.md", mimeType: "text/markdown", base64: Buffer.from("# valid\n").toString("base64") },
+      { fileName: "broken.md", mimeType: "text/markdown", base64: "not base64!" },
+    ],
+  })) as any;
+  assert.equal(malformed.ok, false);
+  assert.equal(malformed.error.code, "INVALID_REQUEST");
+  const afterMalformed = await connector.__test__.handleCommand(scopeA, command("asset.list")) as any;
+  assert.equal(afterMalformed.data.items.length, before.data.items.length, "malformed batch must not partially write");
+
+  const uploaded = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
+    files: [
+      { fileName: "batch-a.md", mimeType: "text/markdown", base64: Buffer.from("# a\n").toString("base64"), idempotencyKey: "batch-a" },
+      { fileName: "batch-b.md", mimeType: "text/markdown", base64: Buffer.from("# b\n").toString("base64"), idempotencyKey: "batch-b" },
+    ],
+  })) as any;
+  assert.equal(uploaded.ok, true);
+  assert.equal(uploaded.data.items.length, 2);
+  assert.equal(uploaded.data.items.every((item: any) => item.ok), true);
+});
+
+test("Portal batch upload applies decoded 10MB file and 20MB aggregate limits before writes", async () => {
+  const { connector } = await fixture;
+  await assert.rejects(
+    () => connector.__test__.handleCommand(scopeA, command("asset.upload", {
+      files: [{ fileName: "too-large.md", mimeType: "text/markdown", base64: Buffer.alloc(10 * 1024 * 1024 + 1, 65).toString("base64") }],
+    })),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_TOO_LARGE",
+  );
+
+  const tenMiB = Buffer.alloc(10 * 1024 * 1024, 66).toString("base64");
+  await assert.rejects(
+    () => connector.__test__.handleCommand(scopeA, command("asset.upload", {
+      files: [
+        { fileName: "request-a.md", mimeType: "text/markdown", base64: tenMiB },
+        { fileName: "request-b.md", mimeType: "text/markdown", base64: tenMiB },
+        { fileName: "request-c.md", mimeType: "text/markdown", base64: Buffer.from("x").toString("base64") },
+      ],
+    })),
+    (error: unknown) => (error as { code?: string }).code === "UPLOAD_REQUEST_TOO_LARGE",
+  );
+});
+
+test("report mappings open their same-scope backing asset without copying bytes", async () => {
+  const { connector } = await fixture;
+  const uploaded = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
+    fileName: "mapped-report.md",
+    mimeType: "text/markdown",
+    base64: Buffer.from("# backed report\n").toString("base64"),
+    idempotencyKey: "backed-report",
+  })) as any;
+  const mappings = await import("../src/services/report-asset-mappings.js");
+  const mapping = await mappings.registerReportAssetMapping({
+    userId: scopeA.userId,
+    projectId: scopeA.projectId,
+    instanceId: scopeA.instanceId,
+    reportId: "backed-portal-report",
+    title: "Backed portal report",
+    fileName: "mapped-report.md",
+    mimeType: "text/markdown",
+    sizeBytes: uploaded.data.currentVersion.sizeBytes,
+    backingAssetId: uploaded.data.assetId,
+    backingVersionId: uploaded.data.currentVersionId,
+  });
+  const response = await connector.__test__.handleCommand(scopeA, command("report.mapping.get", { mappingId: mapping.mappingId })) as any;
+  assert.equal(response.ok, true);
+  assert.equal(Buffer.from(response.data.base64, "base64").toString(), "# backed report\n");
+  assert.equal(response.data.sizeBytes, uploaded.data.currentVersion.sizeBytes);
 });

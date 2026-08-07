@@ -23,6 +23,7 @@ import { assertServiceAuthConfiguration, hasServiceApiAuthorization, isPublicSer
 import { hasPlatformSession, isLoopbackAddress } from "./lib/platform-session.js";
 import { hasPersistentPlatformSession } from "./lib/platform-auth.js";
 import { consumeRequestRateLimit } from "./lib/request-rate-limit.js";
+import { recoverInterruptedConversationTaskRuns } from "./services/conversation-task-runs.js";
 
 const agent = createAgent();
 
@@ -109,6 +110,10 @@ export async function createServer() {
   await ensureBuiltInAiProjects();
   await ensureBuiltInIndicatorDefinitions();
   await assertPlatformPartnerKeySafety();
+  const recoveredConversationRuns = recoverInterruptedConversationTaskRuns();
+  if (recoveredConversationRuns > 0) {
+    logger.warn(`已收敛 ${recoveredConversationRuns} 条服务重启前未完成的对话任务`);
+  }
 
   registerPortalRoutes(app);
   registerSandboxRoutes(app);

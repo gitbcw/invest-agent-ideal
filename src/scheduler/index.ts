@@ -13,7 +13,11 @@ import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/sched
 import { formatUnknownError } from "../lib/errors.js";
 import { formatAlerts, runAlertCheck } from "./alert-check.js";
 import { processOnboardingDraftCommits } from "../services/onboarding-drafts.js";
-import type { ScheduledMessageKind } from "../services/scheduled-message-policy.js";
+import {
+  resolveScheduledMessageExpiry,
+  scheduledMessageIdempotencyKey,
+  type ScheduledMessageKind,
+} from "../services/scheduled-message-policy.js";
 
 export type PushCallback = (message: string, options?: {
   userId?: string;
@@ -237,7 +241,24 @@ function restartAlertInterval(_minutes: number) {
                 continue;
               }
               const text = formatAlerts(items);
-              const pushResult = await getPushFn()(text, { userId, projectId, instanceId });
+              const messageKind = "rule_alert" as const;
+              const delivery = resolveScheduledMessageExpiry(messageKind, now);
+              const pushResult = await getPushFn()(text, {
+                userId,
+                projectId,
+                instanceId,
+                messageKind,
+                expiresAt: delivery.expiresAt,
+                originTaskKey: ruleAlertHit.taskKey,
+                retryPolicy: delivery.retryPolicy,
+                idempotencyKey: scheduledMessageIdempotencyKey({
+                  userId,
+                  instanceId,
+                  kind: messageKind,
+                  businessPeriod: ruleAlertHit.taskKey,
+                }),
+                maxAttempts: delivery.maxAttempts,
+              });
               await finishScheduledTaskRun(ruleAlertHit.taskKey, {
                 status: "success",
                 pushJobId: typeof pushResult === "string" ? pushResult : undefined,
@@ -307,7 +328,24 @@ async function runQueuedMarketWatchTask(item: MarketWatchQueueItem) {
   try {
     const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId });
     if (text) {
-      const pushResult = await getPushFn()(text, { userId, projectId, instanceId });
+      const messageKind = "market_watch" as const;
+      const delivery = resolveScheduledMessageExpiry(messageKind, new Date(item.enqueuedAt));
+      const pushResult = await getPushFn()(text, {
+        userId,
+        projectId,
+        instanceId,
+        messageKind,
+        expiresAt: delivery.expiresAt,
+        originTaskKey: item.hit.taskKey,
+        retryPolicy: delivery.retryPolicy,
+        idempotencyKey: scheduledMessageIdempotencyKey({
+          userId,
+          instanceId,
+          kind: messageKind,
+          businessPeriod: item.hit.taskKey,
+        }),
+        maxAttempts: delivery.maxAttempts,
+      });
       await finishScheduledTaskRun(item.hit.taskKey, {
         status: "success",
         pushJobId: typeof pushResult === "string" ? pushResult : undefined,
@@ -337,9 +375,7 @@ export async function startScheduler() {
   }, 5_000);
 
   // 收盘后日复盘
-  startReviewScheduler(async (message: string, options?: { userId?: string; projectId?: string; instanceId?: string }) => {
-    await getPushFn()(message, options);
-  }, getSchedulableScopes);
+  startReviewScheduler((message, options) => getPushFn()(message, options), getSchedulableScopes);
 
   // 收盘后平台级数据质量汇总
   await startDataQualityScheduler();
@@ -444,7 +480,24 @@ export async function triggerScheduledMarketWatchNow(
       await finishScheduledTaskRun(taskKey, { status: "skipped" });
       return { taskKey, skipped: true };
     }
-    const pushResult = await getPushFn()(text, { userId, projectId, instanceId });
+    const messageKind = "market_watch" as const;
+    const delivery = resolveScheduledMessageExpiry(messageKind, now);
+    const pushResult = await getPushFn()(text, {
+      userId,
+      projectId,
+      instanceId,
+      messageKind,
+      expiresAt: delivery.expiresAt,
+      originTaskKey: taskKey,
+      retryPolicy: delivery.retryPolicy,
+      idempotencyKey: scheduledMessageIdempotencyKey({
+        userId,
+        instanceId,
+        kind: messageKind,
+        businessPeriod: taskKey,
+      }),
+      maxAttempts: delivery.maxAttempts,
+    });
     const pushJobId = typeof pushResult === "string" ? pushResult : undefined;
     await finishScheduledTaskRun(taskKey, { status: "success", pushJobId });
     return { taskKey, skipped: false, pushJobId };

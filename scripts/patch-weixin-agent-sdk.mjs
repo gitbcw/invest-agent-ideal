@@ -23,8 +23,8 @@ if (markdownPatched !== source) {
 }
 
 const requestPatched = source.replace(
-  /const request = \{\n\t\tconversationId: full\.from_user_id \?\? "",\n\t\ttext: bodyFromItemList\(full\.item_list\),\n\t\tmedia\n\t\};/,
-  "const request = {\n\t\tconversationId: full.from_user_id ?? \"\",\n\t\ttext: bodyFromItemList(full.item_list),\n\t\tcontextToken,\n\t\tmedia\n\t};"
+  /const request = \{\n\t\tconversationId: full\.from_user_id \?\? "",\n\t\ttext: bodyFromItemList\(full\.item_list\),\n\t\t(?:contextToken,\n\t\t)?media\n\t\};/,
+  "const request = {\n\t\tconversationId: full.from_user_id ?? \"\",\n\t\ttext: bodyFromItemList(full.item_list),\n\t\tmessageId: full.client_id ?? undefined,\n\t\tcontextToken,\n\t\tmedia\n\t};"
 );
 
 if (requestPatched !== source) {
@@ -39,10 +39,10 @@ if (changed) {
 let typeChanged = false;
 if (existsSync(sdkTypesPath)) {
   let types = readFileSync(sdkTypesPath, "utf-8");
-  if (!types.includes("contextToken?: string")) {
+  if (!types.includes("contextToken?: string") || !types.includes("messageId?: string")) {
     const typePatched = types.replace(
       /(\s+\/\*\* Text content of the message\. \*\/\n\s+text: string;)/,
-      "$1\n  /** Weixin per-message context token. Echo it on outbound sends when available. */\n  contextToken?: string;"
+      "$1\n  /** Stable Weixin client message id. */\n  messageId?: string;\n  /** Weixin per-message context token. Echo it on outbound sends when available. */\n  contextToken?: string;"
     );
     if (typePatched !== types) {
       types = typePatched;
@@ -55,7 +55,7 @@ if (existsSync(sdkTypesPath)) {
 if (!changed && !typeChanged) {
   if (
     /function markdownToPlainText\(text\) \{\n\treturn text;\n\}/.test(source) &&
-    /contextToken,\n\t\tmedia/.test(source)
+    /messageId: full\.client_id \?\? undefined,\n\t\tcontextToken,\n\t\tmedia/.test(source)
   ) {
     console.log("[patch-weixin-agent-sdk] already patched");
     process.exit(0);
@@ -64,4 +64,4 @@ if (!changed && !typeChanged) {
   process.exit(0);
 }
 
-console.log("[patch-weixin-agent-sdk] patched markdown passthrough and contextToken passthrough");
+console.log("[patch-weixin-agent-sdk] patched markdown, message id, and context token passthrough");

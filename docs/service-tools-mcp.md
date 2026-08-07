@@ -59,12 +59,15 @@ Read tools:
 - `watchlist.read`
 - `plans.read`
 - `conversation.history`
+- `assets.list`：列出当前 user/project/instance scope 下可用的用户产物描述；不返回本地路径。
+- `automation.list`：读取当前 scope 的自动化任务列表和状态，用于任务管理及目标消歧。
+- `automation.get`：读取当前 scope 内指定自动化任务的完整定义与状态。
 - `confirmations.pending`
 - `watch_rules.catalog`
 - `watch_rules.list`
 - `watch_rules.validate`
 - `watch_rules.dry_run`
-- `assets.version.read`：按当前服务 scope 读取用户产物的当前或指定不可变版本；返回受控字节和 descriptor，不返回 Workspace 路径。
+- `assets.version.read`：按当前服务 scope 读取任意同 scope 用户产物的当前或指定不可变版本；返回受控字节和 descriptor，不返回 Workspace 路径。
 
 Confirmation workflow tool:
 
@@ -88,7 +91,7 @@ New workspace onboarding flows use these tools instead of `onboarding.confirm_po
 
 This tool closes the final watch-setup step without another user confirmation. The service accepts only an explicit skip in the latest user message, or scoped rule IDs with successful `watch_rules.create` audit evidence from the current conversation and no active pending rule drafts.
 
-Confirmed write tools:
+Write tools:
 
 - `portfolio.apply_changes`
 - `onboarding.confirm_portfolio`
@@ -101,8 +104,15 @@ Confirmed write tools:
 - `preferences.apply`
 - `reviews.save`
 - `watch_rules.create`
-- `assets.version.commit`：在明确用户确认或受控自动化 run scope 下，将校验后的 staging 字节提交为既有产物的新版本；校验 expected version、checksum、MIME 和幂等键。
-- `assets.conversation.save`：把当前对话或受控自动化生成物保存为产物库资产；普通对话需要 `confirmedByUser=true`，失败不会声称已保存。
+- `assets.version.commit`：普通对话可直接提交同 scope 既有产物的新版本；`expectedVersionId` 仍强制 compare-and-swap、并校验 checksum、MIME 和幂等键。受控自动化 run 仅能写入绑定 output。
+- `assets.conversation.save`：普通对话可直接保存生成物为同 scope 产物（或向指定资产追加版本）；受控自动化 run 仅能写入绑定 output。
+- `assets.rename`：普通对话可直接重命名同 scope 产物。
+- `assets.archive`：普通对话可直接归档同 scope 产物；归档保留内容和版本但禁止后续提交。
+- `assets.delete`：永久删除同 scope 产物及版本，始终需要 `confirmations.request` 建立的显式确认。
+- `automation.create`：创建通用自动化任务并默认直接启用；只有显式传入暂停状态时保持暂停。该工具不要求交互确认，服务仍强制 scope、schema、资产绑定和审计。
+- `automation.update`：创建新的任务 revision；已启用任务默认保持启用，除非明确要求暂停。该工具不要求交互确认，并检查 expected revision（如提供）。
+- `automation.activate`：在当前 scope 内启用任务，不要求交互确认；历史和资产保留。
+- `automation.pause`：在当前 scope 内暂停任务，不要求交互确认；历史和资产保留。
 
 `portfolio.apply_changes` is a portfolio-domain transaction, not a file-field CRUD surface. The Agent first reads the current portfolio revision, resolves all holding identities, decides every watched-stock keep/remove action with the user, and supplies an explicit cash ratio when known weights would otherwise stop totaling 100%. `confirmations.request` previews and validates the exact change set before a confirmation is created. A later confirmed call rejects stale revisions, writes the complete portfolio once, preserves completed onboarding state, appends the change log, records service audit, and returns the saved state for read-back verification.
 
@@ -110,7 +120,7 @@ Confirmed write tools:
 
 `preferences.apply` updates only named post-onboarding preference domains: review schedule, intraday brief schedule, and notification mode. It requires an exact confirmation payload and optional expected revision, preserves unrelated schedule fields, writes and reads back the affected files, records a change log and audit, consumes the confirmation once, and publishes each changed config file. The confirmation ID is persisted in every affected configuration file so post-write failures can be retried idempotently while the confirmation remains pending. Each automatic artifact publication also uses the confirmation-and-path idempotency key, so partially completed publication retries do not duplicate artifact records. Required artifact publication failure is an error, not a successful response. It is not an arbitrary workspace YAML editor.
 
-User-owned Workspace methods, Skills, knowledge, ordinary reports, and research scripts do not each require a named domain MCP tool. They remain Agent-maintained Workspace assets and require an exact draft plus later explicit user confirmation. Service-consumed deterministic state and runtime capabilities still require named service contracts so scope, schema, audit, and execution guarantees are not delegated to prompt text.
+User-owned Workspace methods, Skills, knowledge, ordinary reports, and research scripts do not each require a named domain MCP tool. They remain Agent-maintained Workspace assets and require an exact draft plus later explicit user confirmation. User automation task lifecycle is the narrow exception: named `automation.*` tools may create/update/activate/pause directly when the request is clear. The Agent must ask only for missing execution-critical details such as schedule, instruction scope, or an ambiguous update target. Service-consumed deterministic state and runtime capabilities still require named service contracts so scope, schema, audit, and execution guarantees are not delegated to prompt text.
 
 `reviews.save` is the only current write exception: a scheduled daily-review conversation may publish without an interactive confirmation record. The Agent owns the report content and calls the tool with full Markdown `content` plus an independent WeChat `pushBrief`; optional `decisionRecords` and `sourceEvents` are appended to workspace memory. The service preserves the content, mirrors/indexes the artifact, records audit, and never derives the full report from the final customer reply. Manual durable saves still require `confirmedByUser=true`.
 
@@ -118,7 +128,7 @@ Artifact publication tool:
 
 - `artifacts.publish`
 
-`artifacts.publish` registers an already-created file under the scoped workspace `reports/` directory, or under `config/` during the internal development phase, and returns a first-class artifact descriptor for Portal message metadata. Config artifacts are conversation-only raw workspace files and are not promoted into the curated library. An explicitly requested standalone webpage report uses `reports/html/<timestamp>-<slug>.html` and must be published in the same Agent turn; semantic daily, weekly, monthly and company reports keep their existing directories even when rendered as HTML. A successful `portfolio.apply_changes` also publishes `config/portfolio.yaml` automatically in the same turn. The Agent must not claim that a file is available unless publication succeeds. The tool rejects absolute paths, parent traversal, escaping symlinks, unsupported or forged MIME content, oversized files, unsafe SVG, and cross-scope reads. It does not create or edit the file and cannot select another user scope.
+`artifacts.publish` registers an already-created scoped workspace file and returns a first-class artifact descriptor for Portal message metadata. Ordinary Portal delivery uses `deliveries/` and remains temporary; set `saveToMyFiles=true` only after the user explicitly asks for a formal report or asks to retain the file. `reports/` is reserved for Workspace-native reports, while `config/` remains a development-phase raw workspace delivery surface. Config artifacts are conversation-only and are not promoted into the user library. A successful `portfolio.apply_changes` also publishes `config/portfolio.yaml` automatically in the same turn. The Agent must not claim that a file is available unless publication succeeds. The tool rejects absolute paths, parent traversal, escaping symlinks, unsupported or forged MIME content, oversized files, unsafe SVG, and cross-scope reads. It does not create or edit the file and cannot select another user scope.
 
 ## Verification
 
@@ -145,5 +155,5 @@ Expected checks:
 - General web tools are discoverable through MCP, page reads cannot reach local/private addresses, and search/page results preserve final URL, fetch time, provider and warnings.
 - Durable writes reject missing, expired, replayed, cross-scope, payload-mismatched, or stale-revision confirmations. Portfolio writes also reject unresolved watchlist transitions and complete allocations that do not total 100%.
 - Scheduled `reviews.save` accepts only the trusted scheduler conversation scope, preserves full report and push brief separately, appends optional decision/source records, and keeps manual unconfirmed saves rejected.
-- `artifacts.publish` accepts only allowlisted `reports/` files, plus development-phase `config/` files, and returns a scoped descriptor whose payload checksum matches the workspace bytes.
+- `artifacts.publish` accepts allowlisted `deliveries/`, `reports/`, and development-phase `config/` files, and returns a scoped descriptor whose payload checksum matches the workspace bytes.
 - Final onboarding watch setup completes after an explicit skip or verified confirmed-rule creation without a redundant completion-only confirmation.

@@ -93,11 +93,12 @@ Connector 注册后，本地 runtime 以注册 scope 为权威。command payload
 | `automation.create` | relay -> connector | `{ name, description?, schedule, sourceAsset }` | paused task |
 | `automation.update` | relay -> connector | `{ taskId, expectedRevision?, name?, description?, schedule?, sourceAsset? }` | new paused revision |
 | `automation.activate` / `automation.pause` | relay -> connector | `{ taskId, expectedRevision? }` | updated task |
-| `automation.run_now` | relay -> connector | `{ taskId, idempotencyKey? }` | run, new conversation and result |
+| `automation.run_now` | relay -> connector | `{ taskId, idempotencyKey? }` | run and result |
 | `automation.runs.list` | relay -> connector | `{ taskId, limit? }` | `{ items }` |
 | `automation.run.get` | relay -> connector | `{ runId }` | one scoped run |
 | `automation.asset.get` | relay -> connector | `{ assetId }` | task asset descriptor and base64 |
 | `automation.continue_in_chat` | relay -> connector | `{ runId }` | a new conversation bound to the run |
+| `asset.delete` | relay -> connector | `{ assetId }` | `{ assetId, deletedVersions }`；若文件仍被自动化任务引用则拒绝 |
 
 注册时的 capability label 还包含 `conversation.sync` 和 `conversation.attachments`，它们描述镜像/附件能力，不代表存在同名 command。对接方不得发送表中没有列出的 `conversation.sync` command。
 
@@ -164,7 +165,7 @@ interface ConversationChatResult {
 
 `text` 与 `attachments` 至少一个非空。Connector 先把用户消息写入本地权威 conversation log，再调用 workspace ACP，最后写入并返回完整助手消息。协议当前不要求流式 chunk；Portal 可以在收到完整内容后做展示动画。
 
-附件限制由本地 attachment store 强制执行：单条最多 8 个，总大小最多 40 MB；图片单个最多 10 MB，文档单个最多 25 MB。优先传 `base64`。`downloadUrl` 默认拒绝，只有 HTTPS host 被 `PORTAL_ATTACHMENT_DOWNLOAD_HOSTS` 精确列入白名单才允许，下载后仍执行类型、大小和 magic-byte 校验。
+附件限制由本地 attachment store 强制执行：单条消息最多 8 个；每个原始文件最多 `10 MiB`，同一请求解码后的原始字节合计最多 `20 MiB`，不区分图片与文档。优先传 `base64`，边界按实际解码字节而非客户端声明或 base64 长度计算。`downloadUrl` 默认拒绝，只有 HTTPS host 被 `PORTAL_ATTACHMENT_DOWNLOAD_HOSTS` 精确列入白名单才允许，下载后仍执行类型、大小和 magic-byte 校验。
 
 消息 `metadata.attachments` 只能镜像安全描述字段，不能包含本地绝对路径。助手消息可以带经服务端清洗的 `metadata.inlineVisuals`：
 
@@ -186,7 +187,9 @@ Portal 应将其作为静态图片数据呈现，不能把 SVG 当作同源 HTML
 自动化 command 的 `userId`、`instanceId`、`projectId` 永远取自 connector 注册 scope，payload 中同名字段会被忽略。任务定义写入服务 SQLite，文件资产提升到用户 Workspace 的
 `automations/<task-id>/source|working/`，不引用 7 天 TTL 的 `conversation_attachments`。首期上传只接受 CSV/XLSX；`source` 不可覆盖，`working` 由服务校验真实路径、符号链接和 checksum 后原子替换。
 
-`automation.create` 和 `automation.update` 返回的任务都处于 `paused`；update 会创建不可变 revision，必须再次调用 `automation.activate` 才会按声明的 timezone 和 daily/weekdays/weekly 规则调度。`automation.run_now` 是真实运行：每次使用新的 `runId` 和新的 Portal conversation，session metadata 绑定 `taskId`、revision、`runId`、`origin=automation_manual`。计划运行只生成 `automation_task_runs` 历史，不生成普通 conversation；用户要继续讨论时必须显式调用 `automation.continue_in_chat`，该入口不会恢复后台上下文或自动再次写文件。
+新建 Portal 自动化应使用通用 `instruction` 与 `inputs` 绑定“我的文件”中的资产；绑定引用资产 ID，不复制文件。附加资产同时是该任务的受控文件候选：`output.mode=agent` 允许 Agent 在每次运行中根据任务说明选择只读、更新某个 latest 输入的 Markdown/CSV/XLSX 版本，或创建一个关联资产；服务只接受任务输入中的更新目标，不允许 Agent 访问或修改未附加资产。通用输入支持当前用户资产格式（Markdown、HTML、CSV、XLSX、PDF、PNG、JPEG、WebP、SVG）。上述 CSV/XLSX 限制仍适用于兼容旧任务的 `sourceAsset` 上传路径。
+
+`automation.create` 和 `automation.update` 返回的任务都处于 `paused`；update 会创建不可变 revision，必须再次调用 `automation.activate` 才会按声明的 timezone 和 daily/weekdays/weekly 规则调度。`automation.run_now` 是真实运行：每次使用新的 `runId`，只写入运行记录和结果，不创建 Portal conversation。计划运行同样只生成 `automation_task_runs` 历史；用户要继续讨论时必须显式调用 `automation.continue_in_chat`，该入口才创建新的普通 conversation，且不会恢复后台上下文或自动再次写文件。
 
 运行和资产读取始终按注册 scope 强制隔离。运行错误、写入结果和 checksum 记录在自动化审计与运行历史中；旧 `scheduled_task_runs` 仍只服务现有复盘、盘中简报和规则巡检。
 
@@ -198,7 +201,7 @@ Portal 应将其作为静态图片数据呈现，不能把 SVG 当作同源 HTML
 
 `artifact.event.event` 仅接受 `open`、`success`、`failure`、`download`。`artifact.library.list` payload 只接受 `cursor` 和 `limit`，多余字段返回 `INVALID_REQUEST`。`artifact.publish.legacy` 仅用于既有相对路径兼容；新产物应由服务/MCP 的正式发布流程登记。
 
-通过 `artifacts.publish` 或 `reviews.save` 正式发布且被判定为 `durable_library` 的受支持文件，服务会同步登记到 `user_assets`。首次发布创建文件，同一 Workspace 相对路径的后续发布追加版本；artifact descriptor 的 `assetId`、`versionId` 与“我的文件”中的当前文件版本保持一致。该衔接由服务层执行，不依赖 Agent 再调用一次保存工具。
+`reviews.save` 以及在 `artifacts.publish` 中明确传入 `saveToMyFiles=true` 的正式交付物，如被判定为 `durable_library`，服务会同步登记到 `user_assets`。普通聊天发布写入 `deliveries/` 并保持临时状态，直到用户执行保存。首次自动入库创建文件，同一 Workspace 相对路径的后续正式发布追加版本；artifact descriptor 的 `assetId`、`versionId` 与 `savedToMyFiles=true` 与“我的文件”中的当前文件版本保持一致。该衔接由服务层执行，不依赖 Agent 再调用一次保存工具。
 
 Artifact payload 的公共字段包括：
 
@@ -296,3 +299,16 @@ npm run verify
 ```
 
 Portal 仓库与本地 runtime 改动协议时必须在同一变更窗口对齐 `protocolVersion`、command 类型与 scope 语义。
+### Asset list quota fields
+
+`asset.list` 的成功数据在保持既有 `items` 字段兼容的同时，可返回：
+
+```json
+{"items": [], "catalog": [], "reportMappings": [], "storageUsage": {"usedBytes": 0, "reservedBytes": 0, "limitBytes": 209715200, "availableBytes": 209715200}}
+```
+
+客户端不得将该字段作为写入安全边界；上传仍由 Runtime 按解码后的单文件 `10 MiB`、单请求 `20 MiB` 和 scope `200 MiB` 强制校验。
+
+`catalog` 是受控虚拟列表，条目 `catalogKind` 为 `asset` 或 `report`；报告条目只携带 opaque `reportMappingId`，不返回 Workspace 路径。`asset.upload` 保持旧单文件 payload 兼容，同时接受 `{ files: [...] }`；批量请求会先校验全部 base64 与总原始字节，只有通过前置校验才开始逐文件写入，并以 `{ items: [...] }` 返回每一项结果。
+
+`asset.conversation.save` 只接受 scope-bound `artifactId` 和可选名称。它表示用户在 Portal 明确执行“保存到我的文件”，创建 `source=conversation` 的长期资产；临时附件和未保存交付物不自动占用 200 MiB 配额。`report.mapping.get` 只接受 opaque `mappingId`，同 scope 可读取映射的受控 backing bytes；backing asset/version 映射不得复制或重复计费。

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { sqlite } from "../db/index.js";
-import { createAgent } from "../acp/agent.js";
+import { createAgent, type AcpAgent } from "../acp/agent.js";
 import type { AcpMessage, AcpResponse } from "../acp/protocol.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser, type UserContext } from "../lib/user-context.js";
 import { ensureDefaultAiInstanceForUser } from "../lib/user-identity.js";
@@ -31,6 +31,7 @@ import {
   type AutomationTaskRecord,
 } from "./automation-tasks.js";
 import { writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
+import { classifyTaskError, executeWithRetryPolicy, executionResponseError, terminalTaskError } from "./task-execution.js";
 
 export type ConversationChannel = "web" | "weixin-mobile";
 export type ConversationRole = "user" | "assistant" | "system";
@@ -450,7 +451,7 @@ export function getConversationMessageByIdempotencyKey(input: { idempotencyKey: 
   return row ? rowToMessage(row) : null;
 }
 
-function getAssistantMessageByRequestId(input: {
+export function getAssistantMessageByRequestId(input: {
   conversationId: string;
   requestId: string;
 }): ConversationMessageRecord | null {
@@ -587,6 +588,8 @@ export async function chatViaConversationLog(input: {
   attachments?: IncomingPortalAttachment[];
   idempotencyKey?: string;
   clientSentAt?: string;
+  /** Internal/test injection point; Portal routes never accept an agent body field. */
+  agent?: AcpAgent;
 }): Promise<ConversationChatResult> {
   if (input.idempotencyKey) {
     const pending = pendingPortalChats.get(input.idempotencyKey);
@@ -758,6 +761,7 @@ async function chatViaConversationLogOnce(input: {
   attachments?: IncomingPortalAttachment[];
   idempotencyKey?: string;
   clientSentAt?: string;
+  agent?: AcpAgent;
 }): Promise<ConversationChatResult> {
   const scope = normalizeConversationScope(input);
   if (input.idempotencyKey) {
@@ -851,7 +855,7 @@ async function chatViaConversationLogOnce(input: {
     }
   }
 
-  const agent = createAgent();
+  const agent = input.agent ?? createAgent();
   const acpMessage: AcpMessage = {
     id: requestId,
     from: input.conversationId,
@@ -879,59 +883,110 @@ async function chatViaConversationLogOnce(input: {
     instanceId: runtime?.instanceId || scope.instanceId,
     conversationId: input.conversationId,
   };
+  const persistResponse = async (response: AcpResponse, automationFailure: boolean, messageId?: string): Promise<ConversationChatResult> => {
+    const assistantText = response.content.text ?? "处理完成，但没有生成文本回复。";
+    const inlineVisuals = Array.isArray(response.data?.inlineVisuals) ? response.data.inlineVisuals : undefined;
+    const assistantMessage = appendConversationMessage({
+      scope: persistenceScope,
+      conversationId: input.conversationId,
+      channel: "web",
+      role: "assistant",
+      content: assistantText,
+      ...(automationFailure ? { status: "failed" as const } : {}),
+      ...(messageId ? { messageId } : {}),
+      requestId,
+    metadata: (() => {
+      const responseError = executionResponseError(response);
+      return {
+        ...(inlineVisuals && inlineVisuals.length > 0 ? { inlineVisuals } : {}),
+        ...(responseError ? {
+          executionStatus: "failed",
+          executionErrorCode: responseError.code,
+          executionErrorCategory: responseError.category,
+          executionRetryable: responseError.retryable,
+        } : {}),
+      };
+    })(),
+    });
+    const artifacts = attachArtifactsToAssistantMessage({
+      conversationId: input.conversationId,
+      assistantMessageId: assistantMessage.messageId,
+      userId: scope.userId,
+      instanceId: runtime?.instanceId || scope.instanceId,
+      turnId: requestId,
+    });
+    await rememberConversationTurn({
+      userId: scope.userId,
+      projectId: runtime?.projectId || scope.projectId,
+      instanceId: runtime?.instanceId || scope.instanceId,
+      instanceExpansionPath: runtime?.instanceExpansionPath,
+      workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
+      channel: "web",
+      conversationId: input.conversationId,
+    }, userTextForAgent, assistantText);
+    return {
+      conversationId: input.conversationId,
+      userMessage,
+      assistantMessage: withArtifactMetadata(assistantMessage, artifacts),
+      traceId: requestId,
+    };
+  };
+
+  const cleanupTurn = async () => {
+    markTurnEnd({ ...turnScope, turnId: requestId });
+    await automationConversation?.cleanup();
+  };
   markTurnStart({ ...turnScope, turnId: requestId });
   let response: AcpResponse;
   let automationFailure = false;
   try {
-    response = await agent.handleMessage(acpMessage);
+    response = await executeWithRetryPolicy(
+      () => agent.handleMessage(acpMessage),
+      {
+        executionBudgetMs: Number(process.env.PORTAL_EXECUTION_BUDGET_MS) || undefined,
+        isRetryableResult: (candidate) => Boolean(executionResponseError(candidate)?.retryable),
+      },
+    );
+    const responseError = executionResponseError(response);
+    automationFailure = Boolean(responseError);
+    if (responseError && !automationConversation) {
+      const terminal = terminalTaskError(responseError);
+      response = {
+        content: { type: "text", text: terminal.userMessage },
+        finished: true,
+        data: {
+          executionStatus: "failed",
+          executionErrorCode: terminal.code,
+          executionErrorCategory: terminal.category,
+          executionRetryable: false,
+        },
+      };
+    }
     if (automationConversation) await automationConversation.complete(response);
   } catch (error) {
-    if (!automationConversation) throw error;
     automationFailure = true;
-    const errorCode = error instanceof Error ? error.message : "ACP_TURN_FAILED";
+    const classified = terminalTaskError(classifyTaskError(error));
     response = {
-      content: { type: "text", text: "这次自动化后续操作失败了，工作文件没有被修改。请查看运行详情后重试。" },
+      content: {
+        type: "text",
+        text: automationConversation
+          ? "这次自动化后续操作失败了，工作文件没有被修改。请查看运行详情后重试。"
+          : classified.userMessage,
+      },
       finished: true,
-      data: { executionStatus: "failed", executionErrorCode: errorCode },
+      data: {
+        executionStatus: "failed",
+        executionErrorCode: classified.code,
+        executionErrorCategory: classified.category,
+        executionRetryable: false,
+      },
     };
-  } finally {
-    markTurnEnd({ ...turnScope, turnId: requestId });
-    await automationConversation?.cleanup();
   }
-  const assistantText = response.content.text ?? "处理完成，但没有生成文本回复。";
-  const inlineVisuals = Array.isArray(response.data?.inlineVisuals) ? response.data.inlineVisuals : undefined;
-  const assistantMessage = appendConversationMessage({
-    scope: persistenceScope,
-    conversationId: input.conversationId,
-    channel: "web",
-    role: "assistant",
-    content: assistantText,
-    ...(automationFailure ? { status: "failed" as const } : {}),
-    requestId,
-    metadata: inlineVisuals && inlineVisuals.length > 0 ? { inlineVisuals } : undefined,
-  });
-  const artifacts = attachArtifactsToAssistantMessage({
-    conversationId: input.conversationId,
-    assistantMessageId: assistantMessage.messageId,
-    userId: scope.userId,
-    instanceId: runtime?.instanceId || scope.instanceId,
-    turnId: requestId,
-  });
-  await rememberConversationTurn({
-    userId: scope.userId,
-    projectId: runtime?.projectId || scope.projectId,
-    instanceId: runtime?.instanceId || scope.instanceId,
-    instanceExpansionPath: runtime?.instanceExpansionPath,
-    workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
-    channel: "web",
-    conversationId: input.conversationId,
-  }, userTextForAgent, assistantText);
-  return {
-    conversationId: input.conversationId,
-    userMessage,
-    assistantMessage: withArtifactMetadata(assistantMessage, artifacts),
-    traceId: requestId,
-  };
+  try {
+    return await persistResponse(response, automationFailure);
+  } finally {
+    await cleanupTurn();
+  }
 }
 
 function withArtifactMetadata(
@@ -959,6 +1014,7 @@ function toPublicArtifactDescriptor(artifact: ConversationArtifactRecord) {
     checksum: artifact.checksum,
     assetId: artifact.assetId ?? null,
     versionId: artifact.versionId ?? null,
+    savedToMyFiles: Boolean(artifact.assetId && artifact.versionId),
     workspacePath: browsableArtifactWorkspacePath(artifact),
   };
 }
@@ -970,20 +1026,24 @@ function enrichArtifactWorkspacePaths(input: {
   instanceId: string;
 }): ConversationMessageRecord[] {
   const rows = sqlite.prepare(`
-    SELECT artifact_id AS artifactId, relative_path AS relativePath, preview_mode AS previewMode
+    SELECT artifact_id AS artifactId, relative_path AS relativePath, preview_mode AS previewMode,
+           asset_id AS assetId, version_id AS versionId
     FROM conversation_artifacts
     WHERE conversation_id = ? AND user_id = ? AND instance_id = ?
   `).all(input.conversationId, input.userId, input.instanceId) as Array<{
     artifactId: string;
     relativePath: string;
     previewMode: string;
+    assetId: string | null;
+    versionId: string | null;
   }>;
-  const paths = new Map(
-    rows.flatMap((row) => isWorkspaceBrowsablePreviewMode(row.previewMode)
-      ? [[row.artifactId, row.relativePath] as const]
-      : []),
+  const details = new Map(
+    rows.map((row) => [row.artifactId, {
+      workspacePath: isWorkspaceBrowsablePreviewMode(row.previewMode) ? row.relativePath : undefined,
+      savedToMyFiles: Boolean(row.assetId && row.versionId),
+    }] as const),
   );
-  if (paths.size === 0) return input.messages;
+  if (details.size === 0) return input.messages;
   return input.messages.map((message) => {
     const artifacts = message.metadata?.artifacts;
     if (!Array.isArray(artifacts)) return message;
@@ -991,10 +1051,17 @@ function enrichArtifactWorkspacePaths(input: {
     const enriched = artifacts.map((artifact) => {
       if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return artifact;
       const record = artifact as Record<string, unknown>;
-      const workspacePath = typeof record.artifactId === "string" ? paths.get(record.artifactId) : undefined;
-      if (!workspacePath || record.workspacePath === workspacePath) return artifact;
+      const detail = typeof record.artifactId === "string" ? details.get(record.artifactId) : undefined;
+      if (!detail) return artifact;
+      const workspacePathChanged = detail.workspacePath && record.workspacePath !== detail.workspacePath;
+      const saveStateChanged = record.savedToMyFiles !== detail.savedToMyFiles;
+      if (!workspacePathChanged && !saveStateChanged) return artifact;
       changed = true;
-      return { ...record, workspacePath };
+      return {
+        ...record,
+        ...(workspacePathChanged ? { workspacePath: detail.workspacePath } : {}),
+        savedToMyFiles: detail.savedToMyFiles,
+      };
     });
     return changed
       ? { ...message, metadata: { ...message.metadata, artifacts: enriched } }
@@ -1078,6 +1145,7 @@ function attachArtifactsToAssistantMessage(input: {
     previewMode: record.previewMode,
     createdAt: record.createdAt,
     checksum: record.checksum,
+    savedToMyFiles: Boolean(record.assetId && record.versionId),
     workspacePath: browsableArtifactWorkspacePath(record),
   }));
   if (descriptors.length === 0) return undefined;

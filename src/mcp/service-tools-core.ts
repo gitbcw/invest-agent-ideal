@@ -8,19 +8,33 @@ import {
   type ConversationArtifactRecord,
 } from "../services/conversation-artifacts.js";
 import {
+  archiveUserAsset,
   createUserAsset,
+  deleteUserAsset,
   getUserAsset,
+  listUserAssets,
   listUserAssetReferences,
   listUserAssetVersions,
   readCurrentUserAsset,
   readUserAssetVersion,
+  renameUserAsset,
   saveConversationArtifactAsUserAsset,
   uploadUserAssetVersion,
   UserAssetError,
 } from "../services/user-assets.js";
-import { getAutomationTask, getAutomationTaskRun, listAutomationTaskRevisions } from "../services/automation-tasks.js";
+import {
+  activateAutomationTask,
+  createAutomationTask,
+  getAutomationTask,
+  getAutomationTaskRun,
+  listAutomationTaskRevisions,
+  listAutomationTasks,
+  pauseAutomationTask,
+  updateAutomationTask,
+} from "../services/automation-tasks.js";
 import { isWorkspaceBackend, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
+import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId } from "../lib/user-context.js";
@@ -125,12 +139,15 @@ export async function callServiceTool(
   context: ServiceToolContext
 ): Promise<unknown> {
   try {
-    const resourceKeys = mutationResourceKeysForOperation(name, input);
+    const resourceKeys = [
+      ...mutationResourceKeysForOperation(name, input),
+      ...directAutomationResourceKeys(name, input),
+    ];
     return resourceKeys.length > 0
       ? await withResourceMutationLock(context, resourceKeys, () => dispatchServiceTool(name, input, context))
       : await dispatchServiceTool(name, input, context);
   } catch (error) {
-    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read" || name.startsWith("assets.")) {
+    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || DIRECT_AUTOMATION_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read" || name.startsWith("assets.")) {
       await audit(context, {
         operation: name,
         resourceType: "service_tool",
@@ -146,6 +163,19 @@ export async function callServiceTool(
     }
     throw error;
   }
+}
+
+function directAutomationResourceKeys(name: string, input: Record<string, unknown> | undefined): string[] {
+  if (name === "assets.list" || name === "automation.list" || name === "automation.get") return [];
+  if (name === "automation.create") {
+    const taskId = stringInput(input?.taskId);
+    return [taskId ? `automation-task:${taskId}` : "automation-task:create"];
+  }
+  if (name === "automation.update" || name === "automation.activate" || name === "automation.pause") {
+    const taskId = stringInput(input?.taskId);
+    return [taskId ? `automation-task:${taskId}` : "automation-task:invalid"];
+  }
+  return [];
 }
 
 async function dispatchServiceTool(
@@ -334,12 +364,32 @@ async function dispatchServiceTool(
     }
     case "conversation.history":
       return readConversationHistory(input, context);
+    case "assets.list":
+      return listAssetsTool(input, context);
     case "assets.version.read":
       return readAssetVersionTool(input, context);
     case "assets.version.commit":
       return submitAssetVersionTool(input, context);
     case "assets.conversation.save":
       return saveConversationAssetTool(input, context);
+    case "assets.rename":
+      return renameAssetTool(input, context);
+    case "assets.archive":
+      return archiveAssetTool(input, context);
+    case "assets.delete":
+      return deleteAssetTool(input, context);
+    case "automation.list":
+      return listAutomationTool(input, context);
+    case "automation.get":
+      return getAutomationTool(input, context);
+    case "automation.create":
+      return createAutomationTool(input, context);
+    case "automation.update":
+      return updateAutomationTool(input, context);
+    case "automation.activate":
+      return setAutomationActiveTool(input, context);
+    case "automation.pause":
+      return setAutomationPausedTool(input, context);
     case "confirmations.pending":
       return readPendingConfirmations(input, context);
     case "confirmations.request":
@@ -426,7 +476,6 @@ async function readAssetVersionTool(input: Record<string, unknown> | undefined, 
   const assetId = stringInput(input?.assetId);
   if (!assetId) throw new UserAssetError("ASSET_NOT_FOUND", "assetId is required");
   const scope = assetScope(context);
-  await assertAssetReadAuthorized(scope, context, assetId, stringInput(input?.versionId));
   const result = stringInput(input?.versionId)
     ? await readUserAssetVersion({ ...scope, assetId, versionId: stringInput(input?.versionId)! })
     : await readCurrentUserAsset({ ...scope, assetId });
@@ -445,20 +494,254 @@ async function readAssetVersionTool(input: Record<string, unknown> | undefined, 
   };
 }
 
+type DirectAutomationStatus = "active" | "paused";
+
+function automationToolScope(context: ServiceToolContext) {
+  return {
+    userId: context.userId,
+    projectId: context.projectId || DEFAULT_PROJECT_ID,
+    instanceId: context.instanceId,
+  };
+}
+
+function requestedAutomationStatus(input: Record<string, unknown> | undefined): DirectAutomationStatus | undefined {
+  const status = stringInput(input?.status);
+  if (status === "active" || status === "paused") return status;
+  if (typeof input?.enabled === "boolean") return input.enabled ? "active" : "paused";
+  if (typeof input?.activate === "boolean") return input.activate ? "active" : "paused";
+  if (typeof input?.active === "boolean") return input.active ? "active" : "paused";
+  return undefined;
+}
+
+function automationDefinitionInput(input: Record<string, unknown> | undefined) {
+  const value = input ?? {};
+  return {
+    ...(stringInput(value.taskId) ? { taskId: stringInput(value.taskId) } : {}),
+    name: value.name,
+    ...(value.description !== undefined ? { description: value.description } : {}),
+    schedule: value.schedule,
+    ...(value.instruction !== undefined ? { instruction: value.instruction } : {}),
+    ...(value.inputs !== undefined ? { inputs: value.inputs } : {}),
+    ...(value.output !== undefined ? { output: value.output } : {}),
+    ...(value.delivery !== undefined ? { delivery: value.delivery } : {}),
+  };
+}
+
+function automationUpdateDefinitionInput(input: Record<string, unknown> | undefined) {
+  const value = input ?? {};
+  return {
+    taskId: value.taskId,
+    ...(value.expectedRevision !== undefined ? { expectedRevision: value.expectedRevision } : {}),
+    ...(value.name !== undefined ? { name: value.name } : {}),
+    ...(value.description !== undefined ? { description: value.description } : {}),
+    ...(value.schedule !== undefined ? { schedule: value.schedule } : {}),
+    ...(value.instruction !== undefined ? { instruction: value.instruction } : {}),
+    ...(value.inputs !== undefined ? { inputs: value.inputs } : {}),
+    ...(value.output !== undefined ? { output: value.output } : {}),
+    ...(value.delivery !== undefined ? { delivery: value.delivery } : {}),
+  };
+}
+
+function hasAutomationDefinitionUpdate(input: Record<string, unknown> | undefined): boolean {
+  const value = input ?? {};
+  return ["name", "description", "schedule", "instruction", "inputs", "output", "delivery"]
+    .some((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+async function listAssetsTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const value = input ?? {};
+  const scope = automationToolScope(context);
+  const assets = await listUserAssets({
+    ...scope,
+    ...(value.status === "active" || value.status === "archived" || value.status === "all" ? { status: value.status } : {}),
+    ...(typeof value.search === "string" ? { search: value.search } : {}),
+    ...(typeof value.format === "string" ? { format: value.format as never } : {}),
+    ...(typeof value.source === "string" ? { source: value.source as never } : {}),
+    ...(typeof value.limit === "number" ? { limit: value.limit } : {}),
+  });
+  await audit(context, {
+    operation: "assets.list",
+    resourceType: "user_asset",
+    resourceId: context.instanceId,
+    requestBody: {
+      status: value.status ?? null,
+      search: value.search ?? null,
+      format: value.format ?? null,
+      source: value.source ?? null,
+      limit: value.limit ?? null,
+    },
+    resultSummary: `assets=${assets.length}`,
+  });
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    count: assets.length,
+    items: assets.map((asset) => publicAssetDescriptor(asset)),
+  };
+}
+
+async function listAutomationTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const value = input ?? {};
+  const statuses = Array.isArray(value.statuses)
+    ? value.statuses.filter((status): status is "paused" | "active" | "needs_attention" | "archived" =>
+      status === "paused" || status === "active" || status === "needs_attention" || status === "archived")
+    : undefined;
+  const frequencies = Array.isArray(value.frequencies)
+    ? value.frequencies.filter((frequency): frequency is "daily" | "trading_days" | "weekdays" | "weekly" =>
+      frequency === "daily" || frequency === "trading_days" || frequency === "weekdays" || frequency === "weekly")
+    : undefined;
+  const deliveryModes = Array.isArray(value.deliveryModes)
+    ? value.deliveryModes.filter((mode): mode is "none" | "wechat_summary" | "wechat_on_condition" =>
+      mode === "none" || mode === "wechat_summary" || mode === "wechat_on_condition")
+    : undefined;
+  const outputModes = Array.isArray(value.outputModes)
+    ? value.outputModes.filter((mode): mode is "none" | "agent" | "create" | "update" =>
+      mode === "none" || mode === "agent" || mode === "create" || mode === "update")
+    : undefined;
+  const items = await listAutomationTasks(automationToolScope(context), {
+    ...(typeof value.query === "string" ? { query: value.query } : {}),
+    ...(statuses?.length ? { statuses } : {}),
+    ...(frequencies?.length ? { frequencies } : {}),
+    ...(deliveryModes?.length ? { deliveryModes } : {}),
+    ...(outputModes?.length ? { outputModes } : {}),
+    ...(typeof value.cursor === "string" ? { cursor: value.cursor } : {}),
+    ...(typeof value.limit === "number" ? { limit: value.limit } : {}),
+  });
+  await audit(context, {
+    operation: "automation.list",
+    resourceType: "automation_task",
+    resourceId: context.instanceId,
+    requestBody: {
+      query: value.query ?? null,
+      statuses: statuses ?? null,
+      frequencies: frequencies ?? null,
+      deliveryModes: deliveryModes ?? null,
+      outputModes: outputModes ?? null,
+      cursor: value.cursor ?? null,
+      limit: value.limit ?? null,
+    },
+    resultSummary: `tasks=${items.length}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, count: items.length, items };
+}
+
+async function getAutomationTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const taskId = stringInput(input?.taskId);
+  if (!taskId) throw new Error("taskId is required");
+  const task = await getAutomationTask({ ...automationToolScope(context), taskId });
+  await audit(context, {
+    operation: "automation.get",
+    resourceType: "automation_task",
+    resourceId: taskId,
+    requestBody: { taskId },
+    resultSummary: task ? `status=${task.status}; revision=${task.currentRevision}` : "not_found",
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
+}
+
+async function createAutomationTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const value = input ?? {};
+  const scope = automationToolScope(context);
+  const created = await createAutomationTask({ ...scope, ...automationDefinitionInput(value) } as never);
+  const requestedStatus = requestedAutomationStatus(value);
+  // Direct assistant creation is an enable-on-create flow by default. A
+  // caller can explicitly request paused when preparing a task for later.
+  const task = requestedStatus === "paused"
+    ? created
+    : await activateAutomationTask({ ...scope, taskId: created.taskId, expectedRevision: created.currentRevision });
+  await audit(context, {
+    operation: "automation.create",
+    resourceType: "automation_task",
+    resourceId: task.taskId,
+    requestBody: { ...automationDefinitionInput(value), status: requestedStatus ?? "active" },
+    resultSummary: `created; status=${task.status}; revision=${task.currentRevision}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
+}
+
+async function updateAutomationTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const value = input ?? {};
+  const taskId = stringInput(value.taskId);
+  if (!taskId) throw new Error("taskId is required");
+  const scope = automationToolScope(context);
+  const current = await getAutomationTask({ ...scope, taskId });
+  if (!current) throw new Error(`automation task not found: ${taskId}`);
+  const requestedStatus = requestedAutomationStatus(value);
+
+  if (!hasAutomationDefinitionUpdate(value) && requestedStatus) {
+    const task = requestedStatus === "active"
+      ? await activateAutomationTask({ ...scope, taskId, expectedRevision: typeof value.expectedRevision === "number" ? value.expectedRevision : undefined })
+      : await pauseAutomationTask({ ...scope, taskId, expectedRevision: typeof value.expectedRevision === "number" ? value.expectedRevision : undefined });
+    await audit(context, {
+      operation: "automation.update",
+      resourceType: "automation_task",
+      resourceId: taskId,
+      requestBody: { taskId, status: requestedStatus, expectedRevision: value.expectedRevision ?? null },
+      resultSummary: `status=${task.status}; revision=${task.currentRevision}`,
+    });
+    return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
+  }
+
+  const revised = await updateAutomationTask({ ...scope, ...automationUpdateDefinitionInput(value) } as never);
+  const shouldRemainActive = requestedStatus === "active" || (requestedStatus !== "paused" && current.status === "active");
+  const task = shouldRemainActive
+    ? await activateAutomationTask({ ...scope, taskId, expectedRevision: revised.currentRevision })
+    : revised;
+  await audit(context, {
+    operation: "automation.update",
+    resourceType: "automation_task",
+    resourceId: taskId,
+    requestBody: { ...automationUpdateDefinitionInput(value), status: requestedStatus ?? (current.status === "active" ? "active" : "paused") },
+    resultSummary: `updated; status=${task.status}; revision=${task.currentRevision}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
+}
+
+async function setAutomationActiveTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const taskId = stringInput(input?.taskId);
+  if (!taskId) throw new Error("taskId is required");
+  const task = await activateAutomationTask({
+    ...automationToolScope(context),
+    taskId,
+    expectedRevision: typeof input?.expectedRevision === "number" ? input.expectedRevision : undefined,
+  });
+  await audit(context, {
+    operation: "automation.activate",
+    resourceType: "automation_task",
+    resourceId: taskId,
+    requestBody: { taskId, expectedRevision: input?.expectedRevision ?? null },
+    resultSummary: `status=${task.status}; revision=${task.currentRevision}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
+}
+
+async function setAutomationPausedTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const taskId = stringInput(input?.taskId);
+  if (!taskId) throw new Error("taskId is required");
+  const task = await pauseAutomationTask({
+    ...automationToolScope(context),
+    taskId,
+    expectedRevision: typeof input?.expectedRevision === "number" ? input.expectedRevision : undefined,
+  });
+  await audit(context, {
+    operation: "automation.pause",
+    resourceType: "automation_task",
+    resourceId: taskId,
+    requestBody: { taskId, expectedRevision: input?.expectedRevision ?? null },
+    resultSummary: `status=${task.status}; revision=${task.currentRevision}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
+}
+
 async function submitAssetVersionTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const assetId = stringInput(input?.assetId);
   const fileName = stringInput(input?.fileName);
   const base64 = stringInput(input?.base64);
   if (!assetId || !fileName || !base64) throw new UserAssetError("ASSET_INVALID_CONTENT", "assetId, fileName and base64 are required");
   const run = await automationAssetRun(context);
-  let confirmation: Awaited<ReturnType<typeof prepareBoundConfirmation>> | undefined;
   if (run) {
     assertAutomationOutputTarget(run, assetId, "commit");
-  } else {
-    if (input?.confirmedByUser !== true || !stringInput(input?.confirmationId)) {
-      throw new UserAssetError("ASSET_CONFIRMATION_REQUIRED", "confirmationId and confirmedByUser=true are required");
-    }
-    confirmation = await prepareBoundConfirmation(input, context, "assets.version.commit");
   }
   const scope = assetScope(context);
   const saved = await uploadUserAssetVersion({
@@ -476,7 +759,6 @@ async function submitAssetVersionTool(input: Record<string, unknown> | undefined
     runId: context.runId ?? null,
     idempotencyKey: stringInput(input?.idempotencyKey),
   });
-  if (confirmation) await confirmation.consume();
   await audit(context, {
     operation: "assets.version.commit",
     resourceType: "user_asset",
@@ -492,14 +774,8 @@ async function saveConversationAssetTool(input: Record<string, unknown> | undefi
   const base64 = stringInput(input?.base64);
   if (!fileName || !base64) throw new UserAssetError("ASSET_INVALID_CONTENT", "fileName and base64 are required");
   const run = await automationAssetRun(context);
-  let confirmation: Awaited<ReturnType<typeof prepareBoundConfirmation>> | undefined;
   if (run) {
     assertAutomationOutputTarget(run, stringInput(input?.assetId), "save");
-  } else {
-    if (input?.confirmedByUser !== true || !stringInput(input?.confirmationId)) {
-      throw new UserAssetError("ASSET_CONFIRMATION_REQUIRED", "confirmationId and confirmedByUser=true are required");
-    }
-    confirmation = await prepareBoundConfirmation(input, context, "assets.conversation.save");
   }
   const saved = await saveConversationArtifactAsUserAsset({
     ...assetScope(context),
@@ -508,13 +784,14 @@ async function saveConversationAssetTool(input: Record<string, unknown> | undefi
     mimeType: stringInput(input?.mimeType),
     bytes: decodeAssetBase64(base64),
     assetId: stringInput(input?.assetId),
-    confirmedByUser: Boolean(run || input?.confirmedByUser === true),
+    // MCP permission authorizes ordinary conversation saves. The service
+    // retains its confirmation guard for callers outside this capability.
+    confirmedByUser: true,
     conversationId: context.conversationId ?? null,
     taskId: run?.taskId ?? null,
     runId: context.runId ?? null,
     idempotencyKey: stringInput(input?.idempotencyKey),
   });
-  if (confirmation) await confirmation.consume();
   await audit(context, {
     operation: "assets.conversation.save",
     resourceType: "user_asset",
@@ -523,6 +800,45 @@ async function saveConversationAssetTool(input: Record<string, unknown> | undefi
     resultSummary: "versionId=" + (saved.currentVersionId || "") + "; source=" + (run ? "automation" : "conversation"),
   });
   return { ok: true, asset: publicAssetDescriptor(saved), version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null };
+}
+
+async function renameAssetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const assetId = stringInput(input?.assetId);
+  const name = stringInput(input?.name);
+  if (!assetId || !name) throw new UserAssetError("ASSET_NOT_FOUND", "assetId and name are required");
+  await assertInteractiveAssetMutation(context, "rename");
+  const saved = await renameUserAsset({ ...assetScope(context), assetId, name });
+  await audit(context, {
+    operation: "assets.rename", resourceType: "user_asset", resourceId: saved.assetId,
+    requestBody: { assetId, name }, resultSummary: "renamed",
+  });
+  return { ok: true, asset: publicAssetDescriptor(saved) };
+}
+
+async function archiveAssetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const assetId = stringInput(input?.assetId);
+  if (!assetId) throw new UserAssetError("ASSET_NOT_FOUND", "assetId is required");
+  await assertInteractiveAssetMutation(context, "archive");
+  const saved = await archiveUserAsset({ ...assetScope(context), assetId });
+  await audit(context, {
+    operation: "assets.archive", resourceType: "user_asset", resourceId: saved.assetId,
+    requestBody: { assetId }, resultSummary: "archived",
+  });
+  return { ok: true, asset: publicAssetDescriptor(saved) };
+}
+
+async function deleteAssetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const assetId = stringInput(input?.assetId);
+  if (!assetId) throw new UserAssetError("ASSET_NOT_FOUND", "assetId is required");
+  await assertInteractiveAssetMutation(context, "delete");
+  const confirmation = await prepareBoundConfirmation(input, context, "assets.delete");
+  const deleted = await deleteUserAsset({ ...assetScope(context), assetId });
+  await confirmation.consume();
+  await audit(context, {
+    operation: "assets.delete", resourceType: "user_asset", resourceId: deleted.assetId,
+    requestBody: { assetId }, resultSummary: "deletedVersions=" + deleted.deletedVersions,
+  });
+  return { ok: true, ...deleted };
 }
 
 type AutomationAssetRunContext = {
@@ -558,43 +874,10 @@ async function automationAssetRun(context: ServiceToolContext): Promise<Automati
   return { taskId: run.taskId, run, revision };
 }
 
-async function assertAssetReadAuthorized(
-  scope: ReturnType<typeof assetScope>,
-  context: ServiceToolContext,
-  assetId: string,
-  versionId: string | undefined,
-): Promise<void> {
+async function assertInteractiveAssetMutation(context: ServiceToolContext, operation: string): Promise<void> {
   const run = await automationAssetRun(context);
   if (run) {
-    const inputVersion = run.run.inputVersions?.find((item) => item.assetId === assetId);
-    const outputVersion = run.run.outputAssetId === assetId
-      ? { assetId, versionId: run.run.outputVersionId }
-      : undefined;
-    const bound = inputVersion || outputVersion;
-    if (!bound || (versionId && bound.versionId && versionId !== bound.versionId)) {
-      throw new UserAssetError("ASSET_SCOPE_MISMATCH", assetId);
-    }
-    if (!versionId && bound.versionId) {
-      const current = await readCurrentUserAsset({ ...scope, assetId });
-      if (current.descriptor.versionId !== bound.versionId) {
-        throw new UserAssetError("ASSET_VERSION_CONFLICT", assetId);
-      }
-    }
-    return;
-  }
-  if (!context.conversationId) throw new UserAssetError("ASSET_SCOPE_MISMATCH", assetId);
-  const rows = await db.select({ versionId: conversationArtifacts.versionId })
-    .from(conversationArtifacts)
-    .where(and(
-      eq(conversationArtifacts.userId, scope.userId),
-      eq(conversationArtifacts.projectId, scope.projectId),
-      eq(conversationArtifacts.instanceId, scope.instanceId),
-      eq(conversationArtifacts.conversationId, context.conversationId),
-      eq(conversationArtifacts.assetId, assetId),
-    ))
-    .limit(20);
-  if (!rows.some((row) => !versionId || !row.versionId || row.versionId === versionId)) {
-    throw new UserAssetError("ASSET_SCOPE_MISMATCH", assetId);
+    throw new UserAssetError("AUTOMATION_ASSET_BINDING_INVALID", `scheduled automation cannot ${operation} assets`);
   }
 }
 
@@ -840,6 +1123,16 @@ const DRAFT_OPERATIONS = new Set([
   "onboarding.draft.skip_watch_rules",
   "onboarding.draft.enqueue_commit",
   "onboarding.draft.commit_status",
+]);
+
+const DIRECT_AUTOMATION_OPERATIONS = new Set([
+  "assets.list",
+  "automation.list",
+  "automation.get",
+  "automation.create",
+  "automation.update",
+  "automation.activate",
+  "automation.pause",
 ]);
 
 function requireDraftConversation(context: ServiceToolContext) {
@@ -1701,12 +1994,14 @@ async function publishArtifact(input: Record<string, unknown> | undefined, conte
   const title = stringInput(input?.title) || undefined;
   const kindRaw = stringInput(input?.kind);
   const kind = isArtifactKind(kindRaw) ? kindRaw : undefined;
+  const saveToMyFiles = input?.saveToMyFiles === true;
   const published = await publishConversationArtifact({
     userId: context.userId,
     instanceId: context.instanceId,
     relativePath,
     kind,
     title,
+    saveToMyFiles,
     scope: {
       projectId: context.projectId || DEFAULT_PROJECT_ID,
       assistantId: context.instanceId,
@@ -1719,7 +2014,7 @@ async function publishArtifact(input: Record<string, unknown> | undefined, conte
     operation: "artifacts.publish",
     resourceType: "conversation_artifact",
     resourceId: available.artifactId,
-    requestBody: { relativePath, kind, title },
+    requestBody: { relativePath, kind, title, saveToMyFiles },
     resultSummary: `published ${available.kind}/${available.previewMode} ${available.fileName}; assetId=${available.assetId ?? "none"}`,
   });
   return {
@@ -1791,6 +2086,21 @@ async function attachPublishedArtifactToUserFiles(
           eq(conversationArtifacts.projectId, published.scope.projectId),
           eq(conversationArtifacts.instanceId, published.instanceId),
         ));
+      if (published.retentionClass === "durable_library" && published.kind === "report") {
+        await registerReportAssetMapping({
+          userId: published.userId,
+          projectId: published.scope.projectId,
+          instanceId: published.instanceId,
+          reportId: published.artifactId,
+          title: published.title,
+          fileName: published.fileName,
+          mimeType: published.mimeType,
+          sizeBytes: published.sizeBytes,
+          backingAssetId: saved.assetId,
+          backingVersionId: versionId,
+          readPath: published.relativePath,
+        });
+      }
       return { ...published, assetId: saved.assetId, versionId };
     },
   );
@@ -2242,8 +2552,7 @@ const CONFIRMED_WRITE_OPERATIONS = new Set([
   "method_changes.apply",
   "preferences.apply",
   "watch_rules.create",
-  "assets.version.commit",
-  "assets.conversation.save",
+  "assets.delete",
 ]);
 
 async function requestConfirmation(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -2357,8 +2666,7 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
     "method_changes.apply": "method_change_candidate",
     "preferences.apply": "user_preferences",
     "watch_rules.create": "watch_rule",
-    "assets.version.commit": "user_asset_version",
-    "assets.conversation.save": "user_asset",
+    "assets.delete": "user_asset",
   };
   const resourceType = resourceByOperation[operation];
   if (!resourceType) throw new Error("operation is not confirmable");
@@ -2374,7 +2682,7 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
       ? stringInput(payload.candidateId)
       : operation === "preferences.apply"
           ? context.instanceId
-        : operation === "assets.version.commit" || operation === "assets.conversation.save"
+        : operation === "assets.delete"
           ? stringInput(payload.assetId) || context.instanceId
         : undefined;
   const requestBody = operation === "method_changes.apply"

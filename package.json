@@ -85,7 +85,8 @@
     "retention:backup": "tsx src/scripts/file-retention-backfill.ts backup",
     "retention:backfill": "tsx src/scripts/file-retention-backfill.ts backfill",
     "retention:cleanup": "tsx src/scripts/file-retention-backfill.ts cleanup",
-    "retention:trash": "tsx src/scripts/file-retention-backfill.ts trash"
+    "retention:trash": "tsx src/scripts/file-retention-backfill.ts trash",
+    "storage:reconcile": "tsx src/scripts/user-storage-reconcile.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.16.1",
@@ -98,6 +99,7 @@
     "fastify": "^5.8.5",
     "node-html-parser": "^7.1.0",
     "qrcode": "^1.5.4",
+    "sharp": "^0.33.5",
     "weixin-agent-sdk": "^0.1.1",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"

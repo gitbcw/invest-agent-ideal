@@ -46,6 +46,7 @@ import { continueAutomationRunInChat, runAutomationTaskNow } from "../services/a
 import { migrateLegacyAutomationTaskToAssets } from "../services/automation-task-migration.js";
 import {
   archiveUserAsset,
+  deleteUserAsset,
   createUserAsset,
   getUserAsset,
   listUserAssetReferences,
@@ -56,8 +57,11 @@ import {
   renameUserAsset,
   restoreUserAssetVersion,
   UserAssetError,
+  saveConversationArtifactAsUserAsset,
   uploadUserAssetVersion,
 } from "../services/user-assets.js";
+import { assertUploadRequestSize, getStorageUsage } from "../services/user-storage-quota.js";
+import { backfillFormalReportAssetMappings, getReportAssetMappingForRead, listReportAssetMappings, registerReportAssetMapping } from "../services/report-asset-mappings.js";
 
 const PROTOCOL_VERSION = "2026-08-05";
 const LEGACY_PROTOCOL_VERSION = "2026-07-04";
@@ -68,6 +72,7 @@ const TYPES = {
   CONVERSATION_GET: "conversation.get",
   CONVERSATION_CHAT: "conversation.chat",
   REPORT_ASSET_GET: "report.asset.get",
+  REPORT_MAPPING_GET: "report.mapping.get",
   ARTIFACT_GET: "artifact.get",
   ARTIFACT_LIBRARY_LIST: "artifact.library.list",
   ARTIFACT_PUBLISH_LEGACY: "artifact.publish.legacy",
@@ -93,8 +98,10 @@ const TYPES = {
   ASSET_VERSION_GET: "asset.version.get",
   ASSET_VERSIONS_LIST: "asset.versions.list",
   ASSET_UPLOAD: "asset.upload",
+  ASSET_CONVERSATION_SAVE: "asset.conversation.save",
   ASSET_RENAME: "asset.rename",
   ASSET_ARCHIVE: "asset.archive",
+  ASSET_DELETE: "asset.delete",
   ASSET_RESTORE_VERSION: "asset.restore_version",
   ASSET_REFERENCES_LIST: "asset.references.list",
 } as const;
@@ -267,7 +274,7 @@ function normalizeAutomationListQuery(payload: any) {
     statuses: normalizeStringArray(payload.statuses, ["paused", "active", "needs_attention", "archived"], "statuses") as any,
     frequencies: normalizeStringArray(payload.frequencies, ["daily", "trading_days", "weekdays", "weekly"], "frequencies") as any,
     deliveryModes: normalizeStringArray(payload.deliveryModes, ["none", "wechat_summary", "wechat_on_condition"], "deliveryModes") as any,
-    outputModes: normalizeStringArray(payload.outputModes, ["none", "create", "update"], "outputModes") as any,
+    outputModes: normalizeStringArray(payload.outputModes, ["none", "agent", "create", "update"], "outputModes") as any,
     cursor: typeof payload.cursor === "string" ? payload.cursor : undefined,
     limit: payload.limit === undefined ? undefined : Number(payload.limit),
   };
@@ -474,9 +481,22 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         status: rawStatus === "archived" ? "archived" : rawStatus === "all" ? "all" : "active",
         search: typeof message.payload?.search === "string" ? message.payload.search : undefined,
         format: typeof message.payload?.format === "string" ? message.payload.format as any : undefined,
+        source: typeof message.payload?.source === "string" ? message.payload.source as any : undefined,
         limit: message.payload?.limit === undefined ? undefined : Number(message.payload.limit),
       });
-      return finish(ok(message.type, message.requestId, { items: items.map(sanitizeAssetDescriptor) }));
+      const assetScope = automationScope(scope);
+      backfillFormalReportAssetMappings(assetScope);
+      const reports = listReportAssetMappings(assetScope);
+      const catalog = [
+        ...items.map((asset) => ({ ...sanitizeAssetDescriptor(asset), catalogId: `asset:${asset.assetId}`, catalogKind: "asset" as const, sources: [asset.currentVersion?.source || "system"] })),
+        ...reports.map((report) => ({
+          assetId: `report:${report.mappingId}`, name: report.title, status: "active" as const,
+          currentVersionId: null, currentVersion: null, createdAt: report.createdAt, updatedAt: report.createdAt,
+          archivedAt: null, catalogId: `report:${report.mappingId}`, catalogKind: "report" as const,
+          sources: ["report" as const], reportMappingId: report.mappingId, reportId: report.reportId,
+        })),
+      ];
+      return finish(ok(message.type, message.requestId, { items: items.map(sanitizeAssetDescriptor), catalog, reportMappings: reports, storageUsage: getStorageUsage(automationScope(scope)) }));
     }
     case TYPES.ASSET_GET: {
       const assetId = String(message.payload?.assetId || "");
@@ -503,10 +523,36 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       return finish(ok(message.type, message.requestId, { items: items.map(sanitizeAssetVersion) }));
     }
     case TYPES.ASSET_UPLOAD: {
+      if (Array.isArray(message.payload?.files)) {
+        const files = message.payload.files as Array<Record<string, unknown>>;
+        if (!files.length || files.length > 50) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "files must contain 1-50 items"));
+        const decoded = files.map((item) => ({
+          fileName: String(item.fileName || ""), base64: String(item.base64 || ""),
+          mimeType: typeof item.mimeType === "string" ? item.mimeType : undefined,
+          name: typeof item.name === "string" ? item.name : undefined,
+          idempotencyKey: typeof item.idempotencyKey === "string" ? item.idempotencyKey : undefined,
+        }));
+        if (decoded.some((item) => !item.fileName || !item.base64 || !isStrictBase64(item.base64))) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "every file requires valid fileName and base64"));
+        assertUploadRequestSize(decoded.map((item) => Buffer.byteLength(item.base64, "base64")));
+        const results: Array<Record<string, unknown>> = [];
+        for (let index = 0; index < decoded.length; index += 1) {
+          const item = decoded[index];
+          try {
+            const asset = await createUserAsset({ ...automationScope(scope), fileName: item.fileName, mimeType: item.mimeType, name: item.name, bytes: Buffer.from(item.base64, "base64"), source: "upload", idempotencyKey: item.idempotencyKey || `${message.requestId}:${index}` });
+            results.push({ index, fileName: item.fileName, ok: true, asset: sanitizeAssetDescriptor(asset) });
+          } catch (error) {
+            const domain = error instanceof UserAssetError ? error : new UserAssetError("ASSET_COMMIT_FAILED", "asset upload failed");
+            results.push({ index, fileName: item.fileName, ok: false, error: { code: domain.code, message: domain.message, details: domain.details } });
+          }
+        }
+        return finish(ok(message.type, message.requestId, { items: results }));
+      }
       const fileName = String(message.payload?.fileName || "");
       const base64 = String(message.payload?.base64 || "");
       if (!fileName || !base64) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "fileName and base64 are required"));
       if (!isStrictBase64(base64)) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "base64 is invalid"));
+      const decodedSize = Buffer.byteLength(base64, "base64");
+      assertUploadRequestSize([decodedSize]);
       const assetId = typeof message.payload?.assetId === "string" && message.payload.assetId.trim() ? message.payload.assetId : undefined;
       if (assetId && (typeof message.payload?.expectedVersionId !== "string" || !message.payload.expectedVersionId.trim() || typeof message.payload?.idempotencyKey !== "string" || !message.payload.idempotencyKey.trim())) {
         return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "existing asset upload requires expectedVersionId and idempotencyKey"));
@@ -535,6 +581,13 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
           });
       return finish(ok(message.type, message.requestId, sanitizeAssetDescriptor(asset)));
     }
+    case TYPES.ASSET_CONVERSATION_SAVE: {
+      const artifactId = String(message.payload?.artifactId || "");
+      if (!artifactId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "artifactId is required"));
+      const result = await readConversationArtifactPayload({ artifactId, userId: scope.userId, instanceId: scope.instanceId });
+      const saved = await saveConversationArtifactAsUserAsset({ ...automationScope(scope), name: typeof message.payload?.name === "string" ? message.payload.name : result.descriptor.title, fileName: result.payload.fileName, mimeType: result.payload.mimeType, bytes: Buffer.from(result.payload.base64, "base64"), confirmedByUser: true, conversationId: result.descriptor.conversationId, idempotencyKey: typeof message.payload?.idempotencyKey === "string" ? message.payload.idempotencyKey : `conversation-save:${artifactId}` });
+      return finish(ok(message.type, message.requestId, sanitizeAssetDescriptor(saved)));
+    }
     case TYPES.ASSET_RENAME: {
       const assetId = String(message.payload?.assetId || "");
       const name = String(message.payload?.name || "");
@@ -547,6 +600,11 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       if (!assetId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "assetId is required"));
       const asset = await archiveUserAsset({ ...automationScope(scope), assetId });
       return finish(ok(message.type, message.requestId, sanitizeAssetDescriptor(asset)));
+    }
+    case TYPES.ASSET_DELETE: {
+      const assetId = String(message.payload?.assetId || "");
+      if (!assetId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "assetId is required"));
+      return finish(ok(message.type, message.requestId, await deleteUserAsset({ ...automationScope(scope), assetId })));
     }
     case TYPES.ASSET_RESTORE_VERSION: {
       const assetId = String(message.payload?.assetId || "");
@@ -578,6 +636,48 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         userId: scope.userId,
         relativePath: String(message.payload?.relativePath || ""),
       })));
+    case TYPES.REPORT_MAPPING_GET: {
+      const mappingId = String(message.payload?.mappingId || "");
+      if (!mappingId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "mappingId is required"));
+      // Scope-bound lookup: a mapping that does not belong to the caller is
+      // indistinguishable from a missing one, so cross-scope opens fail safely.
+      const mapping = getReportAssetMappingForRead(automationScope(scope), mappingId);
+      if (!mapping) {
+        return finish(fail(message.type, message.requestId, "REPORT_MAPPING_NOT_FOUND", mappingId));
+      }
+      try {
+        if (mapping.backingAssetId) {
+          const backing = mapping.backingVersionId
+            ? await readUserAssetVersion({ ...automationScope(scope), assetId: mapping.backingAssetId, versionId: mapping.backingVersionId })
+            : await readCurrentUserAsset({ ...automationScope(scope), assetId: mapping.backingAssetId });
+          return finish(ok(message.type, message.requestId, {
+            mappingId: mapping.mappingId,
+            reportId: mapping.reportId,
+            title: mapping.title,
+            fileName: backing.descriptor.fileName,
+            mimeType: backing.descriptor.mimeType,
+            sizeBytes: backing.descriptor.sizeBytes,
+            base64: backing.bytes.toString("base64"),
+          }));
+        }
+        if (!mapping.readPath) return finish(fail(message.type, message.requestId, "REPORT_MAPPING_NOT_FOUND", mappingId));
+        const payload = await readWorkspaceReportAsset({ userId: scope.userId, relativePath: mapping.readPath });
+        return finish(ok(message.type, message.requestId, {
+          mappingId: mapping.mappingId,
+          reportId: mapping.reportId,
+          title: mapping.title,
+          fileName: payload.fileName,
+          mimeType: payload.mimeType,
+          sizeBytes: payload.sizeBytes,
+          base64: payload.base64,
+        }));
+      } catch (error) {
+        if (error instanceof WorkspaceReportAssetError) {
+          return finish(fail(message.type, message.requestId, error.code, error.message));
+        }
+        throw error;
+      }
+    }
     case TYPES.ARTIFACT_GET: {
       const artifactId = String(message.payload?.artifactId || "");
       // The connector no longer records open/success events here. Those
@@ -678,6 +778,15 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         conversationId: typeof message.payload?.conversationId === "string" ? message.payload.conversationId : null,
         relativePath: String(message.payload?.relativePath || ""),
       });
+      if (record.relativePath.startsWith("reports/")) {
+        await registerReportAssetMapping({
+          userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId,
+          reportId: record.artifactId, title: record.title, fileName: record.fileName,
+          mimeType: record.mimeType, sizeBytes: record.sizeBytes,
+          backingAssetId: null, backingVersionId: null,
+          readPath: record.relativePath,
+        });
+      }
       return finish(ok(message.type, message.requestId, {
         artifactId: record.artifactId,
         title: record.title,
@@ -876,7 +985,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.rename", "asset.archive", "asset.restore_version", "asset.references.list"],
+        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.references.list"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {

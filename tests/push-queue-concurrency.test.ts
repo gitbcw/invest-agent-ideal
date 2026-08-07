@@ -118,9 +118,9 @@ test("permanent delivery failures stop without a retry timer", async () => {
   assert.equal(saved?.terminalReason, "permanent_error");
 });
 
-test("expired awaiting-user jobs are not offered after the user restores a conversation", async () => {
+test("restoring a conversation resumes only unexpired awaiting-user jobs", async () => {
   const { enqueuePushJob, getPushJob } = await import("../src/services/push-queue.js");
-  const { listPendingWeixinDeliveries } = await import("../src/services/weixin-delivery.js");
+  const { resumeAwaitingWeixinDeliveries } = await import("../src/services/weixin-delivery.js");
   const { db } = await import("../src/db/index.js");
   const { pushJobs } = await import("../src/db/schema.js");
   const { eq } = await import("drizzle-orm");
@@ -128,13 +128,42 @@ test("expired awaiting-user jobs are not offered after the user restores a conve
     userId: "awaiting-expiry-user",
     instanceId: "invest-agent-awaiting-expiry",
     expiresAt: new Date(Date.now() - 1_000).toISOString(),
-    message: "不能在恢复会话后补发的旧复盘",
+    message: "过期后不能自动重试的旧复盘",
   });
   await db.update(pushJobs).set({ status: "awaiting_user" }).where(eq(pushJobs.id, job.id));
 
-  const pending = await listPendingWeixinDeliveries("awaiting-expiry-user", "invest-agent-awaiting-expiry");
-  assert.deepEqual(pending, []);
+  const result = await resumeAwaitingWeixinDeliveries("awaiting-expiry-user", "invest-agent-awaiting-expiry");
+  assert.deepEqual(result, { resumed: 0, expired: 1 });
   const saved = await getPushJob(job.id);
   assert.equal(saved?.status, "expired");
   assert.equal(saved?.terminalReason, "expired_while_awaiting_user");
+});
+
+test("restoring a conversation automatically requeues an unexpired awaiting-user job", async () => {
+  const { enqueuePushJob, getPushJob, processDuePushJobs } = await import("../src/services/push-queue.js");
+  const { resumeAwaitingWeixinDeliveries } = await import("../src/services/weixin-delivery.js");
+  const { db } = await import("../src/db/index.js");
+  const { pushJobs } = await import("../src/db/schema.js");
+  const { eq } = await import("drizzle-orm");
+  const job = await enqueuePushJob({
+    userId: "awaiting-retry-user",
+    instanceId: "invest-agent-awaiting-retry",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    message: "会话恢复后由队列自动重试",
+  });
+  await db.update(pushJobs).set({ status: "awaiting_user" }).where(eq(pushJobs.id, job.id));
+
+  const result = await resumeAwaitingWeixinDeliveries("awaiting-retry-user", "invest-agent-awaiting-retry");
+  assert.deepEqual(result, { resumed: 1, expired: 0 });
+  const saved = await getPushJob(job.id);
+  assert.equal(saved?.status, "retry");
+  assert.ok(saved?.nextRetryAt);
+
+  let sends = 0;
+  await processDuePushJobs(async () => {
+    sends += 1;
+    return { ok: true as const, reason: "sent" as const };
+  });
+  assert.equal(sends, 1);
+  assert.equal((await getPushJob(job.id))?.status, "sent");
 });

@@ -5,9 +5,9 @@ import { isIP } from "node:net";
 import path from "node:path";
 
 const MAX_IMAGE_BYTES = Number(process.env.ATTACHMENT_IMAGE_MAX_BYTES) || 10 * 1024 * 1024;
-const MAX_DOCUMENT_BYTES = Number(process.env.ATTACHMENT_DOCUMENT_MAX_BYTES) || 25 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES = Number(process.env.ATTACHMENT_DOCUMENT_MAX_BYTES) || 10 * 1024 * 1024;
 const MAX_FILES_PER_MESSAGE = Number(process.env.ATTACHMENT_MAX_FILES_PER_MESSAGE) || 8;
-const MAX_TOTAL_BYTES_PER_MESSAGE = Number(process.env.ATTACHMENT_MAX_TOTAL_BYTES_PER_MESSAGE) || 40 * 1024 * 1024;
+const MAX_TOTAL_BYTES_PER_MESSAGE = Number(process.env.ATTACHMENT_MAX_TOTAL_BYTES_PER_MESSAGE) || 20 * 1024 * 1024;
 
 /**
  * Authoritative TTL for user uploads, in days. The previous cleanup loop

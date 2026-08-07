@@ -1,17 +1,23 @@
 import { randomBytes } from "node:crypto";
-import { createAgent } from "../acp/agent.js";
+import { createAgent, type AcpAgent } from "../acp/agent.js";
 import { clearAcpSessions } from "../acp/stdio-agent.js";
 import { sanitizeCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
 import { resolveOrCreateChannelUser } from "../lib/user-identity.js";
 import { DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
-import { appendConversationMessage } from "../services/conversation-log.js";
+import {
+  appendConversationMessage,
+  getAssistantMessageByRequestId,
+  getConversationMessageByIdempotencyKey,
+  type ConversationScope,
+} from "../services/conversation-log.js";
 import { config } from "../lib/config.js";
 import { resolveWeixinAccount } from "./weixin-account-store.js";
 import { storeWeixinAttachment, type IncomingMediaAttachment, type StoredAttachment } from "../lib/attachment-store.js";
 import { registerAttachment } from "../services/file-retention.js";
-import { listPendingWeixinDeliveries, markPendingWeixinDeliveriesRecovered } from "../services/weixin-delivery.js";
+import { resumeAwaitingWeixinDeliveries } from "../services/weixin-delivery.js";
+import { classifyTaskError, executeWithRetryPolicy, executionResponseError, terminalTaskError } from "../services/task-execution.js";
 
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
@@ -31,6 +37,7 @@ export interface WeixinProjectBinding {
 type WeixinChatRequest = {
   conversationId: string;
   text: string;
+  messageId?: string;
   media?: IncomingMediaAttachment;
   contextToken?: string;
 };
@@ -167,13 +174,14 @@ function parseWeixinResponseBody(text: string): Record<string, unknown> | null {
 }
 
 export class InvestAgentMobileBridge {
-  private readonly agent = createAgent();
   private readonly inboundBatches = new Map<string, WeixinConversationBatch>();
+  private readonly inFlightInboundMessageIds = new Set<string>();
 
   constructor(
     private readonly accountId: string,
     private readonly stateDir = config.weixin.stateDir,
-    private readonly projectBinding?: WeixinProjectBinding
+    private readonly projectBinding?: WeixinProjectBinding,
+    private readonly agent: AcpAgent = createAgent(),
   ) {}
 
   async chat(request: WeixinChatRequest): Promise<{ text?: string }> {
@@ -182,6 +190,12 @@ export class InvestAgentMobileBridge {
 
   private async enqueueInboundMessage(request: WeixinChatRequest): Promise<{ text?: string }> {
     const conversationId = request.conversationId || `weixin-mobile-${this.accountId}`;
+    const inboundMessageKey = weixinInboundMessageKey(this.accountId, request.messageId);
+    if (inboundMessageKey && this.inFlightInboundMessageIds.has(inboundMessageKey)) {
+      logger.info(`微信重复入站消息已忽略 account=${this.accountId} conversation=${conversationId}`);
+      return {};
+    }
+    if (inboundMessageKey) this.inFlightInboundMessageIds.add(inboundMessageKey);
     return new Promise((resolve, reject) => {
       const batch = this.inboundBatches.get(conversationId) || {
         items: [],
@@ -225,6 +239,10 @@ export class InvestAgentMobileBridge {
       });
       logger.error("微信消息批次处理失败:", error);
     } finally {
+      for (const item of items) {
+        const inboundMessageKey = weixinInboundMessageKey(this.accountId, item.messageId);
+        if (inboundMessageKey) this.inFlightInboundMessageIds.delete(inboundMessageKey);
+      }
       batch.processing = false;
       if (batch.items.length > 0) {
         this.scheduleInboundBatch(conversationId, batch);
@@ -265,17 +283,28 @@ export class InvestAgentMobileBridge {
     }
 
     const userText = formatBatchedUserText(items, attachments.length);
+    const idempotencyKey = weixinInboundBatchKey(this.accountId, items);
+    const scope: ConversationScope = {
+      userId: userContext.userId,
+      projectId: userContext.projectId || "invest-agent",
+      instanceId: userContext.instanceId || defaultInstanceIdForUser(userContext.userId),
+      assistantId: userContext.instanceId || defaultInstanceIdForUser(userContext.userId),
+    };
+    if (idempotencyKey) {
+      const existing = getConversationMessageByIdempotencyKey({ idempotencyKey, scope, conversationId });
+      if (existing?.requestId && getAssistantMessageByRequestId({ conversationId, requestId: existing.requestId })) {
+        logger.info(`微信重复入站消息已持久化 account=${this.accountId} conversation=${conversationId}`);
+        return {};
+      }
+    }
     const userMessage = appendConversationMessage({
-      scope: {
-        userId: userContext.userId,
-        projectId: userContext.projectId,
-        instanceId: userContext.instanceId,
-        assistantId: userContext.instanceId,
-      },
+      scope,
       conversationId,
       channel: "weixin-mobile",
       role: "user",
       content: formatConversationUserContent(userText, attachments),
+      requestId: idempotencyKey,
+      idempotencyKey,
     });
     // Register WeChat uploads in the authoritative attachment table so they get
     // the same 7-day TTL and cleanup path as Portal uploads. Failures are
@@ -293,61 +322,93 @@ export class InvestAgentMobileBridge {
         logger.warn(`微信附件索引失败 attachmentId=${stored.id}: ${(error as Error).message}`);
       }
     }
-    const pendingDeliveries = userContext.instanceId
-      ? await listPendingWeixinDeliveries(userContext.userId, userContext.instanceId)
-      : [];
-    const recoveryRequested = /^(补发|补送|查看未送达)$/u.test(userText.trim());
-    let text: string;
-    if (recoveryRequested && pendingDeliveries.length > 0) {
-      text = [
-        `补送以下 ${pendingDeliveries.length} 条此前未送达内容：`,
-        ...pendingDeliveries.map((item, index) => `【${index + 1}】\n${item.message}`),
-      ].join("\n\n");
-      await markPendingWeixinDeliveriesRecovered(pendingDeliveries.map((item) => item.id));
-    } else {
-      const response = await this.agent.handleMessage({
-        id: `wx-${Date.now()}`,
-        from: first.conversationId || "weixin-mobile",
-        timestamp: Date.now(),
-        content: { type: "text", text: userText },
-        context: {
-          channel: "weixin-mobile",
-          conversationId,
-          userId: userContext.userId,
-          projectId: userContext.projectId,
-          instanceId: userContext.instanceId,
-          instanceExpansionPath: userContext.instanceExpansionPath,
-          workspacePath: userContext.workspacePath,
-          attachments,
-        },
-      });
-      text = response.content.text ?? "处理完成，但没有生成文本回复。";
-      if (pendingDeliveries.length > 0) {
-        text += `\n\n另有 ${pendingDeliveries.length} 条此前未送达内容（${pendingDeliveries.map((item) => item.summary).join("、")}）。回复“补发”即可取回。`;
-      }
+    if (userContext.instanceId) {
+      await resumeAwaitingWeixinDeliveries(userContext.userId, userContext.instanceId);
     }
-    await rememberWeixinTurn(userContext, userText, text);
-    appendConversationMessage({
-      scope: {
-        userId: userContext.userId,
-        projectId: userContext.projectId,
-        instanceId: userContext.instanceId,
-        assistantId: userContext.instanceId,
-      },
-      conversationId,
-      channel: "weixin-mobile",
-      role: "assistant",
-      content: text,
-    });
-    const chunks = splitWeixinText(text);
+    let response: Awaited<ReturnType<InvestAgentMobileBridge["agent"]["handleMessage"]>>;
+    try {
+      response = await executeWithRetryPolicy(
+        () => this.agent.handleMessage({
+          id: `wx-${Date.now()}`,
+          from: first.conversationId || "weixin-mobile",
+          timestamp: Date.now(),
+          content: { type: "text", text: userText },
+          context: {
+            channel: "weixin-mobile",
+            conversationId,
+            userId: userContext.userId,
+            projectId: userContext.projectId,
+            instanceId: userContext.instanceId,
+            instanceExpansionPath: userContext.instanceExpansionPath,
+            workspacePath: userContext.workspacePath,
+            attachments,
+          },
+        }),
+        {
+          executionBudgetMs: Number(process.env.WEIXIN_EXECUTION_BUDGET_MS) || undefined,
+          isRetryableResult: (candidate) => Boolean(executionResponseError(candidate)?.retryable),
+        },
+      );
+      const responseError = executionResponseError(response);
+      if (responseError) {
+        const terminal = terminalTaskError(responseError);
+        response = {
+          content: { type: "text", text: terminal.userMessage },
+          finished: true,
+          data: {
+            executionStatus: "failed",
+            executionErrorCode: terminal.code,
+            executionErrorCategory: terminal.category,
+            executionRetryable: false,
+          },
+        };
+      }
+    } catch (error) {
+      const classified = terminalTaskError(classifyTaskError(error));
+      response = {
+        content: { type: "text", text: classified.userMessage },
+        finished: true,
+        data: {
+          executionStatus: "failed",
+          executionErrorCode: classified.code,
+          executionErrorCategory: classified.category,
+          executionRetryable: false,
+        },
+      };
+    }
+
+    const chunks = await this.persistWeixinResponse({ userContext, userText, scope, conversationId, response });
     if (chunks.length > 1) {
       setTimeout(() => {
         this.pushToConversation(conversationId, chunks.slice(1), contextToken).catch((error) => {
-          logger.warn(`微信分片补发失败: ${(error as Error).message}`);
+          logger.warn(`微信后续分片发送失败: ${(error as Error).message}`);
         });
       }, 1200);
     }
     return { text: chunks[0] };
+  }
+
+  private async persistWeixinResponse(input: {
+    userContext: Awaited<ReturnType<typeof resolveOrCreateChannelUser>>;
+    userText: string;
+    scope: ConversationScope;
+    conversationId: string;
+    response: Awaited<ReturnType<InvestAgentMobileBridge["agent"]["handleMessage"]>>;
+  }): Promise<string[]> {
+    const text = input.response.content.text ?? "处理完成，但没有生成文本回复。";
+    await rememberWeixinTurn(input.userContext, input.userText, text);
+    appendConversationMessage({
+      scope: input.scope,
+      conversationId: input.conversationId,
+      channel: "weixin-mobile",
+      role: "assistant",
+      content: text,
+      requestId: `wx-response:${input.conversationId}:${Date.now()}`,
+      metadata: input.response.data?.executionStatus === "failed"
+        ? { executionStatus: "failed", executionErrorCode: input.response.data.executionErrorCode, executionErrorCategory: input.response.data.executionErrorCategory }
+        : { executionStatus: "succeeded" },
+    });
+    return splitWeixinText(text);
   }
 
   async pushToConversation(conversationId: string, text: string | string[], contextToken?: string, baseUrl?: string, token?: string) {
@@ -378,6 +439,20 @@ export class InvestAgentMobileBridge {
       clearAcpSessions(conversationId);
     }
   }
+}
+
+function weixinInboundMessageKey(accountId: string, messageId?: string) {
+  const normalized = messageId?.trim();
+  return normalized ? `weixin-inbound:${accountId}:${normalized}` : null;
+}
+
+function weixinInboundBatchKey(accountId: string, items: WeixinBatchItem[]) {
+  const messageIds = items
+    .map((item) => item.messageId?.trim())
+    .filter((messageId): messageId is string => Boolean(messageId));
+  return messageIds.length === items.length && messageIds.length > 0
+    ? `weixin-inbound:${accountId}:${messageIds.join(",")}`
+    : undefined;
 }
 
 function formatBatchedUserText(items: WeixinBatchItem[], attachmentCount: number) {
