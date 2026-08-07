@@ -31,6 +31,13 @@ test("optional template catalog covers every seeded Codex Skill asset", async ()
   assert.equal(WORKSPACE_OPTIONAL_TEMPLATE_ASSETS.includes(agentsAsset), true);
 });
 
+test("automation instructions make WeChat delivery a visible user choice", async () => {
+  const agents = await readFile(path.join(templatePath, agentsAsset), "utf8");
+  assert.match(agents, /主动告知用户可将运行结果推送到微信/);
+  assert.match(agents, /询问是否需要推送/);
+  assert.match(agents, /不要因用户尚未提及推送就默认开启/);
+});
+
 test("workspace compatibility preserves user-evolved template skills by default", async () => {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-workspace-compat-"));
   const workspacePath = path.join(tempRoot, "workspaces", "111");
