@@ -114,6 +114,7 @@ test("global run history keeps the revision name and records recovered attempts"
   const { automation, db } = await fixture();
   const task = await createTask();
   const historical = await automation.claimAutomationTaskRun({ ...scopeA, taskId: task.taskId, origin: "manual", idempotencyKey: `historical-${task.taskId}` });
+  assert.ok(historical.run.executionDeadlineAt, "claimed runs have a persisted execution deadline");
   await automation.finishAutomationTaskRun({ ...scopeA, runId: historical.run.runId, leaseToken: historical.run.leaseToken, status: "succeeded", resultSummary: "旧版本完成" });
   await automation.updateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision, name: "后来改名的任务" });
 
@@ -440,7 +441,7 @@ test("moves an active task to needs_attention after three failures and advances 
   assert.ok(afterSuccess?.nextRunAt);
 });
 
-test("binds manual runs to one conversation, keeps scheduled runs out of chat, and continues without re-running", async () => {
+test("keeps all automation runs out of chat until the user explicitly continues", async () => {
   const { automation, workspaceA } = await fixture();
   const conversation = await import("../src/services/conversation-log.js");
   const task = await createTask();
@@ -455,7 +456,7 @@ test("binds manual runs to one conversation, keeps scheduled runs out of chat, a
     executorCalls += 1;
     assert.equal(scope.userId, scopeA.userId);
     assert.equal(currentTask.taskId, task.taskId);
-    assert.equal(conversationId, `automation-${run.runId}`);
+    assert.equal(conversationId, undefined);
     await writeFile(
       path.join(workspaceA, "automations", task.taskId, "working", "tracking.csv"),
       "code,price\n600519,1550\n",
@@ -471,21 +472,12 @@ test("binds manual runs to one conversation, keeps scheduled runs out of chat, a
     executor,
   });
   assert.equal(manual.run.status, "succeeded");
-  assert.equal(manual.conversationId, `automation-${manual.run.runId}`);
-  assert.equal(manual.run.conversationId, manual.conversationId);
-  assert.equal(manual.assistantMessage?.conversationId, manual.conversationId);
+  assert.equal(manual.conversationId, undefined);
+  assert.equal(manual.run.conversationId, null);
   assert.equal(manual.run.outputAssetId, task.workingAsset?.assetId);
   assert.ok(manual.run.outputChecksum);
 
-  const manualConversation = conversation.getConversation({
-    ...scopeA,
-    assistantId: scopeA.instanceId,
-    conversationId: manual.conversationId!,
-  });
-  assert.equal(manualConversation.title, `自动化：${task.revision.name} - 手动运行`);
-  assert.deepEqual(manualConversation.messages.map((message) => message.role), ["system", "assistant"]);
-  assert.equal(manualConversation.messages[1]?.traceId, manual.run.runId);
-  assert.equal(manualConversation.messages[1]?.metadata?.runId, manual.run.runId);
+  assert.equal(conversation.listConversations({ ...scopeA, assistantId: scopeA.instanceId }).items.length, 0);
 
   const working = await automation.readAutomationTaskAsset({ ...scopeA, assetId: task.workingAsset!.assetId });
   assert.equal(working.bytes.toString("utf8"), "code,price\n600519,1550\n");
@@ -501,9 +493,9 @@ test("binds manual runs to one conversation, keeps scheduled runs out of chat, a
     },
   });
   assert.equal(replay.run.runId, manual.run.runId);
-  assert.equal(replay.conversationId, manual.conversationId);
+  assert.equal(replay.conversationId, undefined);
   assert.equal(executorCalls, 1);
-  assert.equal(conversation.getConversation({ ...scopeA, assistantId: scopeA.instanceId, conversationId: manual.conversationId! }).messages.length, 2);
+  assert.equal(conversation.listConversations({ ...scopeA, assistantId: scopeA.instanceId }).items.length, 0);
 
   await automation.activateAutomationTask({ ...scopeA, taskId: task.taskId, expectedRevision: task.currentRevision });
   const conversationsBeforeScheduled = conversation.listConversations({ ...scopeA, assistantId: scopeA.instanceId }).items.length;
@@ -531,7 +523,6 @@ test("binds manual runs to one conversation, keeps scheduled runs out of chat, a
 
   const continued = (await import("../src/services/automation-runner.js")).continueAutomationRunInChat({ scope: scopeA, runId: scheduled.run.runId });
   const continuedResult = await continued;
-  assert.notEqual(continuedResult.conversationId, manual.conversationId);
   assert.equal(conversation.listConversations({ ...scopeA, assistantId: scopeA.instanceId }).items.length, conversationsBeforeScheduled + 1);
   const continuedConversation = conversation.getConversation({
     ...scopeA,
@@ -551,6 +542,7 @@ test("records an ACP failure as failed and never commits the staged working file
   const { automation } = await fixture();
   const conversation = await import("../src/services/conversation-log.js");
   const task = await createTask();
+  const conversationsBefore = conversation.listConversations({ ...scopeA, assistantId: scopeA.instanceId }).items.length;
   const result = await (await import("../src/services/automation-runner.js")).runAutomationTaskNow({
     scope: scopeA,
     taskId: task.taskId,
@@ -566,12 +558,9 @@ test("records an ACP failure as failed and never commits the staged working file
   assert.equal(result.run.status, "failed");
   const working = await automation.readAutomationTaskAsset({ ...scopeA, assetId: task.workingAsset!.assetId });
   assert.equal(working.bytes.toString("utf8"), "code,price\n600519,1500\n");
-  const messages = conversation.getConversation({
-    ...scopeA,
-    assistantId: scopeA.instanceId,
-    conversationId: result.conversationId!,
-  }).messages;
-  assert.equal(messages.at(-1)?.status, "failed");
+  assert.equal(result.conversationId, undefined);
+  assert.equal(result.run.conversationId, null);
+  assert.equal(conversation.listConversations({ ...scopeA, assistantId: scopeA.instanceId }).items.length, conversationsBefore);
 });
 
 test("runner returns a domain busy error while another execution owns the task lease", async () => {

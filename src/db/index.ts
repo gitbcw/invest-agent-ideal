@@ -25,6 +25,23 @@ export function initDb() {
       key TEXT PRIMARY KEY,
       applied_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS user_storage_quotas (
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      used_bytes INTEGER NOT NULL DEFAULT 0, reserved_bytes INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL, PRIMARY KEY (user_id, project_id, instance_id)
+    );
+    CREATE TABLE IF NOT EXISTS report_asset_mappings (
+      mapping_id TEXT PRIMARY KEY, report_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL, instance_id TEXT NOT NULL, title TEXT NOT NULL,
+      file_name TEXT NOT NULL, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+      backing_asset_id TEXT, backing_version_id TEXT, read_path TEXT, created_at TEXT NOT NULL,
+      UNIQUE(user_id, project_id, instance_id, report_id)
+    );
+    CREATE TABLE IF NOT EXISTS user_storage_reservations (
+      reservation_token TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL, requested_bytes INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL, expires_at TEXT NOT NULL, settled_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -178,6 +195,25 @@ export function initDb() {
       metadata TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       FOREIGN KEY(conversation_id) REFERENCES conversation_sessions(conversation_id)
+    );
+    CREATE TABLE IF NOT EXISTS conversation_task_runs (
+      run_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      response_deadline_at TEXT NOT NULL,
+      execution_deadline_at TEXT NOT NULL,
+      error_category TEXT,
+      retryable INTEGER,
+      result_message_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT
     );
     CREATE TABLE IF NOT EXISTS daily_plans (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -827,6 +863,7 @@ export function initDb() {
       idempotency_base_key TEXT,
       attempt INTEGER NOT NULL DEFAULT 1,
       scheduled_for TEXT,
+      execution_deadline_at TEXT,
       status TEXT NOT NULL DEFAULT 'running',
       claimed_at TEXT NOT NULL,
       started_at TEXT,
@@ -840,6 +877,8 @@ export function initDb() {
       push_job_id TEXT,
       result_summary TEXT,
       error_message TEXT,
+      error_category TEXT,
+      retryable INTEGER,
       trace_id TEXT,
       conversation_id TEXT,
       lease_token TEXT,
@@ -909,6 +948,7 @@ export function initDb() {
   ensureColumn("conversation_messages", "request_id", "TEXT");
   ensureColumn("conversation_messages", "idempotency_key", "TEXT");
   ensureColumn("conversation_messages", "metadata", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("conversation_task_runs", "attempt", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("conversation_artifacts", "turn_id", "TEXT");
   ensureColumn("conversation_artifacts", "idempotency_key", "TEXT");
   ensureColumn("conversation_artifacts", "asset_id", "TEXT");
@@ -931,6 +971,9 @@ export function initDb() {
   ensureColumn("automation_task_runs", "push_job_id", "TEXT");
   ensureColumn("automation_task_runs", "idempotency_base_key", "TEXT");
   ensureColumn("automation_task_runs", "attempt", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("automation_task_runs", "execution_deadline_at", "TEXT");
+  ensureColumn("automation_task_runs", "error_category", "TEXT");
+  ensureColumn("automation_task_runs", "retryable", "INTEGER");
   ensureColumn("automation_task_runs", "lease_token", "TEXT");
   ensureColumn("automation_task_runs", "lease_expires_at", "TEXT");
   ensureColumn("push_jobs", "origin_run_id", "TEXT");
@@ -1076,6 +1119,7 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_conversation_sessions_channel_time ON conversation_sessions(channel, updated_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_time ON conversation_messages(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_scope_time ON conversation_messages(instance_id, user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_conversation_task_runs_status_deadline ON conversation_task_runs(status, execution_deadline_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_idempotency ON conversation_messages(user_id, instance_id, conversation_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_conversation_tasks_scope_status ON conversation_tasks(instance_id, user_id, conversation_id, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_indicator_definitions_key ON indicator_definitions(key);
@@ -1140,6 +1184,8 @@ export function initDb() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_user_asset_versions_scope_idempotency
       ON user_asset_versions(user_id, project_id, instance_id, idempotency_key)
       WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_user_storage_reservations_scope_status
+      ON user_storage_reservations(user_id, project_id, instance_id, status, expires_at);
     CREATE INDEX IF NOT EXISTS idx_automation_task_asset_bindings_scope_revision
       ON automation_task_asset_bindings(user_id, project_id, instance_id, revision_id, role);
     CREATE INDEX IF NOT EXISTS idx_automation_task_asset_bindings_scope_asset

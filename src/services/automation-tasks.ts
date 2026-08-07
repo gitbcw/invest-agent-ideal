@@ -32,6 +32,16 @@ const AUTOMATION_RUN_LEASE_MS = positiveInteger(process.env.AUTOMATION_TASK_LEAS
 export type AutomationTaskStatus = "paused" | "active" | "needs_attention" | "archived";
 export type AutomationTaskRunOrigin = "manual" | "scheduled";
 export type AutomationTaskRunStatus = "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+export type AutomationErrorCategory =
+  | "transient"
+  | "timeout"
+  | "dependency_unavailable"
+  | "invalid_input"
+  | "validation_failed"
+  | "scope_or_permission"
+  | "expired"
+  | "cancelled"
+  | "unknown";
 export type AutomationTaskAssetRole = "source" | "working";
 export type AutomationTaskVersionPolicy = "latest" | "fixed";
 
@@ -44,6 +54,8 @@ export interface AutomationTaskAssetBinding {
 
 export type AutomationTaskOutputPolicy =
   | { mode: "none" }
+  /** The Agent may update a latest-version input or create one related asset. */
+  | { mode: "agent" }
   | { mode: "create"; format: AssetFormat; fileName: string; titleTemplate?: string }
   | { mode: "update"; assetId: string; versionPolicy: "latest"; expectedVersionId?: string };
 
@@ -145,12 +157,13 @@ export interface AutomationTaskRunRecord extends AutomationScope {
   leaseToken?: string | null;
   leaseExpiresAt?: string | null;
   scheduledFor?: string | null;
+  executionDeadlineAt?: string | null;
   status: AutomationTaskRunStatus;
   claimedAt: string;
   startedAt?: string | null;
   finishedAt?: string | null;
   inputAssetId?: string | null;
-  inputVersions?: Array<{ assetId: string; versionId: string }>;
+  inputVersions?: Array<{ assetId: string; versionId: string; fileName?: string }>;
   outputAssetId?: string | null;
   outputVersionId?: string | null;
   outputChecksum?: string | null;
@@ -158,6 +171,8 @@ export interface AutomationTaskRunRecord extends AutomationScope {
   pushJobId?: string | null;
   resultSummary?: string | null;
   errorMessage?: string | null;
+  errorCategory?: AutomationErrorCategory | null;
+  retryable?: boolean | null;
   traceId?: string | null;
   conversationId?: string | null;
   /** Task name captured from the run's revision for global run history. */
@@ -258,6 +273,7 @@ export interface ClaimAutomationTaskRunInput extends AutomationScope {
   revisionId?: string;
   origin?: AutomationTaskRunOrigin;
   idempotencyKey: string;
+  executionDeadlineAt?: string | null;
   scheduledFor?: string | null;
   conversationId?: string | null;
 }
@@ -274,6 +290,8 @@ export interface FinishAutomationTaskRunInput extends AutomationScope {
   status: Exclude<AutomationTaskRunStatus, "running">;
   resultSummary?: string | null;
   errorMessage?: string | null;
+  errorCategory?: AutomationErrorCategory | null;
+  retryable?: boolean | null;
   outputAssetId?: string | null;
   outputVersionId?: string | null;
   outputChecksum?: string | null;
@@ -286,7 +304,7 @@ export interface AutomationTaskRunLeaseInput extends AutomationScope {
 }
 
 export interface AutomationTaskRunBindingInput extends AutomationTaskRunLeaseInput {
-  inputs: Array<{ assetId: string; versionId: string }>;
+  inputs: Array<{ assetId: string; versionId: string; fileName?: string }>;
   outputAssetId?: string | null;
   outputVersionId?: string | null;
 }
@@ -332,6 +350,7 @@ export class AutomationTaskError extends Error {
       | "AUTOMATION_INVALID_NAME"
       | "AUTOMATION_INVALID_DESCRIPTION"
       | "AUTOMATION_INVALID_SCHEDULE"
+      | "AUTOMATION_INVALID_DEADLINE"
       | "AUTOMATION_INVALID_OUTPUT_POLICY"
       | "AUTOMATION_ASSET_BINDING_INVALID"
       | "AUTOMATION_ASSET_REQUIRED"
@@ -351,6 +370,7 @@ export class AutomationTaskError extends Error {
       | "AUTOMATION_RUN_ALREADY_FINISHED"
       | "AUTOMATION_RUN_STATUS_INVALID"
       | "AUTOMATION_RUN_LEASE_LOST"
+      | "AUTOMATION_RUN_EXECUTION_DEADLINE_EXCEEDED"
       | "AUTOMATION_RUN_INVALID_RESULT"
       | "ASSET_SUBMISSION_FAILED"
       | "AUTOMATION_TASK_BUSY"
@@ -455,6 +475,7 @@ type DbRunRow = {
   attempt: number;
   revisionNumber: number;
   scheduledFor: string | null;
+  executionDeadlineAt: string | null;
   status: string;
   claimedAt: string;
   startedAt: string | null;
@@ -468,6 +489,8 @@ type DbRunRow = {
   pushJobId: string | null;
   resultSummary: string | null;
   errorMessage: string | null;
+  errorCategory: string | null;
+  retryable: number | null;
   traceId: string | null;
   conversationId: string | null;
   taskName?: string | null;
@@ -548,6 +571,7 @@ const RUN_SELECT = `
   automation_task_runs.attempt,
   (SELECT revision FROM automation_task_revisions revision_row WHERE revision_row.revision_id = automation_task_runs.revision_id LIMIT 1) AS revisionNumber,
   automation_task_runs.scheduled_for AS scheduledFor,
+  automation_task_runs.execution_deadline_at AS executionDeadlineAt,
   automation_task_runs.status,
   automation_task_runs.claimed_at AS claimedAt,
   automation_task_runs.started_at AS startedAt,
@@ -561,6 +585,8 @@ const RUN_SELECT = `
   automation_task_runs.push_job_id AS pushJobId,
   automation_task_runs.result_summary AS resultSummary,
   automation_task_runs.error_message AS errorMessage,
+  automation_task_runs.error_category AS errorCategory,
+  automation_task_runs.retryable AS retryable,
   automation_task_runs.trace_id AS traceId,
   automation_task_runs.conversation_id AS conversationId,
   (SELECT name FROM automation_task_revisions revision_row WHERE revision_row.revision_id = automation_task_runs.revision_id LIMIT 1) AS taskName,
@@ -956,9 +982,10 @@ async function normalizeGenericDefinition(scope: AutomationScope, input: {
   }
   const output = normalizeOutputPolicy(input.output);
   for (const binding of inputs) {
-    if (binding.role === "update_target" && (output.mode !== "update" || binding.assetId !== output.assetId || binding.versionPolicy !== "latest")) {
-      throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "update_target must match update output");
-    }
+    if (binding.role !== "update_target") continue;
+    if (output.mode === "update" && binding.assetId === output.assetId && binding.versionPolicy === "latest") continue;
+    if (output.mode === "agent" && binding.versionPolicy === "latest") continue;
+    throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "update_target must be writable by the task output mode");
   }
   await validateOutputPolicy(scope, output);
   const delivery = normalizeDeliveryPolicy(input.delivery);
@@ -977,10 +1004,11 @@ function normalizeAssetBinding(raw: Record<string, unknown>): AutomationTaskAsse
 }
 
 function normalizeOutputPolicy(raw: AutomationTaskOutputPolicy | Record<string, unknown> | undefined): AutomationTaskOutputPolicy {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { mode: "none" };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { mode: "agent" };
   const value = raw as Record<string, unknown>;
   const mode = value.mode;
   if (mode === "none") return { mode: "none" };
+  if (mode === "agent") return { mode: "agent" };
   if (mode === "create") {
     const format = String(value.format || "") as AssetFormat;
     const fileName = normalizeAssetFileNameForOutput(String(value.fileName || ""));
@@ -1144,7 +1172,11 @@ export async function assertAutomationTaskRunLease(input: AutomationTaskRunLease
   const scope = assertAutomationScope(input);
   const runId = normalizeOpaqueId(input.runId, "runId");
   const row = requireRunRow(runId, scope);
-  assertAutomationTaskRunLeaseSync(row, scope, input.leaseToken, Date.parse(nowIso()));
+  const nowMs = Date.parse(nowIso());
+  assertAutomationTaskRunLeaseSync(row, scope, input.leaseToken, nowMs);
+  if (row.executionDeadlineAt && Date.parse(row.executionDeadlineAt) <= nowMs) {
+    throw new AutomationTaskError("AUTOMATION_RUN_EXECUTION_DEADLINE_EXCEEDED", runId);
+  }
   return runRecordFromRow(row);
 }
 
@@ -1154,6 +1186,7 @@ export async function bindAutomationTaskRunAssets(input: AutomationTaskRunBindin
   const inputs = input.inputs.map((item) => ({
     assetId: normalizeOpaqueId(item.assetId, "assetId"),
     versionId: normalizeOpaqueId(item.versionId, "versionId"),
+    ...(item.fileName ? { fileName: String(item.fileName).slice(0, 255) } : {}),
   }));
   const now = nowIso();
   const result = sqlite.prepare(`
@@ -1205,6 +1238,8 @@ export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput)
   const now = nowIso();
   const nowMs = Date.parse(now);
   const leaseExpiresAt = new Date(nowMs + AUTOMATION_RUN_LEASE_MS).toISOString();
+  const executionDeadlineAt = normalizeExecutionDeadline(input.executionDeadlineAt)
+    ?? new Date(nowMs + AUTOMATION_RUN_LEASE_MS).toISOString();
   let claimed = false;
   let run: AutomationTaskRunRecord;
   let staleRecoveredRunId: string | undefined;
@@ -1327,9 +1362,9 @@ export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput)
       INSERT INTO automation_task_runs (
         run_id, task_id, revision_id, user_id, project_id, instance_id,
         origin, idempotency_key, idempotency_base_key, attempt, scheduled_for,
-        status, claimed_at, started_at, input_asset_id, conversation_id,
+        execution_deadline_at, status, claimed_at, started_at, input_asset_id, conversation_id,
         lease_token, lease_expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       runId,
       taskId,
@@ -1342,6 +1377,7 @@ export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput)
       idempotencyKey,
       attempt,
       scheduledFor,
+      executionDeadlineAt,
       now,
       now,
       revision.workingAssetId ?? revision.sourceAssetId ?? null,
@@ -1487,7 +1523,7 @@ function recoverExpiredRun(row: DbRunRow, scope: AutomationScope, now: string): 
   const updated = sqlite.prepare(`
     UPDATE automation_task_runs
     SET idempotency_key = ?, status = 'failed', finished_at = ?,
-        error_message = COALESCE(error_message, ?), lease_token = NULL,
+        error_message = COALESCE(error_message, ?), error_category = COALESCE(error_category, 'expired'), retryable = 0, lease_token = NULL,
         lease_expires_at = NULL, updated_at = ?
     WHERE run_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'running'
   `).run(
@@ -1571,13 +1607,22 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
   const errorMessage = clipNullable(input.errorMessage, 1_200);
   const traceId = clipNullable(input.traceId, 300);
   const outputChecksum = clipNullable(input.outputChecksum, 128);
+  const expired = existing.executionDeadlineAt !== null && Date.parse(existing.executionDeadlineAt) <= Date.parse(now);
+  const finalStatus: Exclude<AutomationTaskRunStatus, "running"> = expired ? "failed" : input.status;
+  const errorCategory = expired
+    ? "expired"
+    : normalizeErrorCategory(input.errorCategory, finalStatus);
+  const retryable = expired ? false : (input.retryable ?? defaultRetryable(errorCategory, finalStatus));
+  const finalErrorMessage = expired
+    ? (errorMessage || "AUTOMATION_RUN_EXECUTION_DEADLINE_EXCEEDED")
+    : errorMessage;
   const task = requireTaskRow(existing.taskId, scope);
   const revision = requireRevisionById(existing.revisionId, scope, existing.taskId);
   const leaseToken = input.leaseToken ?? existing.leaseToken;
   const updated = sqlite.prepare(`
     UPDATE automation_task_runs
     SET status = ?, finished_at = ?, output_asset_id = ?, output_checksum = ?,
-        output_version_id = ?, result_summary = ?, error_message = ?, trace_id = ?, lease_expires_at = NULL, updated_at = ?
+        output_version_id = ?, result_summary = ?, error_message = ?, error_category = ?, retryable = ?, trace_id = ?, lease_expires_at = NULL, updated_at = ?
     WHERE run_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'running'
       AND EXISTS (
         SELECT 1 FROM automation_tasks t
@@ -1587,8 +1632,8 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
           AND (? IS NULL OR t.active_run_lease_token = ?)
       )
   `).run(
-    input.status, now, input.outputAssetId ?? null, outputChecksum, input.outputVersionId ?? null,
-    resultSummary, errorMessage, traceId, now, runId, scope.userId, scope.projectId, scope.instanceId,
+    finalStatus, now, expired ? null : (input.outputAssetId ?? null), expired ? null : outputChecksum, expired ? null : (input.outputVersionId ?? null),
+    resultSummary, finalErrorMessage, errorCategory, retryable === null ? null : (retryable ? 1 : 0), traceId, now, runId, scope.userId, scope.projectId, scope.instanceId,
     existing.taskId, scope.userId, scope.projectId, scope.instanceId, runId, now, leaseToken, leaseToken,
   );
   if (updated.changes === 0) throw new AutomationTaskError("AUTOMATION_RUN_LEASE_LOST", runId);
@@ -1602,7 +1647,7 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
   insertAuditRow({
     taskId: existing.taskId, revisionId: existing.revisionId, runId, scope,
     action: "run.finished", status: "success",
-    details: { runStatus: input.status, hasOutputAsset: Boolean(input.outputAssetId), attempt: existing.attempt },
+    details: { runStatus: finalStatus, hasOutputAsset: Boolean(expired ? null : input.outputAssetId), attempt: existing.attempt, errorCategory, retryable },
     createdAt: now,
   });
   const schedule = parseScheduleJson(revision.scheduleJson);
@@ -2216,11 +2261,17 @@ function assetRecordFromRow(row: DbAssetRow): AutomationTaskAssetRecord {
 }
 
 function runRecordFromRow(row: DbRunRow): AutomationTaskRunRecord {
-  let inputVersions: Array<{ assetId: string; versionId: string }> = [];
+  let inputVersions: Array<{ assetId: string; versionId: string; fileName?: string }> = [];
   if (row.inputVersionsJson) {
     try {
       const parsed = JSON.parse(row.inputVersionsJson);
-      if (Array.isArray(parsed)) inputVersions = parsed.filter((item) => item && typeof item.assetId === "string" && typeof item.versionId === "string");
+      if (Array.isArray(parsed)) inputVersions = parsed
+        .filter((item) => item && typeof item.assetId === "string" && typeof item.versionId === "string")
+        .map((item) => ({
+          assetId: item.assetId,
+          versionId: item.versionId,
+          ...(typeof item.fileName === "string" ? { fileName: item.fileName } : {}),
+        }));
     } catch {
       throw new AutomationTaskError("AUTOMATION_DATA_CORRUPT", "input_versions_json");
     }
@@ -2239,6 +2290,7 @@ function runRecordFromRow(row: DbRunRow): AutomationTaskRunRecord {
     leaseToken: row.leaseToken,
     leaseExpiresAt: row.leaseExpiresAt,
     scheduledFor: row.scheduledFor,
+    executionDeadlineAt: row.executionDeadlineAt,
     status: parseRunStatus(row.status),
     claimedAt: row.claimedAt,
     startedAt: row.startedAt,
@@ -2252,6 +2304,8 @@ function runRecordFromRow(row: DbRunRow): AutomationTaskRunRecord {
     pushJobId: row.pushJobId,
     resultSummary: row.resultSummary,
     errorMessage: row.errorMessage,
+    errorCategory: parseErrorCategory(row.errorCategory),
+    retryable: row.retryable === null || row.retryable === undefined ? null : Boolean(row.retryable),
     traceId: row.traceId,
     conversationId: row.conversationId,
     ...(row.taskName ? { taskName: row.taskName } : {}),
@@ -2717,6 +2771,42 @@ function normalizeIdempotencyKey(value: string): string {
   const key = String(value ?? "").trim();
   if (!key || key.length > MAX_IDEMPOTENCY_KEY_LENGTH) throw new AutomationTaskError("AUTOMATION_RUN_IDEMPOTENCY_CONFLICT", key || "empty");
   return key;
+}
+
+const AUTOMATION_ERROR_CATEGORIES: AutomationErrorCategory[] = [
+  "transient", "timeout", "dependency_unavailable", "invalid_input", "validation_failed",
+  "scope_or_permission", "expired", "cancelled", "unknown",
+];
+
+function normalizeExecutionDeadline(value: string | null | undefined): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Date.parse(String(value));
+  if (!Number.isFinite(parsed)) throw new AutomationTaskError("AUTOMATION_INVALID_DEADLINE", "executionDeadlineAt");
+  return new Date(parsed).toISOString();
+}
+
+function parseErrorCategory(value: string | null | undefined): AutomationErrorCategory | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (AUTOMATION_ERROR_CATEGORIES.includes(value as AutomationErrorCategory)) return value as AutomationErrorCategory;
+  throw new AutomationTaskError("AUTOMATION_DATA_CORRUPT", value);
+}
+
+function normalizeErrorCategory(value: AutomationErrorCategory | null | undefined, status: AutomationTaskRunStatus): AutomationErrorCategory | null {
+  if (status === "succeeded") return null;
+  if (value !== null && value !== undefined) {
+    if (!AUTOMATION_ERROR_CATEGORIES.includes(value)) throw new AutomationTaskError("AUTOMATION_RUN_STATUS_INVALID", String(value));
+    return value;
+  }
+  if (status === "failed") return "unknown";
+  if (status === "cancelled") return "cancelled";
+  return null;
+}
+
+function defaultRetryable(category: AutomationErrorCategory | null, status: AutomationTaskRunStatus): boolean | null {
+  if (status === "succeeded") return null;
+  if (category === "expired" || category === "cancelled" || category === "invalid_input" || category === "validation_failed" || category === "scope_or_permission" || category === "dependency_unavailable") return false;
+  if (status === "failed") return true;
+  return null;
 }
 
 function workspacePathForScope(scope: AutomationScope): string {

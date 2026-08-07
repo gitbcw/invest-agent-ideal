@@ -159,6 +159,26 @@ export const conversationMessages = sqliteTable("conversation_messages", {
   createdAt: text("created_at").notNull(),
 });
 
+export const conversationTaskRuns = sqliteTable("conversation_task_runs", {
+  runId: text("run_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  requestId: text("request_id").notNull(),
+  channel: text("channel").notNull(),
+  status: text("status").notNull(),
+  attempt: integer("attempt").notNull().default(1),
+  responseDeadlineAt: text("response_deadline_at").notNull(),
+  executionDeadlineAt: text("execution_deadline_at").notNull(),
+  errorCategory: text("error_category"),
+  retryable: integer("retryable", { mode: "boolean" }),
+  resultMessageId: text("result_message_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  finishedAt: text("finished_at"),
+});
+
 export const dailyPlans = sqliteTable("daily_plans", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull().default("primary"),
@@ -807,6 +827,52 @@ export const userAssetVersions = sqliteTable("user_asset_versions", {
   createdAt: text("created_at").notNull(),
 });
 
+/** Additive quota accounting row for one user/instance/project scope. */
+export const userStorageQuotas = sqliteTable("user_storage_quotas", {
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  usedBytes: integer("used_bytes").notNull().default(0),
+  reservedBytes: integer("reserved_bytes").notNull().default(0),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Scope-bound report catalog entries; backing ids make no-copy mappings explicit. */
+export const reportAssetMappings = sqliteTable("report_asset_mappings", {
+  mappingId: text("mapping_id").primaryKey(),
+  reportId: text("report_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  title: text("title").notNull(),
+  fileName: text("file_name").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  backingAssetId: text("backing_asset_id"),
+  backingVersionId: text("backing_version_id"),
+  readPath: text("read_path"),
+  createdAt: text("created_at").notNull(),
+});
+
+/**
+ * Additive per-mutation reservation ledger. One row per reserveStorage() call;
+ * its lifecycle active -> committed|released is idempotent per token. Expired
+ * active rows are reclaimable so a crashed write can never permanently hold
+ * reserved bytes. Authoritative used/reserved bytes are still recomputed from
+ * version/mapping rows plus this ledger; nothing here is migrated from real data.
+ */
+export const userStorageReservations = sqliteTable("user_storage_reservations", {
+  reservationToken: text("reservation_token").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  requestedBytes: integer("requested_bytes").notNull(),
+  status: text("status").notNull().default("active"),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  settledAt: text("settled_at"),
+});
+
 /**
  * User-owned automation task identity and mutable lifecycle state.
  *
@@ -890,6 +956,7 @@ export const automationTaskRuns = sqliteTable("automation_task_runs", {
   idempotencyBaseKey: text("idempotency_base_key"),
   attempt: integer("attempt").notNull().default(1),
   scheduledFor: text("scheduled_for"),
+  executionDeadlineAt: text("execution_deadline_at"),
   status: text("status").notNull().default("running"),
   claimedAt: text("claimed_at").notNull(),
   startedAt: text("started_at"),
@@ -903,6 +970,8 @@ export const automationTaskRuns = sqliteTable("automation_task_runs", {
   pushJobId: text("push_job_id"),
   resultSummary: text("result_summary"),
   errorMessage: text("error_message"),
+  errorCategory: text("error_category"),
+  retryable: integer("retryable", { mode: "boolean" }),
   traceId: text("trace_id"),
   conversationId: text("conversation_id"),
   leaseToken: text("lease_token"),

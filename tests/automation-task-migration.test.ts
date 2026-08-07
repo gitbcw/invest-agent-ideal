@@ -67,6 +67,7 @@ test("migrates one legacy CSV task with backup, asset bindings, paused revision,
       data: {
         summary: "已更新迁移后的跟踪表",
         stagedOutput: {
+          assetId: result.workingAsset.assetId,
           fileName: "source.csv",
           mimeType: "text/csv",
           base64: Buffer.from(`code,price\n600519,${price}\n`).toString("base64"),

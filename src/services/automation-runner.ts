@@ -8,11 +8,9 @@ import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import {
   appendConversationMessage,
   createConversationSession,
-  type ConversationMessageRecord,
   type ConversationScope,
 } from "./conversation-log.js";
 import {
-  bindAutomationTaskRunConversation,
   assertAutomationTaskRunLease,
   claimAutomationTaskRun,
   finishAutomationTaskRun,
@@ -28,11 +26,11 @@ import {
 } from "./automation-tasks.js";
 import { writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
 import { runGenericAutomationTaskNow } from "./generic-automation-runner.js";
+import { classifyTaskError } from "./task-execution.js";
 
 export type AutomationRunResult = {
   run: AutomationTaskRunRecord;
   conversationId?: string;
-  assistantMessage?: ConversationMessageRecord;
   task: AutomationTaskRecord;
 };
 
@@ -182,26 +180,11 @@ export async function runAutomationTaskNow(input: {
     return { run, conversationId: run.conversationId || undefined, task };
   }
 
-  const conversationId = input.origin === "manual" ? `automation-${run.runId}` : undefined;
-
-  if (input.origin === "manual") {
-    bindAutomationTaskRunConversation({ ...input.scope, runId: run.runId, conversationId: conversationId! });
-    createConversationSession({
-      scope: conversationScope(input.scope),
-      conversationId: conversationId!,
-      channel: "web",
-      title: `自动化：${task.revision.name} - 手动运行`,
-      metadata: { taskId: task.taskId, taskRevision: task.currentRevision, runId: run.runId, origin: "automation_manual" },
-    });
-    appendConversationMessage({
-      scope: conversationScope(input.scope),
-      conversationId: conversationId!,
-      channel: "web",
-      role: "system",
-      content: `这是一次用户主动发起的真实自动化运行。任务：${task.revision.name}。输入文件与目标工作文件已绑定到本次运行。`,
-      metadata: { taskId: task.taskId, taskRevision: task.currentRevision, runId: run.runId, origin: "automation_manual" },
-    });
-  }
+  // A test run is execution history, not a customer conversation. Creating a
+  // chat session here makes test runs appear in the Portal sidebar before the
+  // user has chosen to discuss their result. Only continueAutomationRunInChat
+  // creates a normal conversation explicitly.
+  const conversationId = undefined;
 
   try {
     const response = await (input.executor || executeAcp)(input.scope, task, run, conversationId, run.leaseToken);
@@ -219,43 +202,20 @@ export async function runAutomationTaskNow(input: {
       outputChecksum: working?.checksum,
       traceId: run.runId,
     });
-    let assistantMessage: ConversationMessageRecord | undefined;
-    if (conversationId) {
-      assistantMessage = appendConversationMessage({
-        scope: conversationScope(input.scope),
-        conversationId,
-        channel: "web",
-        role: "assistant",
-        content: resultSummary,
-        traceId: run.runId,
-        requestId: run.runId,
-        metadata: { taskId: task.taskId, taskRevision: task.currentRevision, runId: run.runId, origin: "automation_manual", outputAssetId: working?.assetId },
-      });
-    }
-    return { run: finished, conversationId, assistantMessage, task };
+    return { run: finished, conversationId, task };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const classified = classifyTaskError(error);
     const failed = await finishAutomationTaskRun({
       ...input.scope,
       runId: run.runId,
       leaseToken: run.leaseToken,
       status: "failed",
       errorMessage: message,
+      errorCategory: classified.category,
+      retryable: classified.retryable,
       traceId: run.runId,
     });
-    if (conversationId) {
-      appendConversationMessage({
-        scope: conversationScope(input.scope),
-        conversationId,
-        channel: "web",
-        role: "assistant",
-        content: "这次自动化运行失败了，请查看运行详情中的错误并重试。",
-        status: "failed",
-        traceId: run.runId,
-        requestId: run.runId,
-        metadata: { taskId: task.taskId, taskRevision: task.currentRevision, runId: run.runId, origin: "automation_manual", error: message.slice(0, 500) },
-      });
-    }
     return { run: failed, conversationId, task };
   }
 }
