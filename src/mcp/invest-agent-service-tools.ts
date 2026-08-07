@@ -281,6 +281,19 @@ async function main() {
 
   registerJsonTool(
     { server, callServiceTool, context },
+    "assets.attachment.save",
+    "Save a current user-uploaded conversation attachment to My Files without exposing or re-encoding its bytes. Use only when the user explicitly asks to retain the attachment or asks to create an automation based on it. Pass the attachmentId from the attachment context; the service verifies current scope and expiry, then returns an assetId that can be bound in automation.create inputs or output.",
+    {
+      attachmentId: z.string().min(1),
+      assetId: z.string().min(1).optional(),
+      name: z.string().max(200).optional(),
+      idempotencyKey: z.string().max(500).optional(),
+    },
+    { readOnlyHint: false, destructiveHint: false }
+  );
+
+  registerJsonTool(
+    { server, callServiceTool, context },
     "assets.rename",
     "Rename an active same-scope user asset without changing its versions or file bytes.",
     { assetId: z.string().min(1), name: z.string().min(1).max(200) },

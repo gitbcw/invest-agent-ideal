@@ -106,6 +106,7 @@ Write tools:
 - `watch_rules.create`
 - `assets.version.commit`：普通对话可直接提交同 scope 既有产物的新版本；`expectedVersionId` 仍强制 compare-and-swap、并校验 checksum、MIME 和幂等键。受控自动化 run 仅能写入绑定 output。
 - `assets.conversation.save`：普通对话可直接保存生成物为同 scope 产物（或向指定资产追加版本）；受控自动化 run 仅能写入绑定 output。
+- `assets.attachment.save`：用户明确要求保存当前聊天附件、或基于它创建自动化任务时，将同 scope、未过期附件提升为“我的文件”资产；返回的 `assetId` 可绑定自动化任务。服务端读取受控附件字节，不接受 Agent 传入的附件路径或 base64。
 - `assets.rename`：普通对话可直接重命名同 scope 产物。
 - `assets.archive`：普通对话可直接归档同 scope 产物；归档保留内容和版本但禁止后续提交。
 - `assets.delete`：永久删除同 scope 产物及版本，始终需要 `confirmations.request` 建立的显式确认。

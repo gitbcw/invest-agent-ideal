@@ -15,7 +15,7 @@ const REGISTERED_TOOLS = [
   "market_watch.snapshot",
   "research.news_search", "research.web_search", "research.web_read",
   "assets.list", "assets.version.read",
-  "assets.version.commit", "assets.conversation.save", "assets.rename", "assets.archive", "assets.delete",
+  "assets.version.commit", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete",
   "automation.list", "automation.get", "automation.create", "automation.update",
   "automation.activate", "automation.pause",
   "portfolio.read", "watchlist.read", "plans.read", "conversation.history",
@@ -82,7 +82,7 @@ test("scheduled automation grant permits same-scope asset reads but no asset mut
   const grant = resolveScheduledServiceGrant("scheduled-automation");
   assert.ok(grant.includes("assets.list"));
   assert.ok(grant.includes("assets.version.read"));
-  for (const tool of ["assets.version.commit", "assets.conversation.save", "assets.rename", "assets.archive", "assets.delete"]) {
+  for (const tool of ["assets.version.commit", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete"]) {
     assert.ok(!grant.includes(tool), `scheduled automation grant exposes ${tool}`);
   }
 });

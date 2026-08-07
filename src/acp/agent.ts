@@ -211,9 +211,10 @@ function buildAttachmentPrompt(input: unknown): string | null {
       const type = String(data.type || "");
       const mimeType = String(data.mimeType || "");
       const fileName = String(data.fileName || "");
+      const attachmentId = String(data.id || data.attachmentId || "");
       const filePath = String(data.path || "");
-      if (!filePath) return null;
-      return `${index + 1}. type=${type || "unknown"} mime=${mimeType || "unknown"} fileName=${fileName || "-"} localPath=${filePath}`;
+      if (!attachmentId || !filePath) return null;
+      return `${index + 1}. attachment_id=${attachmentId} type=${type || "unknown"} mime=${mimeType || "unknown"} fileName=${fileName || "-"} localPath=${filePath}`;
     })
     .filter(Boolean);
   if (lines.length === 0) return null;
@@ -221,7 +222,7 @@ function buildAttachmentPrompt(input: unknown): string | null {
     "【附件上下文】用户随消息发送了附件，附件已保存到当前 workspace 的受控目录。",
     "图片附件：可以读取图片并识别截图内容；如附件是持仓/观察仓/交易记录截图，请先识别成结构化草案，列出股票名称/代码/数量或金额/成本价/关注原因/不确定字段，并明确要求用户确认后再写入；不要直接落库。",
     "文档附件：PDF/Word/PPT/Excel/CSV/html/md/txt 等，若当前会话接入了文档解析工具（如 mineru），优先调用该工具把附件解析为结构化文本，不要自己写解析代码；解析后请先概括内容，再提取和投资决策相关的结构化信息、事实依据和不确定字段。",
-    "所有附件：不要向用户暴露 localPath 或内部目录；如果当前后端无法读取或解析附件，必须如实说明限制，不要编造附件内容。",
+    "所有附件：不要向用户暴露 localPath 或内部目录；如果用户明确要求保存附件、或要求基于附件创建自动化任务，先调用 assets.attachment.save 将 attachment_id 保存到“我的文件”，再使用返回的 assetId；不要手工读取或编码附件字节。若只是分析附件，保持临时状态。",
     ...lines,
   ].join("\n");
 }

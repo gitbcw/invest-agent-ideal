@@ -18,6 +18,7 @@ import {
   readCurrentUserAsset,
   readUserAssetVersion,
   renameUserAsset,
+  saveConversationAttachmentAsUserAsset,
   saveConversationArtifactAsUserAsset,
   uploadUserAssetVersion,
   UserAssetError,
@@ -372,6 +373,8 @@ async function dispatchServiceTool(
       return submitAssetVersionTool(input, context);
     case "assets.conversation.save":
       return saveConversationAssetTool(input, context);
+    case "assets.attachment.save":
+      return saveAttachmentAsAssetTool(input, context);
     case "assets.rename":
       return renameAssetTool(input, context);
     case "assets.archive":
@@ -798,6 +801,38 @@ async function saveConversationAssetTool(input: Record<string, unknown> | undefi
     resourceId: saved.assetId,
     requestBody: { assetId: input?.assetId ?? null, fileName, runId: context.runId ?? null },
     resultSummary: "versionId=" + (saved.currentVersionId || "") + "; source=" + (run ? "automation" : "conversation"),
+  });
+  return { ok: true, asset: publicAssetDescriptor(saved), version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null };
+}
+
+async function saveAttachmentAsAssetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const attachmentId = stringInput(input?.attachmentId);
+  if (!attachmentId) throw new UserAssetError("ASSET_INVALID_CONTENT", "attachmentId is required");
+  await assertInteractiveAssetMutation(context, "promote conversation attachments");
+  const { bytes, record } = await readAttachmentBytes({
+    attachmentId,
+    userId: context.userId,
+    instanceId: context.instanceId,
+  });
+  const saved = await saveConversationAttachmentAsUserAsset({
+    ...assetScope(context),
+    name: stringInput(input?.name),
+    fileName: record.fileName,
+    mimeType: record.mimeType,
+    bytes,
+    assetId: stringInput(input?.assetId),
+    // Calling this capability is permitted only after the user has clearly
+    // asked to retain or automate the attachment in the current conversation.
+    confirmedByUser: true,
+    conversationId: context.conversationId ?? record.conversationId,
+    idempotencyKey: stringInput(input?.idempotencyKey) ?? `attachment-save:${attachmentId}`,
+  });
+  await audit(context, {
+    operation: "assets.attachment.save",
+    resourceType: "user_asset",
+    resourceId: saved.assetId,
+    requestBody: { attachmentId, assetId: input?.assetId ?? null },
+    resultSummary: "versionId=" + (saved.currentVersionId || "") + "; source=upload",
   });
   return { ok: true, asset: publicAssetDescriptor(saved), version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null };
 }

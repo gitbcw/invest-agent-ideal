@@ -52,6 +52,7 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   "artifacts.publish": "other-write",
   "assets.version.commit": "other-write",
   "assets.conversation.save": "other-write",
+  "assets.attachment.save": "other-write",
   "assets.rename": "other-write",
   "assets.archive": "other-write",
   "assets.delete": "other-write",

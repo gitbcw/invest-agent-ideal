@@ -133,6 +133,8 @@ Onboarding 写入遵守以下边界：
 
 普通对话中生成的文件写入 `deliveries/` 并在同一回合调用 `artifacts.publish`；它们默认只是临时交付，用户可在 Portal 中点击“保存”进入“我的文件”。只有用户明确要求正式报告或要求保存在“我的文件”时，才在 `artifacts.publish` 中设置 `saveToMyFiles: true`。`reports/` 仅保留 Workspace 原生报告；不要把普通 Portal 交付写入其中。
 
+用户随对话上传的附件默认是临时文件。只有用户明确要求保存该附件、或明确要求基于该附件创建自动化任务时，才调用 `assets.attachment.save`，使用附件上下文的 `attachment_id` 将它转为“我的文件”；随后以返回的 `assetId` 绑定自动化任务。不得手工复制、读取或编码附件字节，也不得因为普通分析请求而静默保存。
+
 门户文件交付还覆盖所有当前同步完成的 Workspace 写入：服务层会自动发布本轮实际修改的 `config/` 文件，并在工具结果中返回一个或多个 artifact descriptor；必须使用所有成功返回的 descriptor，不要重复调用 `artifacts.publish`。如果 Agent 直接新建或修改 `deliveries/`、`reports/`、`config/` 文件，而对应工具没有自动发布，则必须对每个变更路径调用 `artifacts.publish`。发布失败、写入失败或修改未生效时，不得声称文件已经可用，也不得伪造链接。
 
 ## 写入长期记忆的确认规则

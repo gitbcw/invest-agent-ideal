@@ -347,6 +347,38 @@ export async function saveConversationArtifactAsUserAsset(input: AssetScope & {
   });
 }
 
+/**
+ * Promotes a user-uploaded conversation attachment into the long-lived asset
+ * library. The attachment bytes have already been scope- and checksum-checked
+ * by the caller; this function keeps the resulting asset classified as a user
+ * upload rather than an assistant-generated conversation artifact.
+ */
+export async function saveConversationAttachmentAsUserAsset(input: AssetScope & {
+  name?: string;
+  fileName: string;
+  mimeType?: string;
+  bytes: Uint8Array;
+  assetId?: string | null;
+  confirmedByUser?: boolean;
+  conversationId?: string | null;
+  idempotencyKey?: string | null;
+}): Promise<UserAssetDescriptor> {
+  if (!input.confirmedByUser) {
+    throw new UserAssetError("ASSET_CONFIRMATION_REQUIRED", "saving a conversation attachment requires explicit user intent");
+  }
+  if (input.assetId) {
+    return uploadUserAssetVersion({
+      ...input,
+      assetId: input.assetId,
+      source: "upload",
+    });
+  }
+  return createUserAsset({
+    ...input,
+    source: "upload",
+  });
+}
+
 export async function listUserAssets(input: AssetScope & {
   status?: UserAssetStatus | "all"; search?: string; format?: AssetFormat; source?: UserAssetSource; limit?: number;
 }): Promise<UserAssetDescriptor[]> {

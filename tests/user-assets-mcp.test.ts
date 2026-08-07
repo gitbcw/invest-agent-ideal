@@ -115,6 +115,50 @@ test("MCP asset tools permit same-scope CRUD while keeping delete confirmation-b
   assert.equal(await assets.getUserAsset({ ...scope, assetId: created.assetId }), null);
 });
 
+test("MCP promotes an active same-scope conversation attachment into My Files", async () => {
+  const { db, tools } = await fixture;
+  seedConversation(db);
+  const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
+  const { registerAttachment } = await import("../src/services/file-retention.js");
+  const bytes = Buffer.from("date,freight_index\n2026-08-08,1200\n");
+  const workspace = resolveWorkspacePath(scope.userId);
+  const relativePath = "attachments/2026-08-08/att_promote_freight.csv";
+  const fullPath = path.join(workspace, relativePath);
+  await mkdir(path.dirname(fullPath), { recursive: true });
+  await writeFile(fullPath, bytes);
+  registerAttachment({
+    userId: scope.userId,
+    instanceId: scope.instanceId,
+    conversationId: scope.conversationId,
+    stored: {
+      id: "att_promote_freight",
+      type: "document",
+      mimeType: "text/csv",
+      fileName: "freight-tracker.csv",
+      sizeBytes: bytes.length,
+      path: fullPath,
+      relativePath,
+      source: "portal",
+      checksum: (await import("node:crypto")).createHash("sha256").update(bytes).digest("hex"),
+    },
+  });
+
+  const promoted = await tools.callServiceTool("assets.attachment.save", {
+    attachmentId: "att_promote_freight",
+    name: "海运运价跟踪表",
+  }, scope) as any;
+  assert.equal(promoted.ok, true);
+  assert.equal(promoted.asset.name, "海运运价跟踪表");
+  assert.equal(promoted.asset.currentVersion.source, "upload");
+  assert.equal(promoted.asset.currentVersion.fileName, "freight-tracker.csv");
+  assert.ok(promoted.asset.assetId);
+
+  await assert.rejects(
+    () => tools.callServiceTool("assets.attachment.save", { attachmentId: "att_promote_freight" }, { ...scope, instanceId: "other-instance" }),
+    (error: unknown) => (error as { code?: string }).code === "ATTACHMENT_NOT_FOUND",
+  );
+});
+
 test("MCP asset tools reject a cross-scope read", async () => {
   const { assets, tools } = await fixture;
   const created = await assets.createUserAsset({
