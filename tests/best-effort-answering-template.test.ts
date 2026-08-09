@@ -18,6 +18,17 @@ test("workspace template treats partial evidence as an answer boundary, not a st
   assert.match(servicePolicy, /representative sample is never a full-market scan/);
 });
 
+test("workspace template writes available values into user-facing tables instead of repeating verification placeholders", async () => {
+  const agents = await templateFile("templates/workspace/AGENTS.md");
+  const qa = await templateFile("templates/workspace/skills/qa/prompt.md");
+
+  for (const content of [agents, qa]) {
+    assert.match(content, /已经取得的具体数值.*写入/);
+    assert.match(content, /确实没有.*数值.*留空或填“—”/);
+    assert.match(content, /不得用“待核验”“数据缺失”等状态词批量占满单元格/);
+  }
+});
+
 test("capability extension separates the current answer from persistent capability work", async () => {
   const skill = await templateFile("templates/workspace/.codex/skills/capability-extension/SKILL.md");
   const protocol = await templateFile("templates/workspace/knowledge/capability_extension_protocol.md");

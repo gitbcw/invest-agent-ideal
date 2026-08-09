@@ -6,6 +6,7 @@ import { config } from "../lib/config.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import { withResourceMutationLock } from "./resource-mutation-lock.js";
 import { validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
+import { convertCsvBytesToXlsx, CsvXlsxConversionError } from "./csv-xlsx-conversion.js";
 import { recordFileLifecycleEvent } from "./file-lifecycle-audit.js";
 import {
   assertCommittedBytesWithinQuota,
@@ -24,6 +25,16 @@ export type AssetFormat = "markdown" | "html" | "csv" | "xlsx" | "pdf" | "png" |
 export type UserAssetStatus = "active" | "archived";
 export type UserAssetSource = "upload" | "conversation" | "automation" | "restore" | "system";
 export type AssetScope = { userId: string; projectId: string; instanceId: string };
+export type UserAssetFolderDescriptor = {
+  folderId: string;
+  userId: string;
+  projectId: string;
+  instanceId: string;
+  parentFolderId: string | null;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type UserAssetVersionDescriptor = {
   versionId: string;
@@ -52,6 +63,7 @@ export type UserAssetDescriptor = {
   userId: string;
   projectId: string;
   instanceId: string;
+  folderId: string | null;
   name: string;
   status: UserAssetStatus;
   currentVersionId: string | null;
@@ -71,10 +83,11 @@ export type UserAssetMutationSource = {
   idempotencyKey?: string | null;
   parentVersionId?: string | null;
   finalizeRun?: FinalizeAutomationRun;
+  confirmedMutation?: "convert_to_xlsx";
 };
 
 type AssetRow = {
-  assetId: string; userId: string; projectId: string; instanceId: string; name: string;
+  assetId: string; userId: string; projectId: string; instanceId: string; folderId: string | null; name: string;
   status: string; currentVersionId: string | null; archivedAt: string | null;
   createdAt: string; updatedAt: string;
 };
@@ -97,7 +110,7 @@ export type FinalizeAutomationRun = (input: {
 }) => void;
 
 const ASSET_COLUMNS = [
-  "asset_id AS assetId", "user_id AS userId", "project_id AS projectId", "instance_id AS instanceId",
+  "asset_id AS assetId", "user_id AS userId", "project_id AS projectId", "instance_id AS instanceId", "folder_id AS folderId",
   "name", "status", "current_version_id AS currentVersionId", "archived_at AS archivedAt",
   "created_at AS createdAt", "updated_at AS updatedAt",
 ].join(", ");
@@ -135,16 +148,108 @@ const EXTENSION_FORMAT: Record<string, AssetFormat> = {
 };
 const SOURCES = new Set<UserAssetSource>(["upload", "conversation", "automation", "restore", "system"]);
 
+const FOLDER_COLUMNS = [
+  "folder_id AS folderId", "user_id AS userId", "project_id AS projectId", "instance_id AS instanceId",
+  "parent_folder_id AS parentFolderId", "name", "created_at AS createdAt", "updated_at AS updatedAt",
+].join(", ");
+
+export async function listUserAssetFolders(input: AssetScope): Promise<UserAssetFolderDescriptor[]> {
+  const scope = normalizeScope(input);
+  const rows = sqlite.prepare(
+    "SELECT " + FOLDER_COLUMNS + " FROM user_asset_folders WHERE user_id = ? AND project_id = ? AND instance_id = ? ORDER BY parent_folder_id IS NOT NULL, name COLLATE NOCASE, folder_id",
+  ).all(scope.userId, scope.projectId, scope.instanceId) as UserAssetFolderDescriptor[];
+  return rows;
+}
+
+export async function createUserAssetFolder(input: AssetScope & { name: string; parentFolderId?: string | null }): Promise<UserAssetFolderDescriptor> {
+  const scope = normalizeScope(input);
+  const name = normalizeName(input.name);
+  const parentFolderId = input.parentFolderId ? normalizeOpaqueId(input.parentFolderId, "parentFolderId") : null;
+  return withResourceMutationLock(scope, scopeStorageLockKey(scope), async () => {
+    if (parentFolderId) {
+      const parent = getFolderRow(scope, parentFolderId);
+      if (parent.parentFolderId) throw new UserAssetError("ASSET_FOLDER_DEPTH_EXCEEDED", parentFolderId);
+    }
+    const duplicate = sqlite.prepare(
+      "SELECT folder_id FROM user_asset_folders WHERE user_id = ? AND project_id = ? AND instance_id = ? AND parent_folder_id IS ? AND name = ? COLLATE NOCASE LIMIT 1",
+    ).get(scope.userId, scope.projectId, scope.instanceId, parentFolderId, name);
+    if (duplicate) throw new UserAssetError("ASSET_FOLDER_NAME_CONFLICT", name);
+    const folderId = "folder_" + randomUUID().replaceAll("-", "");
+    const now = nowIso();
+    sqlite.prepare(
+      "INSERT INTO user_asset_folders (folder_id,user_id,project_id,instance_id,parent_folder_id,name,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+    ).run(folderId, scope.userId, scope.projectId, scope.instanceId, parentFolderId, name, now, now);
+    return { folderId, ...scope, parentFolderId, name, createdAt: now, updatedAt: now };
+  });
+}
+
+export async function renameUserAssetFolder(input: AssetScope & { folderId: string; name: string }): Promise<UserAssetFolderDescriptor> {
+  const scope = normalizeScope(input);
+  const folderId = normalizeOpaqueId(input.folderId, "folderId");
+  const name = normalizeName(input.name);
+  return withResourceMutationLock(scope, scopeStorageLockKey(scope), async () => {
+    const folder = getFolderRow(scope, folderId);
+    const duplicate = sqlite.prepare(
+      "SELECT folder_id FROM user_asset_folders " +
+      "WHERE user_id = ? AND project_id = ? AND instance_id = ? AND folder_id <> ? " +
+      "AND parent_folder_id IS ? AND name = ? COLLATE NOCASE LIMIT 1",
+    ).get(scope.userId, scope.projectId, scope.instanceId, folderId, folder.parentFolderId, name);
+    if (duplicate) throw new UserAssetError("ASSET_FOLDER_NAME_CONFLICT", name);
+    const now = nowIso();
+    const result = sqlite.prepare(
+      "UPDATE user_asset_folders SET name = ?, updated_at = ? " +
+      "WHERE folder_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
+    ).run(name, now, folderId, scope.userId, scope.projectId, scope.instanceId);
+    if (result.changes !== 1) throw new UserAssetError("ASSET_FOLDER_NOT_FOUND", folderId);
+    return getFolderRow(scope, folderId);
+  });
+}
+
+export async function deleteUserAssetFolder(input: AssetScope & { folderId: string }): Promise<{ folderId: string }> {
+  const scope = normalizeScope(input);
+  const folderId = normalizeOpaqueId(input.folderId, "folderId");
+  return withResourceMutationLock(scope, scopeStorageLockKey(scope), async () => {
+    getFolderRow(scope, folderId);
+    const hasAssets = sqlite.prepare(
+      "SELECT 1 FROM user_assets WHERE folder_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
+    ).get(folderId, scope.userId, scope.projectId, scope.instanceId);
+    const hasChildren = sqlite.prepare(
+      "SELECT 1 FROM user_asset_folders WHERE parent_folder_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
+    ).get(folderId, scope.userId, scope.projectId, scope.instanceId);
+    if (hasAssets || hasChildren) throw new UserAssetError("ASSET_FOLDER_NOT_EMPTY", folderId);
+    const result = sqlite.prepare(
+      "DELETE FROM user_asset_folders WHERE folder_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
+    ).run(folderId, scope.userId, scope.projectId, scope.instanceId);
+    if (result.changes !== 1) throw new UserAssetError("ASSET_FOLDER_NOT_FOUND", folderId);
+    return { folderId };
+  });
+}
+
+export async function moveUserAsset(input: AssetScope & { assetId: string; folderId?: string | null }): Promise<UserAssetDescriptor> {
+  const scope = normalizeScope(input);
+  const assetId = normalizeOpaqueId(input.assetId, "assetId");
+  const folderId = input.folderId ? normalizeOpaqueId(input.folderId, "folderId") : null;
+  return withResourceMutationLock(scope, ["user-asset:" + assetId, scopeStorageLockKey(scope)], async () => {
+    const asset = requireAsset({ ...scope, assetId });
+    if (folderId) getFolderRow(scope, folderId);
+    const now = nowIso();
+    sqlite.prepare("UPDATE user_assets SET folder_id = ?, updated_at = ? WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?")
+      .run(folderId, now, assetId, scope.userId, scope.projectId, scope.instanceId);
+    return hydrate(requireAsset({ ...scope, assetId }), scope);
+  });
+}
+
 export async function createUserAsset(input: AssetScope & {
-  name?: string; fileName: string; mimeType?: string; bytes: Uint8Array;
+  name?: string; fileName: string; mimeType?: string; bytes: Uint8Array; folderId?: string | null;
 } & UserAssetMutationSource): Promise<UserAssetDescriptor> {
   const scope = normalizeScope(input);
   const normalized = await normalizeInput(input.fileName, input.mimeType, input.bytes);
   const source = normalizeSource(input.source);
   const idempotencyKey = normalizeKey(input.idempotencyKey);
   const name = normalizeName(input.name || defaultName(normalized.fileName));
+  const folderId = input.folderId ? normalizeOpaqueId(input.folderId, "folderId") : null;
   const idempotencyFingerprint = fingerprint("asset.create", {
-    name, fileName: normalized.fileName, mimeType: normalized.mimeType, checksum: normalized.checksum, source,
+    name, fileName: normalized.fileName, mimeType: normalized.mimeType, checksum: normalized.checksum, source, folderId,
   });
   // Pre-lock fast path: a genuine replay can return without contending for the
   // scope lock. This read is racy under concurrency, so an authoritative
@@ -154,6 +259,7 @@ export async function createUserAsset(input: AssetScope & {
     if (replayed) return replayed;
   }
   return withResourceMutationLock(scope, scopeStorageLockKey(scope), async () => {
+    if (folderId) getFolderRow(scope, folderId);
     // Authoritative idempotency recheck inside the scope storage lock. Two
     // concurrent createUserAsset calls with the same key serialize here: the
     // loser finds the winner's version and replays it, so both return the same
@@ -174,9 +280,9 @@ export async function createUserAsset(input: AssetScope & {
         assertAutomationMutationLease(scope, source, input);
         sqlite.prepare(
           "INSERT INTO user_assets " +
-          "(asset_id,user_id,project_id,instance_id,name,status,current_version_id,archived_at,created_at,updated_at) " +
-          "VALUES (?,?,?,?,?,'active',?,NULL,?,?)",
-        ).run(assetId, scope.userId, scope.projectId, scope.instanceId, name, versionId, now, now);
+        "(asset_id,user_id,project_id,instance_id,folder_id,name,status,current_version_id,archived_at,created_at,updated_at) " +
+        "VALUES (?,?,?,?,?,?,'active',?,NULL,?,?)",
+        ).run(assetId, scope.userId, scope.projectId, scope.instanceId, folderId, name, versionId, now, now);
         insertVersion({ versionId, versionNumber: 1, assetId, scope, normalized, storagePath, source, input, idempotencyKey, idempotencyFingerprint, createdAt: now });
         assertCommittedBytesWithinQuota(scope, normalized.bytes.length);
         recordStorageCommit(scope, normalized.bytes.length);
@@ -223,7 +329,7 @@ async function resolveIdempotentCreate(
 }
 
 export async function uploadUserAssetVersion(input: AssetScope & {
-  assetId: string; fileName: string; mimeType?: string; bytes: Uint8Array; expectedVersionId?: string | null;
+  assetId: string; fileName: string; mimeType?: string; bytes: Uint8Array; expectedVersionId?: string | null; folderId?: string | null;
 } & UserAssetMutationSource): Promise<UserAssetDescriptor> {
   const scope = normalizeScope(input);
   const assetId = normalizeOpaqueId(input.assetId, "assetId");
@@ -237,6 +343,8 @@ export async function uploadUserAssetVersion(input: AssetScope & {
   return withResourceMutationLock(scope, ["user-asset:" + assetId, scopeStorageLockKey(scope)], async () => {
     const asset = requireAsset({ ...scope, assetId });
     if (asset.status !== "active") throw new UserAssetError("ASSET_ARCHIVED", assetId);
+    const folderId = input.folderId === undefined ? asset.folderId : (input.folderId ? normalizeOpaqueId(input.folderId, "folderId") : null);
+    if (folderId) getFolderRow(scope, folderId);
     if (idempotencyKey) {
       const old = sqlite.prepare(
         "SELECT " + VERSION_COLUMNS + " FROM user_asset_versions " +
@@ -280,6 +388,10 @@ export async function uploadUserAssetVersion(input: AssetScope & {
           "WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
         ).run(versionId, now, assetId, scope.userId, scope.projectId, scope.instanceId);
         if (result.changes !== 1) throw new UserAssetError("ASSET_COMMIT_FAILED", "asset head update failed");
+        if (input.folderId !== undefined) {
+          sqlite.prepare("UPDATE user_assets SET folder_id = ? WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?")
+            .run(folderId, assetId, scope.userId, scope.projectId, scope.instanceId);
+        }
         commitStorageReservation(scope, token);
         input.finalizeRun?.({ assetId, versionId, checksum: normalized.checksum });
       })();
@@ -316,12 +428,68 @@ export async function restoreUserAssetVersion(input: AssetScope & {
   });
 }
 
+export async function convertUserAssetCsvToXlsx(input: AssetScope & {
+  assetId: string;
+  expectedVersionId: string;
+  confirmed: boolean;
+  idempotencyKey: string;
+}): Promise<UserAssetDescriptor> {
+  if (!input.confirmed) throw new UserAssetError("ASSET_CONFIRMATION_REQUIRED", "CSV 转换为 Excel 需要用户明确确认");
+  const scope = normalizeScope(input);
+  const asset = requireAsset({ ...scope, assetId: input.assetId });
+  const idempotencyKey = normalizeKey(input.idempotencyKey);
+  if (!idempotencyKey) throw new UserAssetError("ASSET_INVALID_CONTENT", "转换需要幂等键");
+  const replay = sqlite.prepare(
+    "SELECT " + VERSION_COLUMNS + " FROM user_asset_versions WHERE user_id = ? AND project_id = ? AND instance_id = ? AND idempotency_key = ?",
+  ).get(scope.userId, scope.projectId, scope.instanceId, idempotencyKey) as VersionRow | undefined;
+  if (replay) {
+    if (replay.assetId !== asset.assetId || replay.parentVersionId !== input.expectedVersionId || replay.format !== "xlsx") {
+      throw new UserAssetError("ASSET_IDEMPOTENCY_CONFLICT", "idempotency key conflict");
+    }
+    return hydrate(asset, scope);
+  }
+  if (asset.status !== "active") throw new UserAssetError("ASSET_ARCHIVED", asset.assetId);
+  if (asset.currentVersionId !== input.expectedVersionId) throw new UserAssetError("ASSET_VERSION_CONFLICT", "asset head is stale");
+  const current = await readUserAssetVersion({ ...scope, assetId: asset.assetId, versionId: input.expectedVersionId });
+  if (current.descriptor.format !== "csv") throw new UserAssetError("ASSET_UNSUPPORTED_FORMAT", "只有 CSV 文件可以转换为 Excel");
+  let bytes: Buffer;
+  try {
+    bytes = await convertCsvBytesToXlsx(current.bytes);
+  } catch (error) {
+    if (error instanceof CsvXlsxConversionError) throw new UserAssetError("ASSET_INVALID_CONTENT", error.message);
+    throw error;
+  }
+  const fileName = current.descriptor.fileName.replace(/\.csv$/i, "") + ".xlsx";
+  const converted = await uploadUserAssetVersion({
+    ...scope,
+    assetId: asset.assetId,
+    fileName,
+    mimeType: CANONICAL_MIME.xlsx,
+    bytes,
+    expectedVersionId: input.expectedVersionId,
+    source: current.descriptor.source,
+    conversationId: current.descriptor.conversationId,
+    taskId: current.descriptor.taskId,
+    runId: current.descriptor.runId,
+    parentVersionId: current.descriptor.versionId,
+    idempotencyKey,
+    confirmedMutation: "convert_to_xlsx",
+  });
+  recordAssetLifecycle(scope, asset.assetId, "asset.converted_to_xlsx", "success", {
+    parentVersionId: current.descriptor.versionId,
+    versionId: converted.currentVersionId,
+    source: current.descriptor.source,
+  });
+  return converted;
+}
+
 export async function saveConversationArtifactAsUserAsset(input: AssetScope & {
   name?: string;
   fileName: string;
   mimeType?: string;
   bytes: Uint8Array;
   assetId?: string | null;
+  folderId?: string | null;
   confirmedByUser?: boolean;
   conversationId?: string | null;
   taskId?: string | null;
@@ -338,11 +506,13 @@ export async function saveConversationArtifactAsUserAsset(input: AssetScope & {
     return uploadUserAssetVersion({
       ...input,
       assetId: input.assetId,
+      folderId: input.folderId,
       source,
     });
   }
   return createUserAsset({
     ...input,
+    folderId: input.folderId,
     source,
   });
 }
@@ -380,12 +550,17 @@ export async function saveConversationAttachmentAsUserAsset(input: AssetScope & 
 }
 
 export async function listUserAssets(input: AssetScope & {
-  status?: UserAssetStatus | "all"; search?: string; format?: AssetFormat; source?: UserAssetSource; limit?: number;
+  status?: UserAssetStatus | "all"; search?: string; format?: AssetFormat; source?: UserAssetSource; folderId?: string | null; limit?: number;
 }): Promise<UserAssetDescriptor[]> {
   const scope = normalizeScope(input);
   const limit = clampLimit(input.limit);
   const clauses = ["user_id = ?", "project_id = ?", "instance_id = ?"];
   const params: unknown[] = [scope.userId, scope.projectId, scope.instanceId];
+  if (input.folderId !== undefined) {
+    const folderId = input.folderId ? normalizeOpaqueId(input.folderId, "folderId") : null;
+    if (folderId) getFolderRow(scope, folderId);
+    clauses.push("folder_id IS ?"); params.push(folderId);
+  }
   if (input.status && input.status !== "all") {
     if (input.status !== "active" && input.status !== "archived") throw new UserAssetError("ASSET_INVALID_SCOPE", "invalid status");
     clauses.push("status = ?"); params.push(input.status);
@@ -544,13 +719,25 @@ export function assetFormatForFileName(fileName: string): AssetFormat {
 }
 
 async function normalizeInput(fileNameValue: string, mimeValue: string | undefined, value: Uint8Array): Promise<NormalizedInput> {
-  const fileName = normalizeFileName(fileNameValue);
-  const format = assetFormatForFileName(fileName);
-  let bytes = Buffer.from(value || new Uint8Array());
+  let fileName = normalizeFileName(fileNameValue);
+  let format = assetFormatForFileName(fileName);
+  let bytes: Buffer<ArrayBufferLike> = Buffer.from(value || new Uint8Array());
   if (!bytes.length) throw new UserAssetError("ASSET_INVALID_CONTENT", "asset is empty");
   if (bytes.length > MAX_BYTES[format]) throw new UserAssetError("ASSET_TOO_LARGE", String(bytes.length), { limitBytes: MAX_BYTES[format] });
   const mime = normalizeMime(mimeValue);
   if (mime && !MIME_BY_FORMAT[format].includes(mime)) throw new UserAssetError("ASSET_MIME_MISMATCH", fileName + ":" + mime);
+  // CSV remains readable for historical versions, but every newly submitted
+  // table is normalized into XLSX before it becomes an asset version.
+  if (format === "csv") {
+    try {
+      bytes = await convertCsvBytesToXlsx(bytes);
+    } catch (error) {
+      if (error instanceof CsvXlsxConversionError) throw new UserAssetError("ASSET_INVALID_CONTENT", error.message);
+      throw error;
+    }
+    fileName = fileName.replace(/\.csv$/i, "") + ".xlsx";
+    format = "xlsx";
+  }
   if (format === "png" || format === "jpeg" || format === "webp") {
     try { bytes = Buffer.from((await normalizeImageBytes(format, bytes)).bytes); }
     catch (error) { throw new UserAssetError("ASSET_TOO_LARGE", errorMessage(error), { limitBytes: USER_ASSET_MAX_BYTES }); }
@@ -590,6 +777,16 @@ function requireAsset(input: AssetScope & { assetId: string }): AssetRow {
   return row;
 }
 
+function getFolderRow(scope: AssetScope, folderId: string): UserAssetFolderDescriptor {
+  const row = sqlite.prepare("SELECT " + FOLDER_COLUMNS + " FROM user_asset_folders WHERE folder_id = ?")
+    .get(folderId) as UserAssetFolderDescriptor | undefined;
+  if (!row) throw new UserAssetError("ASSET_FOLDER_NOT_FOUND", folderId);
+  if (row.userId !== scope.userId || row.projectId !== scope.projectId || row.instanceId !== scope.instanceId) {
+    throw new UserAssetError("ASSET_SCOPE_MISMATCH", folderId);
+  }
+  return row;
+}
+
 async function hydrate(row: AssetRow, scope: AssetScope): Promise<UserAssetDescriptor> {
   const version = row.currentVersionId
     ? sqlite.prepare("SELECT " + VERSION_COLUMNS + " FROM user_asset_versions WHERE version_id = ?").get(row.currentVersionId) as VersionRow | undefined
@@ -597,7 +794,7 @@ async function hydrate(row: AssetRow, scope: AssetScope): Promise<UserAssetDescr
   if (version) assertScope(version, scope);
   return {
     assetId: row.assetId, userId: row.userId, projectId: row.projectId, instanceId: row.instanceId,
-    name: row.name, status: normalizeStatus(row.status), currentVersionId: row.currentVersionId,
+    name: row.name, folderId: row.folderId, status: normalizeStatus(row.status), currentVersionId: row.currentVersionId,
     currentVersion: version ? versionFromRow(version) : null,
     createdAt: row.createdAt, updatedAt: row.updatedAt, archivedAt: row.archivedAt,
   };
@@ -708,6 +905,7 @@ function insertVersion(input: {
 
 function assertAutomationMutationLease(scope: AssetScope, source: UserAssetSource, input: UserAssetMutationSource): void {
   if (source !== "automation") return;
+  if (input.confirmedMutation === "convert_to_xlsx") return;
   if (!input.taskId || !input.runId) {
     throw new UserAssetError("ASSET_INVALID_CONTENT", "automation asset mutation requires taskId and runId");
   }

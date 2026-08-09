@@ -127,6 +127,28 @@ test("Portal saves a conversation artifact to My Files", async () => {
   assert.equal(saved.data.currentVersion.source, "conversation");
 });
 
+test("Portal normalizes a CSV upload to XLSX and no longer exposes a conversion action", async () => {
+  const { connector } = await fixture;
+  const uploaded = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
+    name: "转换文件",
+    fileName: "convert.csv",
+    mimeType: "text/csv",
+    base64: Buffer.from("name,value\n煤炭,700\n").toString("base64"),
+  })) as any;
+  const asset = uploaded.data;
+  assert.equal(asset.currentVersion.format, "xlsx");
+  assert.equal(asset.currentVersion.fileName, "convert.xlsx");
+  await assert.rejects(
+    () => connector.__test__.handleCommand(scopeA, command("asset.convert_to_xlsx", {
+      assetId: asset.assetId,
+      expectedVersionId: asset.currentVersionId,
+      confirmed: true,
+      idempotencyKey: "portal-convert-obsolete",
+    })),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_UNSUPPORTED_FORMAT",
+  );
+});
+
 test("Portal asset commands enforce registered connector scope", async () => {
   const { connector } = await fixture;
   const created = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
@@ -151,6 +173,90 @@ test("Portal asset list rejects an unknown status instead of defaulting to activ
   const response = await connector.__test__.handleCommand(scopeA, command("asset.list", { status: "deleted" })) as any;
   assert.equal(response.ok, false);
   assert.equal(response.error.code, "INVALID_REQUEST");
+});
+
+test("Portal uploads preserve the requested folder for single and batch files", async () => {
+  const { connector } = await fixture;
+  const folder = await connector.__test__.handleCommand(scopeA, command("asset.folder.create", { name: `上传目录-${Date.now()}` })) as any;
+  assert.equal(folder.ok, true);
+
+  const single = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
+    fileName: "folder-single.md",
+    folderId: folder.data.folderId,
+    base64: Buffer.from("# single\n").toString("base64"),
+  })) as any;
+  assert.equal(single.ok, true);
+  assert.equal(single.data.folderId, folder.data.folderId);
+
+  const batch = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
+    files: [{
+      fileName: "folder-batch.md",
+      folderId: folder.data.folderId,
+      base64: Buffer.from("# batch\n").toString("base64"),
+    }],
+  })) as any;
+  assert.equal(batch.ok, true);
+  assert.equal(batch.data.items[0].asset.folderId, folder.data.folderId);
+
+  const listed = await connector.__test__.handleCommand(scopeA, command("asset.list", { folderId: folder.data.folderId })) as any;
+  assert.deepEqual(new Set(listed.data.items.map((item: any) => item.assetId)), new Set([single.data.assetId, batch.data.items[0].asset.assetId]));
+});
+
+test("Portal folder rename/delete enforce scoped empty-folder contract", async () => {
+  const { connector } = await fixture;
+  const rootFolder = await connector.__test__.handleCommand(scopeA, command("asset.folder.create", { name: `Portal folder root ${Date.now()}` })) as any;
+  const siblingFolder = await connector.__test__.handleCommand(scopeA, command("asset.folder.create", { name: `Portal folder sibling ${Date.now()}` })) as any;
+  const childFolder = await connector.__test__.handleCommand(scopeA, command("asset.folder.create", {
+    name: "Portal child",
+    parentFolderId: rootFolder.data.folderId,
+  })) as any;
+
+  const renamed = await connector.__test__.handleCommand(scopeA, command("asset.folder.rename", {
+    folderId: rootFolder.data.folderId,
+    name: "Portal folder root renamed",
+  })) as any;
+  assert.equal(renamed.ok, true);
+  assert.equal(renamed.data.folderId, rootFolder.data.folderId);
+  assert.equal(renamed.data.name, "Portal folder root renamed");
+
+  await assert.rejects(
+    () => connector.__test__.handleCommand(scopeA, command("asset.folder.rename", {
+      folderId: siblingFolder.data.folderId,
+      name: "PORTAL FOLDER ROOT RENAMED",
+    })),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_FOLDER_NAME_CONFLICT",
+  );
+  await assert.rejects(
+    () => connector.__test__.handleCommand(scopeB, command("asset.folder.rename", {
+      folderId: rootFolder.data.folderId,
+      name: "cross-scope",
+    })),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_SCOPE_MISMATCH",
+  );
+
+  const uploaded = await connector.__test__.handleCommand(scopeA, command("asset.upload", {
+    fileName: "non-empty-folder.md",
+    folderId: childFolder.data.folderId,
+    base64: Buffer.from("# folder\n").toString("base64"),
+  })) as any;
+  assert.equal(uploaded.ok, true);
+  await assert.rejects(
+    () => connector.__test__.handleCommand(scopeA, command("asset.folder.delete", { folderId: childFolder.data.folderId })),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_FOLDER_NOT_EMPTY",
+  );
+
+  const deletedAsset = await connector.__test__.handleCommand(scopeA, command("asset.delete", { assetId: uploaded.data.assetId })) as any;
+  assert.equal(deletedAsset.ok, true);
+  const deletedChild = await connector.__test__.handleCommand(scopeA, command("asset.folder.delete", { folderId: childFolder.data.folderId })) as any;
+  assert.deepEqual(deletedChild.data, { folderId: childFolder.data.folderId });
+  await assert.rejects(
+    () => connector.__test__.handleCommand(scopeB, command("asset.folder.delete", { folderId: rootFolder.data.folderId })),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_SCOPE_MISMATCH",
+  );
+  const deletedRoot = await connector.__test__.handleCommand(scopeA, command("asset.folder.delete", { folderId: rootFolder.data.folderId })) as any;
+  assert.deepEqual(deletedRoot.data, { folderId: rootFolder.data.folderId });
+  const deletedSibling = await connector.__test__.handleCommand(scopeA, command("asset.folder.delete", { folderId: siblingFolder.data.folderId })) as any;
+  assert.deepEqual(deletedSibling.data, { folderId: siblingFolder.data.folderId });
 });
 
 test("Portal batch upload validates every payload before writes and returns per-file results", async () => {
@@ -223,6 +329,12 @@ test("report mappings open their same-scope backing asset without copying bytes"
   });
   const response = await connector.__test__.handleCommand(scopeA, command("report.mapping.get", { mappingId: mapping.mappingId })) as any;
   assert.equal(response.ok, true);
+  const folder = await connector.__test__.handleCommand(scopeA, command("asset.folder.create", { name: `报告目录-${Date.now()}` })) as any;
+  await connector.__test__.handleCommand(scopeA, command("asset.move", { assetId: uploaded.data.assetId, folderId: folder.data.folderId }));
+  const rootListing = await connector.__test__.handleCommand(scopeA, command("asset.list", { folderId: null })) as any;
+  assert.equal(rootListing.data.catalog.some((item: any) => item.reportMappingId === mapping.mappingId), false);
+  const folderListing = await connector.__test__.handleCommand(scopeA, command("asset.list", { folderId: folder.data.folderId })) as any;
+  assert.equal(folderListing.data.catalog.some((item: any) => item.reportMappingId === mapping.mappingId), true);
   assert.equal(Buffer.from(response.data.base64, "base64").toString(), "# backed report\n");
   assert.equal(response.data.sizeBytes, uploaded.data.currentVersion.sizeBytes);
 });

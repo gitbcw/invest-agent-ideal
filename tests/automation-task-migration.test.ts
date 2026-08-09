@@ -82,7 +82,7 @@ test("migrates one legacy CSV task with backup, asset bindings, paused revision,
   const assets = await import("../src/services/user-assets.js");
   const current = await assets.readCurrentUserAsset({ ...scope, assetId: result.workingAsset.assetId });
   assert.equal(current.descriptor.versionNumber, 3);
-  assert.equal(current.bytes.toString(), "code,price\n600519,1520\n");
+  assert.equal(current.descriptor.format, "xlsx");
 });
 
 test("refuses cross-scope legacy migration", async () => {

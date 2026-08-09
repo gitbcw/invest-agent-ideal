@@ -98,7 +98,12 @@ Connector 注册后，本地 runtime 以注册 scope 为权威。command payload
 | `automation.run.get` | relay -> connector | `{ runId }` | one scoped run |
 | `automation.asset.get` | relay -> connector | `{ assetId }` | task asset descriptor and base64 |
 | `automation.continue_in_chat` | relay -> connector | `{ runId }` | a new conversation bound to the run |
+| `asset.folder.list` | relay -> connector | `{}` | `{ items: UserAssetFolderDescriptor[] }` |
+| `asset.folder.create` | relay -> connector | `{ name, parentFolderId? }` | folder descriptor |
+| `asset.folder.rename` | relay -> connector | `{ folderId, name }` | folder descriptor；同级名称按不区分大小写唯一 |
+| `asset.folder.delete` | relay -> connector | `{ folderId }` | `{ folderId }`；仅允许删除空目录 |
 | `asset.delete` | relay -> connector | `{ assetId }` | `{ assetId, deletedVersions }`；若文件仍被自动化任务引用则拒绝 |
+| `asset.convert_to_xlsx` | relay -> connector | `{ assetId, expectedVersionId, confirmed: true, idempotencyKey }` | 同一 `assetId` 上新增格式化 XLSX 版本；保留 CSV 历史版本与自动化绑定 |
 
 注册时的 capability label 还包含 `conversation.sync` 和 `conversation.attachments`，它们描述镜像/附件能力，不代表存在同名 command。对接方不得发送表中没有列出的 `conversation.sync` command。
 
@@ -299,16 +304,20 @@ npm run verify
 ```
 
 Portal 仓库与本地 runtime 改动协议时必须在同一变更窗口对齐 `protocolVersion`、command 类型与 scope 语义。
-### Asset list quota fields
+### Asset library fields and folders
 
 `asset.list` 的成功数据在保持既有 `items` 字段兼容的同时，可返回：
 
 ```json
-{"items": [], "catalog": [], "reportMappings": [], "storageUsage": {"usedBytes": 0, "reservedBytes": 0, "limitBytes": 209715200, "availableBytes": 209715200}}
+{"items": [], "folders": [], "catalog": [], "reportMappings": [], "storageUsage": {"usedBytes": 0, "reservedBytes": 0, "limitBytes": 209715200, "availableBytes": 209715200}}
 ```
 
 客户端不得将该字段作为写入安全边界；上传仍由 Runtime 按解码后的单文件 `10 MiB`、单请求 `20 MiB` 和 scope `200 MiB` 强制校验。
 
 `catalog` 是受控虚拟列表，条目 `catalogKind` 为 `asset` 或 `report`；报告条目只携带 opaque `reportMappingId`，不返回 Workspace 路径。`asset.upload` 保持旧单文件 payload 兼容，同时接受 `{ files: [...] }`；批量请求会先校验全部 base64 与总原始字节，只有通过前置校验才开始逐文件写入，并以 `{ items: [...] }` 返回每一项结果。
 
+`asset.folder.list` 返回当前 connector scope 内至多两级的 opaque 文件夹描述；`asset.folder.create` 接受 `{ name, parentFolderId? }`，`asset.folder.rename` 接受 `{ folderId, name }` 并保持同级名称不区分大小写唯一，`asset.folder.delete` 接受 `{ folderId }` 且只允许删除没有直接资产和子文件夹的空目录，非空时返回 `ASSET_FOLDER_NOT_EMPTY`；`asset.move` 接受 `{ assetId, folderId }`。上述文件夹命令以及资产命令都必须使用 connector 注册的 `userId`、`projectId`、`instanceId` scope，payload 不得覆盖这些值。`asset.list` 未传 `folderId` 时保持跨目录汇总兼容，传 `folderId: null` 时只返回根目录资产，传 opaque `folderId` 时只返回该目录资产；目录限定查询的 `catalog` 与 `reportMappings` 只包含 backing asset 位于该目录的报告。`asset.upload` 的单文件 payload 以及批量 `files` 中的每一项都可携带 `folderId`，Runtime 必须按注册 scope 校验目录并把新资产写入该位置。
+
 `asset.conversation.save` 只接受 scope-bound `artifactId` 和可选名称。它表示用户在 Portal 明确执行“保存到我的文件”，创建 `source=conversation` 的长期资产；临时附件和未保存交付物不自动占用 200 MiB 配额。`report.mapping.get` 只接受 opaque `mappingId`，同 scope 可读取映射的受控 backing bytes；backing asset/version 映射不得复制或重复计费。
+
+`asset.convert_to_xlsx` 只允许转换当前活动版本仍为 CSV 的资产，要求 Portal 传入当前 `expectedVersionId`、显式 `confirmed: true` 和幂等键。Runtime 将 CSV 解析为结构化工作簿，应用冻结表头、筛选、受限自动列宽、换行和基础样式，并在同一 `assetId` 上提交新的 XLSX 版本；文件夹、资产名称和基于 `assetId` 的自动化绑定不变，原 CSV 版本保留用于历史恢复。该命令不得被用于批量或静默迁移真实 Workspace 文件。

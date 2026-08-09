@@ -1013,6 +1013,7 @@ function normalizeOutputPolicy(raw: AutomationTaskOutputPolicy | Record<string, 
     const format = String(value.format || "") as AssetFormat;
     const fileName = normalizeAssetFileNameForOutput(String(value.fileName || ""));
     if (!isAssetFormat(format) || assetFormatForFileName(fileName) !== format) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "create format/fileName mismatch");
+    if (format === "csv") throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "new spreadsheet outputs must use xlsx");
     const titleTemplate = value.titleTemplate === undefined ? undefined : String(value.titleTemplate);
     if (titleTemplate && titleTemplate.length > 500) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "titleTemplate too long");
     return { mode: "create", format, fileName, ...(titleTemplate ? { titleTemplate } : {}) };
@@ -1038,8 +1039,8 @@ async function validateOutputPolicy(scope: AutomationScope, output: AutomationTa
   if (output.mode !== "update") return;
   const asset = await getUserAsset({ ...scope, assetId: output.assetId });
   if (!asset || asset.status !== "active" || !asset.currentVersion) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", output.assetId);
-  if (!(asset.currentVersion.format === "markdown" || asset.currentVersion.format === "csv" || asset.currentVersion.format === "xlsx")) {
-    throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "update supports markdown/csv/xlsx only");
+  if (!(asset.currentVersion.format === "markdown" || asset.currentVersion.format === "xlsx")) {
+    throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "update supports markdown/xlsx only");
   }
 }
 

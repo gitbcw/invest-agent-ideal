@@ -790,11 +790,23 @@ export const artifactDeleteConfirmations = sqliteTable("artifact_delete_confirma
 });
 
 /** Canonical long-lived user asset identity. Bytes are versioned below. */
+export const userAssetFolders = sqliteTable("user_asset_folders", {
+  folderId: text("folder_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  parentFolderId: text("parent_folder_id"),
+  name: text("name").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const userAssets = sqliteTable("user_assets", {
   assetId: text("asset_id").primaryKey(),
   userId: text("user_id").notNull(),
   projectId: text("project_id").notNull(),
   instanceId: text("instance_id").notNull(),
+  folderId: text("folder_id"),
   name: text("name").notNull(),
   status: text("status").notNull().default("active"),
   currentVersionId: text("current_version_id"),

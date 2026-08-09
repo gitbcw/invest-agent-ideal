@@ -1,4 +1,5 @@
 import type { DailyReviewContext } from "../handlers/review.js";
+import { SPREADSHEET_OUTPUT_POLICY } from "./spreadsheet-output-policy.js";
 
 export function compactDailyReviewContext(context: DailyReviewContext) {
   return {
@@ -68,6 +69,7 @@ export function buildMobilePrompt(params: {
   if (!compactReviewContext) {
     return [
       params.userText,
+      `【表格文件格式规则】${SPREADSHEET_OUTPUT_POLICY}`,
       internalRuntimeContext ? `【内部执行上下文】\n${internalRuntimeContext}` : "",
     ].filter(Boolean).join("\n");
   }
@@ -84,6 +86,7 @@ export function buildMobilePrompt(params: {
       "主力控盘情况只作为最后一部分；如果没有确定性数据源，只简短说明未接入，不要在核心结论里反复强调缺口。",
       "直接输出复盘正文，不要说明你将如何处理，不要提到技能、上下文、工具或保存动作；数据来源章节只写“腾讯行情、腾讯日K、东方财富新闻线索、巨潮资讯公告”等可读来源名。",
       "输出客户微信可读版本，内容可以完整，但避免工程词和内部路径。",
+      `【表格文件格式规则】${SPREADSHEET_OUTPUT_POLICY}`,
       params.sandboxPermissions?.length ? `当前允许权限：${params.sandboxPermissions.join(",")}` : "",
       "当用户明确要求新增或修改盯盘规则时，不要直接落库；先输出结构化草案，等待服务端确认后再执行。",
       internalRuntimeContext ? `【内部执行上下文】\n${internalRuntimeContext}` : "",

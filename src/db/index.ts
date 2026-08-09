@@ -764,11 +764,22 @@ export function initDb() {
       completed_at TEXT,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS user_asset_folders (
+      folder_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      parent_folder_id TEXT,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS user_assets (
       asset_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       project_id TEXT NOT NULL,
       instance_id TEXT NOT NULL,
+      folder_id TEXT,
       name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       current_version_id TEXT,
@@ -980,6 +991,7 @@ export function initDb() {
   ensureColumn("user_asset_versions", "version_number", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("user_asset_versions", "parent_version_id", "TEXT");
   ensureColumn("user_asset_versions", "idempotency_fingerprint", "TEXT");
+  ensureColumn("user_assets", "folder_id", "TEXT");
   // Portal file-retention governance (additive, nullable). Backfill assigns
   // these values; rows left NULL behave as they did before the migration.
   ensureColumn("conversation_artifacts", "origin", "TEXT");
@@ -992,6 +1004,7 @@ export function initDb() {
   ensureColumn("conversation_artifacts", "trash_relative_path", "TEXT");
   ensureColumn("conversation_artifacts", "purge_at", "TEXT");
   ensureUserAssetLibraryMigration();
+  ensureUserAssetFoldersMigration();
   ensureColumn("daily_plans", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("daily_plans", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("investment_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
@@ -1179,6 +1192,10 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_automation_task_audit_task_time ON automation_task_audit_logs(task_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_user_assets_scope_status_updated ON user_assets(user_id, project_id, instance_id, status, updated_at);
     CREATE INDEX IF NOT EXISTS idx_user_assets_scope_name ON user_assets(user_id, project_id, instance_id, name);
+    CREATE INDEX IF NOT EXISTS idx_user_asset_folders_scope_parent ON user_asset_folders(user_id, project_id, instance_id, parent_folder_id, updated_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_asset_folders_scope_parent_name
+      ON user_asset_folders(user_id, project_id, instance_id, parent_folder_id, name COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS idx_user_assets_scope_folder ON user_assets(user_id, project_id, instance_id, folder_id, updated_at);
     CREATE INDEX IF NOT EXISTS idx_user_asset_versions_scope_asset_created ON user_asset_versions(user_id, project_id, instance_id, asset_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_user_asset_versions_scope_checksum ON user_asset_versions(user_id, project_id, instance_id, checksum);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_user_asset_versions_scope_idempotency
@@ -1670,6 +1687,14 @@ function ensureUserAssetLibraryMigration() {
   if (hasMigration(migrationKey)) return;
   // The tables are created additively above. This is only an operator-visible
   // checkpoint; it does not rewrite existing rows or files.
+  markMigration(migrationKey);
+}
+
+function ensureUserAssetFoldersMigration() {
+  const migrationKey = "user_asset_folders_v1";
+  if (hasMigration(migrationKey)) return;
+  // Folder ownership is additive. Existing assets retain NULL folder_id and
+  // therefore remain in the virtual root folder.
   markMigration(migrationKey);
 }
 

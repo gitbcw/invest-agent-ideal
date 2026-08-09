@@ -29,10 +29,61 @@ test("initializes additive asset tables and remains idempotent", async () => {
   const { db } = await fixture;
   db.initDb();
   const tables = db.sqlite.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_assets','user_asset_versions','automation_task_asset_bindings') ORDER BY name",
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_asset_folders','user_assets','user_asset_versions','automation_task_asset_bindings') ORDER BY name",
   ).all() as Array<{ name: string }>;
-  assert.deepEqual(tables.map((row) => row.name), ["automation_task_asset_bindings", "user_asset_versions", "user_assets"]);
+  assert.deepEqual(tables.map((row) => row.name), ["automation_task_asset_bindings", "user_asset_folders", "user_asset_versions", "user_assets"]);
   assert.ok(db.sqlite.prepare("SELECT key FROM schema_migrations WHERE key = 'user_asset_library_v1'").get());
+  assert.ok(db.sqlite.prepare("SELECT key FROM schema_migrations WHERE key = 'user_asset_folders_v1'").get());
+});
+
+test("asset folders are scoped, unique within a parent, and at most two levels deep", async () => {
+  const { assets } = await fixture;
+  const rootFolder = await assets.createUserAssetFolder({ ...scopeA, name: "研究资料" });
+  const childFolder = await assets.createUserAssetFolder({ ...scopeA, name: "锂电", parentFolderId: rootFolder.folderId });
+  assert.equal((await assets.listUserAssetFolders(scopeA)).length, 2);
+  await assert.rejects(
+    () => assets.createUserAssetFolder({ ...scopeA, name: "锂电", parentFolderId: rootFolder.folderId }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_FOLDER_NAME_CONFLICT",
+  );
+  await assert.rejects(
+    () => assets.createUserAssetFolder({ ...scopeA, name: "明细", parentFolderId: childFolder.folderId }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_FOLDER_DEPTH_EXCEEDED",
+  );
+  await assert.rejects(
+    () => assets.createUserAssetFolder({ ...scopeB, name: "跨 scope", parentFolderId: rootFolder.folderId }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_SCOPE_MISMATCH",
+  );
+  const asset = await assets.createUserAsset({ ...scopeA, folderId: childFolder.folderId, fileName: "in-folder.md", bytes: Buffer.from("# folder\n") });
+  assert.equal(asset.folderId, childFolder.folderId);
+  assert.equal((await assets.listUserAssets({ ...scopeA, folderId: childFolder.folderId })).some((item) => item.assetId === asset.assetId), true);
+  const moved = await assets.moveUserAsset({ ...scopeA, assetId: asset.assetId, folderId: rootFolder.folderId });
+  assert.equal(moved.folderId, rootFolder.folderId);
+  const siblingFolder = await assets.createUserAssetFolder({ ...scopeA, name: "FolderName" });
+  await assert.rejects(
+    () => assets.renameUserAssetFolder({ ...scopeA, folderId: rootFolder.folderId, name: "foldername" }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_FOLDER_NAME_CONFLICT",
+  );
+  const renamedChild = await assets.renameUserAssetFolder({ ...scopeA, folderId: childFolder.folderId, name: "锂电改名" });
+  assert.equal(renamedChild.name, "锂电改名");
+  await assert.rejects(
+    () => assets.deleteUserAssetFolder({ ...scopeA, folderId: rootFolder.folderId }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_FOLDER_NOT_EMPTY",
+  );
+  await assert.rejects(
+    () => assets.renameUserAssetFolder({ ...scopeB, folderId: rootFolder.folderId, name: "跨 scope 改名" }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_SCOPE_MISMATCH",
+  );
+  await assert.rejects(
+    () => assets.deleteUserAssetFolder({ ...scopeB, folderId: rootFolder.folderId }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_SCOPE_MISMATCH",
+  );
+  const deletedChild = await assets.deleteUserAssetFolder({ ...scopeA, folderId: childFolder.folderId });
+  assert.deepEqual(deletedChild, { folderId: childFolder.folderId });
+  await assets.deleteUserAssetFolder({ ...scopeA, folderId: siblingFolder.folderId });
+  await assert.rejects(
+    () => assets.moveUserAsset({ ...scopeB, assetId: asset.assetId, folderId: null }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_SCOPE_MISMATCH",
+  );
 });
 
 test("creates, reads, versions, restores, renames and archives an asset", async () => {
@@ -45,10 +96,10 @@ test("creates, reads, versions, restores, renames and archives an asset", async 
     bytes: Buffer.from("date,note\n2026-08-05,first\n"),
   });
   assert.equal(first.status, "active");
-  assert.equal(first.currentVersion?.format, "csv");
-  assert.match(first.currentVersion?.storagePath || "", /^assets\/asset_.+\/versions\/version_.+\/review\.csv$/);
+  assert.equal(first.currentVersion?.format, "xlsx");
+  assert.match(first.currentVersion?.storagePath || "", /^assets\/asset_.+\/versions\/version_.+\/review\.xlsx$/);
   const rootPath = workspace.resolveWorkspacePath(scopeA.userId);
-  assert.equal(readFileSync(path.join(rootPath, first.currentVersion!.storagePath), "utf8"), "date,note\n2026-08-05,first\n");
+  assert.ok(readFileSync(path.join(rootPath, first.currentVersion!.storagePath)).length > 100);
 
   const oldVersionId = first.currentVersionId!;
   const updated = await assets.uploadUserAssetVersion({
@@ -62,7 +113,7 @@ test("creates, reads, versions, restores, renames and archives an asset", async 
     conversationId: "conversation-1",
   });
   assert.notEqual(updated.currentVersionId, oldVersionId);
-  assert.equal((await assets.readUserAssetVersion({ ...scopeA, assetId: first.assetId, versionId: oldVersionId })).bytes.toString(), "date,note\n2026-08-05,first\n");
+  assert.equal((await assets.readUserAssetVersion({ ...scopeA, assetId: first.assetId, versionId: oldVersionId })).descriptor.format, "xlsx");
 
   const restored = await assets.restoreUserAssetVersion({
     ...scopeA,
@@ -73,7 +124,7 @@ test("creates, reads, versions, restores, renames and archives an asset", async 
   assert.notEqual(restored.currentVersionId, oldVersionId);
   assert.equal(restored.currentVersion?.source, "restore");
   assert.equal(restored.currentVersion?.parentVersionId, oldVersionId);
-  assert.equal((await assets.readCurrentUserAsset({ ...scopeA, assetId: first.assetId })).bytes.toString(), "date,note\n2026-08-05,first\n");
+  assert.equal((await assets.readCurrentUserAsset({ ...scopeA, assetId: first.assetId })).descriptor.format, "xlsx");
   assert.equal((await assets.listUserAssetVersions({ ...scopeA, assetId: first.assetId })).length, 3);
 
   const renamed = await assets.renameUserAsset({ ...scopeA, assetId: first.assetId, name: "已命名复盘表" });
@@ -92,6 +143,41 @@ test("creates, reads, versions, restores, renames and archives an asset", async 
     "SELECT COUNT(*) AS count FROM file_lifecycle_events WHERE entity_type = 'asset' AND entity_id = ?",
   ).get(first.assetId) as { count: number };
   assert.ok(lifecycle.count >= 4);
+});
+
+test("normalizes newly submitted CSV into a formatted XLSX asset", async () => {
+  const { assets } = await fixture;
+  const folder = await assets.createUserAssetFolder({ ...scopeA, name: "转换测试" });
+  const created = await assets.createUserAsset({
+    ...scopeA,
+    folderId: folder.folderId,
+    name: "运价跟踪",
+    fileName: "shipping.csv",
+    mimeType: "text/csv",
+    bytes: Buffer.from("日期,航线,备注\r\n2026-08-09,上海-鹿特丹,\"含,逗号\"\r\n"),
+    source: "upload",
+  });
+  assert.equal(created.folderId, folder.folderId);
+  assert.equal(created.name, "运价跟踪");
+  assert.equal(created.currentVersion?.format, "xlsx");
+  assert.equal(created.currentVersion?.fileName, "shipping.xlsx");
+  assert.equal(created.currentVersion?.source, "upload");
+
+  const ExcelJS = (await import("exceljs")).default;
+  const workbook = new ExcelJS.Workbook();
+  const payload = await assets.readCurrentUserAsset({ ...scopeA, assetId: created.assetId });
+  await (workbook.xlsx.load as unknown as (input: ArrayBuffer) => Promise<unknown>)(payload.bytes.buffer.slice(payload.bytes.byteOffset, payload.bytes.byteOffset + payload.bytes.byteLength));
+  const sheet = workbook.getWorksheet("数据")!;
+  assert.equal(sheet.getCell("A1").value, "日期");
+  assert.equal(sheet.getCell("C2").value, "含,逗号");
+  assert.equal(sheet.views[0]?.state, "frozen");
+  assert.ok((sheet.getColumn(2).width || 0) >= 10);
+
+  assert.equal((await assets.listUserAssetVersions({ ...scopeA, assetId: created.assetId })).length, 1);
+  await assert.rejects(
+    () => assets.createUserAsset({ ...scopeA, fileName: "malformed.csv", bytes: Buffer.from('name\n"coal"x\n') }),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_INVALID_CONTENT",
+  );
 });
 
 test("enforces all three scope fields and hides cross-scope assets", async () => {

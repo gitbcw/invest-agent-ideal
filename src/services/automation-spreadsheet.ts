@@ -44,37 +44,108 @@ import { readFile } from "node:fs/promises";
 const require = createRequire(${JSON.stringify(packageJsonPath)});
 const ExcelJS = require("exceljs");
 const [command, workbookPath, payloadPath] = process.argv.slice(2);
-if (!command || !workbookPath || !["inspect", "apply"].includes(command)) {
-  throw new Error("usage: node automation-sheet.mjs inspect <workbook.xlsx> | apply <workbook.xlsx> <changes.json>");
+if (!command || !workbookPath || !["create", "inspect", "apply"].includes(command)) {
+  throw new Error("usage: node automation-sheet.mjs create <workbook.xlsx> <changes.json> | inspect <workbook.xlsx> | apply <workbook.xlsx> <changes.json>");
 }
 const workbook = new ExcelJS.Workbook();
-await workbook.xlsx.readFile(workbookPath);
+if (command !== "create") await workbook.xlsx.readFile(workbookPath);
 if (command === "inspect") {
   const sheets = workbook.worksheets.map((sheet) => ({
     name: sheet.name,
     rowCount: sheet.rowCount,
     columnCount: sheet.columnCount,
+    columnWidths: Array.from({ length: sheet.columnCount }, (_, index) => sheet.getColumn(index + 1).width ?? null),
+    mergedRanges: sheet.model.merges || [],
+    views: sheet.views || [],
     rows: sheet.getSheetValues().slice(1, 31).map((row) => Array.isArray(row) ? row.slice(1) : row),
   }));
   process.stdout.write(JSON.stringify({ sheets }));
   process.exit(0);
 }
-if (!payloadPath) throw new Error("apply requires <changes.json>");
+if (!payloadPath) throw new Error(command + " requires <changes.json>");
 const changes = JSON.parse(await readFile(payloadPath, "utf8"));
+const getSheet = (name) => {
+  const sheet = workbook.getWorksheet(String(name || ""));
+  if (!sheet) throw new Error("worksheet not found");
+  return sheet;
+};
+const color = (value) => {
+  const text = String(value || "").replace(/^#/, "").toUpperCase();
+  if (!/^[0-9A-F]{6}$/.test(text)) throw new Error("invalid color");
+  return { argb: "FF" + text };
+};
+for (const change of Array.isArray(changes.createSheets) ? changes.createSheets : []) {
+  const name = String(change.name || "").trim();
+  if (!name || name.length > 31 || workbook.getWorksheet(name)) throw new Error("invalid createSheets item");
+  workbook.addWorksheet(name);
+}
+for (const change of Array.isArray(changes.renameSheets) ? changes.renameSheets : []) {
+  const sheet = getSheet(change.sheet);
+  const name = String(change.name || "").trim();
+  if (!name || name.length > 31 || workbook.getWorksheet(name)) throw new Error("invalid renameSheets item");
+  sheet.name = name;
+}
 for (const change of Array.isArray(changes.setCells) ? changes.setCells : []) {
-  const sheet = workbook.getWorksheet(String(change.sheet || ""));
+  const sheet = getSheet(change.sheet);
   const row = Number(change.row);
   const column = Number(change.column);
-  if (!sheet || !Number.isInteger(row) || row < 1 || !Number.isInteger(column) || column < 1) {
+  if (!Number.isInteger(row) || row < 1 || !Number.isInteger(column) || column < 1) {
     throw new Error("invalid setCells item");
   }
-  sheet.getCell(row, column).value = change.value ?? null;
+  const cell = sheet.getCell(row, column);
+  cell.value = typeof change.formula === "string" ? { formula: change.formula, result: change.result ?? undefined } : change.value ?? null;
+  if (change.numberFormat !== undefined) cell.numFmt = String(change.numberFormat);
+  if (change.font && typeof change.font === "object") cell.font = {
+    bold: change.font.bold === true,
+    italic: change.font.italic === true,
+    color: change.font.color ? color(change.font.color) : undefined,
+  };
+  if (change.fillColor) cell.fill = { type: "pattern", pattern: "solid", fgColor: color(change.fillColor) };
+  if (change.alignment && typeof change.alignment === "object") cell.alignment = {
+    horizontal: ["left", "center", "right"].includes(change.alignment.horizontal) ? change.alignment.horizontal : undefined,
+    vertical: ["top", "middle", "bottom"].includes(change.alignment.vertical) ? change.alignment.vertical : undefined,
+    wrapText: change.alignment.wrapText === true,
+  };
 }
 for (const change of Array.isArray(changes.appendRows) ? changes.appendRows : []) {
-  const sheet = workbook.getWorksheet(String(change.sheet || ""));
-  if (!sheet || !Array.isArray(change.values)) throw new Error("invalid appendRows item");
+  const sheet = getSheet(change.sheet);
+  if (!Array.isArray(change.values)) throw new Error("invalid appendRows item");
   sheet.addRow(change.values);
 }
+for (const change of Array.isArray(changes.setColumnWidths) ? changes.setColumnWidths : []) {
+  const sheet = getSheet(change.sheet);
+  const column = Number(change.column);
+  const width = Number(change.width);
+  if (!Number.isInteger(column) || column < 1 || !Number.isFinite(width) || width < 1 || width > 100) throw new Error("invalid setColumnWidths item");
+  sheet.getColumn(column).width = width;
+}
+for (const change of Array.isArray(changes.setRowHeights) ? changes.setRowHeights : []) {
+  const sheet = getSheet(change.sheet);
+  const row = Number(change.row);
+  const height = Number(change.height);
+  if (!Number.isInteger(row) || row < 1 || !Number.isFinite(height) || height < 1 || height > 300) throw new Error("invalid setRowHeights item");
+  sheet.getRow(row).height = height;
+}
+for (const change of Array.isArray(changes.mergeCells) ? changes.mergeCells : []) {
+  const sheet = getSheet(change.sheet);
+  const range = String(change.range || "").toUpperCase();
+  if (!/^[A-Z]{1,3}[1-9][0-9]*:[A-Z]{1,3}[1-9][0-9]*$/.test(range)) throw new Error("invalid mergeCells item");
+  sheet.mergeCells(range);
+}
+for (const change of Array.isArray(changes.freezePanes) ? changes.freezePanes : []) {
+  const sheet = getSheet(change.sheet);
+  const xSplit = Number(change.xSplit || 0);
+  const ySplit = Number(change.ySplit || 0);
+  if (!Number.isInteger(xSplit) || xSplit < 0 || !Number.isInteger(ySplit) || ySplit < 0) throw new Error("invalid freezePanes item");
+  sheet.views = xSplit || ySplit ? [{ state: "frozen", xSplit, ySplit }] : [];
+}
+for (const change of Array.isArray(changes.autoFilters) ? changes.autoFilters : []) {
+  const sheet = getSheet(change.sheet);
+  const range = String(change.range || "").toUpperCase();
+  if (!/^[A-Z]{1,3}[1-9][0-9]*:[A-Z]{1,3}[1-9][0-9]*$/.test(range)) throw new Error("invalid autoFilters item");
+  sheet.autoFilter = range;
+}
+if (workbook.worksheets.length === 0) throw new Error("workbook requires at least one worksheet");
 await workbook.xlsx.writeFile(workbookPath);
 `;
   await writeFile(helperPath, source, { flag: "wx", mode: 0o600 });

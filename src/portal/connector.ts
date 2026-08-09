@@ -48,10 +48,16 @@ import {
   archiveUserAsset,
   deleteUserAsset,
   createUserAsset,
+  convertUserAssetCsvToXlsx,
   getUserAsset,
   listUserAssetReferences,
   listUserAssetVersions,
   listUserAssets,
+  listUserAssetFolders,
+  createUserAssetFolder,
+  renameUserAssetFolder,
+  deleteUserAssetFolder,
+  moveUserAsset,
   readCurrentUserAsset,
   readUserAssetVersion,
   renameUserAsset,
@@ -94,6 +100,11 @@ const TYPES = {
   AUTOMATION_CONTINUE_IN_CHAT: "automation.continue_in_chat",
   AUTOMATION_MIGRATE_LEGACY: "automation.migrate_legacy",
   ASSET_LIST: "asset.list",
+  ASSET_FOLDER_LIST: "asset.folder.list",
+  ASSET_FOLDER_CREATE: "asset.folder.create",
+  ASSET_FOLDER_RENAME: "asset.folder.rename",
+  ASSET_FOLDER_DELETE: "asset.folder.delete",
+  ASSET_MOVE: "asset.move",
   ASSET_GET: "asset.get",
   ASSET_VERSION_GET: "asset.version.get",
   ASSET_VERSIONS_LIST: "asset.versions.list",
@@ -103,6 +114,7 @@ const TYPES = {
   ASSET_ARCHIVE: "asset.archive",
   ASSET_DELETE: "asset.delete",
   ASSET_RESTORE_VERSION: "asset.restore_version",
+  ASSET_CONVERT_TO_XLSX: "asset.convert_to_xlsx",
   ASSET_REFERENCES_LIST: "asset.references.list",
 } as const;
 
@@ -482,11 +494,16 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         search: typeof message.payload?.search === "string" ? message.payload.search : undefined,
         format: typeof message.payload?.format === "string" ? message.payload.format as any : undefined,
         source: typeof message.payload?.source === "string" ? message.payload.source as any : undefined,
+        folderId: typeof message.payload?.folderId === "string" ? message.payload.folderId : message.payload?.folderId === null ? null : undefined,
         limit: message.payload?.limit === undefined ? undefined : Number(message.payload.limit),
       });
       const assetScope = automationScope(scope);
       backfillFormalReportAssetMappings(assetScope);
-      const reports = listReportAssetMappings(assetScope);
+      const allReports = listReportAssetMappings(assetScope);
+      const visibleAssetIds = new Set(items.map((item) => item.assetId));
+      const reports = message.payload?.folderId === undefined
+        ? allReports
+        : allReports.filter((report) => report.backingAssetId && visibleAssetIds.has(report.backingAssetId));
       const catalog = [
         ...items.map((asset) => ({ ...sanitizeAssetDescriptor(asset), catalogId: `asset:${asset.assetId}`, catalogKind: "asset" as const, sources: [asset.currentVersion?.source || "system"] })),
         ...reports.map((report) => ({
@@ -496,7 +513,35 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
           sources: ["report" as const], reportMappingId: report.mappingId, reportId: report.reportId,
         })),
       ];
-      return finish(ok(message.type, message.requestId, { items: items.map(sanitizeAssetDescriptor), catalog, reportMappings: reports, storageUsage: getStorageUsage(automationScope(scope)) }));
+      const folders = await listUserAssetFolders(assetScope);
+      return finish(ok(message.type, message.requestId, { items: items.map(sanitizeAssetDescriptor), catalog, reportMappings: reports, folders, storageUsage: getStorageUsage(automationScope(scope)) }));
+    }
+    case TYPES.ASSET_FOLDER_LIST: {
+      return finish(ok(message.type, message.requestId, { items: await listUserAssetFolders(automationScope(scope)) }));
+    }
+    case TYPES.ASSET_FOLDER_CREATE: {
+      const name = typeof message.payload?.name === "string" ? message.payload.name : "";
+      if (!name.trim()) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "name is required"));
+      const folder = await createUserAssetFolder({ ...automationScope(scope), name, parentFolderId: typeof message.payload?.parentFolderId === "string" ? message.payload.parentFolderId : null });
+      return finish(ok(message.type, message.requestId, folder));
+    }
+    case TYPES.ASSET_FOLDER_RENAME: {
+      const folderId = String(message.payload?.folderId || "");
+      const name = typeof message.payload?.name === "string" ? message.payload.name : "";
+      if (!folderId || !name.trim()) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "folderId and name are required"));
+      const folder = await renameUserAssetFolder({ ...automationScope(scope), folderId, name });
+      return finish(ok(message.type, message.requestId, folder));
+    }
+    case TYPES.ASSET_FOLDER_DELETE: {
+      const folderId = String(message.payload?.folderId || "");
+      if (!folderId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "folderId is required"));
+      return finish(ok(message.type, message.requestId, await deleteUserAssetFolder({ ...automationScope(scope), folderId })));
+    }
+    case TYPES.ASSET_MOVE: {
+      const assetId = String(message.payload?.assetId || "");
+      if (!assetId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "assetId is required"));
+      const asset = await moveUserAsset({ ...automationScope(scope), assetId, folderId: typeof message.payload?.folderId === "string" ? message.payload.folderId : null });
+      return finish(ok(message.type, message.requestId, sanitizeAssetDescriptor(asset)));
     }
     case TYPES.ASSET_GET: {
       const assetId = String(message.payload?.assetId || "");
@@ -530,6 +575,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
           fileName: String(item.fileName || ""), base64: String(item.base64 || ""),
           mimeType: typeof item.mimeType === "string" ? item.mimeType : undefined,
           name: typeof item.name === "string" ? item.name : undefined,
+          folderId: typeof item.folderId === "string" ? item.folderId : item.folderId === null ? null : undefined,
           idempotencyKey: typeof item.idempotencyKey === "string" ? item.idempotencyKey : undefined,
         }));
         if (decoded.some((item) => !item.fileName || !item.base64 || !isStrictBase64(item.base64))) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "every file requires valid fileName and base64"));
@@ -538,7 +584,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         for (let index = 0; index < decoded.length; index += 1) {
           const item = decoded[index];
           try {
-            const asset = await createUserAsset({ ...automationScope(scope), fileName: item.fileName, mimeType: item.mimeType, name: item.name, bytes: Buffer.from(item.base64, "base64"), source: "upload", idempotencyKey: item.idempotencyKey || `${message.requestId}:${index}` });
+            const asset = await createUserAsset({ ...automationScope(scope), fileName: item.fileName, mimeType: item.mimeType, name: item.name, folderId: item.folderId, bytes: Buffer.from(item.base64, "base64"), source: "upload", idempotencyKey: item.idempotencyKey || `${message.requestId}:${index}` });
             results.push({ index, fileName: item.fileName, ok: true, asset: sanitizeAssetDescriptor(asset) });
           } catch (error) {
             const domain = error instanceof UserAssetError ? error : new UserAssetError("ASSET_COMMIT_FAILED", "asset upload failed");
@@ -554,6 +600,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       const decodedSize = Buffer.byteLength(base64, "base64");
       assertUploadRequestSize([decodedSize]);
       const assetId = typeof message.payload?.assetId === "string" && message.payload.assetId.trim() ? message.payload.assetId : undefined;
+      const folderId = typeof message.payload?.folderId === "string" ? message.payload.folderId : message.payload?.folderId === null ? null : undefined;
       if (assetId && (typeof message.payload?.expectedVersionId !== "string" || !message.payload.expectedVersionId.trim() || typeof message.payload?.idempotencyKey !== "string" || !message.payload.idempotencyKey.trim())) {
         return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "existing asset upload requires expectedVersionId and idempotencyKey"));
       }
@@ -563,6 +610,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
             assetId,
             fileName,
             mimeType: typeof message.payload?.mimeType === "string" ? message.payload.mimeType : undefined,
+            folderId,
             bytes: Buffer.from(base64, "base64"),
             expectedVersionId: typeof message.payload?.expectedVersionId === "string" ? message.payload.expectedVersionId : undefined,
             source: "upload",
@@ -573,6 +621,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
             name: typeof message.payload?.name === "string" ? message.payload.name : undefined,
             fileName,
             mimeType: typeof message.payload?.mimeType === "string" ? message.payload.mimeType : undefined,
+            folderId,
             bytes: Buffer.from(base64, "base64"),
             source: "upload",
             idempotencyKey: typeof message.payload?.idempotencyKey === "string" && message.payload.idempotencyKey.trim()
@@ -619,6 +668,21 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         idempotencyKey: typeof message.payload?.idempotencyKey === "string" && message.payload.idempotencyKey.trim()
           ? message.payload.idempotencyKey
           : `portal:${message.requestId}`,
+      });
+      return finish(ok(message.type, message.requestId, sanitizeAssetDescriptor(asset)));
+    }
+    case TYPES.ASSET_CONVERT_TO_XLSX: {
+      const assetId = String(message.payload?.assetId || "");
+      const expectedVersionId = String(message.payload?.expectedVersionId || "");
+      const idempotencyKey = String(message.payload?.idempotencyKey || "");
+      if (!assetId || !expectedVersionId || !idempotencyKey) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "assetId, expectedVersionId and idempotencyKey are required"));
+      }
+      if (message.payload?.confirmed !== true) {
+        return finish(fail(message.type, message.requestId, "ASSET_CONFIRMATION_REQUIRED", "CSV 转换为 Excel 需要用户明确确认"));
+      }
+      const asset = await convertUserAssetCsvToXlsx({
+        ...automationScope(scope), assetId, expectedVersionId, idempotencyKey, confirmed: true,
       });
       return finish(ok(message.type, message.requestId, sanitizeAssetDescriptor(asset)));
     }
@@ -985,7 +1049,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.references.list"],
+        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {

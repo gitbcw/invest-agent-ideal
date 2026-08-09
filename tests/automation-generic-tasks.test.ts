@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -68,6 +68,22 @@ test("generic automation prompt defaults to provisional public values and avoids
   assert.match(runnerSource, /默认按可用数据完成任务/);
   assert.match(runnerSource, /即使尚未完成第二次独立核验/);
   assert.match(runnerSource, /不得为了证明执行过而写入空值、零值、估算值或无意义状态行/);
+});
+
+test("assistant and generic automation prompts require XLSX for user-facing tables", async () => {
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  const template = await source.readFile(new URL("../templates/workspace/AGENTS.md", import.meta.url), "utf8");
+  const { buildMobilePrompt } = await import("../src/acp/mobile-prompt.js");
+  const prompt = buildMobilePrompt({ userText: "创建一个表格" });
+
+  for (const content of [prompt, template]) {
+    assert.match(content, /统一.*Excel|统一使用 Excel/);
+    assert.match(content, /CSV.*xlsx|CSV.*XLSX/);
+    assert.match(content, /不得提交.*csv|不要创建 CSV/);
+  }
+  assert.match(runnerSource, /本次输出策略（明确格式和文件名必须严格遵守）/);
+  assert.match(runnerSource, /SPREADSHEET_OUTPUT_POLICY/);
 });
 
 test("validates create Markdown output and preserves immutable generic revisions", async () => {
@@ -223,6 +239,19 @@ test("generic runner commits one Markdown version and keeps run output reference
   assert.equal((await (await import("../src/services/user-assets.js")).listUserAssets(scope)).filter((item) => item.assetId === result.run.outputAssetId).length, 1);
 });
 
+test("new automation spreadsheet outputs reject CSV in favor of XLSX", async () => {
+  const { automation, assets } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  await assert.rejects(() => automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-create-csv-for-conversion",
+    name: "生成 CSV",
+    instruction: "生成跟踪表。",
+    schedule: schedule(),
+    output: { mode: "create", format: "csv", fileName: "automation-table.csv" },
+  }), /new spreadsheet outputs must use xlsx/);
+});
+
 test("agent-managed attachment may be read without changes or update its own latest version", async () => {
   const { automation, assets } = await fixture;
   const target = await assets.createUserAsset({
@@ -249,7 +278,7 @@ test("agent-managed attachment may be read without changes or update its own lat
   });
   assert.equal(unchanged.run.status, "succeeded");
   assert.equal(unchanged.run.outputAssetId, null);
-  assert.deepEqual(unchanged.run.inputVersions, [{ assetId: target.assetId, versionId: target.currentVersionId, fileName: "coal-tracker.csv" }]);
+  assert.deepEqual(unchanged.run.inputVersions, [{ assetId: target.assetId, versionId: target.currentVersionId, fileName: "coal-tracker.xlsx" }]);
 
   const updated = await runner.runGenericAutomationTaskNow({
     scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-agent-managed-update",
@@ -261,7 +290,37 @@ test("agent-managed attachment may be read without changes or update its own lat
   assert.equal(updated.run.status, "succeeded");
   assert.equal(updated.run.outputAssetId, target.assetId);
   const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
-  assert.equal(current.bytes.toString(), "week,price\n2026-W31,700\n2026-W32,705\n");
+  assert.equal(current.descriptor.format, "xlsx");
+});
+
+test("generic XLSX runs install the structured spreadsheet helper", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const bytes = await convertCsvBytesToXlsx(Buffer.from("name,value\ncoal,700\n"));
+  const target = await assets.createUserAsset({
+    ...scope, name: "XLSX helper target", fileName: "helper.xlsx",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes,
+  });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-xlsx-helper",
+    name: "维护 Excel",
+    instruction: "检查工作簿。",
+    schedule: schedule(),
+    inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }],
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const result = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-xlsx-helper-once",
+    executor: async (input) => {
+      assert.equal(input.spreadsheetHelper, "automation-sheet.mjs");
+      assert.equal(existsSync(path.join(input.stagingPath, input.spreadsheetHelper!)), true);
+      return { content: { type: "text" as const, text: "已检查" }, finished: true, data: { summary: "已检查，未修改。" } };
+    },
+  });
+  assert.equal(result.run.status, "succeeded");
 });
 
 test("generic runner pushes idempotently and does not commit malformed output", async () => {
@@ -332,7 +391,7 @@ test("generic latest update uses the head read at run start and advances it once
   assert.equal(result.run.status, "succeeded");
   const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
   assert.notEqual(current.descriptor.versionId, changed.currentVersionId);
-  assert.equal(current.bytes.toString(), "code,price\n600519,1520\n");
+  assert.equal(current.descriptor.format, "xlsx");
 });
 
 test("bound update task may finish without changing its file and exposes its exact target to the executor", async () => {
@@ -354,7 +413,7 @@ test("bound update task may finish without changing its file and exposes its exa
     origin: "scheduled",
     idempotencyKey: "generic-run-update-unchanged-once",
     executor: async (input) => {
-      assert.deepEqual(input.writableTargets, [{ assetId: target.assetId, versionId: target.currentVersionId, fileName: "shipping.csv", mimeType: "text/csv" }]);
+      assert.deepEqual(input.writableTargets, [{ assetId: target.assetId, versionId: target.currentVersionId, fileName: "shipping.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }]);
       return { content: { type: "text" as const, text: "暂无可核验报价。" }, finished: true, data: { summary: "暂无可核验报价，未更新文件。" } };
     },
   });

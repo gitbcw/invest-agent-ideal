@@ -150,7 +150,7 @@ test("MCP promotes an active same-scope conversation attachment into My Files", 
   assert.equal(promoted.ok, true);
   assert.equal(promoted.asset.name, "海运运价跟踪表");
   assert.equal(promoted.asset.currentVersion.source, "upload");
-  assert.equal(promoted.asset.currentVersion.fileName, "freight-tracker.csv");
+  assert.equal(promoted.asset.currentVersion.fileName, "freight-tracker.xlsx");
   assert.ok(promoted.asset.assetId);
 
   await assert.rejects(

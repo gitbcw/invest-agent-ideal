@@ -53,7 +53,7 @@ const automationOutputSchema = z.union([
   z.object({ mode: z.literal("agent") }),
   z.object({
     mode: z.literal("create"),
-    format: z.enum(["markdown", "html", "csv", "xlsx", "pdf", "png", "jpeg", "webp", "svg"]),
+      format: z.enum(["markdown", "html", "xlsx", "pdf", "png", "jpeg", "webp", "svg"]),
     fileName: z.string().min(1).max(240),
     titleTemplate: z.string().max(500).optional(),
   }),

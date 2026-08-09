@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { createAgent } from "../acp/agent.js";
 import type { AcpMessage, AcpResponse } from "../acp/protocol.js";
+import { SPREADSHEET_OUTPUT_POLICY } from "../acp/spreadsheet-output-policy.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { enqueuePushJob } from "./push-queue.js";
 import {
@@ -19,6 +20,7 @@ import {
   type AutomationTaskRunRecord,
 } from "./automation-tasks.js";
 import { classifyTaskError, executionResponseError, type TaskErrorInfo } from "./task-execution.js";
+import { writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
 import {
   createUserAsset,
   getUserAsset,
@@ -35,6 +37,7 @@ export type GenericAutomationExecutor = (input: {
   stagingPath: string;
   inputs: UserAssetBytes[];
   writableTargets: Array<NonNullable<ResolvedOutput>>;
+  spreadsheetHelper?: string;
 }) => Promise<AcpResponse>;
 
 export type GenericAutomationRunResult = {
@@ -99,6 +102,11 @@ export async function runGenericAutomationTaskNow(input: {
       for (const [index, item] of resolved.inputs.entries()) {
         await writeFile(path.join(stagingPath, "inputs", `${index + 1}-${item.descriptor.fileName}`), item.bytes, { flag: "wx", mode: 0o600 });
       }
+      const usesXlsx = resolved.inputs.some((item) => item.descriptor.format === "xlsx")
+        || resolved.writableTargets.some((item) => item.fileName.toLowerCase().endsWith(".xlsx"))
+        || task.revision.output.mode === "agent"
+        || (task.revision.output.mode === "create" && task.revision.output.format === "xlsx");
+      const spreadsheetHelper = usesXlsx ? await writeAutomationSpreadsheetHelper(stagingPath) : undefined;
       const response = await (input.executor || defaultExecutor)({
         scope: input.scope,
         task,
@@ -106,6 +114,7 @@ export async function runGenericAutomationTaskNow(input: {
         stagingPath,
         inputs: resolved.inputs,
         writableTargets: resolved.writableTargets,
+        spreadsheetHelper,
       });
       assertAcpSucceeded(response);
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
@@ -221,9 +230,14 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       text: [
         "执行一个受控的通用自动化任务。",
         `任务说明：${input.task.revision.instruction}`,
+        `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
         `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
         `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
         "需要读取绑定文件时，直接使用上述 assetId 调用 assets.version.read；不要用 assets.list 猜测或替换任务对象。其他“我的文件”仅可作为参考，绝不能作为本次更新输出目标。",
+        input.spreadsheetHelper
+          ? `处理 XLSX 时使用暂存目录中的 ${input.spreadsheetHelper}：create 可新建工作簿，inspect 可读取工作簿，apply 可按 JSON 执行单元格、公式、样式、列宽、行高、合并、冻结窗格、筛选和工作表调整；不要把 XLSX 当文本编辑。`
+          : "本次没有 XLSX 文件，不需要电子表格辅助工具。",
+        `表格文件规则：${SPREADSHEET_OUTPUT_POLICY}`,
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64}, shouldNotify?:boolean}。更新绑定文件时提供 operation='update'、对应 assetId 和完整文件内容；仅在任务确有必要新建文件时提供 operation='create'。不得返回物理路径或调用写入工具。",
       ].join("\n"),
@@ -306,10 +320,10 @@ function normalizeStructuredResult(response: AcpResponse, task: AutomationTaskRe
   }
   const assetId = typeof staged.assetId === "string" ? staged.assetId : undefined;
   if (task.revision.output.mode === "create" && fileName !== task.revision.output.fileName) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput fileName does not match output policy");
-  if (task.revision.output.mode === "update" && (!resolved.output || assetId !== resolved.output.assetId || fileName !== resolved.output.fileName)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
+  if (task.revision.output.mode === "update" && (!resolved.output || assetId !== resolved.output.assetId || !matchesCurrentSpreadsheetName(fileName, resolved.output.fileName))) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
   if (task.revision.output.mode === "agent" && operation === "update") {
     const target = assetId ? resolved.agentUpdateTargets.get(assetId) : undefined;
-    if (!target || fileName !== target.fileName) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
+    if (!target || !matchesCurrentSpreadsheetName(fileName, target.fileName)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
   }
   return { summary: summary || "自动化运行完成。", shouldNotify, stagedOutput: { operation, ...(assetId ? { assetId } : {}), fileName, mimeType: typeof staged.mimeType === "string" ? staged.mimeType : undefined, base64 } };
 }
@@ -396,4 +410,10 @@ function isStrictBase64(value: string): boolean {
   if (!value || value.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return false;
   const padding = value.indexOf("=");
   return padding < 0 || padding >= value.length - 2;
+}
+
+function matchesCurrentSpreadsheetName(submitted: string, current: string): boolean {
+  if (submitted === current) return true;
+  return submitted.toLowerCase().endsWith(".csv")
+    && current.toLowerCase() === submitted.replace(/\.csv$/i, ".xlsx").toLowerCase();
 }
