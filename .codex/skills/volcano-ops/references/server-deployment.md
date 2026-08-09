@@ -75,9 +75,9 @@ curl http://127.0.0.1:22648/health
 
 - `main` 是唯一维护与生产发布基线。
 - `codex/volcano-snapshot-*`、冻结标签和历史 reconciliation 分支只用于审计、比较和回滚，不继续修复、不整体 merge 回 `main`。
-- 普通发布只能从规范仓库 `/Users/combo/MyFile/projects/invest-agent-ideal` 的干净 `main` 执行。创建快照前必须在线刷新 `origin/main`，且本地 `HEAD` 与 `origin/main` 完全一致。
+- 普通发布只能从规范仓库 `/Users/combo/MyFile/projects/invest-agent-ideal` 的干净 `main` 执行，且 `HEAD` 必须解析为已提交的 Git 对象。
 - 火山云运行代码始终以最近一次从 `main` 干净 worktree 完成的发布为准；`111`、`dyk`、`mg` 的历史 Workspace 备份与迁移证据见 `docs/workspace-compatibility.md`。兼容模型 v2 起，`ready` 允许存在尚未采用的 `template_updates`。
-- GitHub push、PR、生产部署仍是三个独立授权动作；但普通生产快照只接受已经进入 `origin/main` 的提交。紧急未推送发布必须是本地 `main` 严格领先 `origin/main`，并显式提供 `--confirm=release-unpushed-main-v1`；本地落后、历史分叉或非规范仓库均不得使用该例外。
+- GitHub push、PR、生产部署是三个独立授权动作。生产快照不要求提交已进入 `origin/main`；脚本仅尽力刷新远端，并把本地相对 `origin/main` 的 `equal`、`ahead`、`behind`、`diverged` 或 `unavailable` 关系记录为非阻塞审计证据。
 
 ## 3. 两种发布模式
 
@@ -90,13 +90,7 @@ npm run release:snapshot -- create
 npm run release:deploy -- <release-id>
 ```
 
-紧急情况下，若本地 `main` 只是严格领先已刷新或缓存的 `origin/main`，可使用一次性显式例外：
-
-```bash
-npm run release:snapshot -- create --confirm=release-unpushed-main-v1
-```
-
-例外模式必须写入 release manifest。它不能绕过规范仓库路径、干净工作树、`main` 分支、祖先关系或完整验证；GitHub 不可达时只能依赖已有 `origin/main` 缓存，并仍要求其为 `HEAD` 的祖先。
+快照 manifest 以 `committed-local-main` 记录发布基线，同时记录远端刷新结果和关系。GitHub 不可达、本地领先、落后或分叉不会阻塞发布；规范仓库路径、干净工作树、`main` 分支、已提交 `HEAD` 和完整验证仍是硬门禁。
 
 完成本手册第 8 节验收并保存证据后，才允许把版本标为 known-good：
 
@@ -140,7 +134,7 @@ npm run release:snapshot -- accept <release-id> --confirm=mark-known-good-v1
 
 ## 4. 发布前检查
 
-1. 在规范仓库记录目标 `main` 提交，确认发布 worktree 干净；刷新 `origin/main` 并确认普通发布的 `HEAD == origin/main`。
+1. 在规范仓库记录目标 `main` 提交，确认发布 worktree 干净；尽力刷新 `origin/main` 并记录关系，不以远端状态阻塞发布。
 2. 本地运行：
 
 ```bash

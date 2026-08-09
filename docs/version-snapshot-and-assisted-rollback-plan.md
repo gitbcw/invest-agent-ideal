@@ -63,10 +63,10 @@
 1. `source.bundle`：自包含的 Git 对象与发布提交引用，避免只依赖当前工作树或远端分支。
 2. `source.tar.gz`：目标提交的可部署树，包含被 Git 跟踪的代码、prompt、模板和模板 Skills。
 3. `workspaces/`：创建发布快照时重新从生产只读拉取并完成三方 SHA-256 校验的 `111`、`dyk`、`mg` 副本。通过硬链接从阶段 1 快照固定到发布目录，阶段 1 按日清理后仍然有效。
-4. `manifest.json`：release ID、完整 commit、branch、创建时间、source-control gate 模式、`origin/main` 基线、Workspace 名单、排除项、源包和 Workspace 清单摘要、工具版本及状态。
+4. `manifest.json`：release ID、完整 commit、branch、创建时间、source-control gate 模式、`origin/main` 非阻塞审计证据、Workspace 名单、排除项、源包和 Workspace 清单摘要、工具版本及状态。
 5. `checksums.sha256`：快照内固定产物的校验值。
 
-只有满足以下条件的快照才能标记 `known-good`：从规范仓库的干净 `main` 创建，普通模式下 `HEAD` 与在线刷新的 `origin/main` 一致，或紧急模式下本地 `main` 严格领先 `origin/main` 且记录精确确认；本地 `npm run verify` 通过、生产发布成功、发布后最小验收通过。保留策略仅自动清理超出保留数且状态为 `known-good` 的旧版本；`candidate`、失败、正在用于 recovery 或人工 pin 的版本不自动删除。默认保留 3 个 known-good。
+只有满足以下条件的快照才能标记 `known-good`：从规范仓库的干净 `main` 创建，`HEAD` 是已提交的 Git 对象，本地 `npm run verify` 通过、生产发布成功、发布后最小验收通过。`origin/main` 的刷新结果及与本地的关系只作为审计证据，不是门禁。保留策略仅自动清理超出保留数且状态为 `known-good` 的旧版本；`candidate`、失败、正在用于 recovery 或人工 pin 的版本不自动删除。默认保留 3 个 known-good。
 
 ## 命令接口
 
@@ -75,9 +75,6 @@
 ```bash
 # 1. 在发布前创建系统 + Workspace 一致性快照
 npm run release:snapshot -- create
-
-# 仅紧急未推送发布：必须是本地 main 严格领先 origin/main
-npm run release:snapshot -- create --confirm=release-unpushed-main-v1
 
 # 2. 从指定快照的干净源树标准发布；不会替换运行数据
 npm run release:deploy -- <release-id>
@@ -98,11 +95,11 @@ npm run release:workspace-rollback -- apply <run-id> \
   --target=production
 ```
 
-所有生产命令必须拒绝：非规范仓库、脏工作树、非 `main` 分支、本地落后或分叉历史、未经确认的未推送提交、不在私有快照根下的路径、符号链接逃逸、未知用户、目录/通配符资产、hash 不匹配、快照不完整、未记录当前状态备份、错误确认短语。日志不得包含文件正文、token 或凭证。
+所有生产命令必须拒绝：非规范仓库、脏工作树、非 `main` 分支、无法解析为提交的 `HEAD`、不在私有快照根下的路径、符号链接逃逸、未知用户、目录/通配符资产、hash 不匹配、快照不完整、未记录当前状态备份、错误确认短语。日志不得包含文件正文、token 或凭证。远端不可达、本地领先、落后或分叉仅记录，不阻塞快照。
 
 ## 标准发布流程
 
-1. 在规范仓库的干净 `main` 记录完整 commit，在线刷新 `origin/main`；普通发布确认 `HEAD == origin/main`，紧急未推送发布确认 `origin/main` 是 `HEAD` 的严格祖先并提供精确确认短语。
+1. 在规范仓库的干净 `main` 记录完整 commit；尽力刷新 `origin/main` 并记录 `equal`、`ahead`、`behind`、`diverged` 或 `unavailable`，但不以远端状态阻塞发布。
 2. 执行 `release:snapshot create`。脚本先完成 source-control gate，再运行 `npm run verify`，同步生产 Workspace，验证远端前后与本地 SHA-256 一致，固定发布快照并校验所有产物。
 3. 从快照解包到临时干净目录，执行现有 `scripts/deploy-volcano.sh`。禁止从调用者当前脏工作树发布。
 4. 执行当前生产手册中的健康、PM2、MCP、Workspace 预检、微信 listener、push job 和只读 ACP 单点验收。

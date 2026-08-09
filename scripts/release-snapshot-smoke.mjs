@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,10 +91,11 @@ const releaseId = initialReleaseIds[0];
 run(process.execPath, [snapshotScript, "verify", releaseId], { env });
 const initialManifest = JSON.parse(readFileSync(join(releases, releaseId, "manifest.json"), "utf8"));
 assert.equal(initialManifest.schemaVersion, 2);
-assert.equal(initialManifest.sourceControl.mode, "normal");
+assert.equal(initialManifest.sourceControl.mode, "committed-local-main");
 assert.equal(initialManifest.sourceControl.head, initialManifest.commit);
 assert.equal(initialManifest.sourceControl.originMain, initialManifest.commit);
 assert.equal(initialManifest.sourceControl.fetchSucceeded, true);
+assert.equal(initialManifest.sourceControl.originRelation, "equal");
 assert.match(readFileSync(join(releases, releaseId, "workspace-manifest.txt"), "utf8"), /excluded=.*\.sandbox-token/);
 const forbidden = run("find", [join(releases, releaseId, "workspaces"), "-name", ".sandbox-token"]).trim();
 assert.equal(forbidden, "");
@@ -111,30 +112,66 @@ writeFileSync(join(legacyPath, "manifest.json"), `${JSON.stringify(legacyManifes
 rewriteChecksums(legacyPath);
 run(process.execPath, [snapshotScript, "verify", legacyId], { env });
 
-run("git", ["commit", "--allow-empty", "-m", "unpublished"]);
-expectRejected(["create"], /HEAD to equal refs\/remotes\/origin\/main/ , { env });
-expectRejected(["create", "--confirm=wrong-confirmation"], /HEAD to equal refs\/remotes\/origin\/main/ , { env });
-expectRejected(["create", "--confirm="], /HEAD to equal refs\/remotes\/origin\/main/ , { env });
+const legacyV2NormalId = "20260727T000001Z-00000001";
+const legacyV2NormalPath = join(releases, legacyV2NormalId);
+cpSync(join(releases, releaseId), legacyV2NormalPath, { recursive: true });
+const legacyV2NormalManifest = JSON.parse(readFileSync(join(legacyV2NormalPath, "manifest.json"), "utf8"));
+legacyV2NormalManifest.releaseId = legacyV2NormalId;
+legacyV2NormalManifest.sourceControl = {
+  mode: "normal",
+  head: legacyV2NormalManifest.commit,
+  originMain: legacyV2NormalManifest.commit,
+  fetchSucceeded: true,
+};
+writeFileSync(join(legacyV2NormalPath, "manifest.json"), `${JSON.stringify(legacyV2NormalManifest, null, 2)}\n`);
+rewriteChecksums(legacyV2NormalPath);
+run(process.execPath, [snapshotScript, "verify", legacyV2NormalId], { env });
 
-run(process.execPath, [snapshotScript, "create", "--confirm=release-unpushed-main-v1"], { env });
-const emergencyReleaseId = releaseNames().find((name) => name !== releaseId && name !== legacyId);
-assert.ok(emergencyReleaseId);
-const emergencyManifest = JSON.parse(readFileSync(join(releases, emergencyReleaseId, "manifest.json"), "utf8"));
-assert.equal(emergencyManifest.schemaVersion, 2);
-assert.equal(emergencyManifest.sourceControl.mode, "emergency-unpushed-main");
-assert.equal(emergencyManifest.sourceControl.head, emergencyManifest.commit);
-assert.notEqual(emergencyManifest.sourceControl.originMain, emergencyManifest.sourceControl.head);
-assert.equal(emergencyManifest.sourceControl.fetchSucceeded, true);
+const dirtyProbe = join(repo, "dirty-probe.txt");
+writeFileSync(dirtyProbe, "dirty\n");
+expectRejected(["create"], /clean worktree/, { env });
+rmSync(dirtyProbe);
+run("git", ["switch", "-c", "release-smoke-feature"]);
+expectRejected(["create"], /requires branch main/, { env });
+run("git", ["switch", "main"]);
+
+run("git", ["commit", "--allow-empty", "-m", "unpublished"]);
+run(process.execPath, [snapshotScript, "create"], { env });
+const aheadReleaseId = releaseNames().find((name) => ![releaseId, legacyId, legacyV2NormalId].includes(name));
+assert.ok(aheadReleaseId);
+const aheadManifest = JSON.parse(readFileSync(join(releases, aheadReleaseId, "manifest.json"), "utf8"));
+assert.equal(aheadManifest.sourceControl.mode, "committed-local-main");
+assert.equal(aheadManifest.sourceControl.originRelation, "ahead");
+assert.equal(aheadManifest.sourceControl.fetchSucceeded, true);
+
+const legacyV2EmergencyId = "20260727T000002Z-00000002";
+const legacyV2EmergencyPath = join(releases, legacyV2EmergencyId);
+cpSync(join(releases, aheadReleaseId), legacyV2EmergencyPath, { recursive: true });
+const legacyV2EmergencyManifest = JSON.parse(readFileSync(join(legacyV2EmergencyPath, "manifest.json"), "utf8"));
+legacyV2EmergencyManifest.releaseId = legacyV2EmergencyId;
+legacyV2EmergencyManifest.sourceControl = {
+  mode: "emergency-unpushed-main",
+  head: legacyV2EmergencyManifest.commit,
+  originMain: initialManifest.commit,
+  fetchSucceeded: true,
+};
+writeFileSync(join(legacyV2EmergencyPath, "manifest.json"), `${JSON.stringify(legacyV2EmergencyManifest, null, 2)}\n`);
+rewriteChecksums(legacyV2EmergencyPath);
+run(process.execPath, [snapshotScript, "verify", legacyV2EmergencyId], { env });
 
 run("git", ["remote", "set-url", "origin", join(fixture, "missing-origin.git")]);
-run("git", ["commit", "--allow-empty", "-m", "emergency cached origin fallback"]);
-run(process.execPath, [snapshotScript, "create", "--confirm=release-unpushed-main-v1"], { env });
-const cachedEmergencyReleaseId = releaseNames().find((name) => ![releaseId, legacyId, emergencyReleaseId].includes(name));
-assert.ok(cachedEmergencyReleaseId);
-const cachedEmergencyManifest = JSON.parse(readFileSync(join(releases, cachedEmergencyReleaseId, "manifest.json"), "utf8"));
-assert.equal(cachedEmergencyManifest.sourceControl.mode, "emergency-unpushed-main");
-assert.equal(cachedEmergencyManifest.sourceControl.fetchSucceeded, false);
-assert.equal(cachedEmergencyManifest.sourceControl.originMain, initialManifest.sourceControl.originMain);
+run("git", ["update-ref", "-d", "refs/remotes/origin/main"]);
+run("git", ["commit", "--allow-empty", "-m", "remote unavailable"]);
+run(process.execPath, [snapshotScript, "create"], { env });
+const unavailableReleaseId = releaseNames().find((name) => ![
+  releaseId, legacyId, legacyV2NormalId, aheadReleaseId, legacyV2EmergencyId,
+].includes(name));
+assert.ok(unavailableReleaseId);
+const unavailableManifest = JSON.parse(readFileSync(join(releases, unavailableReleaseId, "manifest.json"), "utf8"));
+assert.equal(unavailableManifest.sourceControl.mode, "committed-local-main");
+assert.equal(unavailableManifest.sourceControl.fetchSucceeded, false);
+assert.equal(unavailableManifest.sourceControl.originMain, null);
+assert.equal(unavailableManifest.sourceControl.originRelation, "unavailable");
 
 const standaloneVerifier = join(fixture, "standalone-verifier");
 mkdirSync(join(standaloneVerifier, "scripts"), { recursive: true });
@@ -142,7 +179,7 @@ writeFileSync(join(standaloneVerifier, "scripts", "release-snapshot.mjs"), readF
 run(process.execPath, [
   join(standaloneVerifier, "scripts", "release-snapshot.mjs"),
   "verify",
-  cachedEmergencyReleaseId,
+  unavailableReleaseId,
 ], { cwd: standaloneVerifier, env });
 
 run("git", ["remote", "set-url", "origin", origin]);
@@ -153,9 +190,22 @@ run("git", ["config", "user.email", "remote-smoke@example.invalid"], { cwd: remo
 run("git", ["config", "user.name", "Remote Smoke"], { cwd: remoteClone });
 run("git", ["commit", "--allow-empty", "-m", "remote ahead"] , { cwd: remoteClone });
 run("git", ["push", "origin", "main"], { cwd: remoteClone });
-expectRejected(["create", "--confirm=release-unpushed-main-v1"], /strict ancestor/ , { env });
+run(process.execPath, [snapshotScript, "create"], { env });
+const behindReleaseId = releaseNames().find((name) => ![
+  releaseId, legacyId, legacyV2NormalId, aheadReleaseId, legacyV2EmergencyId, unavailableReleaseId,
+].includes(name));
+assert.ok(behindReleaseId);
+const behindManifest = JSON.parse(readFileSync(join(releases, behindReleaseId, "manifest.json"), "utf8"));
+assert.equal(behindManifest.sourceControl.originRelation, "behind");
+assert.equal(behindManifest.sourceControl.fetchSucceeded, true);
 run("git", ["commit", "--allow-empty", "-m", "local diverged"]);
-expectRejected(["create", "--confirm=release-unpushed-main-v1"], /strict ancestor/ , { env });
+run(process.execPath, [snapshotScript, "create"], { env });
+const divergedReleaseId = releaseNames().find((name) => ![
+  releaseId, legacyId, legacyV2NormalId, aheadReleaseId, legacyV2EmergencyId, unavailableReleaseId, behindReleaseId,
+].includes(name));
+assert.ok(divergedReleaseId);
+const divergedManifest = JSON.parse(readFileSync(join(releases, divergedReleaseId, "manifest.json"), "utf8"));
+assert.equal(divergedManifest.sourceControl.originRelation, "diverged");
 run("git", ["checkout", "--orphan", "force-main"], { cwd: remoteClone });
 run("git", ["rm", "-rf", "."], { cwd: remoteClone });
 writeFileSync(join(remoteClone, "force-push.txt"), "force-push\n");
@@ -163,7 +213,7 @@ run("git", ["add", "force-push.txt"], { cwd: remoteClone });
 run("git", ["commit", "-m", "force-pushed main"], { cwd: remoteClone });
 const forcePushedCommit = run("git", ["rev-parse", "HEAD"], { cwd: remoteClone }).trim();
 run("git", ["push", "--force", "origin", "HEAD:main"], { cwd: remoteClone });
-expectRejected(["create", "--confirm=release-unpushed-main-v1"], /strict ancestor/ , { env });
+run("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
 assert.equal(run("git", ["rev-parse", "refs/remotes/origin/main"]).trim(), forcePushedCommit);
 
 const nonCanonicalRepo = join(fixture, "noncanonical-repo");
