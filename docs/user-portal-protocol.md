@@ -208,6 +208,8 @@ Portal 应将其作为静态图片数据呈现，不能把 SVG 当作同源 HTML
 
 `reviews.save` 以及在 `artifacts.publish` 中明确传入 `saveToMyFiles=true` 的正式交付物，如被判定为 `durable_library`，服务会同步登记到 `user_assets`。普通聊天发布写入 `deliveries/` 并保持临时状态，直到用户执行保存。首次自动入库创建文件，同一 Workspace 相对路径的后续正式发布追加版本；artifact descriptor 的 `assetId`、`versionId` 与 `savedToMyFiles=true` 与“我的文件”中的当前文件版本保持一致。该衔接由服务层执行，不依赖 Agent 再调用一次保存工具。
 
+普通对话生成的表格统一使用 `.xlsx`。`artifacts.publish` 必须校验文件是可解析且至少包含一个工作表的 Office Open XML 工作簿，并以 `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`、`kind=data`、`previewMode=unsupported` 登记；Portal 收到字节后提供原文件下载，不得把“暂不支持在线预览”误判为“无法交付文件”。伪造 ZIP、损坏工作簿或扩展名与内容不匹配时返回 `ARTIFACT_UNSAFE`。
+
 Artifact payload 的公共字段包括：
 
 ```ts

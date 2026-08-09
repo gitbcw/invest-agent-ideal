@@ -12,6 +12,9 @@ import { recordFileLifecycleEvent } from "./file-lifecycle-audit.js";
 import { registerReportAssetMappingUnderScopeLock } from "./report-asset-mappings.js";
 import { withResourceMutationLock } from "./resource-mutation-lock.js";
 import { scopeStorageLockKey } from "./user-storage-quota.js";
+import { validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
+
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 export const ARTIFACT_PREVIEWABLE_MIME_TYPES = [
   "image/svg+xml",
@@ -25,6 +28,7 @@ export const ARTIFACT_PREVIEWABLE_MIME_TYPES = [
   "application/yaml",
   "application/json",
   "text/csv",
+  XLSX_MIME,
 ] as const;
 
 const EXT_MIME_MAP: Record<string, string> = {
@@ -43,6 +47,7 @@ const EXT_MIME_MAP: Record<string, string> = {
   ".txt": "text/plain",
   ".json": "application/json",
   ".csv": "text/csv",
+  ".xlsx": XLSX_MIME,
 };
 
 const MIME_PREVIEW_MODE: Record<string, ConversationArtifact["previewMode"]> = {
@@ -57,6 +62,7 @@ const MIME_PREVIEW_MODE: Record<string, ConversationArtifact["previewMode"]> = {
   "application/yaml": "text",
   "application/json": "text",
   "text/csv": "table",
+  [XLSX_MIME]: "unsupported",
 };
 
 const KIND_BY_MIME: Record<string, ConversationArtifact["kind"]> = {
@@ -71,6 +77,7 @@ const KIND_BY_MIME: Record<string, ConversationArtifact["kind"]> = {
   "application/yaml": "data",
   "application/json": "data",
   "text/csv": "data",
+  [XLSX_MIME]: "data",
 };
 
 const TEXT_MIME_TYPES = new Set([
@@ -141,6 +148,7 @@ export const DURABLE_LIBRARY_MIME_TYPES = new Set([
   "text/plain",
   "application/json",
   "text/csv",
+  XLSX_MIME,
 ]);
 
 /** MIME types that the Portal file tree shows but only offers download for. */
@@ -149,6 +157,7 @@ const DOWNLOAD_ONLY_MIME_TYPES = new Set([
   "text/plain",
   "application/json",
   "text/csv",
+  XLSX_MIME,
 ]);
 
 const IMAGE_MIME_TYPES = new Set([
@@ -844,7 +853,7 @@ export interface ArtifactLibraryItem {
   displayPath: string;
   directorySegments: string[];
   mimeType: string;
-  previewMode: "markdown" | "html" | "image" | "pdf" | "text" | "table";
+  previewMode: "markdown" | "html" | "image" | "pdf" | "text" | "table" | "unsupported";
   sizeBytes: number;
   createdAt: string;
   updatedAt: string;
@@ -882,7 +891,7 @@ export interface ArtifactLibraryListResult {
 const LIBRARY_DEFAULT_LIMIT = 200;
 const LIBRARY_MAX_LIMIT = 500;
 const LIBRARY_TEMP_BACKUP_SUFFIXES = ["~", ".tmp", ".temp", ".bak", ".swp"];
-const LIBRARY_PREVIEW_MODES = new Set(["markdown", "html", "image", "pdf", "text", "table"]);
+const LIBRARY_PREVIEW_MODES = new Set(["markdown", "html", "image", "pdf", "text", "table", "unsupported"]);
 
 interface LibraryRow {
   artifactId: string;
@@ -1276,7 +1285,15 @@ async function prepareArtifactPayload(declaredMime: string, raw: Buffer): Promis
   // extension on publish; on read it comes from the artifact record. We always
   // re-validate the actual bytes against the declared MIME so a `.png` that
   // contains HTML cannot leak through as an inline image.
-  validateContentMatchesMime(declaredMime, raw);
+  if (declaredMime === XLSX_MIME) {
+    try {
+      await validateAutomationSpreadsheet({ extension: ".xlsx", bytes: raw });
+    } catch {
+      throw new ConversationArtifactError("ARTIFACT_UNSAFE", "XLSX must be a valid Office Open XML workbook");
+    }
+  } else {
+    validateContentMatchesMime(declaredMime, raw);
+  }
 
   if (declaredMime === "image/svg+xml") {
     const text = raw.toString("utf8");

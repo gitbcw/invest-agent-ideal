@@ -14,9 +14,10 @@ test("web channel teaches the proactive inline SVG selection policy", () => {
   assert.match(instruction, /纯词义解释、单一事实或简短行情问答/);
   assert.match(instruction, /数据行不超过 7 条且列不超过 5 列/);
   assert.match(instruction, /超过 7 条数据行或超过 5 列/);
-  assert.match(instruction, /UTF-8 CSV 文件到 `reports\/` 下/);
+  assert.match(instruction, /Excel（\.xlsx）文件到 `deliveries\/` 下/);
   assert.match(instruction, /表头不计入 7 条数据行/);
-  assert.match(instruction, /生成 CSV 表格时更加注重人类可读性/);
+  assert.match(instruction, /冻结表头、筛选和适合阅读的列宽/);
+  assert.doesNotMatch(instruction, /UTF-8 CSV 文件到 `reports\/` 下/);
   assert.match(instruction, /只能使用下方的 `invest-svg` 内联图示/);
   assert.match(instruction, /最多 2 张/);
   assert.match(instruction, /用户明确要求发送、提供链接或下载某个文件/);

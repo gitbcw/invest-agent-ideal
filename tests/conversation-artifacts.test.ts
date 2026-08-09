@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import ExcelJS from "exceljs";
 
 import type * as ArtifactModuleType from "../src/services/conversation-artifacts.js";
 
@@ -92,6 +93,65 @@ test("publishes and reads a valid mg-shaped markdown report", async () => {
   });
   assert.equal(read.payload.mimeType, "text/markdown");
   assert.equal(Buffer.from(read.payload.base64, "base64").toString("utf8"), VALID_MG_MARKDOWN);
+});
+
+test("publishes and reads a valid XLSX conversation delivery", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const relativePath = "deliveries/portfolio-export.xlsx";
+  const target = path.join(workspaceUserA, relativePath);
+  await mkdir(path.dirname(target), { recursive: true });
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("持仓");
+  sheet.addRows([["代码", "名称"], ["600000", "浦发银行"]]);
+  sheet.views = [{ state: "frozen", ySplit: 1 }];
+  sheet.autoFilter = "A1:B2";
+  await workbook.xlsx.writeFile(target);
+
+  const original = await readFile(target);
+  const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
+  markTurnStart({ userId: "user-a", instanceId: "user-a", conversationId: "conv-xlsx", turnId: "turn-xlsx" });
+  const record = await mod.publishConversationArtifact({
+    userId: "user-a",
+    instanceId: "user-a",
+    relativePath,
+    scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "conv-xlsx" },
+  });
+  markTurnEnd({ userId: "user-a", instanceId: "user-a", conversationId: "conv-xlsx", turnId: "turn-xlsx" });
+  assert.equal(record.mimeType, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  assert.equal(record.kind, "data");
+  assert.equal(record.previewMode, "unsupported");
+  assert.equal(record.visibility, "conversation_only");
+
+  const read = await mod.readConversationArtifactPayload({
+    artifactId: record.artifactId,
+    userId: "user-a",
+    instanceId: "user-a",
+  });
+  assert.equal(read.payload.mimeType, record.mimeType);
+  assert.deepEqual(Buffer.from(read.payload.base64, "base64"), original);
+  assert.equal(read.payload.checksum, record.checksum);
+  assert.deepEqual(
+    mod.findArtifactsForTurn({ userId: "user-a", instanceId: "user-a", conversationId: "conv-xlsx", turnId: "turn-xlsx" })
+      .map((artifact) => artifact.artifactId),
+    [record.artifactId],
+  );
+});
+
+test("rejects a fake XLSX conversation delivery", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const relativePath = "deliveries/fake.xlsx";
+  const target = path.join(workspaceUserA, relativePath);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, Buffer.from("PK\u0003\u0004not-an-office-workbook"));
+  await assert.rejects(
+    () => mod.publishConversationArtifact({
+      userId: "user-a",
+      instanceId: "user-a",
+      relativePath,
+      scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "conv-fake-xlsx" },
+    }),
+    (error: unknown) => expectErrorCode(error, "ARTIFACT_UNSAFE"),
+  );
 });
 
 test("daily, weekly and monthly reports atomically create quota-counted mappings", async () => {
@@ -1101,11 +1161,17 @@ test("library list admits images, pdf, text and table as downloadable/lightbox i
   await writeFile(csvTarget, "a,b\n1,2\n");
   const csv = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/table.csv", saveToMyFiles: true, scope });
 
+  const xlsxTarget = path.join(workspace, "reports", "daily", "table.xlsx");
+  const workbook = new ExcelJS.Workbook();
+  workbook.addWorksheet("数据").addRows([["a", "b"], [1, 2]]);
+  await workbook.xlsx.writeFile(xlsxTarget);
+  const xlsx = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/table.xlsx", saveToMyFiles: true, scope });
+
   const result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
   const ids = result.items.map((item) => item.artifactId).sort();
   // Legacy path is the only excluded type now.
   assert.ok(!ids.includes(legacy.artifactId), "legacy_path artifact must not appear in the library");
-  assert.deepEqual(ids, [validPublish.artifactId, validReview.artifactId, svg.artifactId, pdf.artifactId, txt.artifactId, csv.artifactId].sort());
+  assert.deepEqual(ids, [validPublish.artifactId, validReview.artifactId, svg.artifactId, pdf.artifactId, txt.artifactId, csv.artifactId, xlsx.artifactId].sort());
 
   const byId = new Map(result.items.map((item) => [item.artifactId, item]));
   // Markdown documents open in a tab and are not downloadable.
@@ -1120,6 +1186,9 @@ test("library list admits images, pdf, text and table as downloadable/lightbox i
   assert.equal(byId.get(pdf.artifactId)!.downloadable, true);
   assert.equal(byId.get(txt.artifactId)!.openRoute, "download");
   assert.equal(byId.get(csv.artifactId)!.openRoute, "download");
+  assert.equal(byId.get(xlsx.artifactId)!.previewMode, "unsupported");
+  assert.equal(byId.get(xlsx.artifactId)!.openRoute, "download");
+  assert.equal(byId.get(xlsx.artifactId)!.downloadable, true);
 });
 
 test("library list excludes non-reports, absolute, traversal, hidden and temp/backup paths", async () => {
