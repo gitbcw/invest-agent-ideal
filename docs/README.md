@@ -84,6 +84,7 @@ Repeatable operational actions are kept as project-only skills under `.codex/ski
 - `.codex/skills/service-api-change`: sandbox, portal, MCP, Platform, and deterministic service API changes.
 - `.codex/skills/db-migration`: SQLite schema, table ownership, migration, backfill, and production DB rollout safety.
 - `.codex/skills/invest-eval`: audit-driven evaluation, evidence review, and issue classification.
+- `.codex/skills/audit-driven-diagnosis`: read-only diagnosis across a specified time range, with case evidence, problem clustering, root-cause confidence, and human review handoff.
 - `.codex/skills/onboarding-flow-eval`: onboarding continuous workflow run, log audit, workspace state audit, and issue classification.
 - `.codex/skills/screening-flow-eval`: screening, candidate risk scan, observation-pool write, and watchlist-conversion evaluation.
 - `.codex/skills/eval-instance-cleanup`: retained evaluation user/workspace inspection and permanent cleanup after a completed run.

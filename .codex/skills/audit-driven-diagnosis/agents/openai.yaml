@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit-Driven Diagnosis"
+  short_description: "Diagnose production issues from audit evidence"
+  default_prompt: "Use $audit-driven-diagnosis to diagnose issues in a specified time range from Invest Agent audit evidence, preserve case-level evidence, cluster related cases, and write a human-reviewable diagnosis report."
