@@ -9,7 +9,11 @@ import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { beijingDateKey, beijingNow, isBeijingTradingDay, readSchedules, type SchedulesYaml } from "../lib/schedules-loader.js";
 import { runScheduledMarketWatchTask } from "../acp/scheduled-tasks.js";
-import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/scheduled-task-runs.js";
+import {
+  claimScheduledTaskRun,
+  finishScheduledTaskRun,
+  reconcileExpiredScheduledTaskRuns,
+} from "../services/scheduled-task-runs.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { formatAlerts, runAlertCheck } from "./alert-check.js";
 import { processOnboardingDraftCommits } from "../services/onboarding-drafts.js";
@@ -366,6 +370,8 @@ async function runQueuedMarketWatchTask(item: MarketWatchQueueItem) {
 /** 启动所有定时任务 */
 export async function startScheduler() {
   logger.info("启动定时任务调度器...");
+
+  await reconcileExpiredScheduledTaskRuns();
 
   const intervalMin = await getAlertInterval();
   restartAlertInterval(intervalMin);

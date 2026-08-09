@@ -23,18 +23,29 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { runScheduledReviewTask } from "../acp/scheduled-tasks.js";
-import { claimScheduledTaskRun, finishScheduledTaskRun } from "../services/scheduled-task-runs.js";
+import {
+  claimScheduledTaskRun,
+  finishScheduledTaskRun,
+  getScheduledTaskRunState,
+  reconcileExpiredScheduledTaskRuns,
+  type ScheduledTaskRunState,
+} from "../services/scheduled-task-runs.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { resolveScheduledMessageExpiry, scheduledMessageIdempotencyKey, type ScheduledMessageKind } from "../services/scheduled-message-policy.js";
 
 const PUSH_TIME_KEY = "review_push_time";
 const DEFAULT_HOUR = 21;
 const DEFAULT_MINUTE = 30;
-const REVIEW_PREPARE_LEAD_MINUTES = normalizePositiveInteger(process.env.REVIEW_PREPARE_LEAD_MINUTES, 10);
+const REVIEW_PREPARE_LEAD_MINUTES = normalizePositiveInteger(process.env.REVIEW_PREPARE_LEAD_MINUTES, 12);
+const REVIEW_PREPARE_LEASE_MS = 15 * 60 * 1000;
+const REVIEW_FINAL_LEASE_MS = 25 * 60 * 1000;
+const REVIEW_HANDOFF_POLL_MS = 1_000;
+const REVIEW_HANDOFF_SETTLE_BUFFER_MS = 5_000;
 
 type ReviewKind = "daily" | "weekly" | "monthly";
 
 let reviewIntervalId: ReturnType<typeof setInterval> | null = null;
+let lastScheduledTaskReconcileAt = 0;
 
 let fallbackHour = DEFAULT_HOUR;
 let fallbackMinute = DEFAULT_MINUTE;
@@ -191,13 +202,107 @@ async function getScheduledPreparedDailyReview(scope: ReviewScope, dateKey: stri
   return context.source === "scheduled-acp" ? row.content : null;
 }
 
+function reviewPrepareTaskKey(kind: ReviewKind, scope: ReviewScope, dateKey: string) {
+  return `${dateKey}:${kind}-review-prepare:${scope.userId}:${scope.instanceId}`;
+}
+
+async function readReusableReviewText(scope: ReviewScope, kind: ReviewKind, dateKey: string): Promise<string | null> {
+  const prepared = await readPreparedReviewPush(scope, kind, dateKey);
+  if (prepared?.text) return prepared.text;
+  return kind === "daily" ? getScheduledPreparedDailyReview(scope, dateKey) : null;
+}
+
+interface ReviewPrepareHandoffDependencies {
+  getState: (taskKey: string) => Promise<ScheduledTaskRunState | null>;
+  readText: () => Promise<string | null>;
+  reconcile: (now: Date) => Promise<number>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => Date;
+}
+
+function prepareLeaseDeadline(state: ScheduledTaskRunState): number {
+  const explicit = state.leaseExpiresAt ? Date.parse(state.leaseExpiresAt) : Number.NaN;
+  if (Number.isFinite(explicit)) return explicit;
+  const claimedAt = Date.parse(state.claimedAt);
+  return Number.isFinite(claimedAt) ? claimedAt + REVIEW_PREPARE_LEASE_MS : Number.NaN;
+}
+
+async function waitForPreparedReview(
+  kind: ReviewKind,
+  scope: ReviewScope,
+  dateKey: string,
+  overrides: Partial<ReviewPrepareHandoffDependencies> = {},
+): Promise<string | null> {
+  const taskKey = reviewPrepareTaskKey(kind, scope, dateKey);
+  const deps: ReviewPrepareHandoffDependencies = {
+    getState: getScheduledTaskRunState,
+    readText: () => readReusableReviewText(scope, kind, dateKey),
+    reconcile: reconcileExpiredScheduledTaskRuns,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => new Date(),
+    ...overrides,
+  };
+
+  let state = await deps.getState(taskKey);
+  if (state?.status !== "claimed") return deps.readText();
+
+  let nextProgressLogAt = deps.now().getTime() + 30_000;
+  while (state?.status === "claimed") {
+    const text = await deps.readText();
+    if (text) return text;
+
+    const now = deps.now();
+    const deadline = prepareLeaseDeadline(state) + REVIEW_HANDOFF_SETTLE_BUFFER_MS;
+    if (!Number.isFinite(deadline) || now.getTime() >= deadline) {
+      await deps.reconcile(now);
+      return deps.readText();
+    }
+    if (now.getTime() >= nextProgressLogAt) {
+      logger.info(`等待复盘预生成交接 kind=${kind} user=${scope.userId} instance=${scope.instanceId} date=${dateKey} prepareTask=${taskKey}`);
+      nextProgressLogAt = now.getTime() + 30_000;
+    }
+    await deps.sleep(Math.min(REVIEW_HANDOFF_POLL_MS, deadline - now.getTime()));
+    state = await deps.getState(taskKey);
+  }
+
+  return deps.readText();
+}
+
+async function resolveReviewText(
+  kind: ReviewKind,
+  scope: ReviewScope,
+  dateKey: string,
+  manualReason?: string,
+  overrides: {
+    readText?: () => Promise<string | null>;
+    waitForPrepare?: () => Promise<string | null>;
+    shouldSkipFallback?: () => Promise<boolean>;
+    generate?: () => Promise<string | null>;
+  } = {},
+) {
+  const readText = overrides.readText ?? (() => readReusableReviewText(scope, kind, dateKey));
+  let text = await readText();
+  if (!text && !manualReason) {
+    text = await (overrides.waitForPrepare ?? (() => waitForPreparedReview(kind, scope, dateKey)))();
+  }
+  if (!text) {
+    const shouldSkip = await (overrides.shouldSkipFallback
+      ?? (() => shouldSkipFallbackDailyGeneration(kind, scope, dateKey, manualReason)))();
+    if (!shouldSkip) {
+      text = await (overrides.generate
+        ?? (() => runScheduledReviewTask({ userId: scope.userId, instanceId: scope.instanceId, projectId: scope.projectId }, kind)))();
+    }
+  }
+  return text;
+}
+
 async function triggerReviewPrepareNow(
   kind: ReviewKind,
   scope: ReviewScope,
   dateKey: string,
 ): Promise<{ taskKey: string; skipped: boolean }> {
   const projectId = scope.projectId ?? DEFAULT_PROJECT_ID;
-  const taskKey = `${dateKey}:${kind}-review-prepare:${scope.userId}:${scope.instanceId}`;
+  const taskKey = reviewPrepareTaskKey(kind, scope, dateKey);
   const claimed = await claimScheduledTaskRun({
     taskKey,
     taskType: `${kind}-review-prepare`,
@@ -205,6 +310,7 @@ async function triggerReviewPrepareNow(
     userId: scope.userId,
     projectId,
     instanceId: scope.instanceId,
+    leaseMs: REVIEW_PREPARE_LEASE_MS,
   });
   if (!claimed) {
     logger.info(`跳过 ${kind} 复盘预生成 user=${scope.userId} instance=${scope.instanceId}: task 已被其他进程领取`);
@@ -249,6 +355,7 @@ export async function triggerReviewNow(
     userId: scope.userId,
     projectId,
     instanceId: scope.instanceId,
+    leaseMs: REVIEW_FINAL_LEASE_MS,
   });
   if (!claimed) {
     logger.info(`跳过 ${kind} 复盘 user=${scope.userId} instance=${scope.instanceId}: task 已被其他进程领取`);
@@ -256,16 +363,7 @@ export async function triggerReviewNow(
   }
 
   try {
-    const prepared = await readPreparedReviewPush({ ...scope, projectId }, kind, dateKey);
-    let text = prepared?.text ?? null;
-    if (!text && kind === "daily" && !options.manualReason) {
-      text = await getScheduledPreparedDailyReview({ ...scope, projectId }, dateKey);
-    }
-    if (!text) {
-      text = await shouldSkipFallbackDailyGeneration(kind, { ...scope, projectId }, dateKey, options.manualReason)
-        ? null
-        : await runScheduledReviewTask({ userId: scope.userId, instanceId: scope.instanceId, projectId }, kind);
-    }
+    const text = await resolveReviewText(kind, { ...scope, projectId }, dateKey, options.manualReason);
     if (!text) {
       await finishScheduledTaskRun(taskKey, { status: "skipped" });
       return { taskKey, skipped: true };
@@ -327,6 +425,10 @@ export async function startReviewScheduler(
   reviewIntervalId = setInterval(async () => {
     const now = new Date();
     try {
+      if (now.getTime() - lastScheduledTaskReconcileAt >= 60_000) {
+        lastScheduledTaskReconcileAt = now.getTime();
+        await reconcileExpiredScheduledTaskRuns(now);
+      }
       const scopes = await getScopes();
       for (const scope of scopes) {
         for (const kind of ["daily", "weekly", "monthly"] as ReviewKind[]) {
@@ -358,8 +460,12 @@ export function stopReviewScheduler() {
 
 export const __test__ = {
   addMinutes,
+  prepareLeaseDeadline,
   preparedReviewPath,
   readPreparedReviewPush,
+  resolveReviewText,
+  reviewPrepareTaskKey,
   shouldPrepare,
+  waitForPreparedReview,
   writePreparedReviewPush,
 };
