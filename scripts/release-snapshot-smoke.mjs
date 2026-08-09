@@ -6,16 +6,33 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const projectRoot = resolve(new URL("..", import.meta.url).pathname);
+const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixture = mkdtempSync(join(tmpdir(), "invest-agent-release-snapshot-"));
 const repo = join(fixture, "repo");
+const origin = join(fixture, "origin.git");
 const workspaces = join(fixture, "source-workspaces");
 const workspaceBackups = join(fixture, "workspace-backups");
 const releases = join(fixture, "releases");
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, { cwd: options.cwd ?? repo, encoding: "utf8", env: options.env ?? process.env });
+}
+
+function result(command, args, options = {}) {
+  return spawnSync(command, args, {
+    cwd: options.cwd ?? repo,
+    encoding: "utf8",
+    env: options.env ?? process.env,
+  });
+}
+
+function expectRejected(args, pattern, options = {}) {
+  const rejected = result(process.execPath, [join(repo, "scripts", "release-snapshot.mjs"), ...args], options);
+  assert.notEqual(rejected.status, 0, `expected rejection for ${args.join(" ")}`);
+  if (pattern) assert.match(`${rejected.stdout}\n${rejected.stderr}`, pattern);
+  return rejected;
 }
 
 mkdirSync(join(repo, "scripts"), { recursive: true });
@@ -30,7 +47,13 @@ writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { verify: "n
 writeFileSync(join(repo, "templates", "workspace", ".codex", "skills", "fixture", "SKILL.md"), "system skill\n");
 for (const name of ["release-snapshot.mjs", "release-deploy.mjs", "workspace-rollback.mjs", "backup-volcano-workspaces.sh"]) {
   const source = join(projectRoot, "scripts", name);
-  writeFileSync(join(repo, "scripts", name), readFileSync(source));
+  const sourceText = readFileSync(source, "utf8");
+  writeFileSync(join(repo, "scripts", name), name === "release-snapshot.mjs"
+    ? sourceText.replace(
+      'const canonicalRepositoryRoot = "/Users/combo/MyFile/projects/invest-agent-ideal";',
+      `const canonicalRepositoryRoot = ${JSON.stringify(repo)};`,
+    )
+    : sourceText);
 }
 writeFileSync(join(repo, "scripts", "deploy-volcano.sh"), `#!/usr/bin/env bash
 set -euo pipefail
@@ -42,24 +65,119 @@ run("git", ["config", "user.email", "smoke@example.invalid"]);
 run("git", ["config", "user.name", "Release Smoke"]);
 run("git", ["add", "."]);
 run("git", ["commit", "-m", "fixture"]);
+run("git", ["init", "--bare", origin], { cwd: fixture });
+run("git", ["remote", "add", "origin", origin]);
+run("git", ["push", "-u", "origin", "main"]);
 
 const env = {
   ...process.env,
+  NODE_ENV: "test",
   INVEST_AGENT_RELEASE_ROOT: releases,
   VOLCANO_BACKUP_ROOT: workspaceBackups,
   VOLCANO_BACKUP_LOCAL_SOURCE: workspaces,
   RSYNC_BIN: "/usr/bin/rsync",
   FAKE_DEPLOY_LOG: join(fixture, "deploy.log"),
 };
-run(process.execPath, [join(repo, "scripts", "release-snapshot.mjs"), "create"], { env });
-const releaseIds = run("find", [releases, "-mindepth", "1", "-maxdepth", "1", "-type", "d"]).trim().split("\n");
-assert.equal(releaseIds.length, 1);
-const releaseId = releaseIds[0].split("/").at(-1);
-run(process.execPath, [join(repo, "scripts", "release-snapshot.mjs"), "verify", releaseId], { env });
+const snapshotScript = join(repo, "scripts", "release-snapshot.mjs");
+const releaseNamePattern = /^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$/;
+function releaseNames() {
+  return readdirSync(releases).filter((name) => releaseNamePattern.test(name)).sort();
+}
+
+run(process.execPath, [snapshotScript, "create"], { env });
+const initialReleaseIds = releaseNames();
+assert.equal(initialReleaseIds.length, 1);
+const releaseId = initialReleaseIds[0];
+run(process.execPath, [snapshotScript, "verify", releaseId], { env });
+const initialManifest = JSON.parse(readFileSync(join(releases, releaseId, "manifest.json"), "utf8"));
+assert.equal(initialManifest.schemaVersion, 2);
+assert.equal(initialManifest.sourceControl.mode, "normal");
+assert.equal(initialManifest.sourceControl.head, initialManifest.commit);
+assert.equal(initialManifest.sourceControl.originMain, initialManifest.commit);
+assert.equal(initialManifest.sourceControl.fetchSucceeded, true);
 assert.match(readFileSync(join(releases, releaseId, "workspace-manifest.txt"), "utf8"), /excluded=.*\.sandbox-token/);
 const forbidden = run("find", [join(releases, releaseId, "workspaces"), "-name", ".sandbox-token"]).trim();
 assert.equal(forbidden, "");
 assert.equal(readFileSync(join(releases, releaseId, "manifest.json"), "utf8").includes('"state": "candidate"'), true);
+
+const legacyId = "20260727T000000Z-00000000";
+const legacyPath = join(releases, legacyId);
+cpSync(join(releases, releaseId), legacyPath, { recursive: true });
+const legacyManifest = JSON.parse(readFileSync(join(legacyPath, "manifest.json"), "utf8"));
+legacyManifest.releaseId = legacyId;
+legacyManifest.schemaVersion = 1;
+delete legacyManifest.sourceControl;
+writeFileSync(join(legacyPath, "manifest.json"), `${JSON.stringify(legacyManifest, null, 2)}\n`);
+rewriteChecksums(legacyPath);
+run(process.execPath, [snapshotScript, "verify", legacyId], { env });
+
+run("git", ["commit", "--allow-empty", "-m", "unpublished"]);
+expectRejected(["create"], /HEAD to equal refs\/remotes\/origin\/main/ , { env });
+expectRejected(["create", "--confirm=wrong-confirmation"], /HEAD to equal refs\/remotes\/origin\/main/ , { env });
+expectRejected(["create", "--confirm="], /HEAD to equal refs\/remotes\/origin\/main/ , { env });
+
+run(process.execPath, [snapshotScript, "create", "--confirm=release-unpushed-main-v1"], { env });
+const emergencyReleaseId = releaseNames().find((name) => name !== releaseId && name !== legacyId);
+assert.ok(emergencyReleaseId);
+const emergencyManifest = JSON.parse(readFileSync(join(releases, emergencyReleaseId, "manifest.json"), "utf8"));
+assert.equal(emergencyManifest.schemaVersion, 2);
+assert.equal(emergencyManifest.sourceControl.mode, "emergency-unpushed-main");
+assert.equal(emergencyManifest.sourceControl.head, emergencyManifest.commit);
+assert.notEqual(emergencyManifest.sourceControl.originMain, emergencyManifest.sourceControl.head);
+assert.equal(emergencyManifest.sourceControl.fetchSucceeded, true);
+
+run("git", ["remote", "set-url", "origin", join(fixture, "missing-origin.git")]);
+run("git", ["commit", "--allow-empty", "-m", "emergency cached origin fallback"]);
+run(process.execPath, [snapshotScript, "create", "--confirm=release-unpushed-main-v1"], { env });
+const cachedEmergencyReleaseId = releaseNames().find((name) => ![releaseId, legacyId, emergencyReleaseId].includes(name));
+assert.ok(cachedEmergencyReleaseId);
+const cachedEmergencyManifest = JSON.parse(readFileSync(join(releases, cachedEmergencyReleaseId, "manifest.json"), "utf8"));
+assert.equal(cachedEmergencyManifest.sourceControl.mode, "emergency-unpushed-main");
+assert.equal(cachedEmergencyManifest.sourceControl.fetchSucceeded, false);
+assert.equal(cachedEmergencyManifest.sourceControl.originMain, initialManifest.sourceControl.originMain);
+
+const standaloneVerifier = join(fixture, "standalone-verifier");
+mkdirSync(join(standaloneVerifier, "scripts"), { recursive: true });
+writeFileSync(join(standaloneVerifier, "scripts", "release-snapshot.mjs"), readFileSync(snapshotScript));
+run(process.execPath, [
+  join(standaloneVerifier, "scripts", "release-snapshot.mjs"),
+  "verify",
+  cachedEmergencyReleaseId,
+], { cwd: standaloneVerifier, env });
+
+run("git", ["remote", "set-url", "origin", origin]);
+run("git", ["push", "origin", "main"]);
+const remoteClone = join(fixture, "remote-clone");
+run("git", ["clone", origin, remoteClone], { cwd: fixture });
+run("git", ["config", "user.email", "remote-smoke@example.invalid"], { cwd: remoteClone });
+run("git", ["config", "user.name", "Remote Smoke"], { cwd: remoteClone });
+run("git", ["commit", "--allow-empty", "-m", "remote ahead"] , { cwd: remoteClone });
+run("git", ["push", "origin", "main"], { cwd: remoteClone });
+expectRejected(["create", "--confirm=release-unpushed-main-v1"], /strict ancestor/ , { env });
+run("git", ["commit", "--allow-empty", "-m", "local diverged"]);
+expectRejected(["create", "--confirm=release-unpushed-main-v1"], /strict ancestor/ , { env });
+run("git", ["checkout", "--orphan", "force-main"], { cwd: remoteClone });
+run("git", ["rm", "-rf", "."], { cwd: remoteClone });
+writeFileSync(join(remoteClone, "force-push.txt"), "force-push\n");
+run("git", ["add", "force-push.txt"], { cwd: remoteClone });
+run("git", ["commit", "-m", "force-pushed main"], { cwd: remoteClone });
+const forcePushedCommit = run("git", ["rev-parse", "HEAD"], { cwd: remoteClone }).trim();
+run("git", ["push", "--force", "origin", "HEAD:main"], { cwd: remoteClone });
+expectRejected(["create", "--confirm=release-unpushed-main-v1"], /strict ancestor/ , { env });
+assert.equal(run("git", ["rev-parse", "refs/remotes/origin/main"]).trim(), forcePushedCommit);
+
+const nonCanonicalRepo = join(fixture, "noncanonical-repo");
+const nonCanonicalScript = join(nonCanonicalRepo, "scripts", "release-snapshot.mjs");
+mkdirSync(join(nonCanonicalRepo, "scripts"), { recursive: true });
+writeFileSync(nonCanonicalScript, readFileSync(snapshotScript));
+const nonCanonicalRejected = spawnSync(process.execPath, [nonCanonicalScript, "create"], {
+  cwd: nonCanonicalRepo,
+  env,
+  encoding: "utf8",
+});
+assert.notEqual(nonCanonicalRejected.status, 0);
+assert.match(`${nonCanonicalRejected.stdout}\n${nonCanonicalRejected.stderr}`, /canonical repository root/);
+
 run(process.execPath, [join(repo, "scripts", "release-deploy.mjs"), "deploy", releaseId], { env });
 assert.equal(existsSync(join(releases, releaseId, "status", "deployed.json")), true);
 assert.match(readFileSync(env.FAKE_DEPLOY_LOG, "utf8"), new RegExp(`${releaseId} [0-9a-f]{40} deploy`));

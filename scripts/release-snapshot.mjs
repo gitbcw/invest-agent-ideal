@@ -9,8 +9,10 @@ import {
   lstatSync,
   linkSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -18,9 +20,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const canonicalRepositoryRoot = "/Users/combo/MyFile/projects/invest-agent-ideal";
+const emergencyConfirmation = "release-unpushed-main-v1";
 const releaseRoot = resolve(
   process.env.INVEST_AGENT_RELEASE_ROOT
     ?? "/Users/combo/MyFile/my-data/backups/invest-agent/releases",
@@ -101,6 +107,106 @@ function ensureMainAndClean() {
   if (status.trim()) fail("snapshot creation requires a clean worktree");
 }
 
+function realpathOrFail(path, label) {
+  try {
+    return resolve(realpathSync(path));
+  } catch {
+    fail(`${label} does not exist or cannot be resolved: ${resolve(path)}`);
+  }
+}
+
+function assertCanonicalRepository() {
+  const actualRoot = realpathOrFail(repoRoot, "repository root");
+  const expectedRoot = realpathOrFail(canonicalRepositoryRoot, "canonical repository root");
+  if (actualRoot !== expectedRoot) {
+    fail(`snapshot creation requires canonical repository root ${expectedRoot}, found ${actualRoot}`);
+  }
+}
+
+function originMainCommit() {
+  try {
+    return run("git", ["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"]).trim();
+  } catch {
+    return null;
+  }
+}
+
+function isCommit(value) {
+  return typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
+}
+
+function isStrictAncestor(ancestor, descendant, cwd = repoRoot) {
+  if (!isCommit(ancestor) || !isCommit(descendant) || ancestor === descendant) return false;
+  try {
+    run("git", ["merge-base", "--is-ancestor", ancestor, descendant], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function inspectSourceBundle(bundlePath, manifest) {
+  const temporary = mkdtempSync(join(tmpdir(), "invest-agent-release-bundle-"));
+  try {
+    run("git", ["init", "--quiet", "--bare", temporary]);
+    run("git", ["bundle", "verify", bundlePath], { cwd: temporary });
+    const bundleHeads = run("git", ["bundle", "list-heads", bundlePath], { cwd: temporary });
+    const headMatches = bundleHeads.split("\n").some((line) => line.startsWith(`${manifest.commit} `));
+    let emergencyAncestryValid = true;
+    if (manifest.schemaVersion === 2 && manifest.sourceControl.mode === "emergency-unpushed-main") {
+      run("git", ["fetch", "--quiet", "--no-tags", bundlePath, "HEAD:refs/heads/release"], { cwd: temporary });
+      emergencyAncestryValid = isStrictAncestor(
+        manifest.sourceControl.originMain,
+        manifest.sourceControl.head,
+        temporary,
+      );
+    }
+    return { headMatches, emergencyAncestryValid };
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+function sourceControlGate(confirm) {
+  let fetchSucceeded = false;
+  try {
+    run("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
+    fetchSucceeded = true;
+  } catch {
+    // A confirmed emergency release may use an existing origin/main cache.
+  }
+
+  const head = run("git", ["rev-parse", "HEAD"]).trim();
+  const originMain = originMainCommit();
+  const emergency = confirm === emergencyConfirmation;
+
+  if (fetchSucceeded && originMain === head) {
+    return { mode: "normal", head, originMain, fetchSucceeded: true };
+  }
+
+  if (!emergency) {
+    if (!fetchSucceeded) {
+      fail("source-control gate requires a successful git fetch origin main; use the exact emergency confirmation only when origin/main is a strict ancestor");
+    }
+    fail("source-control gate requires HEAD to equal refs/remotes/origin/main");
+  }
+
+  if (!originMain) {
+    fail("emergency source-control gate requires a cached refs/remotes/origin/main");
+  }
+  if (!isStrictAncestor(originMain, head)) {
+    fail("emergency source-control gate requires origin/main to be a strict ancestor of HEAD");
+  }
+  return {
+    mode: "emergency-unpushed-main",
+    head,
+    originMain,
+    fetchSucceeded,
+  };
+}
+
 function cloneWorkspaceSnapshot(source, destination) {
   mkdirSync(destination, { recursive: true });
   for (const entry of readdirSync(source, { withFileTypes: true })) {
@@ -174,14 +280,21 @@ function checksumsFor(releaseDir) {
   return names.map((name) => `${sha256(join(releaseDir, name))}  ${name}`).join("\n") + "\n";
 }
 
-function createSnapshot() {
+function createSnapshot(confirm) {
+  assertCanonicalRepository();
   assertPrivateRoot();
   ensureMainAndClean();
+  const sourceControl = sourceControlGate(confirm);
   if (!Number.isInteger(retention) || retention < 3) fail("release retention must be an integer >= 3");
 
   console.log("[release-snapshot] run repository verification");
   run("npm", ["run", "verify"], { stdio: "inherit" });
-  const commit = run("git", ["rev-parse", "HEAD"]).trim();
+  ensureMainAndClean();
+  const verifiedHead = run("git", ["rev-parse", "HEAD"]).trim();
+  if (verifiedHead !== sourceControl.head) {
+    fail("repository HEAD changed during verification");
+  }
+  const commit = sourceControl.head;
   const releaseId = `${timestamp().replace("Z", "Z-")}${commit.slice(0, 8)}`;
   const releaseDir = join(releaseRoot, releaseId);
   if (existsSync(releaseDir)) fail(`release already exists: ${releaseId}`);
@@ -198,6 +311,13 @@ function createSnapshot() {
   if (!existsSync(workspaceSource) || !existsSync(workspaceManifest)) fail("workspace backup did not publish expected artifacts");
   verifyWorkspaceSafety(workspaceSource);
 
+  // Workspace capture can take long enough for a local source change. Recheck
+  // immediately before archiving so the source and manifest remain aligned.
+  ensureMainAndClean();
+  if (run("git", ["rev-parse", "HEAD"]).trim() !== commit) {
+    fail("repository HEAD changed before archive");
+  }
+
   console.log(`[release-snapshot] archive system commit ${commit}`);
   run("git", ["bundle", "create", join(releaseDir, "source.bundle"), "HEAD"]);
   run("git", ["archive", "--format=tar.gz", `--output=${join(releaseDir, "source.tar.gz")}`, commit]);
@@ -205,12 +325,13 @@ function createSnapshot() {
   copyFileSync(workspaceManifest, join(releaseDir, "workspace-manifest.txt"));
 
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     releaseId,
     state: "candidate",
     commit,
     branch: "main",
     createdAt: new Date().toISOString(),
+    sourceControl,
     workspaces: ["111", "dyk", "mg"],
     workspaceBackupLabel: backupLabel,
     excluded: [".sandbox-token", ".codex/auth.json", ".codex/logs_2.sqlite*", ".codex/.tmp", ".codex/tmp", ".rsync-partial", "._*"],
@@ -233,8 +354,29 @@ function resolveRelease(releaseId) {
 function verifyRelease(releaseId) {
   const releaseDir = resolveRelease(releaseId);
   const manifest = JSON.parse(readFileSync(join(releaseDir, "manifest.json"), "utf8"));
-  if (manifest.releaseId !== releaseId || manifest.branch !== "main" || !/^[0-9a-f]{40}$/.test(manifest.commit)) {
+  if (manifest.releaseId !== releaseId || manifest.branch !== "main" || !isCommit(manifest.commit)) {
     fail("invalid release manifest identity");
+  }
+  if (manifest.schemaVersion === 2) {
+    const sourceControl = manifest.sourceControl;
+    if (!sourceControl || typeof sourceControl !== "object"
+      || !["normal", "emergency-unpushed-main"].includes(sourceControl.mode)
+      || sourceControl.head !== manifest.commit
+      || !isCommit(sourceControl.head)
+      || !isCommit(sourceControl.originMain)
+      || typeof sourceControl.fetchSucceeded !== "boolean") {
+      fail("invalid release source-control gate evidence");
+    }
+    if (sourceControl.mode === "normal"
+      && (sourceControl.fetchSucceeded !== true || sourceControl.originMain !== sourceControl.head)) {
+      fail("invalid normal source-control gate evidence");
+    }
+    if (sourceControl.mode === "emergency-unpushed-main"
+      && sourceControl.originMain === sourceControl.head) {
+      fail("invalid emergency source-control gate evidence");
+    }
+  } else if (manifest.schemaVersion !== 1) {
+    fail("unsupported release manifest schema");
   }
   const expected = readFileSync(join(releaseDir, "checksums.sha256"), "utf8");
   if (expected !== checksumsFor(releaseDir)) fail("release artifact checksum mismatch");
@@ -245,10 +387,14 @@ function verifyRelease(releaseId) {
   if (!recordedWorkspaceDigest || recordedWorkspaceDigest !== workspaceContentDigest(workspaces)) {
     fail("workspace content manifest mismatch");
   }
-  run("git", ["bundle", "verify", join(releaseDir, "source.bundle")]);
-  const bundleHeads = run("git", ["bundle", "list-heads", join(releaseDir, "source.bundle")]);
-  if (!bundleHeads.split("\n").some((line) => line.startsWith(`${manifest.commit} `))) {
+  const bundleInspection = inspectSourceBundle(join(releaseDir, "source.bundle"), manifest);
+  if (!bundleInspection.headMatches) {
     fail("release bundle does not contain manifest commit");
+  }
+  if (manifest.schemaVersion === 2
+    && manifest.sourceControl.mode === "emergency-unpushed-main"
+    && !bundleInspection.emergencyAncestryValid) {
+    fail("invalid emergency source-control ancestry");
   }
   console.log(`[release-snapshot] verified ${releaseId}`);
 }
@@ -291,10 +437,15 @@ function pruneKnownGood() {
   }
 }
 
-const [command, releaseId, ...rest] = process.argv.slice(2);
-const confirm = rest.find((arg) => arg.startsWith("--confirm="))?.slice("--confirm=".length);
-assertPrivateRoot();
-if (command === "create" && !releaseId) createSnapshot();
-else if (command === "verify" && releaseId) verifyRelease(releaseId);
-else if (command === "accept" && releaseId) acceptRelease(releaseId, confirm);
-else fail("usage: release-snapshot.mjs create | verify <release-id> | accept <release-id> --confirm=mark-known-good-v1");
+const [command, ...args] = process.argv.slice(2);
+const confirm = args.find((arg) => arg.startsWith("--confirm="))?.slice("--confirm=".length);
+const positional = args.filter((arg) => !arg.startsWith("--"));
+const releaseId = positional[0];
+if (command === "create" && positional.length === 0) createSnapshot(confirm);
+else if (command === "verify" && releaseId) {
+  assertPrivateRoot();
+  verifyRelease(releaseId);
+} else if (command === "accept" && releaseId) {
+  assertPrivateRoot();
+  acceptRelease(releaseId, confirm);
+} else fail("usage: release-snapshot.mjs create [--confirm=release-unpushed-main-v1] | verify <release-id> | accept <release-id> --confirm=mark-known-good-v1");

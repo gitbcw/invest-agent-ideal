@@ -15,6 +15,7 @@ Use this skill from the repo root for production or staging work on the Volcano 
 - Prefer read-only inspection before deployment or rollback.
 - Keep local/dev and production ports separate. Local Platform is usually `localhost:22655`; production may use SSH tunnel or cloud-side process ports.
 - Treat `main` as the sole maintained release baseline. Snapshot/freeze/reconciliation branches are evidence and rollback references, not long-lived production development branches.
+- Create production snapshots only from the canonical repository root and require the clean local `main` to equal the freshly fetched `origin/main`. An emergency unpushed release is allowed only when local `main` strictly descends from `origin/main` and the caller supplies the exact confirmation phrase `release-unpushed-main-v1`; the exception never permits a non-canonical repository, a behind branch, or diverged history.
 - Production ACP paths, models, and credentials belong to the server `.env`, not PM2's retained process environment. If PM2 still carries old `CODEX_*` overrides, delete and recreate the process from a clean shell before acceptance.
 
 ## Mandatory Deployment Mode Rule
@@ -41,6 +42,7 @@ Local build and optional runtime-data scripts:
 ```bash
 npm run build
 npm run release:snapshot -- create
+npm run release:snapshot -- create --confirm=release-unpushed-main-v1 # emergency only
 npm run release:deploy -- <releaseId>
 npm run release:rollback -- <releaseId> --confirm=rollback-code-v1
 npm run release:workspace-rollback -- plan <releaseId>
@@ -65,7 +67,7 @@ Use the exact port and process manager from the production environment; do not a
 
 ## Deployment Workflow
 
-1. Identify target environment, current branch/commit, production process name, app port, workspace root, DB path, and portal connector status.
+1. Identify target environment, canonical repository root, current branch/commit, freshly fetched `origin/main`, production process name, app port, workspace root, DB path, and portal connector status.
 2. Inspect local diff and scripts relevant to the deployment. Do not package unrelated work accidentally.
 3. Run local `npm run build` and any smoke tests tied to changed areas.
 4. Select the deployment mode before touching the target:
