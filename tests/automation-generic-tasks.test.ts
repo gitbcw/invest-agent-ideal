@@ -83,7 +83,7 @@ test("assistant and generic automation prompts require XLSX for user-facing tabl
     assert.match(content, /不得提交.*csv|不要创建 CSV/);
   }
   assert.match(runnerSource, /本次输出策略（明确格式和文件名必须严格遵守）/);
-  assert.match(runnerSource, /SPREADSHEET_OUTPUT_POLICY/);
+  assert.match(runnerSource, /OUTPUT_VOLUME_POLICY/);
 });
 
 test("validates create Markdown output and preserves immutable generic revisions", async () => {

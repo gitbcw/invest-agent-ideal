@@ -17,6 +17,9 @@ test("web channel teaches the proactive inline SVG selection policy", () => {
   assert.match(instruction, /Excel（\.xlsx）文件到 `deliveries\/` 下/);
   assert.match(instruction, /表头不计入 7 条数据行/);
   assert.match(instruction, /冻结表头、筛选和适合阅读的列宽/);
+  assert.match(instruction, /量化选股默认最多展示工具返回顺序的前 100 个候选/);
+  assert.match(instruction, /默认单个 Excel 工作簿最多保留 100 条数据行/);
+  assert.match(instruction, /用户明确要求全部结果、完整名单、不要截断或指定更大数量/);
   assert.doesNotMatch(instruction, /UTF-8 CSV 文件到 `reports\/` 下/);
   assert.match(instruction, /只能使用下方的 `invest-svg` 内联图示/);
   assert.match(instruction, /最多 2 张/);

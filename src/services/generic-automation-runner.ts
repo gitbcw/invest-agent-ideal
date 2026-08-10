@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { createAgent } from "../acp/agent.js";
 import type { AcpMessage, AcpResponse } from "../acp/protocol.js";
-import { SPREADSHEET_OUTPUT_POLICY } from "../acp/spreadsheet-output-policy.js";
+import { OUTPUT_VOLUME_POLICY } from "../acp/spreadsheet-output-policy.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { enqueuePushJob } from "./push-queue.js";
 import {
@@ -237,7 +237,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         input.spreadsheetHelper
           ? `处理 XLSX 时使用暂存目录中的 ${input.spreadsheetHelper}：create 可新建工作簿，inspect 可读取工作簿，apply 可按 JSON 执行单元格、公式、样式、列宽、行高、合并、冻结窗格、筛选和工作表调整；不要把 XLSX 当文本编辑。`
           : "本次没有 XLSX 文件，不需要电子表格辅助工具。",
-        `表格文件规则：${SPREADSHEET_OUTPUT_POLICY}`,
+        `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64}, shouldNotify?:boolean}。更新绑定文件时提供 operation='update'、对应 assetId 和完整文件内容；仅在任务确有必要新建文件时提供 operation='create'。不得返回物理路径或调用写入工具。",
       ].join("\n"),
