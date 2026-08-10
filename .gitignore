@@ -19,6 +19,7 @@ workspaces/
 .backup/
 .agents/
 eval-reports/
+docs/mastra-migration-strategy.md
 .tmp/
 .local/
 .hermes/
