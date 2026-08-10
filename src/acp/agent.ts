@@ -17,11 +17,25 @@ const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
   resolvePositiveTimeoutMs("WEIXIN_DIRECT_ACP_TIMEOUT_MS", 600_000);
 // The Portal Relay keeps a small buffer beyond the total execution budget so
 // the connector can persist the runtime's terminal response.
-export const PORTAL_DIRECT_ACP_TIMEOUT_MS =
+let portalDirectAcpTimeoutMs =
   resolvePositiveTimeoutMs("PORTAL_DIRECT_ACP_TIMEOUT_MS", 600_000);
 export const PORTAL_EXECUTION_BUDGET_MS =
   resolvePositiveTimeoutMs("PORTAL_EXECUTION_BUDGET_MS", 1_200_000);
-validatePortalRuntimeTimeouts(PORTAL_DIRECT_ACP_TIMEOUT_MS, PORTAL_EXECUTION_BUDGET_MS);
+try {
+  validatePortalRuntimeTimeouts(portalDirectAcpTimeoutMs, PORTAL_EXECUTION_BUDGET_MS);
+} catch (error) {
+  // Older production environments may have equal timeout values. Keep the
+  // strict validator for explicit callers, but fail closed at startup with a
+  // bounded direct timeout instead of taking the whole runtime offline.
+  const safeDirectTimeoutMs = Math.min(600_000, PORTAL_EXECUTION_BUDGET_MS - 1);
+  if (safeDirectTimeoutMs <= 0) throw error;
+  logger.warn(
+    `Invalid Portal timeout configuration; using safe direct timeout ${safeDirectTimeoutMs}ms: ${formatUnknownError(error)}`,
+  );
+  portalDirectAcpTimeoutMs = safeDirectTimeoutMs;
+  validatePortalRuntimeTimeouts(portalDirectAcpTimeoutMs, PORTAL_EXECUTION_BUDGET_MS);
+}
+export const PORTAL_DIRECT_ACP_TIMEOUT_MS = portalDirectAcpTimeoutMs;
 const ACP_EVALUATION_CASE_TIMEOUT_MS = Number(process.env.ACP_EVAL_CASE_TIMEOUT_MS) || 0;
 
 export function validatePortalRuntimeTimeouts(directAcpTimeoutMs: number, executionBudgetMs: number): void {
