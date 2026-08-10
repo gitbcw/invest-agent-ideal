@@ -36,6 +36,16 @@ test("ACP trace stores compact runtime metadata without successful prompt/raw re
       elapsedMs: 1234,
       acpBackend: "codex",
       acpModel: "gpt-test",
+      reviewContextSummary: {
+        budget: {
+          state: "completed",
+          startedAt: 1_000,
+          exhaustedAt: 1_200,
+          exhaustionType: "identical_calls",
+          convergenceDeadlineAt: 6_200,
+          toolCallsAfterExhaustion: 0,
+        },
+      },
       mcpManifest: {
         sessionId: "session-a",
         userId: "trace-user",
@@ -62,6 +72,7 @@ test("ACP trace stores compact runtime metadata without successful prompt/raw re
     assert.equal(row.promptChars, "internal prompt that should not be persisted on success".length);
     assert.equal(row.replyChars, "raw reply".length);
     assert.match(row.mcpManifest ?? "", /market-data-tool/);
+    assert.match(row.reviewContextSummary ?? "", /"toolCallsAfterExhaustion":0/);
     assert.match(row.toolCalls ?? "", /quant_screen_stocks/);
     assert.doesNotMatch(row.toolCalls ?? "", /secret/);
     assert.equal(sqlite.prepare("SELECT json_valid(tool_calls) AS valid FROM codex_acp_traces WHERE user_id = ?").get("trace-user").valid, 1);

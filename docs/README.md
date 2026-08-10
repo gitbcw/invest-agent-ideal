@@ -71,6 +71,7 @@ Initial Portal design, completed work packages and acceptance records are under 
 | [mcp-registry-and-agent-tooling-refactor-plan.md](./mcp-registry-and-agent-tooling-refactor-plan.md) | MCP registration, Agent-owned research, scheduler simplification, and narrow deterministic rule facts (WP0-WP8 completed) |
 | [mcp-refactor-wp0-baseline.md](./mcp-refactor-wp0-baseline.md) | Refactor WP0 baseline: consumer matrix, conflict-item status table, test baseline |
 | [mcp-refactor-wp6-rule-decision.md](./mcp-refactor-wp6-rule-decision.md) | WP6 non-price rule retirement decision and rationale |
+| [mg-screening-timeout-recovery-plan.md](./mg-screening-timeout-recovery-plan.md) | mg 选股超时的预算、批量历史数据、终态收敛、超时层级与 Portal 消息协调修复方案 |
 | [custom-formula-historical-screening-research.md](./custom-formula-historical-screening-research.md) | User-defined formula, point-in-time A-share screening requirements, evidence, scope, and phased delivery boundary |
 
 > **Note**: The superseded capability-plane extraction plan and its execution records have been moved to [archive/](./archive/) for audit. Its capability contracts and fixture runners remain in use and are inherited by the refactor plan.

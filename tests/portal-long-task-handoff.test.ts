@@ -10,6 +10,7 @@ process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(root, "long-task.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+process.env.PORTAL_DIRECT_ACP_TIMEOUT_MS = "100";
 process.env.PORTAL_EXECUTION_BUDGET_MS = "200";
 mkdir(path.join(root, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));

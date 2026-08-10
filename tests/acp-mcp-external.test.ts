@@ -377,13 +377,14 @@ test("market-data-tool does not enter evaluation sessions", () => {
 // ─── 动态发现证明: 无逐工具映射 ────────────────────────────────────
 
 test("no per-tool mapping exists in invest-agent for market-data-tool tools", () => {
-  // market-data-tool 的 15 个工具名,invest-agent 代码里不应有逐工具适配器。
-  // 如果未来新增第 16 个工具,invest-agent 无需改代码即可发现。
+  // 工具清单由 server 握手 tools/list 动态提供，invest-agent 不维护工具数量或逐工具适配器。
+  // 代表性旧工具和新批量工具都不能泄漏到注册项 transport。
   const mdt = buildMarketDataToolRegistration();
   // 注册项 transport 只描述"如何启动 server",不含任何工具名映射
   const transportJson = JSON.stringify(mdt.transport);
   const knownTools = [
     "get_realtime_quote", "get_hist_kline", "search_securities",
+    "get_hist_klines",
     "get_fund_flow", "get_financial_report", "get_stock_profile",
   ];
   for (const tool of knownTools) {

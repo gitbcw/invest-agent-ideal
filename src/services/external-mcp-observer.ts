@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { db } from "../db/index.js";
 import { sqlite } from "../db/index.js";
 import { externalMcpToolCalls } from "../db/schema.js";
@@ -16,27 +17,26 @@ export type ExternalMcpObserverScope = {
 export type ExternalMcpToolCallBudget = {
   /** Maximum external `tools/call` requests for one ACP turn. */
   maxCalls: number;
-  /** Maximum consecutive requests for exactly the same external tool. */
-  maxConsecutiveCalls: number;
+  /** Maximum requests with the same server, tool, and canonical arguments. */
+  maxIdenticalCalls: number;
 };
 
 export type ExternalMcpToolCallBudgetState = {
   totalCalls: number;
-  lastToolKey?: string;
-  consecutiveCalls: number;
+  identicalCallCounts: Map<string, number>;
 };
 
 export type ExternalMcpToolCallBudgetDecision =
-  | { allowed: true; totalCalls: number; consecutiveCalls: number }
+  | { allowed: true; totalCalls: number; identicalCalls: number }
   | {
       allowed: false;
-      reason: "total_calls" | "consecutive_calls";
+      reason: "total_calls" | "identical_calls";
       totalCalls: number;
-      consecutiveCalls: number;
+      identicalCalls: number;
     };
 
 const DEFAULT_EXTERNAL_MCP_MAX_CALLS_PER_TURN = 12;
-const DEFAULT_EXTERNAL_MCP_MAX_CONSECUTIVE_CALLS = 4;
+const DEFAULT_EXTERNAL_MCP_MAX_IDENTICAL_CALLS = 4;
 const MAX_BUDGET_VALUE = 100;
 
 /**
@@ -46,9 +46,9 @@ const MAX_BUDGET_VALUE = 100;
 export function resolveExternalMcpToolCallBudget(env: NodeJS.ProcessEnv = process.env): ExternalMcpToolCallBudget {
   return {
     maxCalls: boundedBudget(env.EXTERNAL_MCP_MAX_CALLS_PER_TURN, DEFAULT_EXTERNAL_MCP_MAX_CALLS_PER_TURN),
-    maxConsecutiveCalls: boundedBudget(
-      env.EXTERNAL_MCP_MAX_CONSECUTIVE_CALLS,
-      DEFAULT_EXTERNAL_MCP_MAX_CONSECUTIVE_CALLS,
+    maxIdenticalCalls: boundedBudget(
+      env.EXTERNAL_MCP_MAX_IDENTICAL_CALLS ?? env.EXTERNAL_MCP_MAX_CONSECUTIVE_CALLS,
+      DEFAULT_EXTERNAL_MCP_MAX_IDENTICAL_CALLS,
     ),
   };
 }
@@ -69,32 +69,49 @@ export function reserveExternalMcpToolCall(input: {
   state: ExternalMcpToolCallBudgetState;
   serverId: string;
   toolName: string;
+  arguments?: unknown;
   budget: ExternalMcpToolCallBudget;
 }): ExternalMcpToolCallBudgetDecision {
-  const toolKey = `${input.serverId}\u0000${input.toolName}`;
-  const nextConsecutive = input.state.lastToolKey === toolKey
-    ? input.state.consecutiveCalls + 1
-    : 1;
+  const invocationKey = externalMcpInvocationKey(input.serverId, input.toolName, input.arguments);
+  const nextIdentical = (input.state.identicalCallCounts.get(invocationKey) ?? 0) + 1;
   if (input.budget.maxCalls > 0 && input.state.totalCalls >= input.budget.maxCalls) {
     return {
       allowed: false,
       reason: "total_calls",
       totalCalls: input.state.totalCalls,
-      consecutiveCalls: nextConsecutive,
+      identicalCalls: nextIdentical,
     };
   }
-  if (input.budget.maxConsecutiveCalls > 0 && nextConsecutive > input.budget.maxConsecutiveCalls) {
+  if (input.budget.maxIdenticalCalls > 0 && nextIdentical > input.budget.maxIdenticalCalls) {
     return {
       allowed: false,
-      reason: "consecutive_calls",
+      reason: "identical_calls",
       totalCalls: input.state.totalCalls,
-      consecutiveCalls: nextConsecutive,
+      identicalCalls: nextIdentical,
     };
   }
   input.state.totalCalls += 1;
-  input.state.lastToolKey = toolKey;
-  input.state.consecutiveCalls = nextConsecutive;
-  return { allowed: true, totalCalls: input.state.totalCalls, consecutiveCalls: nextConsecutive };
+  input.state.identicalCallCounts.set(invocationKey, nextIdentical);
+  return { allowed: true, totalCalls: input.state.totalCalls, identicalCalls: nextIdentical };
+}
+
+function externalMcpInvocationKey(serverId: string, toolName: string, args: unknown): string {
+  const canonicalArguments = JSON.stringify(canonicalizeJson(args));
+  const argumentsHash = createHash("sha256").update(canonicalArguments).digest("hex");
+  return `${serverId}\u0000${toolName}\u0000${argumentsHash}`;
+}
+
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => canonicalizeJson(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([key, item]) => [key, canonicalizeJson(item)]),
+    );
+  }
+  return value === undefined ? null : value;
 }
 
 export function resolveObservedExternalMcp(serverId: string, env: NodeJS.ProcessEnv = process.env) {
@@ -106,11 +123,13 @@ export function resolveObservedExternalMcp(serverId: string, env: NodeJS.Process
 
 export function observedToolCallFromBody(body: unknown) {
   if (!body || typeof body !== "object") return null;
-  const rpc = body as { method?: unknown; id?: unknown; params?: { name?: unknown } };
+  const rpc = body as { method?: unknown; id?: unknown; params?: { name?: unknown; arguments?: unknown } };
   if (rpc.method !== "tools/call" || typeof rpc.params?.name !== "string") return null;
   return {
     toolName: rpc.params.name,
+    responseId: typeof rpc.id === "string" || typeof rpc.id === "number" ? rpc.id : undefined,
     requestId: typeof rpc.id === "string" || typeof rpc.id === "number" ? String(rpc.id) : undefined,
+    arguments: rpc.params.arguments,
   };
 }
 

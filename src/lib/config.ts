@@ -75,6 +75,7 @@ export const config = {
     agentId: process.env.ACP_AGENT_ID || "invest-agent",
     agentName: process.env.ACP_AGENT_NAME || "投资选股助手",
     backend: (process.env.ACP_BACKEND || "codex") as RuntimeBackend,
+    budgetConvergenceMs: Number(process.env.ACP_BUDGET_CONVERGENCE_MS) || 5_000,
   },
 
   codex: {

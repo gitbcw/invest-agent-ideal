@@ -21,29 +21,66 @@ function restoreEnv(name: string, value: string | undefined) {
 test("recognizes only JSON-RPC tools/call requests", () => {
   assert.deepEqual(observedToolCallFromBody({ method: "tools/call", id: 7, params: { name: "get_realtime_quote" } }), {
     toolName: "get_realtime_quote",
+    responseId: 7,
     requestId: "7",
+    arguments: undefined,
+  });
+  assert.deepEqual(observedToolCallFromBody({ method: "tools/call", id: "call-7", params: { name: "get_realtime_quote" } }), {
+    toolName: "get_realtime_quote",
+    responseId: "call-7",
+    requestId: "call-7",
+    arguments: undefined,
   });
   assert.equal(observedToolCallFromBody({ method: "tools/list", id: 8 }), null);
 });
 
-test("external MCP budget limits total calls and repeated identical tool calls per turn", () => {
-  const state = { totalCalls: 0, consecutiveCalls: 0 };
-  const budget = { maxCalls: 3, maxConsecutiveCalls: 2 };
-  assert.equal(reserveExternalMcpToolCall({ state, serverId: "market", toolName: "quote", budget }).allowed, true);
-  assert.equal(reserveExternalMcpToolCall({ state, serverId: "market", toolName: "quote", budget }).allowed, true);
-  const repeated = reserveExternalMcpToolCall({ state, serverId: "market", toolName: "quote", budget });
-  assert.deepEqual(repeated, { allowed: false, reason: "consecutive_calls", totalCalls: 2, consecutiveCalls: 3 });
-  assert.equal(state.totalCalls, 2, "rejected calls must not consume total budget");
-  assert.equal(reserveExternalMcpToolCall({ state, serverId: "market", toolName: "news", budget }).allowed, true);
-  const exhausted = reserveExternalMcpToolCall({ state, serverId: "qsse", toolName: "industry", budget });
-  assert.deepEqual(exhausted, { allowed: false, reason: "total_calls", totalCalls: 3, consecutiveCalls: 1 });
+test("JSON-RPC request ids do not affect invocation identity", () => {
+  const state = { totalCalls: 0, identicalCallCounts: new Map<string, number>() };
+  const budget = { maxCalls: 12, maxIdenticalCalls: 1 };
+  const first = observedToolCallFromBody({
+    jsonrpc: "2.0",
+    id: 101,
+    method: "tools/call",
+    params: { name: "get_hist_kline", arguments: { symbol: "600519" } },
+  })!;
+  const second = observedToolCallFromBody({
+    jsonrpc: "2.0",
+    id: 202,
+    method: "tools/call",
+    params: { name: "get_hist_kline", arguments: { symbol: "600519" } },
+  })!;
+  assert.equal(reserveExternalMcpToolCall({ state, serverId: "market", toolName: first.toolName, arguments: first.arguments, budget }).allowed, true);
+  assert.deepEqual(
+    reserveExternalMcpToolCall({ state, serverId: "market", toolName: second.toolName, arguments: second.arguments, budget }),
+    { allowed: false, reason: "identical_calls", totalCalls: 1, identicalCalls: 2 },
+  );
+});
+
+test("external MCP budget distinguishes arguments and limits identical invocations", () => {
+  const state = { totalCalls: 0, identicalCallCounts: new Map<string, number>() };
+  const budget = { maxCalls: 4, maxIdenticalCalls: 2 };
+  const first = { state, serverId: "market", toolName: "get_hist_kline", arguments: { symbol: "600519", period: "day" }, budget };
+  assert.equal(reserveExternalMcpToolCall(first).allowed, true);
+  assert.equal(reserveExternalMcpToolCall({ ...first, arguments: { symbol: "000001", period: "day" } }).allowed, true);
+  assert.equal(reserveExternalMcpToolCall({ ...first, arguments: { period: "day", symbol: "600519" } }).allowed, true);
+  const repeated = reserveExternalMcpToolCall(first);
+  assert.deepEqual(repeated, { allowed: false, reason: "identical_calls", totalCalls: 3, identicalCalls: 3 });
+  assert.equal(state.totalCalls, 3, "rejected calls must not consume total budget");
+  assert.equal(reserveExternalMcpToolCall({ ...first, toolName: "news" }).allowed, true);
+  const exhausted = reserveExternalMcpToolCall({ ...first, serverId: "qsse", toolName: "industry" });
+  assert.deepEqual(exhausted, { allowed: false, reason: "total_calls", totalCalls: 4, identicalCalls: 1 });
+  assert.equal([...state.identicalCallCounts.keys()].some((key) => key.includes("600519")), false, "state must not retain raw arguments");
 });
 
 test("external MCP budget defaults safely and permits explicit controlled disable", () => {
-  assert.deepEqual(resolveExternalMcpToolCallBudget({}), { maxCalls: 12, maxConsecutiveCalls: 4 });
+  assert.deepEqual(resolveExternalMcpToolCallBudget({}), { maxCalls: 12, maxIdenticalCalls: 4 });
   assert.deepEqual(resolveExternalMcpToolCallBudget({ EXTERNAL_MCP_MAX_CALLS_PER_TURN: "0", EXTERNAL_MCP_MAX_CONSECUTIVE_CALLS: "0" }), {
     maxCalls: 0,
-    maxConsecutiveCalls: 0,
+    maxIdenticalCalls: 0,
+  });
+  assert.deepEqual(resolveExternalMcpToolCallBudget({ EXTERNAL_MCP_MAX_IDENTICAL_CALLS: "2", EXTERNAL_MCP_MAX_CONSECUTIVE_CALLS: "9" }), {
+    maxCalls: 12,
+    maxIdenticalCalls: 2,
   });
 });
 
@@ -99,6 +136,75 @@ test("observer forwards tools/call and persists minimal external MCP evidence", 
     restoreEnv("INVEST_AGENT_MCP_MARKET_DATA_ENABLED", previous.enabled);
     restoreEnv("MARKET_DATA_MCP_URL", previous.url);
     restoreEnv("MARKET_DATA_MCP_TOKEN", previous.token);
+  }
+});
+
+test("observer budgets identical arguments without blocking different symbols", async () => {
+  initDb();
+  const previous = {
+    enabled: process.env.INVEST_AGENT_MCP_MARKET_DATA_ENABLED,
+    url: process.env.MARKET_DATA_MCP_URL,
+    token: process.env.MARKET_DATA_MCP_TOKEN,
+    maxCalls: process.env.EXTERNAL_MCP_MAX_CALLS_PER_TURN,
+    maxIdentical: process.env.EXTERNAL_MCP_MAX_IDENTICAL_CALLS,
+  };
+  const originalFetch = globalThis.fetch;
+  let forwarded = 0;
+  process.env.INVEST_AGENT_MCP_MARKET_DATA_ENABLED = "true";
+  process.env.MARKET_DATA_MCP_URL = "https://external.example.test/mcp";
+  process.env.MARKET_DATA_MCP_TOKEN = "external-secret";
+  process.env.EXTERNAL_MCP_MAX_CALLS_PER_TURN = "12";
+  process.env.EXTERNAL_MCP_MAX_IDENTICAL_CALLS = "1";
+  globalThis.fetch = async () => {
+    forwarded += 1;
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: forwarded, result: { content: [] } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const app = Fastify();
+  registerExternalMcpObserverRoutes(app);
+  const baseRunId = `observer-budget-${Date.now()}`;
+  const headers = {
+    "x-invest-agent-token": serviceApiToken,
+    "x-invest-agent-mcp-user-id": "observer-budget-user",
+    "x-invest-agent-mcp-project-id": "invest-agent",
+    "x-invest-agent-mcp-instance-id": "invest-agent-observer-budget-user",
+    "x-invest-agent-mcp-conversation-id": "observer-budget-conversation",
+    "x-invest-agent-mcp-run-id": baseRunId,
+  };
+  const call = (id: number | string, symbol: string, runId = baseRunId) => app.inject({
+    method: "POST",
+    url: "/api/internal/mcp-observer/market-data-tool",
+    headers: { ...headers, "x-invest-agent-mcp-run-id": runId },
+    payload: { jsonrpc: "2.0", id, method: "tools/call", params: { name: "get_hist_kline", arguments: { symbol } } },
+  });
+  try {
+    assert.equal((await call(1, "600519")).statusCode, 200);
+    assert.equal((await call(2, "000001")).statusCode, 200);
+    const rejected = await call(3, "600519");
+    assert.equal(rejected.statusCode, 200);
+    const rejectedBody = rejected.json();
+    assert.equal(rejectedBody.id, 3, "numeric JSON-RPC ids must remain numeric");
+    assert.match(rejectedBody.error.message, /identical invocation budget/);
+
+    const stringRunId = `${baseRunId}-string`;
+    assert.equal((await call("call-a", "600519", stringRunId)).statusCode, 200);
+    const rejectedString = await call("call-b", "600519", stringRunId);
+    assert.equal(rejectedString.json().id, "call-b", "string JSON-RPC ids must remain strings");
+    assert.equal(forwarded, 3, "rejected identical invocations must not reach upstream");
+    const [row] = await db.select().from(externalMcpToolCalls)
+      .where(eq(externalMcpToolCalls.userId, "observer-budget-user"))
+      .orderBy(desc(externalMcpToolCalls.id)).limit(1);
+    assert.equal(row.errorClass, "MCP_TOOL_CALL_REPEAT_BUDGET_EXHAUSTED");
+  } finally {
+    await app.close();
+    globalThis.fetch = originalFetch;
+    restoreEnv("INVEST_AGENT_MCP_MARKET_DATA_ENABLED", previous.enabled);
+    restoreEnv("MARKET_DATA_MCP_URL", previous.url);
+    restoreEnv("MARKET_DATA_MCP_TOKEN", previous.token);
+    restoreEnv("EXTERNAL_MCP_MAX_CALLS_PER_TURN", previous.maxCalls);
+    restoreEnv("EXTERNAL_MCP_MAX_IDENTICAL_CALLS", previous.maxIdentical);
   }
 });
 

@@ -34,6 +34,16 @@ import {
   type AcpMcpSessionManifest,
 } from "./mcp-session-manifest.js";
 import { probeToolConflicts, shouldBlockSessionOnConflict, type ToolConflictReport } from "./mcp-tool-conflict-probe.js";
+import {
+  AcpBudgetExhaustedError,
+  AcpBudgetRun,
+  DEFAULT_ACP_BUDGET_CONVERGENCE_MS,
+  detectAcpBudgetExhaustion,
+  probeAcpCapabilities,
+  type AcpBudgetExhaustionType,
+  type AcpBudgetRunSnapshot,
+  type AcpCapabilityProbe,
+} from "./budget-convergence.js";
 
 const ACP_DEBUG_SESSION_UPDATES = process.env.ACP_DEBUG_SESSION_UPDATES === "1";
 const ACP_DEBUG_PREVIEW_CHARS = Number(process.env.ACP_DEBUG_PREVIEW_CHARS) || 120;
@@ -206,6 +216,7 @@ export interface AcpBackendStatus {
   lastError?: string;
   isCurrent: boolean;
   isDefault: boolean;
+  capabilityProbe?: AcpCapabilityProbe;
 }
 
 export interface AcpTokenUsage {
@@ -226,6 +237,7 @@ export interface AcpTokenUsage {
 export interface AcpChatResult {
   text: string;
   usage: AcpTokenUsage;
+  budget: AcpBudgetRunSnapshot;
   backendId: AcpBackendId;
   model?: string;
   modelLabel?: string;
@@ -312,14 +324,28 @@ export class ResponseCollector {
   private readonly toolCallRecords = new Map<string, AcpToolCallSummary>();
   private readonly toolCallStartedAt = new Map<string, number>();
 
+  constructor(private readonly hooks: {
+    onToolCall?: () => void;
+    onBudgetExhausted?: (type: AcpBudgetExhaustionType) => void;
+  } = {}) {}
+
   handleUpdate(notification: SessionNotification) {
     const update = notification.update;
     if (update.sessionUpdate === "tool_call") {
+      this.hooks.onToolCall?.();
+      const budgetType = detectAcpBudgetExhaustion(update);
+      if (budgetType) this.hooks.onBudgetExhausted?.(budgetType);
       this.recordToolCall(update as Record<string, unknown>);
       this.flushSegment();
       return;
     }
     if (update.sessionUpdate === "tool_call_update") {
+      const toolCallId = typeof (update as { toolCallId?: unknown }).toolCallId === "string"
+        ? (update as unknown as { toolCallId: string }).toolCallId
+        : "";
+      if (toolCallId && !this.toolCallRecords.has(toolCallId)) this.hooks.onToolCall?.();
+      const budgetType = detectAcpBudgetExhaustion(update);
+      if (budgetType) this.hooks.onBudgetExhausted?.(budgetType);
       this.recordToolCall(update as Record<string, unknown>);
       this.flushSegment();
       return;
@@ -586,6 +612,15 @@ function estimateTokens(text: string) {
   return Math.max(1, Math.ceil(ascii / 4 + nonAscii / 1.7));
 }
 
+function resolveAcpBudgetConvergenceMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.ACP_BUDGET_CONVERGENCE_MS);
+  if (Number.isFinite(configured) && configured > 0) return Math.round(configured);
+  const fromConfig = config.acp.budgetConvergenceMs;
+  return Number.isFinite(fromConfig) && fromConfig > 0
+    ? Math.round(fromConfig)
+    : DEFAULT_ACP_BUDGET_CONVERGENCE_MS;
+}
+
 export class StdioAcpAgent {
   private connection: ClientSideConnection | null = null;
   private process: ChildProcessWithoutNullStreams | null = null;
@@ -598,6 +633,7 @@ export class StdioAcpAgent {
   private readonly activeConversations = new Set<string>();
   private readonly inFlightPromptRejectors = new Map<string, (error: Error) => void>();
   private httpMcpSupported = false;
+  private capabilityProbe: AcpCapabilityProbe = probeAcpCapabilities(undefined);
 
   constructor(private readonly def: AcpBackendDef, private readonly override: AcpBackendOverride = {}) {}
 
@@ -623,6 +659,7 @@ export class StdioAcpAgent {
       lastError: this.lastError,
       isCurrent,
       isDefault: Boolean(this.def.isDefault),
+      capabilityProbe: this.capabilityProbe,
     };
   }
 
@@ -690,7 +727,35 @@ export class StdioAcpAgent {
       .join("::");
     const sessionId = await this.getOrCreateSession(sessionKey, conn, params.cwd, resolvedMcp);
     const prompt = [{ type: "text" as const, text: params.text }];
-    const collector = new ResponseCollector();
+    const budgetRun = new AcpBudgetRun({ convergenceMs: resolveAcpBudgetConvergenceMs() });
+    let budgetCancelRequested = false;
+    let budgetTimer: NodeJS.Timeout | undefined;
+    let rejectBudgetConvergence: ((error: AcpBudgetExhaustedError) => void) | undefined;
+    const budgetConvergence = new Promise<never>((_, reject) => {
+      rejectBudgetConvergence = reject;
+    });
+    const collector = new ResponseCollector({
+      onToolCall: () => budgetRun.recordToolCall(),
+      onBudgetExhausted: (type) => {
+        if (!budgetRun.markBudgetExhausted(type)) return;
+        // ACP 0.16.1 does not advertise a safe same-turn MCP revocation
+        // operation, so cancel the active turn and converge to a terminal
+        // result instead of allowing another upstream request.
+        budgetRun.enterSynthesisOnly();
+        if (!budgetCancelRequested) {
+          budgetCancelRequested = true;
+          void conn.cancel({ sessionId }).catch((error: unknown) => {
+            logger.warn(`${this.label} ACP 预算耗尽后的取消失败:`, error);
+          });
+        }
+        const deadline = budgetRun.snapshot().convergenceDeadlineAt ?? Date.now();
+        budgetTimer = setTimeout(() => {
+          budgetRun.terminalFail();
+          rejectBudgetConvergence?.(new AcpBudgetExhaustedError(budgetRun.snapshot()));
+        }, Math.max(0, deadline - Date.now()));
+        budgetTimer.unref?.();
+      },
+    });
     this.collectors.set(sessionId, collector);
     const startedAt = Date.now();
     logger.info(
@@ -710,12 +775,19 @@ export class StdioAcpAgent {
         }),
         this.timeoutAfter(params.timeoutMs ?? this.def.timeoutMs),
         processExit,
+        budgetConvergence,
       ]);
       logger.info(
         `${this.label} ACP 完成 session=${sessionId} elapsedMs=${Date.now() - startedAt} result=${JSON.stringify(promptResult)} responseStats=${JSON.stringify(collector.stats())}`
       );
       debugPromptResult(this.label, sessionId, promptResult);
     } catch (error) {
+      if (budgetRun.isBudgetExhausted()) {
+        budgetRun.terminalFail();
+        throw error instanceof AcpBudgetExhaustedError
+          ? error
+          : new AcpBudgetExhaustedError(budgetRun.snapshot());
+      }
       if (error instanceof Error && error.message.includes("请求超时")) {
         logger.warn(`${this.label} ACP 超时,取消当前轮次 session=${sessionId}`);
         await conn.cancel({ sessionId }).catch((cancelError: unknown) => {
@@ -724,18 +796,26 @@ export class StdioAcpAgent {
       }
       throw error;
     } finally {
+      if (budgetTimer) clearTimeout(budgetTimer);
       this.inFlightPromptRejectors.delete(sessionId);
       this.collectors.delete(sessionId);
       this.activeConversations.delete(params.conversationId);
+    }
+
+    if (budgetRun.isBudgetExhausted()) {
+      budgetRun.terminalFail();
+      throw new AcpBudgetExhaustedError(budgetRun.snapshot());
     }
 
     const text = collector.toText();
     if (!text) {
       throw new Error(`${this.label} ACP 未生成可展示的用户回复`);
     }
+    budgetRun.complete();
     return {
       text,
       usage: extractAcpUsage(promptResult, collector.usageFromUpdate(), params.text, text),
+      budget: budgetRun.snapshot(),
       backendId: this.def.id,
       model: this.override.model,
       modelLabel: this.override.modelLabel,
@@ -845,6 +925,8 @@ export class StdioAcpAgent {
       clientCapabilities: {},
     });
 
+    this.capabilityProbe = probeAcpCapabilities(initResult, conn);
+
     const agentCapabilities = initResult as {
       agentCapabilities?: { mcpCapabilities?: { http?: boolean } };
     };
@@ -907,10 +989,11 @@ export class StdioAcpAgent {
 
   private timeoutAfter(ms: number): Promise<never> {
     return new Promise((_, reject) => {
-      setTimeout(
+      const timer = setTimeout(
         () => reject(new Error(`${this.label} ACP 请求超时 ${ms}ms`)),
         ms
       );
+      timer.unref?.();
     });
   }
 
@@ -1265,6 +1348,7 @@ export async function listAcpBackends(): Promise<{
         sessions: 0,
         isCurrent: def.id === current,
         isDefault: Boolean(def.isDefault),
+        capabilityProbe: probeAcpCapabilities(undefined),
       } satisfies AcpBackendStatus;
     }
     return inst.status(def.id === current);

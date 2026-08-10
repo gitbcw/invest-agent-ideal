@@ -3,6 +3,7 @@ import { textResponse } from "./protocol.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../lib/config.js";
 import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
+import { AcpBudgetExhaustedError, TOOL_BUDGET_EXHAUSTED_CODE } from "./budget-convergence.js";
 import { dedupeRepeatedCustomerText, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { recordAcpTrace } from "./trace.js";
@@ -13,12 +14,39 @@ import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 import { classifyTaskError } from "../services/task-execution.js";
 
 const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
-  Number(process.env.WEIXIN_DIRECT_ACP_TIMEOUT_MS) || 600_000;
-// The Portal Relay keeps a small buffer beyond this deadline so the connector
-// can persist the runtime's terminal timeout response.
-const PORTAL_DIRECT_ACP_TIMEOUT_MS =
-  Number(process.env.PORTAL_DIRECT_ACP_TIMEOUT_MS) || 600_000;
+  resolvePositiveTimeoutMs("WEIXIN_DIRECT_ACP_TIMEOUT_MS", 600_000);
+// The Portal Relay keeps a small buffer beyond the total execution budget so
+// the connector can persist the runtime's terminal response.
+export const PORTAL_DIRECT_ACP_TIMEOUT_MS =
+  resolvePositiveTimeoutMs("PORTAL_DIRECT_ACP_TIMEOUT_MS", 600_000);
+export const PORTAL_EXECUTION_BUDGET_MS =
+  resolvePositiveTimeoutMs("PORTAL_EXECUTION_BUDGET_MS", 1_200_000);
+validatePortalRuntimeTimeouts(PORTAL_DIRECT_ACP_TIMEOUT_MS, PORTAL_EXECUTION_BUDGET_MS);
 const ACP_EVALUATION_CASE_TIMEOUT_MS = Number(process.env.ACP_EVAL_CASE_TIMEOUT_MS) || 0;
+
+export function validatePortalRuntimeTimeouts(directAcpTimeoutMs: number, executionBudgetMs: number): void {
+  if (!Number.isInteger(directAcpTimeoutMs) || directAcpTimeoutMs <= 0) {
+    throw new Error(`PORTAL_DIRECT_ACP_TIMEOUT_MS must be a positive integer: ${directAcpTimeoutMs}`);
+  }
+  if (!Number.isInteger(executionBudgetMs) || executionBudgetMs <= 0) {
+    throw new Error(`PORTAL_EXECUTION_BUDGET_MS must be a positive integer: ${executionBudgetMs}`);
+  }
+  if (directAcpTimeoutMs >= executionBudgetMs) {
+    throw new Error(
+      `PORTAL_DIRECT_ACP_TIMEOUT_MS (${directAcpTimeoutMs}) must be less than PORTAL_EXECUTION_BUDGET_MS (${executionBudgetMs})`,
+    );
+  }
+}
+
+function resolvePositiveTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer: ${raw}`);
+  }
+  return value;
+}
 
 export interface AcpAgent {
   agentId: string;
@@ -122,6 +150,7 @@ export function createAgent(): AcpAgent {
           replyTextRaw: postProcessed.finalReply,
           replyTextSanitized: cleaned,
           mode,
+          reviewContextSummary: { budget: acpResult.budget },
           status: "success",
           elapsedMs: Date.now() - startedAt,
           usage: acpResult.usage,
@@ -139,9 +168,13 @@ export function createAgent(): AcpAgent {
         logger.error("转发 ACP 后端失败:", error);
         const errorMessage = formatUnknownError(error);
         const taskError = classifyTaskError(errorMessage);
+        const budgetExhausted = error instanceof AcpBudgetExhaustedError
+          || errorMessage.includes(TOOL_BUDGET_EXHAUSTED_CODE);
         const isBusy = errorMessage.includes("ACP_TURN_BUSY") || errorMessage.includes("turn.agent_busy");
         const executionErrorCode = isBusy
           ? "ACP_TURN_BUSY"
+          : budgetExhausted
+            ? TOOL_BUDGET_EXHAUSTED_CODE
           : taskError.code === "TASK_TIMEOUT"
             ? "ACP_TURN_TIMEOUT"
             : taskError.code;
@@ -154,6 +187,9 @@ export function createAgent(): AcpAgent {
           channel,
           userText: text,
           mode,
+          reviewContextSummary: budgetExhausted && error instanceof AcpBudgetExhaustedError
+            ? { budget: error.budget }
+            : undefined,
           status: errorMessage.includes("超时") ? "timeout" : "error",
           errorMessage,
           elapsedMs: Date.now() - startedAt,
@@ -174,7 +210,7 @@ export function createAgent(): AcpAgent {
             executionStatus: "failed",
             executionErrorCode,
             executionErrorCategory: taskError.category,
-            executionRetryable: taskError.retryable,
+            executionRetryable: budgetExhausted ? false : taskError.retryable,
           },
         );
       }
