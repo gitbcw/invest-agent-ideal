@@ -16,7 +16,7 @@ import {
   type StoredAttachment,
 } from "../lib/attachment-store.js";
 import { findArtifactsForMessage, findArtifactsForTurn, type ConversationArtifactRecord } from "./conversation-artifacts.js";
-import { markTurnStart, markTurnEnd } from "./conversation-turns.js";
+import { getCurrentTurnId, markTurnStart, markTurnEnd } from "./conversation-turns.js";
 import { registerAttachment, ATTACHMENT_RETENTION_MS } from "./file-retention.js";
 import {
   AutomationTaskError,
@@ -86,6 +86,24 @@ export class ConversationScopeError extends Error {
 
 const pendingPortalChats = new Map<string, Promise<ConversationChatResult>>();
 const conversationChatTails = new Map<string, Promise<void>>();
+
+type ActiveConversationChat = {
+  cancelRequested: boolean;
+  abortController: AbortController;
+  cancelAgent?: () => Promise<boolean>;
+};
+
+const activeConversationChats = new Map<string, ActiveConversationChat>();
+
+function conversationChatKey(input: {
+  userId: string;
+  assistantId: string;
+  instanceId: string;
+  projectId: string;
+  conversationId: string;
+}): string {
+  return [input.userId, input.assistantId, input.instanceId, input.projectId, input.conversationId].join("\u0000");
+}
 
 type AutomationConversationBinding = {
   taskId: string;
@@ -596,9 +614,27 @@ export async function chatViaConversationLog(input: {
     if (pending) return pending;
   }
   const scope = normalizeConversationScope(input);
+  const key = conversationChatKey({ ...scope, conversationId: input.conversationId });
+  const control: ActiveConversationChat = {
+    cancelRequested: false,
+    abortController: new AbortController(),
+  };
+  // Register at acceptance rather than after the conversation lock is acquired.
+  // This makes cancellation cover queued turns and runtime/Workspace setup before
+  // the ACP session exists.
+  if (!activeConversationChats.has(key)) activeConversationChats.set(key, control);
   const operation = withConversationChatLock(
     { ...scope, conversationId: input.conversationId },
-    () => chatViaConversationLogOnce(input),
+    async () => {
+      // A second same-conversation turn may have waited behind the previous
+      // turn. Publish its own controller once it becomes the active turn.
+      if (activeConversationChats.get(key) !== control) activeConversationChats.set(key, control);
+      try {
+        return await chatViaConversationLogOnce(input, control);
+      } finally {
+        if (activeConversationChats.get(key) === control) activeConversationChats.delete(key);
+      }
+    },
   );
   if (!input.idempotencyKey) return operation;
   pendingPortalChats.set(input.idempotencyKey, operation);
@@ -607,6 +643,111 @@ export async function chatViaConversationLog(input: {
   } finally {
     pendingPortalChats.delete(input.idempotencyKey);
   }
+}
+
+export async function cancelConversationChat(input: {
+  userId?: string;
+  assistantId?: string;
+  instanceId?: string;
+  projectId?: string;
+  conversationId: string;
+}): Promise<{ conversationId: string; status: "cancelled" | "no_active" }> {
+  const scope = normalizeConversationScope(input);
+  const key = conversationChatKey({ ...scope, conversationId: input.conversationId });
+  const control = activeConversationChats.get(key);
+  if (control) {
+    control.cancelRequested = true;
+    control.abortController.abort(new Error("TASK_CANCELLED"));
+    await control.cancelAgent?.();
+    return { conversationId: input.conversationId, status: "cancelled" };
+  }
+
+  const existing = sqlite.prepare(`
+    SELECT user_id AS userId, project_id AS projectId, instance_id AS instanceId, assistant_id AS assistantId
+    FROM conversation_sessions WHERE conversation_id = ?
+  `).get(input.conversationId) as ConversationScope | undefined;
+  if (!existing) return { conversationId: input.conversationId, status: "no_active" };
+  const runtime = await getProjectRuntimeContext(scope.instanceId).catch(() => null);
+  resolveConversationPersistenceScope({
+    scope,
+    conversationId: input.conversationId,
+    runtimeProjectId: runtime?.projectId,
+  });
+  const orphanedTurnId = getCurrentTurnId({
+    userId: scope.userId,
+    instanceId: scope.instanceId,
+    conversationId: input.conversationId,
+  });
+  if (orphanedTurnId) {
+    finalizeInterruptedConversationTurn({
+      ...scope,
+      conversationId: input.conversationId,
+      turnId: orphanedTurnId,
+      code: "TASK_CANCELLED",
+      message: "这项任务已停止，没有继续产生新的结果。",
+    });
+    return { conversationId: input.conversationId, status: "cancelled" };
+  }
+  return { conversationId: input.conversationId, status: "no_active" };
+}
+
+function finalizeInterruptedConversationTurn(input: ConversationScope & {
+  conversationId: string;
+  turnId: string;
+  code: "TASK_CANCELLED" | "TASK_RUNTIME_RESTARTED";
+  message: string;
+}): void {
+  const existing = getAssistantMessageByRequestId({
+    conversationId: input.conversationId,
+    requestId: input.turnId,
+  });
+  if (!existing) {
+    appendConversationMessage({
+      scope: input,
+      conversationId: input.conversationId,
+      channel: "web",
+      role: "assistant",
+      content: input.message,
+      status: "failed",
+      requestId: input.turnId,
+      metadata: {
+        executionStatus: "failed",
+        executionErrorCode: input.code,
+        executionErrorCategory: "cancelled",
+        executionRetryable: false,
+      },
+    });
+  }
+  markTurnEnd({
+    userId: input.userId,
+    instanceId: input.instanceId,
+    conversationId: input.conversationId,
+    turnId: input.turnId,
+  });
+}
+
+export function reconcileInterruptedConversationTurnsOnStartup(): number {
+  const rows = sqlite.prepare(`
+    SELECT active.user_id AS userId,
+           session.project_id AS projectId,
+           active.instance_id AS instanceId,
+           session.assistant_id AS assistantId,
+           active.conversation_id AS conversationId,
+           active.turn_id AS turnId
+    FROM conversation_turn_active active
+    JOIN conversation_sessions session
+      ON session.conversation_id = active.conversation_id
+     AND session.user_id = active.user_id
+     AND session.instance_id = active.instance_id
+  `).all() as Array<ConversationScope & { conversationId: string; turnId: string }>;
+  for (const row of rows) {
+    finalizeInterruptedConversationTurn({
+      ...row,
+      code: "TASK_RUNTIME_RESTARTED",
+      message: "这项任务因服务重启而中断，未继续执行。",
+    });
+  }
+  return rows.length;
 }
 
 function automationConversationBinding(input: {
@@ -762,7 +903,7 @@ async function chatViaConversationLogOnce(input: {
   idempotencyKey?: string;
   clientSentAt?: string;
   agent?: AcpAgent;
-}): Promise<ConversationChatResult> {
+}, control: ActiveConversationChat): Promise<ConversationChatResult> {
   const scope = normalizeConversationScope(input);
   if (input.idempotencyKey) {
     const existingUserMessage = getConversationMessageByIdempotencyKey({
@@ -871,8 +1012,10 @@ async function chatViaConversationLogOnce(input: {
       workspacePath: automationConversation?.workspacePath || workspace.path || resolveWorkspacePath(scope.userId),
       ...(automationConversation ? { taskType: "scheduled-automation" } : {}),
       attachments: storedAttachments,
+      _cancelSignal: control.abortController.signal,
     },
   };
+  control.cancelAgent = async () => agent.cancelMessage?.(acpMessage) ?? false;
   // Mark the active turn so any MCP `artifacts.publish` / `reviews.save`
   // call made by the ACP backend records this requestId as its `turn_id`.
   // The assistant message is also stored with the same requestId, which
@@ -908,13 +1051,16 @@ async function chatViaConversationLogOnce(input: {
       };
     })(),
     });
-    const artifacts = attachArtifactsToAssistantMessage({
-      conversationId: input.conversationId,
-      assistantMessageId: assistantMessage.messageId,
-      userId: scope.userId,
-      instanceId: runtime?.instanceId || scope.instanceId,
-      turnId: requestId,
-    });
+    const responseError = executionResponseError(response);
+    const artifacts = responseError?.category === "cancelled"
+      ? []
+      : attachArtifactsToAssistantMessage({
+        conversationId: input.conversationId,
+        assistantMessageId: assistantMessage.messageId,
+        userId: scope.userId,
+        instanceId: runtime?.instanceId || scope.instanceId,
+        turnId: requestId,
+      });
     await rememberConversationTurn({
       userId: scope.userId,
       projectId: runtime?.projectId || scope.projectId,
@@ -940,6 +1086,7 @@ async function chatViaConversationLogOnce(input: {
   let response: AcpResponse;
   let automationFailure = false;
   try {
+    if (control.cancelRequested) throw new Error("TASK_CANCELLED");
     response = await executeWithRetryPolicy(
       () => agent.handleMessage(acpMessage),
       {
@@ -947,6 +1094,7 @@ async function chatViaConversationLogOnce(input: {
         isRetryableResult: (candidate) => Boolean(executionResponseError(candidate)?.retryable),
       },
     );
+    if (control.cancelRequested) throw new Error("TASK_CANCELLED");
     const responseError = executionResponseError(response);
     automationFailure = Boolean(responseError);
     if (responseError && !automationConversation) {

@@ -50,6 +50,28 @@ const ACP_DEBUG_PREVIEW_CHARS = Number(process.env.ACP_DEBUG_PREVIEW_CHARS) || 1
 const ACP_RESPONSE_COLLECTOR_MODE =
   process.env.ACP_RESPONSE_COLLECTOR_MODE === "full" ? "full" : "last_segment";
 
+function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) return Promise.reject(new Error("TASK_CANCELLED"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error("TASK_CANCELLED"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 // R3: 工具冲突探针缓存——按 server 配置指纹缓存 tools/list + 冲突结果。
 // 同配置不重复探针；session 复用时 getOrCreateSession 直接 return 不触发探针。
 const toolConflictCache = new Map<string, { report: ToolConflictReport; checkedServers: string[] }>();
@@ -631,6 +653,8 @@ export class StdioAcpAgent {
   private readonly sessionManifests = new Map<string, AcpMcpSessionManifest>();
   private readonly collectors = new Map<string, ResponseCollector>();
   private readonly activeConversations = new Set<string>();
+  private readonly activeConversationSessions = new Map<string, string>();
+  private readonly userCancelledSessions = new Set<string>();
   private readonly inFlightPromptRejectors = new Map<string, (error: Error) => void>();
   private httpMcpSupported = false;
   private capabilityProbe: AcpCapabilityProbe = probeAcpCapabilities(undefined);
@@ -693,6 +717,7 @@ export class StdioAcpAgent {
     timeoutMs?: number;
     cwd?: string;
     userContext?: UserContext;
+    signal?: AbortSignal;
   }): Promise<string> {
     const result = await this.chatWithUsage(params);
     return result.text;
@@ -705,12 +730,24 @@ export class StdioAcpAgent {
     timeoutMs?: number;
     cwd?: string;
     userContext?: UserContext;
+    signal?: AbortSignal;
   }): Promise<AcpChatResult> {
+    if (params.signal?.aborted) throw new Error("TASK_CANCELLED");
     if (this.activeConversations.has(params.conversationId)) {
       throw new Error("ACP_TURN_BUSY:上一条消息仍在处理中");
     }
     this.activeConversations.add(params.conversationId);
-    const conn = await this.ensureReady();
+    let conn: ClientSideConnection;
+    try {
+      conn = await awaitWithAbort(this.ensureReady(), params.signal);
+    } catch (error) {
+      this.activeConversations.delete(params.conversationId);
+      throw error;
+    }
+    if (params.signal?.aborted) {
+      this.activeConversations.delete(params.conversationId);
+      throw new Error("TASK_CANCELLED");
+    }
     // WP3: sessionKey 必须纳入 allowlist 指纹,否则同一 conversation 不同 allowlist 会复用
     // session,导致权限泄漏 (全量 session 被只读阶段复用)。无 allowlist (全量) 时指纹为空串。
     const allowlistFp = computeAllowlistFingerprint(params.userContext, process.env);
@@ -725,7 +762,17 @@ export class StdioAcpAgent {
     ]
       .filter((part) => part !== undefined && part !== "")
       .join("::");
-    const sessionId = await this.getOrCreateSession(sessionKey, conn, params.cwd, resolvedMcp);
+    let sessionId: string;
+    try {
+      sessionId = await awaitWithAbort(
+        this.getOrCreateSession(sessionKey, conn, params.cwd, resolvedMcp),
+        params.signal,
+      );
+    } catch (error) {
+      this.activeConversations.delete(params.conversationId);
+      throw error;
+    }
+    this.activeConversationSessions.set(params.conversationId, sessionId);
     const prompt = [{ type: "text" as const, text: params.text }];
     const budgetRun = new AcpBudgetRun({ convergenceMs: resolveAcpBudgetConvergenceMs() });
     let budgetCancelRequested = false;
@@ -766,7 +813,19 @@ export class StdioAcpAgent {
     const processExit = new Promise<never>((_, reject) => {
       this.inFlightPromptRejectors.set(sessionId, reject);
     });
+    // Cancellation can arrive after the session exists but before Promise.race
+    // begins. Attach a rejection handler immediately so that narrow window
+    // cannot become an unhandled rejection and terminate the Runtime.
+    void processExit.catch(() => undefined);
+    const abortHandler = () => {
+      void this.cancelConversation(params.conversationId);
+    };
+    params.signal?.addEventListener("abort", abortHandler, { once: true });
     try {
+      if (params.signal?.aborted) {
+        await this.cancelConversation(params.conversationId);
+        throw new Error("TASK_CANCELLED");
+      }
       promptResult = await Promise.race([
         conn.prompt({
           sessionId,
@@ -797,8 +856,13 @@ export class StdioAcpAgent {
       throw error;
     } finally {
       if (budgetTimer) clearTimeout(budgetTimer);
+      params.signal?.removeEventListener("abort", abortHandler);
       this.inFlightPromptRejectors.delete(sessionId);
       this.collectors.delete(sessionId);
+      this.userCancelledSessions.delete(sessionId);
+      if (this.activeConversationSessions.get(params.conversationId) === sessionId) {
+        this.activeConversationSessions.delete(params.conversationId);
+      }
       this.activeConversations.delete(params.conversationId);
     }
 
@@ -824,6 +888,20 @@ export class StdioAcpAgent {
     };
   }
 
+  async cancelConversation(conversationId: string): Promise<boolean> {
+    const sessionId = this.activeConversationSessions.get(conversationId);
+    const conn = this.connection;
+    if (!sessionId || !conn) return false;
+    if (this.userCancelledSessions.has(sessionId)) return true;
+    this.userCancelledSessions.add(sessionId);
+
+    this.inFlightPromptRejectors.get(sessionId)?.(new Error("TASK_CANCELLED"));
+    void conn.cancel({ sessionId }).catch((error: unknown) => {
+      logger.warn(`${this.label} ACP 用户取消失败 session=${sessionId}:`, error);
+    });
+    return true;
+  }
+
   clearSession(conversationId: string) {
     for (const [key, sessionId] of this.sessions) {
       if (key !== conversationId && !key.startsWith(`${conversationId}::`)) continue;
@@ -842,6 +920,8 @@ export class StdioAcpAgent {
     this.sessionManifests.clear();
     this.collectors.clear();
     this.activeConversations.clear();
+    this.activeConversationSessions.clear();
+    this.userCancelledSessions.clear();
 
     if (this.process && !this.process.killed) {
       if (this.process.pid) {

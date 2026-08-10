@@ -4,7 +4,7 @@ import { disposeAllAcp } from "../acp/stdio-agent.js";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
-import { chatViaConversationLog, getConversation, listConversations } from "../services/conversation-log.js";
+import { cancelConversationChat, chatViaConversationLog, ConversationScopeError, getConversation, listConversations } from "../services/conversation-log.js";
 import { listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { AttachmentStoreError } from "../lib/attachment-store.js";
 import { WorkspaceReportAssetError, readWorkspaceReportAsset } from "../services/workspace-report-assets.js";
@@ -77,6 +77,7 @@ const TYPES = {
   CONVERSATION_LIST: "conversation.list",
   CONVERSATION_GET: "conversation.get",
   CONVERSATION_CHAT: "conversation.chat",
+  CONVERSATION_CANCEL: "conversation.cancel",
   REPORT_ASSET_GET: "report.asset.get",
   REPORT_MAPPING_GET: "report.mapping.get",
   ARTIFACT_GET: "artifact.get",
@@ -367,6 +368,9 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
   if ((message.type.startsWith("asset.") || message.type.startsWith("automation.")) && declaredScopeField(message.payload)) {
     return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "scope and workspace path must come from the registered connector"));
   }
+  if (message.type === TYPES.CONVERSATION_CANCEL && declaredScopeField(message.payload)) {
+    return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "scope must come from the registered connector"));
+  }
   switch (message.type) {
     case TYPES.CONVERSATION_LIST:
       return finish(ok(message.type, message.requestId, listConversations({
@@ -394,6 +398,14 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         idempotencyKey: message.payload?.idempotencyKey,
         clientSentAt: message.payload?.clientSentAt,
       })));
+    case TYPES.CONVERSATION_CANCEL: {
+      const conversationId = String(message.payload?.conversationId || "").trim();
+      if (!conversationId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "conversationId is required"));
+      return finish(ok(message.type, message.requestId, await cancelConversationChat({
+        ...commandScope,
+        conversationId,
+      })));
+    }
     case TYPES.AUTOMATION_LIST:
       return finish(ok(message.type, message.requestId, await listAutomationTaskPage(automationScope(scope), normalizeAutomationListQuery(message.payload))));
     case TYPES.AUTOMATION_GET: {
@@ -1049,7 +1061,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
+        capabilities: ["conversation.chat", "conversation.cancel", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {
@@ -1133,6 +1145,10 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
           }
           if (error instanceof ConversationArtifactError) {
             send(socket, withProtocolVersion(fail(message.type, message.requestId, error.code, error.message, false), message.protocolVersion));
+            return;
+          }
+          if (error instanceof ConversationScopeError) {
+            send(socket, withProtocolVersion(fail(message.type, message.requestId, "FORBIDDEN", error.message, false), message.protocolVersion));
             return;
           }
           if (error instanceof AutomationTaskError) {

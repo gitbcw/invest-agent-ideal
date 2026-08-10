@@ -68,6 +68,7 @@ export interface AcpAgent {
   agentName: string;
   capabilities: string[];
   handleMessage(message: AcpMessage): Promise<AcpResponse>;
+  cancelMessage?(message: AcpMessage): Promise<boolean>;
 }
 
 export function createAgent(): AcpAgent {
@@ -85,6 +86,17 @@ export function createAgent(): AcpAgent {
       "stock_plan",
     ],
 
+    async cancelMessage(message: AcpMessage): Promise<boolean> {
+      const conversationId = String(
+        message.context?.conversationId || message.from || "invest-agent"
+      );
+      const workspacePath = message.context?.workspacePath
+        ? String(message.context.workspacePath)
+        : undefined;
+      const acpAgent = await getCurrentAcpAgent(workspacePath);
+      return acpAgent.cancelConversation(conversationId);
+    },
+
     async handleMessage(message: AcpMessage): Promise<AcpResponse> {
       const text = message.content.text;
       if (!text) {
@@ -99,8 +111,12 @@ export function createAgent(): AcpAgent {
       const channel = String(message.context?.channel || "unknown");
       const userId = String(message.context?.userId || DEFAULT_USER_ID);
       const mode = "chat";
+      const cancelSignal = message.context?._cancelSignal instanceof AbortSignal
+        ? message.context._cancelSignal
+        : undefined;
 
       try {
+        if (cancelSignal?.aborted) throw new Error("TASK_CANCELLED");
         const userChannel: UserContext["channel"] =
           channel === "weixin-mobile" || channel === "dashboard" || channel === "api" || channel === "web" ? channel : "api";
         const activeBackend = await loadCurrentBackendId();
@@ -140,6 +156,7 @@ export function createAgent(): AcpAgent {
               : undefined,
           cwd: resolveAcpWorkspaceCwd(userContext),
           userContext,
+          signal: cancelSignal,
         });
         const postProcessed = await postProcessAcpReply({
           reply: acpResult.text,

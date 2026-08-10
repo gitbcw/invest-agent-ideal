@@ -10,6 +10,7 @@ import { registerDataQualityAlertSink } from "./handlers/data-quality-report.js"
 import { applyMcpServerOverridesOnStartup } from "./services/mcp-control-plane.js";
 import { startPortalConnector } from "./portal/connector.js";
 import { startAttachmentRetentionCleanup, stopAttachmentRetentionCleanup } from "./services/attachment-retention.js";
+import { reconcileInterruptedConversationTurnsOnStartup } from "./services/conversation-log.js";
 
 const ACP_START_RETRY_MS = 30_000;
 
@@ -35,6 +36,10 @@ async function main() {
 
   // 初始化数据库
   initDb();
+  const interruptedTurns = reconcileInterruptedConversationTurnsOnStartup();
+  if (interruptedTurns > 0) {
+    logger.warn(`已收敛上次进程遗留的对话回合: ${interruptedTurns}`);
+  }
 
   // 应用 MCP server 运行时启停覆盖到 registry (T-243 Phase 2)。
   // 在 HTTP 服务启动前应用:DB 覆盖优先级高于 env 基线,启动时固化一次。
