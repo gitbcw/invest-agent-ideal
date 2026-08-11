@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "mastra:local": "npm run build && bash scripts/run-mastra-local.sh",
     "test": "NODE_ENV=test DB_PATH=./data/test.db WORKSPACE_ROOT=./data/test-workspaces RUNTIME_DATA_ROOT=./data/test-runtime tsx scripts/test-db-bootstrap.ts && NODE_ENV=test DB_PATH=./data/test.db WORKSPACE_ROOT=./data/test-workspaces RUNTIME_DATA_ROOT=./data/test-runtime node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "test:boundary": "node scripts/run-boundary-tests.mjs",
     "typecheck": "tsc --noEmit",
