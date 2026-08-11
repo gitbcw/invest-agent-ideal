@@ -23,6 +23,10 @@ import {
   weekRangeForDate,
   monthRangeForDate,
 } from "../handlers/review.js";
+import { selectExecutionBackend } from "../mastra/backend-selection.js";
+import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
+import { runMastraTurn } from "../mastra/run-turn.js";
+import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 
 const SCHEDULED_ACP_TIMEOUT_MS =
   Number(process.env.SCHEDULED_ACP_TIMEOUT_MS) || 600_000;
@@ -371,7 +375,47 @@ export function buildScheduledAcpChatParams(input: ScheduledAcpTaskInput) {
 
 async function runAcpTask(input: ScheduledAcpTaskInput) {
   const startedAt = Date.now();
+  const executionBackend = selectExecutionBackend(input.userContext);
   try {
+    if (executionBackend.backend === "mastra") {
+      const mastraTools = await createMastraToolMap({ ...input.userContext, instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID });
+      const externalMcp = await resolveExternalMastraToolsets("scheduled-read");
+      try {
+      const mastraResult = await runMastraTurn({
+        conversationId: input.conversationId,
+        text: input.promptText,
+        messageId: input.messageId,
+        timeoutMs: SCHEDULED_ACP_TIMEOUT_MS,
+        cwd: input.userContext.workspacePath,
+        userContext: input.userContext,
+        toolsets: externalMcp.toolsets,
+      }, { agentOptions: { tools: mastraTools } });
+      const reply = mastraResult.text;
+      await recordAcpTrace({
+        userId: input.userContext.userId,
+        projectId: input.userContext.projectId,
+        instanceId: input.userContext.instanceId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        channel: "scheduler",
+        userText: input.promptText.slice(0, 2000),
+        promptText: input.promptText,
+        replyTextRaw: reply,
+        replyTextSanitized: sanitizeCustomerText(reply),
+        mode: input.mode,
+        reviewContextSummary: input.reviewContextSummary,
+        status: "success",
+        elapsedMs: Date.now() - startedAt,
+        usage: mastraResult.usage,
+        acpBackend: "mastra",
+        acpModel: mastraResult.model,
+        toolCalls: mastraResult.toolCalls,
+      });
+      return reply;
+      } finally {
+        await externalMcp.disconnect();
+      }
+    }
     const acpResult = await (await getCurrentAcpAgent(input.userContext.workspacePath))
       .chatWithUsage(buildScheduledAcpChatParams(input));
     const reply = acpResult.text;
@@ -388,8 +432,10 @@ async function runAcpTask(input: ScheduledAcpTaskInput) {
       replyTextSanitized: sanitizeCustomerText(reply),
       mode: input.mode,
       reviewContextSummary: input.reviewContextSummary,
-      sandboxTokenId: input.sandboxTokenId,
-      sandboxPermissions: input.sandboxPermissions,
+      ...(executionBackend.backend === "acp" ? {
+        sandboxTokenId: input.sandboxTokenId,
+        sandboxPermissions: input.sandboxPermissions,
+      } : {}),
       status: "success",
       elapsedMs: Date.now() - startedAt,
       usage: acpResult.usage,
@@ -414,10 +460,12 @@ async function runAcpTask(input: ScheduledAcpTaskInput) {
       status: "error",
       errorMessage: formatUnknownError(error),
       elapsedMs: Date.now() - startedAt,
-      sandboxTokenId: input.sandboxTokenId,
-      sandboxPermissions: input.sandboxPermissions,
-      acpBackend: config.acp.backend,
-      acpModel: config.codex.model,
+      ...(executionBackend.backend === "acp" ? {
+        sandboxTokenId: input.sandboxTokenId,
+        sandboxPermissions: input.sandboxPermissions,
+        acpBackend: config.acp.backend,
+        acpModel: config.codex.model,
+      } : { acpBackend: "mastra" }),
     });
     throw error;
   }

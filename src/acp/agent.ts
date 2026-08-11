@@ -7,12 +7,16 @@ import { AcpBudgetExhaustedError, TOOL_BUDGET_EXHAUSTED_CODE } from "./budget-co
 import { dedupeRepeatedCustomerText, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { recordAcpTrace } from "./trace.js";
-import { DEFAULT_USER_ID } from "../lib/user-context.js";
+import { DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import type { UserContext } from "../lib/user-context.js";
 import { buildAcpPromptContext } from "./prompt-context-builder.js";
 import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 import { classifyTaskError } from "../services/task-execution.js";
 import { OUTPUT_VOLUME_POLICY } from "./spreadsheet-output-policy.js";
+import { selectExecutionBackend } from "../mastra/backend-selection.js";
+import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
+import { runMastraTurn } from "../mastra/run-turn.js";
+import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 
 const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
   resolvePositiveTimeoutMs("WEIXIN_DIRECT_ACP_TIMEOUT_MS", 600_000);
@@ -124,6 +128,43 @@ export function createAgent(): AcpAgent {
           userContext,
           includeContextPacket: false,
         });
+        const executionBackend = selectExecutionBackend(userContext);
+        if (executionBackend.backend === "mastra") {
+          const mastraTools = await createMastraToolMap({ ...userContext, instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId) });
+          const externalMcp = await resolveExternalMastraToolsets("interactive");
+          try {
+          const mastraResult = await runMastraTurn({
+            conversationId,
+            text: promptContext.promptText,
+            messageId: message.id,
+            timeoutMs: userChannel === "weixin-mobile"
+              ? WEIXIN_DIRECT_ACP_TIMEOUT_MS
+              : userChannel === "web"
+                ? PORTAL_DIRECT_ACP_TIMEOUT_MS
+                : ACP_EVALUATION_CASE_TIMEOUT_MS > 0 ? ACP_EVALUATION_CASE_TIMEOUT_MS : undefined,
+            cwd: resolveAcpWorkspaceCwd(userContext),
+            userContext,
+            toolsets: externalMcp.toolsets,
+          }, { agentOptions: { tools: mastraTools } });
+          const postProcessed = await postProcessAcpReply({ reply: mastraResult.text, userContext, originalText: text });
+          const extractedVisuals = userChannel === "web"
+            ? extractInlineSvgVisuals(postProcessed.finalReply)
+            : { text: postProcessed.finalReply, visuals: [] };
+          const deduped = dedupeRepeatedCustomerText(extractedVisuals.text);
+          const cleaned = userChannel === "weixin-mobile" ? sanitizeWeixinCustomerText(deduped) : sanitizeCustomerText(deduped);
+          await recordAcpTrace({
+            userId, projectId: userContext.projectId, instanceId: userContext.instanceId,
+            conversationId, messageId: message.id, channel, userText: text,
+            promptText: promptContext.promptText, replyTextRaw: postProcessed.finalReply,
+            replyTextSanitized: cleaned, mode, reviewContextSummary: { budget: mastraResult.budget },
+            status: "success", elapsedMs: Date.now() - startedAt, usage: mastraResult.usage,
+            acpBackend: "mastra", acpModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
+          });
+          return textResponse(cleaned, true, extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined);
+          } finally {
+            await externalMcp.disconnect();
+          }
+        }
         const acpAgent = await getCurrentAcpAgent(userContext.workspacePath);
         const acpResult = await acpAgent.chatWithUsage({
           conversationId,

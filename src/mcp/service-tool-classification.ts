@@ -19,6 +19,7 @@ export type ServiceToolClass = "read" | "final-action" | "other-write";
 export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   // ── read: 历史市场观察记录、研究证据、用户状态 ──
   "market_watch.snapshot": "read",
+  "file.parse": "read",
   "research.news_search": "read",
   "research.web_search": "read",
   "research.web_read": "read",
