@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { createRuntimeAgent } from "../runtime/agent.js";
@@ -118,7 +118,7 @@ export async function runGenericAutomationTaskNow(input: {
       });
       assertAgentSucceeded(response);
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
-      const result = normalizeStructuredResult(response, task, resolved);
+      const result = await normalizeStructuredResult(response, task, resolved, stagingPath);
       const output = await commitOutput(input.scope, task, run, result, resolved);
       const finished = await finishAutomationTaskRun({
         ...input.scope,
@@ -239,7 +239,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
           : "本次没有 XLSX 文件，不需要电子表格辅助工具。",
         `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
-        "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64}, shouldNotify?:boolean}。更新绑定文件时提供 operation='update'、对应 assetId 和完整文件内容；仅在任务确有必要新建文件时提供 operation='create'。不得返回物理路径或调用写入工具。",
+        "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64?:string,filePath?:string}, shouldNotify?:boolean}。优先把生成的 XLSX/CSV 写入当前暂存目录并返回相对 filePath（不得使用绝对路径、不得越出暂存目录）；只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。",
       ].join("\n"),
     },
     context: {
@@ -283,11 +283,11 @@ function assertAgentSucceeded(response: AgentResponse): void {
   if (error) throw new AutomationExecutionFailure(error);
 }
 
-function normalizeStructuredResult(response: AgentResponse, task: AutomationTaskRecord, resolved: ResolvedBindings): {
+async function normalizeStructuredResult(response: AgentResponse, task: AutomationTaskRecord, resolved: ResolvedBindings, stagingPath: string): Promise<{
   summary: string;
   shouldNotify: boolean;
   stagedOutput?: { operation: "create" | "update"; assetId?: string; fileName: string; mimeType?: string; base64: string };
-} {
+}> {
   const data = response.data && typeof response.data === "object" ? response.data : {};
   const summaryValue = typeof data.summary === "string" ? data.summary : response.content.text;
   const summary = String(summaryValue || "").trim().slice(0, 12_000);
@@ -310,7 +310,19 @@ function normalizeStructuredResult(response: AgentResponse, task: AutomationTask
   }
   const staged = stagedRaw as Record<string, unknown>;
   const fileName = String(staged.fileName || "").trim();
-  const base64 = typeof staged.base64 === "string" ? staged.base64 : typeof staged.bytesBase64 === "string" ? staged.bytesBase64 : "";
+  let base64 = typeof staged.base64 === "string" ? staged.base64 : typeof staged.bytesBase64 === "string" ? staged.bytesBase64 : "";
+  const filePath = typeof staged.filePath === "string" ? staged.filePath.trim() : "";
+  if (!base64 && filePath) {
+    if (path.posix.isAbsolute(filePath) || path.win32.isAbsolute(filePath) || filePath.includes("\0")) {
+      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput filePath is invalid");
+    }
+    const root = await realpath(stagingPath);
+    const candidate = await realpath(path.resolve(stagingPath, filePath)).catch(() => "");
+    if (!candidate || (candidate !== root && !candidate.startsWith(`${root}${path.sep}`))) {
+      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput filePath is outside staging");
+    }
+    base64 = (await readFile(candidate)).toString("base64");
+  }
   if (!fileName || !isStrictBase64(base64)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput fileName/base64 is invalid");
   const operation = task.revision.output.mode === "agent"
     ? staged.operation
@@ -328,7 +340,7 @@ function normalizeStructuredResult(response: AgentResponse, task: AutomationTask
   return { summary: summary || "自动化运行完成。", shouldNotify, stagedOutput: { operation, ...(assetId ? { assetId } : {}), fileName, mimeType: typeof staged.mimeType === "string" ? staged.mimeType : undefined, base64 } };
 }
 
-async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: ReturnType<typeof normalizeStructuredResult>, resolved: ResolvedBindings): Promise<{ assetId: string; versionId: string; checksum: string } | null> {
+async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: Awaited<ReturnType<typeof normalizeStructuredResult>>, resolved: ResolvedBindings): Promise<{ assetId: string; versionId: string; checksum: string } | null> {
   if (!result.stagedOutput || task.revision.output.mode === "none") return null;
   const bytes = Buffer.from(result.stagedOutput.base64, "base64");
   const idempotencyKey = `automation:${run.runId}:output`;
@@ -382,7 +394,7 @@ async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, 
   }
 }
 
-async function deliverResult(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: ReturnType<typeof normalizeStructuredResult>): Promise<{ run: AutomationTaskRunRecord }> {
+async function deliverResult(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: Awaited<ReturnType<typeof normalizeStructuredResult>>): Promise<{ run: AutomationTaskRunRecord }> {
   const delivery = task.revision.delivery;
   if (delivery.mode === "none") return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "not_requested" }) };
   if (!result.shouldNotify) return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "suppressed" }) };

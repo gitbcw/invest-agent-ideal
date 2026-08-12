@@ -28,7 +28,9 @@ try {
   // Older production environments may have equal timeout values. Keep the
   // strict validator for explicit callers, but fail closed at startup with a
   // bounded direct timeout instead of taking the whole runtime offline.
-  const safeDirectTimeoutMs = Math.min(600_000, PORTAL_EXECUTION_BUDGET_MS - 1);
+  // Preserve the configured total budget when legacy environments set the
+  // direct timeout equal to it; the old 10-minute cap silently halved it.
+  const safeDirectTimeoutMs = PORTAL_EXECUTION_BUDGET_MS - 1;
   if (safeDirectTimeoutMs <= 0) throw error;
   logger.warn(
     `Invalid Portal timeout configuration; using safe direct timeout ${safeDirectTimeoutMs}ms: ${formatUnknownError(error)}`,
