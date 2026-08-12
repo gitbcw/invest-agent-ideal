@@ -152,12 +152,16 @@ export function createRuntimeAgent(): RuntimeAgent {
           const deduped = dedupeRepeatedCustomerText(extractedVisuals.text);
           const cleaned = userChannel === "weixin-mobile" ? sanitizeWeixinCustomerText(deduped) : sanitizeCustomerText(deduped);
           await recordAgentTrace({
+            traceId: message.id,
+            runId: typeof message.context?.runId === "string" ? message.context.runId : undefined,
+            taskId: typeof message.context?.taskId === "string" ? message.context.taskId : undefined,
             userId, projectId: userContext.projectId, instanceId: userContext.instanceId,
             conversationId, messageId: message.id, channel, userText: text,
             promptText: promptContext.promptText, replyTextRaw: postProcessed.finalReply,
             replyTextSanitized: cleaned, mode, reviewContextSummary: { budget: mastraResult.budget },
             status: "success", elapsedMs: Date.now() - startedAt, usage: mastraResult.usage,
             agentBackend: "mastra", agentModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
+            modelSource: "runtime-config",
           });
           return textResponse(cleaned, true, extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined);
         } finally {
@@ -174,6 +178,9 @@ export function createRuntimeAgent(): RuntimeAgent {
             ? "MASTRA_TURN_TIMEOUT"
             : taskError.code;
         await recordAgentTrace({
+          traceId: message.id,
+          runId: typeof message.context?.runId === "string" ? message.context.runId : undefined,
+          taskId: typeof message.context?.taskId === "string" ? message.context.taskId : undefined,
           userId,
           projectId: message.context?.projectId ? String(message.context.projectId) : undefined,
           instanceId: message.context?.instanceId ? String(message.context.instanceId) : undefined,
@@ -187,6 +194,7 @@ export function createRuntimeAgent(): RuntimeAgent {
           errorMessage,
           elapsedMs: Date.now() - startedAt,
           agentBackend: "mastra",
+          modelSource: "runtime-config",
         });
         if (isBusy) {
           return textResponse(

@@ -377,6 +377,9 @@ export function initDb() {
     );
     CREATE TABLE IF NOT EXISTS agent_traces (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trace_id TEXT,
+      run_id TEXT,
+      task_id TEXT,
       user_id TEXT NOT NULL DEFAULT 'primary',
       project_id TEXT NOT NULL DEFAULT 'invest-agent',
       instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
@@ -393,6 +396,7 @@ export function initDb() {
       sandbox_permissions TEXT,
       agent_backend TEXT,
       agent_model TEXT,
+      model_source TEXT,
       tool_manifest TEXT,
       tool_calls TEXT,
       prompt_chars INTEGER,
@@ -1069,12 +1073,16 @@ export function initDb() {
   ensureColumn("codex_acp_traces", "usage_source", "TEXT");
   ensureColumn("codex_acp_traces", "usage_raw", "TEXT");
   ensureColumn("agent_traces", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("agent_traces", "trace_id", "TEXT");
+  ensureColumn("agent_traces", "run_id", "TEXT");
+  ensureColumn("agent_traces", "task_id", "TEXT");
   ensureColumn("agent_traces", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("agent_traces", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("agent_traces", "sandbox_token_id", "TEXT");
   ensureColumn("agent_traces", "sandbox_permissions", "TEXT");
   ensureColumn("agent_traces", "agent_backend", "TEXT");
   ensureColumn("agent_traces", "agent_model", "TEXT");
+  ensureColumn("agent_traces", "model_source", "TEXT");
   ensureColumn("agent_traces", "tool_manifest", "TEXT");
   ensureColumn("agent_traces", "tool_calls", "TEXT");
   ensureColumn("agent_traces", "prompt_chars", "INTEGER");
@@ -1170,6 +1178,8 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_alert_signal_states_user_signal ON alert_signal_states(user_id, signal_key);
     CREATE INDEX IF NOT EXISTS idx_alert_signal_states_instance_user_signal ON alert_signal_states(instance_id, user_id, signal_key);
     CREATE INDEX IF NOT EXISTS idx_agent_traces_user ON agent_traces(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_traces_trace ON agent_traces(trace_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_traces_run ON agent_traces(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_conversation ON codex_acp_traces(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_user_conversation ON codex_acp_traces(user_id, conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_instance ON codex_acp_traces(instance_id, created_at);

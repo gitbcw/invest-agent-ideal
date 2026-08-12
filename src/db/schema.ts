@@ -347,6 +347,9 @@ export const codexAcpTraces = sqliteTable("codex_acp_traces", {
 /** Agent-neutral execution observability. Legacy ACP rows are copied here once on DB open. */
 export const agentTraces = sqliteTable("agent_traces", {
   id: integer("id").primaryKey({ autoIncrement: true }),
+  traceId: text("trace_id"),
+  runId: text("run_id"),
+  taskId: text("task_id"),
   userId: text("user_id").notNull().default("primary"),
   projectId: text("project_id").notNull().default("invest-agent"),
   instanceId: text("instance_id").notNull().default("invest-agent-primary"),
@@ -363,6 +366,7 @@ export const agentTraces = sqliteTable("agent_traces", {
   sandboxPermissions: text("sandbox_permissions"),
   agentBackend: text("agent_backend"),
   agentModel: text("agent_model"),
+  modelSource: text("model_source"),
   toolManifest: text("tool_manifest"),
   toolCalls: text("tool_calls"),
   promptChars: integer("prompt_chars"),

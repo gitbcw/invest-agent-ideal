@@ -1171,7 +1171,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
             ), message.protocolVersion));
             return;
           }
-          send(socket, withProtocolVersion(fail(message.type, message.requestId, "ACP_FAILED", (error as Error).message, true), message.protocolVersion));
+          send(socket, withProtocolVersion(fail(message.type, message.requestId, "AGENT_RUNTIME_FAILED", (error as Error).message, true), message.protocolVersion));
         } finally {
           activeRequests = Math.max(0, activeRequests - 1);
           if (isChatTask) taskLimiter.release();

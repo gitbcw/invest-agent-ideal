@@ -12,7 +12,7 @@ function renderAuditScope(){
   document.getElementById('auditScopeAutomation')?.classList.toggle('active',isAutomation);
   document.getElementById('auditScopeHint').textContent=isPush?'推送审计':(isAutomation?'自动化任务':'对话审计');
   document.getElementById('auditTimelineTitle').textContent=isPush?'推送时间线':(isAutomation?'自动化运行历史':'对话时间线');
-  document.getElementById('auditHelp').textContent=isPush?'推送审计查看主动推送入队正文、调度任务状态和关联的 scheduler LLM trace。':(isAutomation?'自动化任务查看每次运行、失败分类、重试属性和交付状态。':'对话审计查看微信/Web 用户消息进入 Codex 后的原始回复、清洗回复和入站提示。');
+  document.getElementById('auditHelp').textContent=isPush?'推送审计查看主动推送入队正文、调度任务状态和关联的 scheduler LLM trace。':(isAutomation?'自动化任务查看每次运行、失败分类、重试属性和交付状态。':'对话审计查看微信/Web 用户消息进入 Mastra runtime 后的原始回复、清洗回复和入站提示。');
 }
 async function loadAudit(){
   const userId=document.getElementById('auditUser')?.value||'';

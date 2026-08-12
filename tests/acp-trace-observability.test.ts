@@ -49,6 +49,9 @@ test("agent trace stores compact metadata and copies legacy ACP audit rows once"
 
     const { recordAgentTrace } = await import("../src/runtime/trace.js");
     await recordAgentTrace({
+      traceId: "trace-correlation",
+      runId: "run-correlation",
+      taskId: "task-correlation",
       userId: "trace-user",
       projectId: "invest-agent",
       instanceId: "invest-agent-trace-user",
@@ -64,6 +67,7 @@ test("agent trace stores compact metadata and copies legacy ACP audit rows once"
       elapsedMs: 1234,
       agentBackend: "mastra",
       agentModel: "gpt-test",
+      modelSource: "runtime-config",
       reviewContextSummary: {
         budget: {
           state: "completed",
@@ -97,6 +101,10 @@ test("agent trace stores compact metadata and copies legacy ACP audit rows once"
     assert.equal(row.replyTextSanitized, "clean reply");
     assert.equal(row.agentBackend, "mastra");
     assert.equal(row.agentModel, "gpt-test");
+    assert.equal(row.traceId, "trace-correlation");
+    assert.equal(row.runId, "run-correlation");
+    assert.equal(row.taskId, "task-correlation");
+    assert.equal(row.modelSource, "runtime-config");
     assert.equal(row.promptChars, "internal prompt that should not be persisted on success".length);
     assert.equal(row.replyChars, "raw reply".length);
     assert.match(row.toolManifest ?? "", /market-data-tool/);

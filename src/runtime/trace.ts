@@ -28,6 +28,9 @@ export interface AgentTokenUsage {
 }
 
 export interface AgentTraceInput {
+  traceId?: string;
+  runId?: string;
+  taskId?: string;
   userId?: string;
   projectId?: string;
   instanceId?: string;
@@ -44,6 +47,7 @@ export interface AgentTraceInput {
   sandboxPermissions?: string[];
   agentBackend?: string;
   agentModel?: string;
+  modelSource?: string;
   toolManifest?: unknown;
   toolCalls?: unknown;
   status: TraceStatus;
@@ -86,6 +90,9 @@ function serializeJsonForStorage(value: unknown, limit = JSON_FIELD_LIMIT) {
 export async function recordAgentTrace(input: AgentTraceInput) {
   try {
     await db.insert(agentTraces).values({
+      traceId: truncate(input.traceId, 300),
+      runId: truncate(input.runId, 300),
+      taskId: truncate(input.taskId, 300),
       userId: truncate(input.userId, 120) ?? DEFAULT_USER_ID,
       projectId: truncate(input.projectId, 120) ?? DEFAULT_PROJECT_ID,
       instanceId: truncate(input.instanceId, 180) ?? DEFAULT_INSTANCE_ID,
@@ -102,6 +109,7 @@ export async function recordAgentTrace(input: AgentTraceInput) {
       sandboxPermissions: truncate(input.sandboxPermissions, 1000),
       agentBackend: truncate(input.agentBackend, 80),
       agentModel: truncate(input.agentModel, 160),
+      modelSource: truncate(input.modelSource, 160),
       toolManifest: serializeJsonForStorage(input.toolManifest, 4000),
       toolCalls: serializeJsonForStorage(input.toolCalls),
       promptChars: input.promptText?.length,

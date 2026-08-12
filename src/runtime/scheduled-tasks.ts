@@ -139,7 +139,7 @@ export async function runScheduledReviewPublicationProbe(
 export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
   const pushMode = await resolveMarketWatchPushMode(scope.userId);
 
-  // WP4 新路径: 开放研究完全交还 ACP。不约束工具 (ACP 自由选任意已启用只读 MCP)、
+  // WP4 新路径: 开放研究交还 Mastra runtime。不约束工具 (Mastra 自由选任意已启用只读 MCP)、
   // 不预抓取 snapshot、不审计纠偏、不矛盾检测、不兜底。只处理精确 NO_PUSH 或可投递正文。
   const userContext = { ...await buildScheduledUserContext(scope, "market-watch"), taskType: "scheduled-market-watch" };
   const promptContext = await buildAgentPromptContext({
@@ -313,7 +313,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
     "数据来源只写可读来源摘要，禁止展示原始 URL、endpoint 或接口路径；完整来源链接只保存在网页/Markdown artifact/Audit。",
     "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
   ];
-  // WP4: 新路径 (context=null) 不注入预聚合数据,开放研究交还 ACP
+  // WP4: 新路径 (context=null) 不注入预聚合数据,开放研究交还 Mastra runtime
   if (context) {
     promptLines.push(`复盘上下文 JSON：${JSON.stringify(context)}`);
   }
@@ -325,7 +325,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
       "若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。仅在 reviews.save 返回成功后，才可给出最终回复，且最终回复必须逐字使用该次成功保存的 pushBrief。",
     );
   }
-  // WP4: 新路径 (context=null) 不注入预聚合数据,开放研究交还 ACP
+  // WP4: 新路径 (context=null) 不注入预聚合数据,开放研究交还 Mastra runtime
   if (context) {
     promptLines.push(`复盘上下文 JSON：${JSON.stringify(context)}`);
   }
@@ -354,6 +354,8 @@ interface ScheduledAgentTaskInput {
   reviewContextSummary?: Record<string, unknown>;
   sandboxTokenId?: string;
   sandboxPermissions?: string[];
+  runId?: string;
+  taskId?: string;
 }
 
 async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
@@ -373,6 +375,9 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
       }, { agentOptions: { tools: mastraTools } });
       const reply = mastraResult.text;
       await recordAgentTrace({
+        traceId: input.messageId,
+        runId: input.runId,
+        taskId: input.taskId,
         userId: input.userContext.userId,
         projectId: input.userContext.projectId,
         instanceId: input.userContext.instanceId,
@@ -390,6 +395,7 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
         usage: mastraResult.usage,
         agentBackend: "mastra",
         agentModel: mastraResult.model,
+        modelSource: "runtime-config",
         toolCalls: mastraResult.toolCalls,
       });
       return reply;
@@ -399,6 +405,9 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
   } catch (error) {
     logger.error(`后台 Agent 任务失败 mode=${input.mode} user=${input.userContext.userId}:`, error);
     await recordAgentTrace({
+      traceId: input.messageId,
+      runId: input.runId,
+      taskId: input.taskId,
       userId: input.userContext.userId,
       projectId: input.userContext.projectId,
       instanceId: input.userContext.instanceId,
@@ -414,6 +423,7 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
       sandboxTokenId: input.sandboxTokenId,
       sandboxPermissions: input.sandboxPermissions,
       agentBackend: "mastra",
+      modelSource: "runtime-config",
     });
     throw error;
   }
@@ -440,7 +450,7 @@ async function readWatchConfig(userId: string) {
 
 export function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: MarketWatchPushMode) {
   // R4: 服务不再编排研究行为。prompt 只解释精确输出协议；数据工具选择、是否推送
-  // 和研究步骤交给 ACP、Workspace Skills 和通知策略决定。
+  // 和研究步骤交给 Mastra runtime、业务工具和通知策略决定。
   return [
     "【后台任务：盘中定时简报】",
     "你正在当前用户 Workspace 中生成盘中定时简报。",

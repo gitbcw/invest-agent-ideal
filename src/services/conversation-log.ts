@@ -619,7 +619,7 @@ export async function chatViaConversationLog(input: {
   };
   // Register at acceptance rather than after the conversation lock is acquired.
   // This makes cancellation cover queued turns and runtime/Workspace setup before
-  // the ACP session exists.
+  // the Mastra turn starts.
   if (!activeConversationChats.has(key)) activeConversationChats.set(key, control);
   const operation = withConversationChatLock(
     { ...scope, conversationId: input.conversationId },
@@ -1008,6 +1008,7 @@ async function chatViaConversationLogOnce(input: {
       instanceExpansionPath: runtime?.instanceExpansionPath,
       workspacePath: automationConversation?.workspacePath || workspace.path || resolveWorkspacePath(scope.userId),
       ...(automationConversation ? { taskType: "scheduled-automation" } : {}),
+      ...(automationBinding ? { runId: automationBinding.runId, taskId: automationBinding.taskId } : {}),
       attachments: storedAttachments,
       _cancelSignal: control.abortController.signal,
     },

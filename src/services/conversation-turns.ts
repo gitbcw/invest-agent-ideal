@@ -11,7 +11,7 @@ import { sqlite } from "../db/index.js";
  * turn that produced them.
  *
  * Lifecycle:
- *   1. `markTurnStart` is called just before the ACP backend is invoked.
+ *   1. `markTurnStart` is called just before the Agent runtime is invoked.
  *   2. The MCP `artifacts.publish` and `reviews.save` tools call
  *      `getCurrentTurnId` to record `turn_id` on the freshly-inserted
  *      artifact row.

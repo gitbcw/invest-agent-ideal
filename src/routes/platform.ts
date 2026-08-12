@@ -226,6 +226,9 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
     .select({
       kind: sql<string>`'trace'`.as("kind"),
       id: agentTraces.id,
+      traceId: agentTraces.traceId,
+      runId: agentTraces.runId,
+      taskId: agentTraces.taskId,
       userId: agentTraces.userId,
       instanceId: agentTraces.instanceId,
       channel: agentTraces.channel,
@@ -254,6 +257,7 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
       sandboxTokenId: agentTraces.sandboxTokenId,
       agentBackend: agentTraces.agentBackend,
       agentModel: agentTraces.agentModel,
+      modelSource: agentTraces.modelSource,
       toolManifest: agentTraces.toolManifest,
       toolCalls: agentTraces.toolCalls,
       promptChars: agentTraces.promptChars,
@@ -357,6 +361,43 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
   }
 
   return { items: combined, limit, scope };
+}
+
+async function loadTraceCoverage(input: { userId?: string; instanceId?: string; days?: number }) {
+  const days = Math.max(1, Math.min(Number(input.days || 30), 365));
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const conditions = [gte(agentTraces.createdAt, since)];
+  if (input.userId) conditions.push(eq(agentTraces.userId, input.userId));
+  if (input.instanceId) conditions.push(eq(agentTraces.instanceId, input.instanceId));
+  const rows = await db.select({
+    status: agentTraces.status,
+    traceId: agentTraces.traceId,
+    model: agentTraces.agentModel,
+    backend: agentTraces.agentBackend,
+    channel: agentTraces.channel,
+    mode: agentTraces.mode,
+    runId: agentTraces.runId,
+    taskId: agentTraces.taskId,
+    toolCalls: agentTraces.toolCalls,
+  }).from(agentTraces).where(and(...conditions));
+  const completed = rows.filter((row) => row.status === "success" || row.status === "error" || row.status === "timeout");
+  const countMissing = (items: typeof completed, selector: (row: typeof rows[number]) => unknown) => items.filter((row) => !selector(row)).length;
+  const scheduled = completed.filter((row) => row.channel === "scheduler" || row.mode.startsWith("scheduled-"));
+  const automation = completed.filter((row) => row.mode.includes("automation"));
+  return {
+    days,
+    since,
+    total: rows.length,
+    completed: completed.length,
+    missing: {
+      traceId: countMissing(completed, (row) => row.traceId),
+      model: countMissing(completed, (row) => row.model && row.backend),
+      runId: countMissing(scheduled, (row) => row.runId),
+      taskId: countMissing(automation, (row) => row.taskId),
+    },
+    eligible: { runId: scheduled.length, taskId: automation.length },
+    toolCallCoverage: completed.length === 0 ? null : completed.filter((row) => row.toolCalls !== null).length / completed.length,
+  };
 }
 
 async function loadRuleAlertAudit(input: { userId?: string; instanceId?: string; limit?: number }) {
@@ -1058,6 +1099,7 @@ function partnerRoutePermission(pathname: string, method: string): PlatformPermi
   if (pathname === "/api/platform/partner/quality") return "quality.read";
   if (pathname === "/api/platform/partner/runtime-health") return "operations.read";
   if (pathname === "/api/platform/audit/usage") return "cost.read";
+  if (pathname === "/api/platform/audit/trace-coverage") return "admin_audit.read";
   if (pathname === "/api/platform/instances/" && method === "GET") return "customers.sensitive.read";
   if (pathname.includes("/investment-state")) return "customers.sensitive.read";
   if (pathname === "/api/platform/audit" || pathname === "/api/platform/automation-runs" || pathname === "/api/platform/rule-alerts") return "admin_audit.read";
@@ -1612,6 +1654,17 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       updatedAt: new Date().toISOString(),
       filters: { userId: userId || "", instanceId: instanceId || "", days, groupBy },
       agentUsage,
+    };
+  }));
+
+  app.get<{ Querystring: { userId?: string; instanceId?: string; days?: string } }>("/api/platform/audit/trace-coverage", safe(async (request) => {
+    const userId = request.query.userId?.trim();
+    const instanceId = request.query.instanceId?.trim();
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      filters: { userId: userId || "", instanceId: instanceId || "", days: Number(request.query.days || 30) },
+      coverage: await loadTraceCoverage({ userId, instanceId, days: Number(request.query.days || 30) }),
     };
   }));
 
