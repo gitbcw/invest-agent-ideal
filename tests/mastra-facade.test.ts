@@ -62,6 +62,30 @@ test("Mastra factory resolves a gateway model through injected bindings without 
   assert.equal("memory" in (receivedOptions ?? {}), false);
 });
 
+test("Mastra model configuration is snapshotted per turn and changes only affect later agents", async () => {
+  const previousModel = process.env.MASTRA_DEFAULT_MODEL;
+  const captured: string[] = [];
+  class FakeAgent implements MastraAgentLike {
+    constructor(options: Record<string, unknown>) {
+      captured.push(String((options.model as { id?: string })?.id));
+    }
+    stream() { return { text: "ok" }; }
+  }
+  const bindings: MastraBindings = { Agent: FakeAgent };
+  try {
+    process.env.MASTRA_DEFAULT_MODEL = "model-a";
+    const first = await createMastraAgent({ bindings, gateway: { baseUrl: "https://gateway.invalid/v1", apiKey: "test" } });
+    process.env.MASTRA_DEFAULT_MODEL = "model-b";
+    const second = await createMastraAgent({ bindings, gateway: { baseUrl: "https://gateway.invalid/v1", apiKey: "test" } });
+    await first.stream([], {});
+    await second.stream([], {});
+    assert.deepEqual(captured, ["gateway/model-a", "gateway/model-b"]);
+  } finally {
+    if (previousModel === undefined) delete process.env.MASTRA_DEFAULT_MODEL;
+    else process.env.MASTRA_DEFAULT_MODEL = previousModel;
+  }
+});
+
 test("runMastraTurn maps text, usage, model, tool calls, and caller-owned history", async () => {
   const seen: { messages?: unknown; options?: Record<string, unknown> } = {};
   const agent: MastraAgentLike = {

@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
-import { buildScheduledReviewPush, sanitizeScheduledReply } from "../dist/acp/scheduled-tasks.js";
+import { buildScheduledReviewPush, sanitizeScheduledReply } from "../dist/runtime/scheduled-tasks.js";
 import { readSchedules, entryHitsNow } from "../dist/lib/schedules-loader.js";
 import { enqueuePushJob, getPushJob, processDuePushJobs } from "../dist/services/push-queue.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../dist/lib/user-context.js";
