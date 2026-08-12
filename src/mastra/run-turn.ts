@@ -130,7 +130,7 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(ascii / 4 + nonAscii / 1.7));
 }
 
-/** Map Mastra/AI SDK usage into the existing ACP token field names. */
+/** Map Mastra/AI SDK usage into the runtime token fields. */
 export function mapMastraUsage(value: unknown, promptText = "", replyText = ""): MastraTokenUsage {
   const record = isRecord(value) ? value : {};
   const inputTokens = tokenValue(record, ["inputTokens", "promptTokens", "promptTokenCount", "inputTokenCount"]);
@@ -224,7 +224,7 @@ function mapOneToolCall(value: unknown, fallbackStartedAt: string): MastraToolCa
   const input = value.input ?? value.args ?? value.arguments ?? value.rawInput;
   const output = value.output ?? value.result ?? value.rawOutput;
   return {
-    source: "acp-event",
+    source: "mastra-event",
     toolCallId,
     serverId: stringValue(value.serverId),
     toolName: stringValue(value.toolName) ?? stringValue(value.name),

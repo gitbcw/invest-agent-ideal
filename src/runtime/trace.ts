@@ -1,19 +1,33 @@
 import { db } from "../db/index.js";
-import { codexAcpTraces } from "../db/schema.js";
+import { agentTraces } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { redactSensitiveText } from "../lib/customer-output.js";
-import type { AcpTokenUsage } from "./stdio-agent.js";
 
 const TEXT_LIMIT = 8000;
 const ERROR_LIMIT = 1200;
 const JSON_FIELD_LIMIT = 16_000;
-const STORE_PROMPT_TEXT = process.env.ACP_TRACE_STORE_PROMPT_TEXT === "true";
-const STORE_RAW_REPLY = process.env.ACP_TRACE_STORE_RAW_REPLY === "true";
+const STORE_PROMPT_TEXT = process.env.AGENT_TRACE_STORE_PROMPT_TEXT === "true";
+const STORE_RAW_REPLY = process.env.AGENT_TRACE_STORE_RAW_REPLY === "true";
 
 type TraceStatus = "success" | "timeout" | "error";
 
-export interface AcpTraceInput {
+export interface AgentTokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  thoughtTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+  totalTokens?: number;
+  contextWindowUsed?: number;
+  contextWindowSize?: number;
+  costAmount?: number;
+  costCurrency?: string;
+  source?: string;
+  raw?: unknown;
+}
+
+export interface AgentTraceInput {
   userId?: string;
   projectId?: string;
   instanceId?: string;
@@ -28,14 +42,14 @@ export interface AcpTraceInput {
   reviewContextSummary?: unknown;
   sandboxTokenId?: string;
   sandboxPermissions?: string[];
-  acpBackend?: string;
-  acpModel?: string;
-  mcpManifest?: unknown;
+  agentBackend?: string;
+  agentModel?: string;
+  toolManifest?: unknown;
   toolCalls?: unknown;
   status: TraceStatus;
   errorMessage?: string;
   elapsedMs?: number;
-  usage?: AcpTokenUsage;
+  usage?: AgentTokenUsage;
 }
 
 function truncate(value: unknown, limit = TEXT_LIMIT) {
@@ -46,11 +60,6 @@ function truncate(value: unknown, limit = TEXT_LIMIT) {
   return `${text.slice(0, limit)}\n...[truncated ${text.length - limit} chars]`;
 }
 
-/**
- * JSON audit fields must remain parseable even when they exceed their storage
- * budget. Plain string slicing turns a valid array/object into malformed JSON,
- * which made tool-call traces impossible to query reliably.
- */
 function serializeJsonForStorage(value: unknown, limit = JSON_FIELD_LIMIT) {
   if (value === undefined || value === null) return undefined;
   let serialized: string;
@@ -73,9 +82,10 @@ function serializeJsonForStorage(value: unknown, limit = JSON_FIELD_LIMIT) {
   return envelope(preview);
 }
 
-export async function recordAcpTrace(input: AcpTraceInput) {
+/** Records bounded, redacted agent observability independently of any transport. */
+export async function recordAgentTrace(input: AgentTraceInput) {
   try {
-    await db.insert(codexAcpTraces).values({
+    await db.insert(agentTraces).values({
       userId: truncate(input.userId, 120) ?? DEFAULT_USER_ID,
       projectId: truncate(input.projectId, 120) ?? DEFAULT_PROJECT_ID,
       instanceId: truncate(input.instanceId, 180) ?? DEFAULT_INSTANCE_ID,
@@ -90,9 +100,9 @@ export async function recordAcpTrace(input: AcpTraceInput) {
       reviewContextSummary: truncate(input.reviewContextSummary, 2000),
       sandboxTokenId: truncate(input.sandboxTokenId, 120),
       sandboxPermissions: truncate(input.sandboxPermissions, 1000),
-      acpBackend: truncate(input.acpBackend, 80),
-      acpModel: truncate(input.acpModel, 160),
-      mcpManifest: serializeJsonForStorage(input.mcpManifest, 4000),
+      agentBackend: truncate(input.agentBackend, 80),
+      agentModel: truncate(input.agentModel, 160),
+      toolManifest: serializeJsonForStorage(input.toolManifest, 4000),
       toolCalls: serializeJsonForStorage(input.toolCalls),
       promptChars: input.promptText?.length,
       replyChars: input.replyTextRaw?.length ?? input.replyTextSanitized?.length,
@@ -114,6 +124,6 @@ export async function recordAcpTrace(input: AcpTraceInput) {
       createdAt: new Date().toISOString(),
     });
   } catch (error) {
-    logger.warn("ACP trace 写入失败:", error);
+    logger.warn("agent trace write failed:", error);
   }
 }

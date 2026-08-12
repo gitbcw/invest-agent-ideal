@@ -11,7 +11,6 @@ import {
   channelIdentities,
   channelIdentityInstances,
   chatHistory,
-  codexAcpTraces,
   conversationMessages,
   conversationSessions,
   conversationTasks,
@@ -36,7 +35,6 @@ import {
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { SandboxPermission } from "../lib/sandbox-context.js";
-import { disposeAcpForWorkspace, ensureHermesRuntimeForWorkspace, ensureCodexRuntimeForWorkspace } from "../acp/stdio-agent.js";
 
 export const INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID = "invest-agent-default";
 
@@ -95,7 +93,7 @@ export interface AiProjectRuntimeContext {
   ownerUserId: string;
   name: string;
   status: string;
-  backend: "hermes" | "codex";
+  backend: "mastra";
   skillBundleId: string;
   permissions: SandboxPermission[];
   dashboardType: string;
@@ -117,8 +115,8 @@ function makeInstanceId(userId: string) {
   return `${DEFAULT_PROJECT_ID}-${userId}`.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
 }
 
-function parseBackend(value: string): "hermes" | "codex" {
-  return value === "codex" ? "codex" : "hermes";
+function parseBackend(_value: string): "mastra" {
+  return "mastra";
 }
 
 function parseConfig(value?: string | null): Record<string, unknown> {
@@ -157,7 +155,7 @@ function runtimeContextFromInstance(instance: typeof aiInstances.$inferSelect): 
 
 export async function ensureDefaultProjectForUser(
   userId: string,
-  backend: "hermes" | "codex" = "codex",
+  backend: "mastra" = "mastra",
   displayName?: string
 ): Promise<AiProjectRuntimeContext> {
   const instanceId = makeInstanceId(userId);
@@ -199,11 +197,6 @@ export async function ensureDefaultProjectForUser(
     .where(eq(aiInstances.id, instanceId));
 
   await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
-  if (backend === "codex") {
-    await ensureCodexRuntimeForWorkspace(resolveWorkspacePath(userId));
-  } else {
-    await ensureHermesRuntimeForWorkspace(resolveWorkspacePath(userId));
-  }
 
   return getProjectRuntimeContext(instanceId);
 }
@@ -212,7 +205,7 @@ export async function createInvestAgentInstance(input: {
   userId: string;
   displayName?: string;
   instanceName?: string;
-  backend?: "hermes" | "codex";
+  backend?: "mastra";
 }) {
   const userId = input.userId.trim();
   if (!/^[a-zA-Z0-9_-]{2,64}$/.test(userId)) {
@@ -225,13 +218,7 @@ export async function createInvestAgentInstance(input: {
   ]);
   try {
     const displayName = input.displayName?.trim() || userId;
-    const project = await ensureDefaultProjectForUser(userId, input.backend || "codex", displayName);
-    const workspacePath = resolveWorkspacePath(userId);
-    if ((input.backend || "codex") === "codex") {
-      await ensureCodexRuntimeForWorkspace(workspacePath);
-    } else {
-      await ensureHermesRuntimeForWorkspace(workspacePath);
-    }
+    const project = await ensureDefaultProjectForUser(userId, input.backend || "mastra", displayName);
     const instanceName = input.instanceName?.trim();
     if (instanceName && instanceName !== project.name) {
       const now = new Date().toISOString();
@@ -256,7 +243,7 @@ export async function createInvestAgentInstance(input: {
   }
 }
 
-export async function syncInstanceBackend(instanceId: string, backend: "hermes" | "codex") {
+export async function syncInstanceBackend(instanceId: string, backend: "mastra") {
   const now = new Date().toISOString();
   await db
     .update(aiInstances)
@@ -293,10 +280,6 @@ export async function deleteInvestAgentInstance(instanceId: string) {
   const instanceIdValue = project.instanceId;
   const workspacePath = resolveWorkspacePath(userId);
 
-  // Instance deletion is also used by automated evaluations, which do not own
-  // the HTTP route's explicit runtime disposal.
-  disposeAcpForWorkspace(workspacePath);
-
   const identityRows = await db
     .select({ id: channelIdentities.id })
     .from(channelIdentities)
@@ -322,7 +305,6 @@ export async function deleteInvestAgentInstance(instanceId: string) {
     tx.delete(alertEvents).where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceIdValue))).run();
     tx.delete(alertSignalStates).where(and(eq(alertSignalStates.userId, userId), eq(alertSignalStates.instanceId, instanceIdValue))).run();
     tx.delete(tradeActions).where(and(eq(tradeActions.userId, userId), eq(tradeActions.instanceId, instanceIdValue))).run();
-    tx.delete(codexAcpTraces).where(and(eq(codexAcpTraces.userId, userId), eq(codexAcpTraces.instanceId, instanceIdValue))).run();
     tx.delete(indicatorResults).where(and(eq(indicatorResults.userId, userId), eq(indicatorResults.instanceId, instanceIdValue))).run();
     tx.delete(alertRules).where(and(eq(alertRules.userId, userId), eq(alertRules.instanceId, instanceIdValue))).run();
     tx.delete(sandboxAuditLogs).where(and(eq(sandboxAuditLogs.userId, userId), eq(sandboxAuditLogs.instanceId, instanceIdValue))).run();

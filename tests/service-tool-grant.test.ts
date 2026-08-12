@@ -131,47 +131,6 @@ test("R2: isScheduledTaskType recognizes any scheduled- prefix (fail closed)", (
   assert.ok(!isScheduledTaskType("evaluation"));
 });
 
-// R2: 测试必须调用 resolveSessionMcpServers（不能只测 helper）
-import { resolveSessionMcpServers } from "../src/acp/mcp-session-manifest.js";
-
-test("R2: unknown scheduled taskType in resolveSessionMcpServers gets reads-only allowlist", () => {
-  const { servers } = resolveSessionMcpServers({
-    backendId: "codex",
-    cwd: "/tmp/ws",
-    userContext: { userId: "r2-test", conversationId: "scheduler:future-task:r2-test:inst", taskType: "scheduled-future-task" },
-    env: { INVEST_AGENT_PROJECT_ROOT: "/tmp/proj", DB_PATH: "a.db" },
-    taskType: "scheduled-future-task",
-    sessionId: "r2-test",
-  });
-  // service-tools server 应该有 INVEST_AGENT_MCP_ALLOWED_TOOLS 且不含写工具
-  const serviceServer = servers.find((s) => s.name === "invest-agent-service-tools");
-  assert.ok(serviceServer, "service-tools assembled");
-  const env = Object.fromEntries(serviceServer!.env.map((e) => [e.name, e.value]));
-  const allowed = (env.INVEST_AGENT_MCP_ALLOWED_TOOLS || "").split(",").filter(Boolean);
-  // 未知 scheduled 类型：只有 read 工具，无 reviews.save，无 other-write
-  assert.ok(allowed.length > 0, "has explicit allowlist (not empty/full-open)");
-  assert.ok(!allowed.includes("reviews.save"), "no final-action for unknown task");
-  for (const tool of allowed) {
-    assert.notEqual(classifyServiceTool(tool), "other-write", `unknown scheduled grant has other-write: ${tool}`);
-  }
-});
-
-test("R2: interactive session without taskType still gets full tools (no regression)", () => {
-  const { servers } = resolveSessionMcpServers({
-    backendId: "codex",
-    cwd: "/tmp/ws",
-    userContext: { userId: "r2-test", conversationId: "interactive-conv" },
-    env: { INVEST_AGENT_PROJECT_ROOT: "/tmp/proj", DB_PATH: "a.db" },
-    taskType: "interactive",
-    sessionId: "r2-interactive",
-  });
-  const serviceServer = servers.find((s) => s.name === "invest-agent-service-tools");
-  assert.ok(serviceServer);
-  const env = Object.fromEntries(serviceServer!.env.map((e) => [e.name, e.value]));
-  // interactive: 无 allowlist = 全开（行为不变）
-  assert.ok(!("INVEST_AGENT_MCP_ALLOWED_TOOLS" in env), "interactive has no allowlist (full open)");
-});
-
 // ─── 无关写工具不出现在任何 scheduled grant ────────────────────
 
 test("no scheduled grant exposes portfolio/watchlist/plan/onboarding mutations", () => {

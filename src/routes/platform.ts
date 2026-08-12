@@ -14,7 +14,7 @@ import {
   alertRules,
   channelIdentities,
   channelIdentityInstances,
-  codexAcpTraces,
+  agentTraces,
   conversationMessages,
   dailyPlans,
   onboardingDrafts,
@@ -38,9 +38,8 @@ import {
   clearMcpServerOverride,
   readAllMcpServerOverrides,
 } from "../services/mcp-control-plane.js";
-import { getMcpRegistry } from "../acp/mcp-registry.js";
-import { disposeAcpForWorkspace, ensureCodexRuntimeForWorkspace, ensureHermesRuntimeForWorkspace } from "../acp/stdio-agent.js";
-import { loadCodexWorkspaceUsageSummary, type CodexUsageGroupBy } from "../services/codex-usage.js";
+import { getMcpRegistry } from "../mcp/mcp-registry.js";
+import { loadAgentUsageSummary, type AgentUsageGroupBy } from "../services/agent-usage.js";
 import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
 import { getAlertInterval } from "../scheduler/index.js";
 import { createPlatformSession, hasPlatformSession, isLoopbackAddress, platformSessionCookie } from "../lib/platform-session.js";
@@ -153,10 +152,10 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
   const limit = Math.max(1, Math.min(Number(input.limit || 40), 120));
   const scope = input.scope || "all";
   const conditions = [];
-  if (input.userId) conditions.push(eq(codexAcpTraces.userId, input.userId));
-  if (input.instanceId) conditions.push(eq(codexAcpTraces.instanceId, input.instanceId));
-  if (scope === "conversation") conditions.push(sql`${codexAcpTraces.channel} IN ('weixin-mobile', 'web')`);
-  if (scope === "push") conditions.push(eq(codexAcpTraces.channel, "scheduler"));
+  if (input.userId) conditions.push(eq(agentTraces.userId, input.userId));
+  if (input.instanceId) conditions.push(eq(agentTraces.instanceId, input.instanceId));
+  if (scope === "conversation") conditions.push(sql`${agentTraces.channel} IN ('weixin-mobile', 'web')`);
+  if (scope === "push") conditions.push(eq(agentTraces.channel, "scheduler"));
   const pushConditions = [];
   if (input.userId) pushConditions.push(eq(pushJobs.userId, input.userId));
   if (input.instanceId) pushConditions.push(eq(pushJobs.instanceId, input.instanceId));
@@ -173,44 +172,44 @@ async function loadAuditTimeline(input: { userId?: string; instanceId?: string; 
   const traceRows = await db
     .select({
       kind: sql<string>`'trace'`.as("kind"),
-      id: codexAcpTraces.id,
-      userId: codexAcpTraces.userId,
-      instanceId: codexAcpTraces.instanceId,
-      channel: codexAcpTraces.channel,
-      mode: codexAcpTraces.mode,
-      status: codexAcpTraces.status,
-      conversationId: codexAcpTraces.conversationId,
-      messageId: codexAcpTraces.messageId,
-      userText: codexAcpTraces.userText,
-      promptText: codexAcpTraces.promptText,
-      replyTextRaw: codexAcpTraces.replyTextRaw,
-      replyTextSanitized: codexAcpTraces.replyTextSanitized,
-      errorMessage: codexAcpTraces.errorMessage,
-      elapsedMs: codexAcpTraces.elapsedMs,
-      inputTokens: codexAcpTraces.inputTokens,
-      outputTokens: codexAcpTraces.outputTokens,
-      thoughtTokens: codexAcpTraces.thoughtTokens,
-      cachedReadTokens: codexAcpTraces.cachedReadTokens,
-      cachedWriteTokens: codexAcpTraces.cachedWriteTokens,
-      totalTokens: codexAcpTraces.totalTokens,
-      contextWindowUsed: codexAcpTraces.contextWindowUsed,
-      contextWindowSize: codexAcpTraces.contextWindowSize,
-      costAmount: codexAcpTraces.costAmount,
-      costCurrency: codexAcpTraces.costCurrency,
-      usageSource: codexAcpTraces.usageSource,
-      reviewContextSummary: codexAcpTraces.reviewContextSummary,
-      sandboxTokenId: codexAcpTraces.sandboxTokenId,
-      acpBackend: codexAcpTraces.acpBackend,
-      acpModel: codexAcpTraces.acpModel,
-      mcpManifest: codexAcpTraces.mcpManifest,
-      toolCalls: codexAcpTraces.toolCalls,
-      promptChars: codexAcpTraces.promptChars,
-      replyChars: codexAcpTraces.replyChars,
-      createdAt: codexAcpTraces.createdAt,
+      id: agentTraces.id,
+      userId: agentTraces.userId,
+      instanceId: agentTraces.instanceId,
+      channel: agentTraces.channel,
+      mode: agentTraces.mode,
+      status: agentTraces.status,
+      conversationId: agentTraces.conversationId,
+      messageId: agentTraces.messageId,
+      userText: agentTraces.userText,
+      promptText: agentTraces.promptText,
+      replyTextRaw: agentTraces.replyTextRaw,
+      replyTextSanitized: agentTraces.replyTextSanitized,
+      errorMessage: agentTraces.errorMessage,
+      elapsedMs: agentTraces.elapsedMs,
+      inputTokens: agentTraces.inputTokens,
+      outputTokens: agentTraces.outputTokens,
+      thoughtTokens: agentTraces.thoughtTokens,
+      cachedReadTokens: agentTraces.cachedReadTokens,
+      cachedWriteTokens: agentTraces.cachedWriteTokens,
+      totalTokens: agentTraces.totalTokens,
+      contextWindowUsed: agentTraces.contextWindowUsed,
+      contextWindowSize: agentTraces.contextWindowSize,
+      costAmount: agentTraces.costAmount,
+      costCurrency: agentTraces.costCurrency,
+      usageSource: agentTraces.usageSource,
+      reviewContextSummary: agentTraces.reviewContextSummary,
+      sandboxTokenId: agentTraces.sandboxTokenId,
+      agentBackend: agentTraces.agentBackend,
+      agentModel: agentTraces.agentModel,
+      toolManifest: agentTraces.toolManifest,
+      toolCalls: agentTraces.toolCalls,
+      promptChars: agentTraces.promptChars,
+      replyChars: agentTraces.replyChars,
+      createdAt: agentTraces.createdAt,
     })
-    .from(codexAcpTraces)
+    .from(agentTraces)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(codexAcpTraces.createdAt))
+    .orderBy(desc(agentTraces.createdAt))
     .limit(limit);
 
   const pushRows = scope === "conversation" ? [] : await db
@@ -523,7 +522,6 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
   const instanceId = project.instanceId;
   const workspacePath = resolveWorkspacePath(userId);
   deletePlatformWeixinManager(instanceId);
-  const disposedAcpCount = disposeAcpForWorkspace(workspacePath);
 
   const userInstanceTables = [
     "portfolio",
@@ -538,7 +536,6 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
     "alert_events",
     "alert_signal_states",
     "trade_actions",
-    "codex_acp_traces",
     "indicator_results",
     "alert_rules",
     "sandbox_audit_logs",
@@ -565,7 +562,7 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
       changes[table] = result.changes;
     }
 
-    const agentTraceResult = sqlite.prepare("DELETE FROM agent_traces WHERE owner_user_id = ? OR user_id = ?").run(userId, userId);
+    const agentTraceResult = sqlite.prepare("DELETE FROM agent_traces WHERE user_id = ? OR instance_id = ?").run(userId, instanceId);
     changes.agent_traces = agentTraceResult.changes;
 
     sqlite.prepare("UPDATE users SET display_name = ?, status = 'active', updated_at = ? WHERE id = ?")
@@ -577,17 +574,11 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
 
   await rm(workspacePath, { recursive: true, force: true });
   const workspace = await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
-  if (project.backend === "codex") {
-    await ensureCodexRuntimeForWorkspace(workspace.path);
-  } else {
-    await ensureHermesRuntimeForWorkspace(workspace.path);
-  }
   logger.info(`Platform 默认测试实例已重置 userId=${userId} instanceId=${instanceId}`);
   return {
     userId,
     instanceId,
     workspace,
-    disposedAcpCount,
     changes,
     resetAt: now,
   };
@@ -674,20 +665,20 @@ async function summarizeInstance(project: AiProjectRuntimeContext) {
   ] = await Promise.all([
     db.select({ id: users.id, displayName: users.displayName, status: users.status }).from(users).where(eq(users.id, project.ownerUserId)).limit(1),
     channelBindingsForProject(project),
-    db.select({ count: count() }).from(codexAcpTraces).where(eq(codexAcpTraces.instanceId, project.instanceId)),
+    db.select({ count: count() }).from(agentTraces).where(eq(agentTraces.instanceId, project.instanceId)),
     db
       .select({
-        id: codexAcpTraces.id,
-        channel: codexAcpTraces.channel,
-        mode: codexAcpTraces.mode,
-        status: codexAcpTraces.status,
-        userText: codexAcpTraces.userText,
-        elapsedMs: codexAcpTraces.elapsedMs,
-        createdAt: codexAcpTraces.createdAt,
+        id: agentTraces.id,
+        channel: agentTraces.channel,
+        mode: agentTraces.mode,
+        status: agentTraces.status,
+        userText: agentTraces.userText,
+        elapsedMs: agentTraces.elapsedMs,
+        createdAt: agentTraces.createdAt,
       })
-      .from(codexAcpTraces)
-      .where(eq(codexAcpTraces.instanceId, project.instanceId))
-      .orderBy(desc(codexAcpTraces.createdAt))
+      .from(agentTraces)
+      .where(eq(agentTraces.instanceId, project.instanceId))
+      .orderBy(desc(agentTraces.createdAt))
       .limit(5),
     safePrivateAssetCount("portfolio", project, () => portfolioBackend.listActive(project.ownerUserId, project.instanceId)),
     safePrivateAssetCount("watchlist", project, () => watchlistBackend.list(project.ownerUserId, project.instanceId)),
@@ -906,10 +897,10 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
       .where(eq(onboardingDrafts.instanceId, project.instanceId))
       .orderBy(desc(onboardingDrafts.updatedAt))
       .limit(1),
-    db.select({ status: codexAcpTraces.status, elapsedMs: codexAcpTraces.elapsedMs, userText: codexAcpTraces.userText, createdAt: codexAcpTraces.createdAt })
-      .from(codexAcpTraces)
-      .where(and(eq(codexAcpTraces.instanceId, project.instanceId), gte(codexAcpTraces.createdAt, thirtyDaysAgo)))
-      .orderBy(desc(codexAcpTraces.createdAt))
+    db.select({ status: agentTraces.status, elapsedMs: agentTraces.elapsedMs, userText: agentTraces.userText, createdAt: agentTraces.createdAt })
+      .from(agentTraces)
+      .where(and(eq(agentTraces.instanceId, project.instanceId), gte(agentTraces.createdAt, thirtyDaysAgo)))
+      .orderBy(desc(agentTraces.createdAt))
       .limit(300),
     db.select({ createdAt: conversationMessages.createdAt })
       .from(conversationMessages)
@@ -1513,21 +1504,21 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       request.query.groupBy === "instance"
         ? request.query.groupBy
         : "day";
-    const codexGroupBy: CodexUsageGroupBy = groupBy === "instance" || groupBy === "user" ? groupBy : "day";
+    const agentGroupBy: AgentUsageGroupBy = groupBy === "instance" || groupBy === "user" ? groupBy : "day";
     const instances = await listProjectRuntimeContexts({ ownerUserId: userId || undefined });
-    const codexUsage = loadCodexWorkspaceUsageSummary({
+    const agentUsage = loadAgentUsageSummary({
       instances,
       userId,
       instanceId,
       days,
-      groupBy: codexGroupBy,
+      groupBy: agentGroupBy,
     });
     // Partner 脱敏：按客户拆分时把明文 instanceId 桶替换为 cus_xxx 标识，
     // 并隐藏 userId 维度（partner 不应按用户拆分）。保护脱敏边界。
     const authRole = (request as any).platformAuth?.role;
     if (authRole === "partner") {
-      const maskedGroups = (codexUsage.groups || []).map((group: any) => {
-        if (codexGroupBy === "instance" && group.bucket) {
+      const maskedGroups = (agentUsage.groups || []).map((group: any) => {
+        if (agentGroupBy === "instance" && group.bucket) {
           const customerKey = partnerCustomerKey(group.bucket);
           return { ...group, bucket: customerKey, customerLabel: partnerCustomerLabel(customerKey) };
         }
@@ -1536,15 +1527,15 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       return {
         ok: true,
         updatedAt: new Date().toISOString(),
-        filters: { userId: "", instanceId: "", days, groupBy: codexGroupBy === "user" ? "instance" : groupBy },
-        codexUsage: { ...codexUsage, groups: maskedGroups },
+        filters: { userId: "", instanceId: "", days, groupBy: agentGroupBy === "user" ? "instance" : groupBy },
+        agentUsage: { ...agentUsage, groups: maskedGroups },
       };
     }
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
       filters: { userId: userId || "", instanceId: instanceId || "", days, groupBy },
-      codexUsage,
+      agentUsage,
     };
   }));
 
@@ -1634,7 +1625,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
         userId,
         displayName: request.body?.displayName,
         instanceName: request.body?.instanceName,
-        backend: config.acp.backend,
+        backend: config.agent.backend,
       });
       const portalCredential = await provisionPortalAccount(project);
       return {
@@ -1671,13 +1662,10 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       return reply.status(400).send({ ok: false, error: "主实例不能删除" });
     }
     deletePlatformWeixinManager(project.instanceId);
-    const workspacePath = resolveWorkspacePath(project.ownerUserId);
-    const disposedAcpCount = disposeAcpForWorkspace(workspacePath);
     const deleted = await deleteInvestAgentInstance(project.instanceId);
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
-      disposedAcpCount,
       deleted,
     };
   }));
@@ -1764,12 +1752,10 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       tenantId: project.ownerUserId,
       projectId: project.instanceId,
     });
-    const hermesHome = await ensureHermesRuntimeForWorkspace(workspace.path);
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
       workspace,
-      hermesHome,
       instance: await summarizeInstance(project),
     };
   }));

@@ -21,7 +21,7 @@ function makeInstanceId(userId: string) {
   return `${DEFAULT_PROJECT_ID}-${userId}`.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
 }
 
-export async function ensureDefaultAiInstanceForUser(userId: string, backend: "hermes" | "codex" = "codex", displayName?: string) {
+export async function ensureDefaultAiInstanceForUser(userId: string, backend: "mastra" = "mastra", displayName?: string) {
   const context = await ensureDefaultProjectForUser(userId, backend, displayName);
   await ensureWorkspace({ userId, tenantId: userId, projectId: context.projectId });
   return { projectId: context.projectId, instanceId: context.instanceId };
@@ -29,7 +29,7 @@ export async function ensureDefaultAiInstanceForUser(userId: string, backend: "h
 
 export async function resolveOrCreateChannelUser(params: {
   channel: "weixin-mobile";
-  backend: "hermes" | "codex";
+  backend: "mastra";
   externalUserId: string;
   externalAccountId?: string;
   conversationId?: string;
@@ -147,7 +147,7 @@ export async function markChannelIdentityWelcomed(
 async function ensureDefaultInstanceForChannelIdentity(
   channelIdentityId: number,
   userId: string,
-  backend: "hermes" | "codex",
+  backend: "mastra",
   projectBinding?: {
     projectId: string;
     instanceId: string;

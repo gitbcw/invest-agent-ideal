@@ -1,9 +1,7 @@
 /**
  * Application-facing types for the stage 1 Mastra facade.
  *
- * These types deliberately live outside src/acp. The ACP implementation keeps
- * its historical backend union and budget semantics until a later migration
- * stage; the facade only needs to expose a structurally compatible turn result.
+ * These types define the native Mastra execution contract.
  */
 
 export type MastraBackendId = "mastra";
@@ -25,8 +23,8 @@ export interface MastraTokenUsage {
 }
 
 export interface MastraToolCallSummary {
-  /** Same source label used by the existing ACP trace serializer. */
-  source: "acp-event";
+  /** Event source recorded by the Mastra runtime. */
+  source: "mastra-event";
   toolCallId: string;
   serverId?: string;
   toolName?: string;
@@ -40,7 +38,7 @@ export interface MastraToolCallSummary {
   outputChars?: number;
 }
 
-/** A completed Mastra turn has the same observability fields as ACP. */
+/** A completed Mastra turn carries bounded observability fields. */
 export interface MastraBudgetSnapshot {
   state: "completed";
   startedAt: number;

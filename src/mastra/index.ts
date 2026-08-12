@@ -3,7 +3,6 @@ export * from "./bindings.js";
 export * from "./model-gateway.js";
 export * from "./agent-factory.js";
 export * from "./run-turn.js";
-export * from "./backend-selection.js";
 export * from "./result-adapter.js";
 export * from "./tools/index.js";
 export * from "./tools/mastra-tools.js";

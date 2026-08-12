@@ -22,7 +22,7 @@ import { fetchWeixinQRCode, isLoginFresh, pollWeixinQRStatus, type WeixinLoginSe
 import type { IncomingMediaAttachment } from "../lib/attachment-store.js";
 import type { WeixinDeliveryResult } from "../services/weixin-delivery.js";
 
-type WeixinBackend = "hermes" | "codex";
+type WeixinBackend = "mastra";
 type LoginStage = "idle" | "waiting_scan" | "scanned" | "connected" | "error";
 
 interface WeixinConnectState {
@@ -199,7 +199,7 @@ function findWeixinChunkCut(text: string, limit: number) {
 export class WeixinMobileManager {
   private state: WeixinConnectState = {
     enabled: false,
-    backend: config.acp.backend,
+    backend: config.agent.backend,
     stage: "idle",
     stateDir: resolveWeixinStateDir(),
     message: "未连接微信",
@@ -235,7 +235,7 @@ export class WeixinMobileManager {
       };
     } = {}
   ) {
-    this.backend = this.options.backend ?? "hermes";
+    this.backend = this.options.backend ?? "mastra";
     this.stateDir = this.options.stateDir ?? config.weixin.stateDir;
     this.label = this.options.label ?? "微信";
     this.projectBinding = this.options.projectBinding;

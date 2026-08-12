@@ -14,7 +14,7 @@ import {
   resetMcpRegistryForTest,
   buildBuiltinServiceToolsRegistration,
   type McpServerRegistration,
-} from "../src/acp/mcp-registry.js";
+} from "../src/mcp/mcp-registry.js";
 
 // 控制面操作作用于全局 registry 单例。用一个隔离的 test server,每个 test 显式清理。
 const TEST_SERVER_ID = "control-plane-test-server";

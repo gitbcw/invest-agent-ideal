@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { buildDailyReviewTaskPrompt } from "../src/acp/scheduled-tasks.js";
+import { buildDailyReviewTaskPrompt } from "../src/runtime/scheduled-tasks.js";
 
 test("scheduled daily review requires a Markdown WeChat push brief", () => {
   const prompt = buildDailyReviewTaskPrompt();

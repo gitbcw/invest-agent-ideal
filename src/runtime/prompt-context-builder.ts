@@ -19,7 +19,7 @@ export interface BuiltPromptContext {
   reviewContextSummary?: Record<string, unknown>;
 }
 
-export async function buildAcpPromptContext(input: {
+export async function buildAgentPromptContext(input: {
   userText: string;
   userContext: UserContext;
   reviewContext?: DailyReviewContext | null;

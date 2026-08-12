@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { OUTPUT_VOLUME_POLICY, SPREADSHEET_OUTPUT_POLICY } from "../src/acp/spreadsheet-output-policy.js";
+import { OUTPUT_VOLUME_POLICY, SPREADSHEET_OUTPUT_POLICY } from "../src/runtime/spreadsheet-output-policy.js";
 
 test("shared output volume policy caps screening and workbook display by default", () => {
   assert.match(OUTPUT_VOLUME_POLICY, /量化选股默认最多展示工具返回顺序的前 100 个候选/);

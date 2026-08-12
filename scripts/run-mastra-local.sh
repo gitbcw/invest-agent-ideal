@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # This migration runtime never shares main's port or state roots.
-MAS_TRA_PORT="${MAS_TRA_PORT:-22656}"
+MAS_TRA_PORT="${MAS_TRA_PORT:-23655}"
 MAS_TRA_ROOT="${MAS_TRA_ROOT:-$PWD/data/mastra-local}"
-MAS_TRA_CODEX_CONFIG="${MAS_TRA_CODEX_CONFIG:-/Users/combo/.codex/config.toml}"
-MAS_TRA_CODEX_AUTH="${MAS_TRA_CODEX_AUTH:-/Users/combo/.codex/auth.json}"
+MAS_TRA_GATEWAY_CONFIG="${MAS_TRA_GATEWAY_CONFIG:-/Users/combo/.codex/config.toml}"
+MAS_TRA_GATEWAY_AUTH="${MAS_TRA_GATEWAY_AUTH:-/Users/combo/.codex/auth.json}"
 
-if [[ ! -f "$MAS_TRA_CODEX_CONFIG" || ! -f "$MAS_TRA_CODEX_AUTH" ]]; then
-  echo "Codex gateway configuration is unavailable; set MAS_TRA_CODEX_CONFIG and MAS_TRA_CODEX_AUTH." >&2
+if [[ ! -f "$MAS_TRA_GATEWAY_CONFIG" || ! -f "$MAS_TRA_GATEWAY_AUTH" ]]; then
+  echo "Gateway configuration is unavailable; set MAS_TRA_GATEWAY_CONFIG and MAS_TRA_GATEWAY_AUTH." >&2
   exit 2
 fi
 
@@ -18,13 +18,13 @@ MAS_TRA_BASE_URL="$(node --input-type=module -e '
   const match = config.match(/^base_url\s*=\s*"([^"]+)"/m);
   if (!match) process.exit(2);
   process.stdout.write(match[1]);
-' "$MAS_TRA_CODEX_CONFIG")"
+' "$MAS_TRA_GATEWAY_CONFIG")"
 MAS_TRA_KEY="$(node --input-type=module -e '
   import fs from "node:fs";
   const auth = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   if (typeof auth.OPENAI_API_KEY !== "string" || !auth.OPENAI_API_KEY) process.exit(2);
   process.stdout.write(auth.OPENAI_API_KEY);
-' "$MAS_TRA_CODEX_AUTH")"
+' "$MAS_TRA_GATEWAY_AUTH")"
 
 mkdir -p "$MAS_TRA_ROOT"
 export PORT="$MAS_TRA_PORT"

@@ -24,8 +24,8 @@ import {
   isForbiddenExternalRef,
   validateRegistration,
   type McpServerRegistration,
-} from "../src/acp/mcp-registry.js";
-import { buildExternalRegistrations } from "../src/acp/external-mcp-registrations.js";
+} from "../src/mcp/mcp-registry.js";
+import { buildExternalRegistrations } from "../src/mcp/external-mcp-registrations.js";
 
 type CheckResult = { name: string; passed: boolean; detail: string };
 

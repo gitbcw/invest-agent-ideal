@@ -24,7 +24,7 @@
 | `ai_projects` | AI 项目类型注册表 | 平台元数据,跨用户 |
 | `ai_instances` | 用户助手注册(历史表名) | 平台元数据 + 路由依据;产品语义上一用户一助手 |
 | `settings` | 系统级 KV(signal_config、巡检间隔、复盘模板) | 平台默认值,跨用户共享 |
-| `codex_acp_traces` | ACP 调用审计(历史表名保留) | 系统审计,与用户方法无关 |
+| `agent_traces` | 运行时调用审计 | 系统审计,与用户方法无关；兼容迁移会从冻结的 `codex_acp_traces` 单向复制历史行 |
 | `external_mcp_tool_calls` | 外部 MCP observer 调用证据 | service-to-external 协议边界审计；按 user/instance/conversation、server 和 tool 查询 |
 | `conversation_sessions` | canonical conversation log 会话索引 | 用户门户与微信共享的权威对话历史索引;云端 portal 只保存镜像,本地 SQLite 是权威源 |
 | `conversation_messages` | canonical conversation log 消息明细 | 用户门户 `conversation.list/get/chat` 和微信对话审计共用;需要分页、幂等和跨 channel 查询索引 |
@@ -71,9 +71,7 @@
 | 表 | 丢弃理由 |
 |---|---|
 | `chat_history` | 历史会话状态;微信侧的会话记忆已切到 `memory/behavior_events.jsonl`(event_type=wechat_conversation_turn) |
-| `agent_traces` | 旧自研 Runtime 历史表,`src/` 中已 0 引用,只有 docs/archive 提及 |
 
-> `agent_traces` 当前 `src/` 引用计数为 0,可立即停止写入并冻结数据。
 > `chat_history` 当前仅作为旧式对话记忆回退表保留;新用户可见对话历史以 `conversation_sessions` / `conversation_messages` 为 canonical conversation log。90 天后由 `scripts/drop-migrated-tables.mjs` 统一清理。
 
 ## 归属判断标准
@@ -151,7 +149,7 @@ SQLite 写入冻结,新增 yaml/jsonl 双写,旧表保留只读。
 1. 新代码不再写入旧表(冻结)。
 2. 旧表保留 90 天作为只读回退。
 3. 90 天后由 `scripts/drop-migrated-tables.mjs`(待写)统一清理。
-4. `chat_history` / `agent_traces` 在工作包 4 完成后即可清空(不需要保留)。
+4. `chat_history` 在工作包 4 完成后即可清空(不需要保留)。旧形态的 `agent_traces` 会改名为 `agent_traces_legacy_runtime_v1` 保留，新的 `agent_traces` 是运行时审计表。
 
 ## 主用户数据不迁移(2026-06-21 决策)
 

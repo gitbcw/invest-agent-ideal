@@ -61,7 +61,7 @@ const fixtureScript = `
 `;
 
 const { getCurrentAcpAgent, disposeAcpForWorkspace, resetToolConflictCacheForTest } = await import("../dist/acp/stdio-agent.js");
-const { getMcpRegistry } = await import("../dist/acp/mcp-registry.js");
+const { getMcpRegistry } = await import("../dist/mcp/mcp-registry.js");
 
 // 注册 fixture 为外部 MCP（临时，仅本 probe）
 const registry = getMcpRegistry();

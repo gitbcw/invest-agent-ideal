@@ -20,7 +20,7 @@ const UNSAFE_OUTPUT_REPLACEMENTS: Array<[RegExp, string]> = [
   [/~\/\.openclaw[^\s，。；、）)]*/g, "内部状态"],
 ];
 
-const ACP_DIAGNOSTIC_LINE_PATTERNS = [
+const RUNTIME_DIAGNOSTIC_LINE_PATTERNS = [
   /^Model metadata for `[^`]+` not found\. Defaulting to fallback metadata; this can degrade performance and cause issues\.$/i,
   /^Unknown model .+ is used\. This will use fallback model metadata\.$/i,
   /^Model personality requested but model_messages is missing, falling back to base instructions\..*$/i,
@@ -28,26 +28,26 @@ const ACP_DIAGNOSTIC_LINE_PATTERNS = [
   /^Goal (?:cleared|paused|resumed)\.?$/i,
 ];
 
-const ACP_DIAGNOSTIC_INLINE_PATTERNS = [
+const RUNTIME_DIAGNOSTIC_INLINE_PATTERNS = [
   /Model metadata for `[^`]+` not found\. Defaulting to fallback metadata; this can degrade performance and cause issues\.?/gi,
   /Goal updated \((?:active|paused|complete)\): [^\n]+/gi,
   /Goal (?:cleared|paused|resumed)\.?/gi,
 ];
 
-export function isAcpDiagnosticText(text: string) {
+export function isRuntimeDiagnosticText(text: string) {
   const lines = String(text || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  return lines.length > 0 && lines.every((line) => ACP_DIAGNOSTIC_LINE_PATTERNS.some((pattern) => pattern.test(line)));
+  return lines.length > 0 && lines.every((line) => RUNTIME_DIAGNOSTIC_LINE_PATTERNS.some((pattern) => pattern.test(line)));
 }
 
-function removeAcpDiagnosticLines(text: string) {
+function removeRuntimeDiagnosticLines(text: string) {
   let cleaned = String(text || "")
     .split(/\r?\n/)
-    .filter((line) => !ACP_DIAGNOSTIC_LINE_PATTERNS.some((pattern) => pattern.test(line.trim())))
+    .filter((line) => !RUNTIME_DIAGNOSTIC_LINE_PATTERNS.some((pattern) => pattern.test(line.trim())))
     .join("\n");
-  for (const pattern of ACP_DIAGNOSTIC_INLINE_PATTERNS) {
+  for (const pattern of RUNTIME_DIAGNOSTIC_INLINE_PATTERNS) {
     cleaned = cleaned.replace(pattern, "");
   }
   return cleaned;
@@ -62,7 +62,7 @@ export function redactSensitiveText(text: string) {
 }
 
 export function sanitizeCustomerText(text: string) {
-  let cleaned = removeAcpDiagnosticLines(text);
+  let cleaned = removeRuntimeDiagnosticLines(text);
   for (const [pattern, replacement] of UNSAFE_OUTPUT_REPLACEMENTS) {
     cleaned = cleaned.replace(pattern, replacement);
   }

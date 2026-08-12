@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
-import { buildAcpPromptContext } from "./prompt-context-builder.js";
-import { recordAcpTrace } from "./trace.js";
+import { buildAgentPromptContext } from "../runtime/prompt-context-builder.js";
+import { recordAgentTrace } from "../runtime/trace.js";
 import { extractFinalCustomerReply, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
-import { config } from "../lib/config.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import type { UserContext } from "../lib/user-context.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID } from "../lib/user-context.js";
@@ -23,13 +21,12 @@ import {
   weekRangeForDate,
   monthRangeForDate,
 } from "../handlers/review.js";
-import { selectExecutionBackend } from "../mastra/backend-selection.js";
 import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 
-const SCHEDULED_ACP_TIMEOUT_MS =
-  Number(process.env.SCHEDULED_ACP_TIMEOUT_MS) || 600_000;
+const SCHEDULED_AGENT_TIMEOUT_MS =
+  Number(process.env.SCHEDULED_AGENT_TIMEOUT_MS) || 600_000;
 
 
 export function isLegacyReviewOrch(): boolean {
@@ -86,7 +83,7 @@ export async function runScheduledReviewPublicationProbe(
       expectedReviewKind: "daily" as const,
       expectedReviewKey: input.date,
     };
-    const promptContext = await buildAcpPromptContext({
+    const promptContext = await buildAgentPromptContext({
       userText: [
         "【定时日复盘发布单点验收】",
         "这是发布步骤验收，不要分析行情、不要改写内容、不要调用其他工具。",
@@ -98,7 +95,7 @@ export async function runScheduledReviewPublicationProbe(
     });
 
     try {
-      await runAcpTask({
+      await runScheduledAgentTask({
         userContext,
         promptText: promptContext.promptText,
         conversationId,
@@ -145,11 +142,11 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
   // WP4 新路径: 开放研究完全交还 ACP。不约束工具 (ACP 自由选任意已启用只读 MCP)、
   // 不预抓取 snapshot、不审计纠偏、不矛盾检测、不兜底。只处理精确 NO_PUSH 或可投递正文。
   const userContext = { ...await buildScheduledUserContext(scope, "market-watch"), taskType: "scheduled-market-watch" };
-  const promptContext = await buildAcpPromptContext({
+  const promptContext = await buildAgentPromptContext({
     userText: buildMarketWatchTaskPrompt(userContext, pushMode),
     userContext,
   });
-  const reply = await runAcpTask({
+  const reply = await runScheduledAgentTask({
     userContext,
     promptText: promptContext.promptText,
     conversationId: userContext.conversationId!,
@@ -193,12 +190,12 @@ async function runScheduledDailyReview(userContext: UserContext): Promise<string
   userContext.expectedReviewKind = "daily";
   userContext.expectedReviewKey = reviewDate;
 
-  const promptContext = await buildAcpPromptContext({
+  const promptContext = await buildAgentPromptContext({
     userText: buildDailyReviewTaskPrompt(),
     ...(legacy ? { reviewContext, allowReviewPublication: true } : {}),
     userContext,
   });
-  await runAcpTask({
+  await runScheduledAgentTask({
     userContext,
     promptText: promptContext.promptText,
     conversationId: userContext.conversationId!,
@@ -301,7 +298,6 @@ async function buildScheduledUserContext(scope: ScheduledScope, taskName: string
     projectId,
     instanceId,
     channel: "api",
-    backend: await loadCurrentBackendId(),
     conversationId: `scheduler:${taskName}:${userId}:${instanceId}`,
     workspacePath: workspace.path,
   };
@@ -333,11 +329,11 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
   if (context) {
     promptLines.push(`复盘上下文 JSON：${JSON.stringify(context)}`);
   }
-  const promptContext = await buildAcpPromptContext({
+  const promptContext = await buildAgentPromptContext({
     userText: promptLines.join("\n"),
     userContext,
   });
-  const reply = await runAcpTask({
+  const reply = await runScheduledAgentTask({
     userContext,
     promptText: promptContext.promptText,
     conversationId: userContext.conversationId!,
@@ -349,7 +345,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
   return sanitizeCustomerText(reply);
 }
 
-interface ScheduledAcpTaskInput {
+interface ScheduledAgentTaskInput {
   userContext: UserContext;
   promptText: string;
   conversationId: string;
@@ -360,38 +356,23 @@ interface ScheduledAcpTaskInput {
   sandboxPermissions?: string[];
 }
 
-export function buildScheduledAcpChatParams(input: ScheduledAcpTaskInput) {
-  return {
-    conversationId: input.conversationId,
-    text: input.promptText,
-    messageId: input.messageId,
-    timeoutMs: SCHEDULED_ACP_TIMEOUT_MS,
-    cwd: input.userContext.workspacePath,
-    // MCP server scope is derived when the ACP session is created. Without
-    // this context scheduled tasks silently fall back to the primary user.
-    userContext: input.userContext,
-  };
-}
-
-async function runAcpTask(input: ScheduledAcpTaskInput) {
+async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
   const startedAt = Date.now();
-  const executionBackend = selectExecutionBackend(input.userContext);
   try {
-    if (executionBackend.backend === "mastra") {
-      const mastraTools = await createMastraToolMap({ ...input.userContext, instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID });
-      const externalMcp = await resolveExternalMastraToolsets("scheduled-read");
-      try {
+    const mastraTools = await createMastraToolMap({ ...input.userContext, instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID });
+    const externalMcp = await resolveExternalMastraToolsets("scheduled-read");
+    try {
       const mastraResult = await runMastraTurn({
         conversationId: input.conversationId,
         text: input.promptText,
         messageId: input.messageId,
-        timeoutMs: SCHEDULED_ACP_TIMEOUT_MS,
+        timeoutMs: SCHEDULED_AGENT_TIMEOUT_MS,
         cwd: input.userContext.workspacePath,
         userContext: input.userContext,
         toolsets: externalMcp.toolsets,
       }, { agentOptions: { tools: mastraTools } });
       const reply = mastraResult.text;
-      await recordAcpTrace({
+      await recordAgentTrace({
         userId: input.userContext.userId,
         projectId: input.userContext.projectId,
         instanceId: input.userContext.instanceId,
@@ -407,47 +388,17 @@ async function runAcpTask(input: ScheduledAcpTaskInput) {
         status: "success",
         elapsedMs: Date.now() - startedAt,
         usage: mastraResult.usage,
-        acpBackend: "mastra",
-        acpModel: mastraResult.model,
+        agentBackend: "mastra",
+        agentModel: mastraResult.model,
         toolCalls: mastraResult.toolCalls,
       });
       return reply;
-      } finally {
-        await externalMcp.disconnect();
-      }
+    } finally {
+      await externalMcp.disconnect();
     }
-    const acpResult = await (await getCurrentAcpAgent(input.userContext.workspacePath))
-      .chatWithUsage(buildScheduledAcpChatParams(input));
-    const reply = acpResult.text;
-    await recordAcpTrace({
-      userId: input.userContext.userId,
-      projectId: input.userContext.projectId,
-      instanceId: input.userContext.instanceId,
-      conversationId: input.conversationId,
-      messageId: input.messageId,
-      channel: "scheduler",
-      userText: input.promptText.slice(0, 2000),
-      promptText: input.promptText,
-      replyTextRaw: reply,
-      replyTextSanitized: sanitizeCustomerText(reply),
-      mode: input.mode,
-      reviewContextSummary: input.reviewContextSummary,
-      ...(executionBackend.backend === "acp" ? {
-        sandboxTokenId: input.sandboxTokenId,
-        sandboxPermissions: input.sandboxPermissions,
-      } : {}),
-      status: "success",
-      elapsedMs: Date.now() - startedAt,
-      usage: acpResult.usage,
-      acpBackend: acpResult.backendId,
-      acpModel: acpResult.model,
-      mcpManifest: acpResult.mcpManifest,
-      toolCalls: acpResult.toolCalls,
-    });
-    return reply;
   } catch (error) {
-    logger.error(`后台 ACP 任务失败 mode=${input.mode} user=${input.userContext.userId}:`, error);
-    await recordAcpTrace({
+    logger.error(`后台 Agent 任务失败 mode=${input.mode} user=${input.userContext.userId}:`, error);
+    await recordAgentTrace({
       userId: input.userContext.userId,
       projectId: input.userContext.projectId,
       instanceId: input.userContext.instanceId,
@@ -460,12 +411,9 @@ async function runAcpTask(input: ScheduledAcpTaskInput) {
       status: "error",
       errorMessage: formatUnknownError(error),
       elapsedMs: Date.now() - startedAt,
-      ...(executionBackend.backend === "acp" ? {
-        sandboxTokenId: input.sandboxTokenId,
-        sandboxPermissions: input.sandboxPermissions,
-        acpBackend: config.acp.backend,
-        acpModel: config.codex.model,
-      } : { acpBackend: "mastra" }),
+      sandboxTokenId: input.sandboxTokenId,
+      sandboxPermissions: input.sandboxPermissions,
+      agentBackend: "mastra",
     });
     throw error;
   }

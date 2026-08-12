@@ -336,20 +336,6 @@ export function initDb() {
       notes TEXT,
       created_at TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS agent_traces (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      owner_user_id TEXT NOT NULL DEFAULT 'primary',
-      user_id TEXT NOT NULL,
-      user_message TEXT NOT NULL,
-      mode TEXT NOT NULL,
-      tool_name TEXT,
-      tool_args TEXT,
-      tool_result TEXT,
-      final_reply TEXT NOT NULL,
-      memory_before TEXT,
-      memory_after TEXT,
-      created_at TEXT NOT NULL
-    );
     CREATE TABLE IF NOT EXISTS codex_acp_traces (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL DEFAULT 'primary',
@@ -369,6 +355,45 @@ export function initDb() {
       acp_backend TEXT,
       acp_model TEXT,
       mcp_manifest TEXT,
+      tool_calls TEXT,
+      prompt_chars INTEGER,
+      reply_chars INTEGER,
+      status TEXT NOT NULL,
+      error_message TEXT,
+      elapsed_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      thought_tokens INTEGER,
+      cached_read_tokens INTEGER,
+      cached_write_tokens INTEGER,
+      total_tokens INTEGER,
+      context_window_used INTEGER,
+      context_window_size INTEGER,
+      cost_amount REAL,
+      cost_currency TEXT,
+      usage_source TEXT,
+      usage_raw TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_traces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      conversation_id TEXT NOT NULL,
+      message_id TEXT,
+      channel TEXT NOT NULL,
+      user_text TEXT NOT NULL,
+      prompt_text TEXT,
+      reply_text_raw TEXT,
+      reply_text_sanitized TEXT,
+      mode TEXT NOT NULL,
+      review_context_summary TEXT,
+      sandbox_token_id TEXT,
+      sandbox_permissions TEXT,
+      agent_backend TEXT,
+      agent_model TEXT,
+      tool_manifest TEXT,
       tool_calls TEXT,
       prompt_chars INTEGER,
       reply_chars INTEGER,
@@ -1006,6 +1031,7 @@ export function initDb() {
   ensureUserAssetLibraryMigration();
   ensureUserAssetFoldersMigration();
   ensureColumn("daily_plans", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  prepareAgentTracesTable();
   ensureColumn("daily_plans", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("investment_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("investment_profiles", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
@@ -1019,7 +1045,6 @@ export function initDb() {
   ensureColumn("review_viewpoints", "resolved_at", "TEXT");
   ensureColumn("trade_actions", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("trade_actions", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
-  ensureColumn("agent_traces", "owner_user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("codex_acp_traces", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("codex_acp_traces", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("codex_acp_traces", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
@@ -1043,6 +1068,29 @@ export function initDb() {
   ensureColumn("codex_acp_traces", "cost_currency", "TEXT");
   ensureColumn("codex_acp_traces", "usage_source", "TEXT");
   ensureColumn("codex_acp_traces", "usage_raw", "TEXT");
+  ensureColumn("agent_traces", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
+  ensureColumn("agent_traces", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("agent_traces", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  ensureColumn("agent_traces", "sandbox_token_id", "TEXT");
+  ensureColumn("agent_traces", "sandbox_permissions", "TEXT");
+  ensureColumn("agent_traces", "agent_backend", "TEXT");
+  ensureColumn("agent_traces", "agent_model", "TEXT");
+  ensureColumn("agent_traces", "tool_manifest", "TEXT");
+  ensureColumn("agent_traces", "tool_calls", "TEXT");
+  ensureColumn("agent_traces", "prompt_chars", "INTEGER");
+  ensureColumn("agent_traces", "reply_chars", "INTEGER");
+  ensureColumn("agent_traces", "input_tokens", "INTEGER");
+  ensureColumn("agent_traces", "output_tokens", "INTEGER");
+  ensureColumn("agent_traces", "thought_tokens", "INTEGER");
+  ensureColumn("agent_traces", "cached_read_tokens", "INTEGER");
+  ensureColumn("agent_traces", "cached_write_tokens", "INTEGER");
+  ensureColumn("agent_traces", "total_tokens", "INTEGER");
+  ensureColumn("agent_traces", "context_window_used", "INTEGER");
+  ensureColumn("agent_traces", "context_window_size", "INTEGER");
+  ensureColumn("agent_traces", "cost_amount", "REAL");
+  ensureColumn("agent_traces", "cost_currency", "TEXT");
+  ensureColumn("agent_traces", "usage_source", "TEXT");
+  ensureColumn("agent_traces", "usage_raw", "TEXT");
   ensureColumn("external_mcp_tool_calls", "run_id", "TEXT");
   ensureColumn("sandbox_audit_logs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("sandbox_audit_logs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
@@ -1084,6 +1132,7 @@ export function initDb() {
   migrateConversationIdempotencyScope();
   backfillOnboardingDraftHandoffs();
   ensureGenericAutomationTaskMigration();
+  migrateLegacyAcpTracesToAgentTraces();
   dropLegacyAlertsTable();
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_username ON platform_users(username);
@@ -1125,6 +1174,10 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_user_conversation ON codex_acp_traces(user_id, conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_instance ON codex_acp_traces(instance_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_codex_acp_traces_status ON codex_acp_traces(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_traces_conversation ON agent_traces(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_traces_user_conversation ON agent_traces(user_id, conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_traces_instance ON agent_traces(instance_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_traces_status ON agent_traces(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_external_mcp_tool_calls_scope ON external_mcp_tool_calls(user_id, instance_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_external_mcp_tool_calls_server_tool ON external_mcp_tool_calls(server_id, tool_name, created_at);
     CREATE INDEX IF NOT EXISTS idx_external_mcp_tool_calls_run ON external_mcp_tool_calls(run_id, created_at);
@@ -1703,6 +1756,89 @@ function ensureGenericAutomationTaskMigration() {
   if (hasMigration(migrationKey)) return;
   // Generic revision columns are additive. Existing CSV/XLSX revisions keep
   // their legacy source/working fields and remain readable by old callers.
+  markMigration(migrationKey);
+}
+
+function prepareAgentTracesTable() {
+  if (hasTable("agent_traces") && !hasColumn("agent_traces", "conversation_id")) {
+    const legacyTable = "agent_traces_legacy_runtime_v1";
+    if (hasTable(legacyTable)) {
+      throw new Error(`Cannot migrate legacy agent traces: ${legacyTable} already exists`);
+    }
+    // The historical index name is reused by the neutral table below.
+    sqlite.exec("DROP INDEX IF EXISTS idx_agent_traces_user");
+    sqlite.exec(`ALTER TABLE agent_traces RENAME TO ${legacyTable}`);
+  }
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS agent_traces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'primary',
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      conversation_id TEXT NOT NULL,
+      message_id TEXT,
+      channel TEXT NOT NULL,
+      user_text TEXT NOT NULL,
+      prompt_text TEXT,
+      reply_text_raw TEXT,
+      reply_text_sanitized TEXT,
+      mode TEXT NOT NULL,
+      review_context_summary TEXT,
+      sandbox_token_id TEXT,
+      sandbox_permissions TEXT,
+      agent_backend TEXT,
+      agent_model TEXT,
+      tool_manifest TEXT,
+      tool_calls TEXT,
+      prompt_chars INTEGER,
+      reply_chars INTEGER,
+      status TEXT NOT NULL,
+      error_message TEXT,
+      elapsed_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      thought_tokens INTEGER,
+      cached_read_tokens INTEGER,
+      cached_write_tokens INTEGER,
+      total_tokens INTEGER,
+      context_window_used INTEGER,
+      context_window_size INTEGER,
+      cost_amount REAL,
+      cost_currency TEXT,
+      usage_source TEXT,
+      usage_raw TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+}
+
+function migrateLegacyAcpTracesToAgentTraces() {
+  const migrationKey = "agent_traces_from_codex_acp_v1";
+  if (hasMigration(migrationKey) || !hasTable("codex_acp_traces")) return;
+
+  // This preserves existing audit evidence while future writes use the neutral table.
+  sqlite.exec(`
+    INSERT OR IGNORE INTO agent_traces (
+      id, user_id, project_id, instance_id, conversation_id, message_id, channel,
+      user_text, prompt_text, reply_text_raw, reply_text_sanitized, mode,
+      review_context_summary, sandbox_token_id, sandbox_permissions,
+      agent_backend, agent_model, tool_manifest, tool_calls,
+      prompt_chars, reply_chars, status, error_message, elapsed_ms,
+      input_tokens, output_tokens, thought_tokens, cached_read_tokens,
+      cached_write_tokens, total_tokens, context_window_used, context_window_size,
+      cost_amount, cost_currency, usage_source, usage_raw, created_at
+    )
+    SELECT
+      id, user_id, project_id, instance_id, conversation_id, message_id, channel,
+      user_text, prompt_text, reply_text_raw, reply_text_sanitized, mode,
+      review_context_summary, sandbox_token_id, sandbox_permissions,
+      acp_backend, acp_model, mcp_manifest, tool_calls,
+      prompt_chars, reply_chars, status, error_message, elapsed_ms,
+      input_tokens, output_tokens, thought_tokens, cached_read_tokens,
+      cached_write_tokens, total_tokens, context_window_used, context_window_size,
+      cost_amount, cost_currency, usage_source, usage_raw, created_at
+    FROM codex_acp_traces;
+  `);
   markMigration(migrationKey);
 }
 

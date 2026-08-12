@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { isLegacyReviewOrch } from "../src/acp/scheduled-tasks.js";
+import { isLegacyReviewOrch } from "../src/runtime/scheduled-tasks.js";
 
-const source = readFileSync(new URL("../src/acp/scheduled-tasks.ts", import.meta.url), "utf-8");
+const source = readFileSync(new URL("../src/runtime/scheduled-tasks.ts", import.meta.url), "utf-8");
 
 /**
  * WP4: 预编排 feature flag 测试。

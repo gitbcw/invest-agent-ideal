@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { db } from "../db/index.js";
 import { sqlite } from "../db/index.js";
 import { externalMcpToolCalls } from "../db/schema.js";
-import { buildExternalRegistrations, isExternalRegistrationActivated } from "../acp/external-mcp-registrations.js";
-import { resolveExternalHttpServer } from "../acp/mcp-registry.js";
+import { buildExternalRegistrations, isExternalRegistrationActivated } from "../mcp/external-mcp-registrations.js";
+import { resolveExternalHttpServer } from "../mcp/mcp-registry.js";
 
 export type ExternalMcpObserverScope = {
   userId: string;

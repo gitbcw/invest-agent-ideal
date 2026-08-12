@@ -74,7 +74,7 @@ test("assistant and generic automation prompts require XLSX for user-facing tabl
   const source = await import("node:fs/promises");
   const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
   const template = await source.readFile(new URL("../templates/workspace/AGENTS.md", import.meta.url), "utf8");
-  const { buildMobilePrompt } = await import("../src/acp/mobile-prompt.js");
+  const { buildMobilePrompt } = await import("../src/runtime/mobile-prompt.js");
   const prompt = buildMobilePrompt({ userText: "创建一个表格" });
 
   for (const content of [prompt, template]) {

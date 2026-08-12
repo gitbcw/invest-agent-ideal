@@ -44,15 +44,15 @@ function renderCostPanel(){
   document.getElementById('costUpdated').textContent='更新于 '+fmtTime(scoped.updatedAt);
   const filters=scoped.filters||{};
   const costScopeHint=document.getElementById('costScopeHint');
-  if(costScopeHint)costScopeHint.textContent='最近 '+(filters.days||30)+' 天 · Codex 原生日志 · '+fmtRate(PRICING_RATES.input)+'/输出'+fmtRate(PRICING_RATES.output);
+  if(costScopeHint)costScopeHint.textContent='最近 '+(filters.days||30)+' 天 · Agent trace 用量 · '+fmtRate(PRICING_RATES.input)+'/输出'+fmtRate(PRICING_RATES.output);
   if(IS_PARTNER){
     // Partner：总览大盘 + 按客户脱敏拆分（cus_xxx，可摊销成本）。
     COST_TAB='overview';
-    root.innerHTML=renderCostToolbar()+renderCostOverviewView(platform,scoped)+'<div class="section"><h3>按客户费用分摊</h3>'+renderPartnerCostByCustomer(COST.byInstance?.codexUsage?.groups||[])+'</div>';
+    root.innerHTML=renderCostToolbar()+renderCostOverviewView(platform,scoped)+'<div class="section"><h3>按客户费用分摊</h3>'+renderPartnerCostByCustomer(COST.byInstance?.agentUsage?.groups||[])+'</div>';
     return;
   }
   const selectedAssistant=costInstanceById(filters.instanceId||selectedCostInstanceId);
-  const scopedTitle=selectedAssistant?'当前用户助手 Codex 用量：'+(selectedAssistant.owner?.displayName||selectedAssistant.owner?.id||selectedAssistant.name||selectedAssistant.instanceId):'当前用户助手 Codex 用量';
+  const scopedTitle=selectedAssistant?'当前用户助手 Agent 用量：'+(selectedAssistant.owner?.displayName||selectedAssistant.owner?.id||selectedAssistant.name||selectedAssistant.instanceId):'当前用户助手 Agent 用量';
   root.innerHTML=renderCostToolbar()+renderCostTabs()+(COST_TAB==='users'?renderCostUsersView(scopedTitle,scoped):renderCostOverviewView(platform,scoped));
 }
 function renderCostToolbar(){
@@ -63,21 +63,21 @@ function costOption(value,label,current){return '<option value="'+esc(value)+'"'
 function setCostTab(tab){COST_TAB=tab==='users'?'users':'overview';renderCostPanel();}
 function renderCostTabs(){return '<div class="tabs"><button class="tab '+(COST_TAB==='overview'?'active':'')+'" onclick="setCostTab(\\'overview\\')">总览统计</button><button class="tab '+(COST_TAB==='users'?'active':'')+'" onclick="setCostTab(\\'users\\')">各用户统计</button></div>';}
 function renderCostOverviewView(platform,scoped){
-  const t=platform.codexUsage?.totals||{};
+  const t=platform.agentUsage?.totals||{};
   return '<div class="section" style="margin-top:0"><h3>费用与 Token 用量</h3>'+
     '<div class="cost-summary">'+stat(fmtCost(totalCost(t)),'总费用')+stat(costOf(t.inputTokens,PRICING_RATES.input),'输入费用')+stat(costOf(t.outputTokens,PRICING_RATES.output),'输出费用')+stat(costOf(t.cachedReadTokens,PRICING_RATES.cacheRead),'Cache 费用')+'</div>'+
     '<div class="cost-source">'+badge('输入 '+fmtRate(PRICING_RATES.input),'info')+badge('输出 '+fmtRate(PRICING_RATES.output),'info')+badge('推理 '+fmtRate(PRICING_RATES.thought),'info')+badge('Cache '+fmtRate(PRICING_RATES.cacheRead)+'(输入1/10)','ok')+'</div>'+
-    '<div class="cost-summary" style="margin-top:10px">'+renderCodexUsageSummary(t)+'</div>'+
-    renderCodexUsageSource(t)+'</div>'+
-    '<div class="section"><h3>Codex 原生日志按日期</h3>'+renderCodexUsageTable(platform.codexUsage?.groups||[],'日期')+'</div>';
+    '<div class="cost-summary" style="margin-top:10px">'+renderAgentUsageSummary(t)+'</div>'+
+    renderAgentUsageSource(t)+'</div>'+
+    '<div class="section"><h3>Agent trace 按日期</h3>'+renderAgentUsageTable(platform.agentUsage?.groups||[],'日期')+'</div>';
 }
 function renderCostUsersView(scopedTitle,scoped){
-  const t=scoped.codexUsage?.totals||{};
-  return '<div class="section" style="margin-top:0"><h3>各用户助手 Codex 原生日志</h3>'+renderCodexAssistantTable(COST.byInstance?.codexUsage?.groups||[])+'</div>'+
+  const t=scoped.agentUsage?.totals||{};
+  return '<div class="section" style="margin-top:0"><h3>各用户助手 Agent trace</h3>'+renderAgentAssistantTable(COST.byInstance?.agentUsage?.groups||[])+'</div>'+
     '<div class="section"><h3>'+esc(scopedTitle)+'</h3>'+
     '<div class="cost-summary">'+stat(fmtCost(totalCost(t)),'总费用')+stat(costOf(t.inputTokens,PRICING_RATES.input),'输入费用')+stat(costOf(t.outputTokens,PRICING_RATES.output),'输出费用')+stat(costOf(t.cachedReadTokens,PRICING_RATES.cacheRead),'Cache 费用')+'</div>'+
-    '<div class="cost-summary" style="margin-top:10px">'+renderCodexUsageSummary(t)+'</div>'+renderCodexUsageSource(t)+'</div>'+
-    '<div class="section"><h3>当前筛选 Codex 按日期</h3>'+renderCodexUsageTable(scoped.codexUsage?.groups||[],'日期')+'</div>';
+    '<div class="cost-summary" style="margin-top:10px">'+renderAgentUsageSummary(t)+'</div>'+renderAgentUsageSource(t)+'</div>'+
+    '<div class="section"><h3>当前筛选 Agent trace 按日期</h3>'+renderAgentUsageTable(scoped.agentUsage?.groups||[],'日期')+'</div>';
 }
 function renderCodexAssistantTable(rows){if(!rows.length)return '<div class="empty">暂无 Codex 原生日志用量</div>';return '<div style="overflow:auto"><table class="cost-table"><thead><tr><th>用户助手</th><th>用户</th><th>事件数</th><th>总 Token</th><th>输入</th><th>输出</th><th>推理</th><th>缓存读取</th><th>费用</th></tr></thead><tbody>'+rows.map((row)=>{const assistant=costInstanceById(row.bucket);const selected=row.bucket===selectedCostInstanceId?' style="background:var(--brand-soft)"':'';const label=assistant?(assistant.name||assistant.instanceId):row.bucket;const userLabel=assistant?(assistant.owner?.displayName||assistant.owner?.id||'-'):'-';return '<tr'+selected+' onclick="selectCostAssistant(\\''+esc(row.bucket||'')+'\\')" style="cursor:pointer"><td><strong>'+esc(label||'-')+'</strong><div class="mono">'+esc(row.bucket||'-')+'</div></td><td>'+esc(userLabel)+'</td><td>'+esc(fmtNumber(row.calls))+'</td><td>'+esc(fmtNumber(row.totalTokens))+'</td><td>'+esc(fmtNumber(row.inputTokens))+'</td><td>'+esc(fmtNumber(row.outputTokens))+'</td><td>'+esc(fmtNumber(row.thoughtTokens))+'</td><td>'+esc(fmtNumber(row.cachedReadTokens))+'</td><td class="tnum"><strong>'+fmtCost(totalCost(row))+'</strong></td></tr>';}).join('')+'</tbody></table></div>';}
 function renderCodexUsageSummary(totals){return [stat(fmtNumber(totals.totalTokens),'Codex 总 Token'),stat(fmtNumber(totals.inputTokens),'输入 Token'),stat(fmtNumber(totals.outputTokens),'输出 Token'),stat(fmtNumber(totals.thoughtTokens),'推理 Token'),stat(fmtNumber(totals.cachedReadTokens),'缓存读取')].join('');}

@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { sqlite } from "../db/index.js";
-import { createAgent, type AcpAgent } from "../acp/agent.js";
-import type { AcpMessage, AcpResponse } from "../acp/protocol.js";
+import { createRuntimeAgent, type RuntimeAgent } from "../runtime/agent.js";
+import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser, type UserContext } from "../lib/user-context.js";
 import { ensureDefaultAiInstanceForUser } from "../lib/user-identity.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
@@ -96,7 +96,7 @@ type AutomationConversationBinding = {
 type PreparedAutomationConversation = {
   workspacePath: string;
   task: AutomationTaskRecord;
-  complete(response: AcpResponse): Promise<void>;
+  complete(response: AgentResponse): Promise<void>;
   fail(error: unknown): Promise<void>;
   cleanup(): Promise<void>;
 };
@@ -166,7 +166,7 @@ export function normalizeConversationScope(input: Partial<ConversationScope> = {
 }
 
 export async function ensureConversationRuntime(scope: ConversationScope) {
-  await ensureDefaultAiInstanceForUser(scope.userId, "codex");
+  await ensureDefaultAiInstanceForUser(scope.userId, "mastra");
   await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
 }
 
@@ -589,7 +589,7 @@ export async function chatViaConversationLog(input: {
   idempotencyKey?: string;
   clientSentAt?: string;
   /** Internal/test injection point; Portal routes never accept an agent body field. */
-  agent?: AcpAgent;
+  agent?: RuntimeAgent;
 }): Promise<ConversationChatResult> {
   if (input.idempotencyKey) {
     const pending = pendingPortalChats.get(input.idempotencyKey);
@@ -636,11 +636,11 @@ function automationScope(scope: ConversationScope): AutomationScope {
   return { userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId };
 }
 
-function assertAutomationAcpSucceeded(response: AcpResponse) {
+function assertAutomationAgentSucceeded(response: AgentResponse) {
   if (response.data?.executionStatus !== "failed") return;
   const code = typeof response.data.executionErrorCode === "string"
     ? response.data.executionErrorCode
-    : "ACP_TURN_FAILED";
+    : "AGENT_TURN_FAILED";
   throw new Error(code);
 }
 
@@ -699,7 +699,7 @@ async function prepareAutomationConversation(input: {
       workspacePath: stagingPath,
       task,
       async complete(response) {
-        assertAutomationAcpSucceeded(response);
+        assertAutomationAgentSucceeded(response);
         const outputStat = await lstat(workingPath).catch(() => null);
         if (!outputStat || outputStat.isSymbolicLink() || !outputStat.isFile()) {
           throw new Error("AUTOMATION_WORKING_OUTPUT_MISSING");
@@ -761,7 +761,7 @@ async function chatViaConversationLogOnce(input: {
   attachments?: IncomingPortalAttachment[];
   idempotencyKey?: string;
   clientSentAt?: string;
-  agent?: AcpAgent;
+  agent?: RuntimeAgent;
 }): Promise<ConversationChatResult> {
   const scope = normalizeConversationScope(input);
   if (input.idempotencyKey) {
@@ -855,8 +855,8 @@ async function chatViaConversationLogOnce(input: {
     }
   }
 
-  const agent = input.agent ?? createAgent();
-  const acpMessage: AcpMessage = {
+  const agent = input.agent ?? createRuntimeAgent();
+  const acpMessage: AgentMessage = {
     id: requestId,
     from: input.conversationId,
     timestamp: Date.now(),
@@ -883,7 +883,7 @@ async function chatViaConversationLogOnce(input: {
     instanceId: runtime?.instanceId || scope.instanceId,
     conversationId: input.conversationId,
   };
-  const persistResponse = async (response: AcpResponse, automationFailure: boolean, messageId?: string): Promise<ConversationChatResult> => {
+  const persistResponse = async (response: AgentResponse, automationFailure: boolean, messageId?: string): Promise<ConversationChatResult> => {
     const assistantText = response.content.text ?? "处理完成，但没有生成文本回复。";
     const inlineVisuals = Array.isArray(response.data?.inlineVisuals) ? response.data.inlineVisuals : undefined;
     const assistantMessage = appendConversationMessage({
@@ -937,7 +937,7 @@ async function chatViaConversationLogOnce(input: {
     await automationConversation?.cleanup();
   };
   markTurnStart({ ...turnScope, turnId: requestId });
-  let response: AcpResponse;
+  let response: AgentResponse;
   let automationFailure = false;
   try {
     response = await executeWithRetryPolicy(

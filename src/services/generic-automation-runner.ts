@@ -1,9 +1,9 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { createAgent } from "../acp/agent.js";
-import type { AcpMessage, AcpResponse } from "../acp/protocol.js";
-import { OUTPUT_VOLUME_POLICY } from "../acp/spreadsheet-output-policy.js";
+import { createRuntimeAgent } from "../runtime/agent.js";
+import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
+import { OUTPUT_VOLUME_POLICY } from "../runtime/spreadsheet-output-policy.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { enqueuePushJob } from "./push-queue.js";
 import {
@@ -38,7 +38,7 @@ export type GenericAutomationExecutor = (input: {
   inputs: UserAssetBytes[];
   writableTargets: Array<NonNullable<ResolvedOutput>>;
   spreadsheetHelper?: string;
-}) => Promise<AcpResponse>;
+}) => Promise<AgentResponse>;
 
 export type GenericAutomationRunResult = {
   run: AutomationTaskRunRecord;
@@ -116,7 +116,7 @@ export async function runGenericAutomationTaskNow(input: {
         writableTargets: resolved.writableTargets,
         spreadsheetHelper,
       });
-      assertAcpSucceeded(response);
+      assertAgentSucceeded(response);
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
       const result = normalizeStructuredResult(response, task, resolved);
       const output = await commitOutput(input.scope, task, run, result, resolved);
@@ -220,8 +220,8 @@ async function createStagingPath(scope: AutomationScope): Promise<string> {
   return stagingPath;
 }
 
-async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]): Promise<AcpResponse> {
-  const message: AcpMessage = {
+async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]): Promise<AgentResponse> {
+  const message: AgentMessage = {
     id: input.run.runId,
     from: `automation:${input.task.taskId}`,
     timestamp: Date.now(),
@@ -252,13 +252,13 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       taskType: "scheduled-automation",
     },
   };
-  const response = await createAgent().handleMessage(message);
+  const response = await createRuntimeAgent().handleMessage(message);
   return parseStructuredAcpResponse(response);
 }
 
 /** The ACP client exposes customer text, so generic runs use a strict JSON
  * envelope in the final response to carry the service-owned staged output. */
-function parseStructuredAcpResponse(response: AcpResponse): AcpResponse {
+function parseStructuredAcpResponse(response: AgentResponse): AgentResponse {
   if (response.data?.stagedOutput !== undefined || response.data?.summary !== undefined || response.data?.shouldNotify !== undefined) return response;
   const text = response.content.text?.trim() || "";
   const candidates = [text, text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || ""];
@@ -278,12 +278,12 @@ function parseStructuredAcpResponse(response: AcpResponse): AcpResponse {
   return response;
 }
 
-function assertAcpSucceeded(response: AcpResponse): void {
+function assertAgentSucceeded(response: AgentResponse): void {
   const error = executionResponseError(response);
   if (error) throw new AutomationExecutionFailure(error);
 }
 
-function normalizeStructuredResult(response: AcpResponse, task: AutomationTaskRecord, resolved: ResolvedBindings): {
+function normalizeStructuredResult(response: AgentResponse, task: AutomationTaskRecord, resolved: ResolvedBindings): {
   summary: string;
   shouldNotify: boolean;
   stagedOutput?: { operation: "create" | "update"; assetId?: string; fileName: string; mimeType?: string; base64: string };

@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { beijingDateKey, beijingNow, isBeijingTradingDay, readSchedules, type SchedulesYaml } from "../lib/schedules-loader.js";
-import { runScheduledMarketWatchTask } from "../acp/scheduled-tasks.js";
+import { runScheduledMarketWatchTask } from "../runtime/scheduled-tasks.js";
 import {
   claimScheduledTaskRun,
   finishScheduledTaskRun,

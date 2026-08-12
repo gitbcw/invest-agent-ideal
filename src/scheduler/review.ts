@@ -22,7 +22,7 @@ import { readSchedules, entryHitsNow, beijingNow, beijingDateKey } from "../lib/
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { runScheduledReviewTask } from "../acp/scheduled-tasks.js";
+import { runScheduledReviewTask } from "../runtime/scheduled-tasks.js";
 import {
   claimScheduledTaskRun,
   finishScheduledTaskRun,

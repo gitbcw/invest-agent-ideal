@@ -126,7 +126,7 @@ test("runMastraTurn maps text, usage, model, tool calls, and caller-owned histor
     source: "actual",
   });
   assert.deepEqual(result.toolCalls, [{
-    source: "acp-event",
+    source: "mastra-event",
     toolCallId: "call-1",
     toolName: "market.quote",
     status: "completed",

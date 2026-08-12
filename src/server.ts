@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { createAgent } from "./acp/agent.js";
-import type { AcpMessage, AcpResponse } from "./acp/protocol.js";
+import { createRuntimeAgent } from "./runtime/agent.js";
+import type { AgentMessage, AgentResponse } from "./runtime/protocol.js";
 import { config } from "./lib/config.js";
 import { logger } from "./lib/logger.js";
 import { listSchedulableScopes, registerPush, triggerScheduledMarketWatchNow, triggerScheduledReviewNow } from "./scheduler/index.js";
@@ -17,7 +17,7 @@ import type { WeixinDeliveryResult } from "./services/weixin-delivery.js";
 import { ensureBuiltInAiProjects } from "./platform/project-registry.js";
 import { instanceIdFromRequest, userIdFromRequest } from "./lib/user-context.js";
 import { db } from "./db/index.js";
-import { codexAcpTraces, pushJobs, scheduledTaskRuns } from "./db/schema.js";
+import { agentTraces, pushJobs, scheduledTaskRuns } from "./db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
 import { assertServiceAuthConfiguration, hasServiceApiAuthorization, isPublicServicePath, isSandboxPath } from "./lib/service-auth.js";
 import { hasPlatformSession, isLoopbackAddress } from "./lib/platform-session.js";
@@ -25,7 +25,7 @@ import { hasPersistentPlatformSession } from "./lib/platform-auth.js";
 import { consumeRequestRateLimit } from "./lib/request-rate-limit.js";
 import { recoverInterruptedConversationTaskRuns } from "./services/conversation-task-runs.js";
 
-const agent = createAgent();
+const agent = createRuntimeAgent();
 
 /** 待推送消息队列（OpenClaw 轮询取走） */
 let pendingAlerts: string[] = [];
@@ -101,7 +101,7 @@ export async function createServer() {
         .send({ ok: false, error: "service api authorization required" });
     }
     const clientKey = `${request.ip}:${request.url.split("?")[0]}`;
-    const limit = request.url.startsWith("/acp/message") ? 30 : 120;
+    const limit = request.url.startsWith("/agent/message") ? 30 : 120;
     const result = consumeRequestRateLimit({ key: clientKey, max: limit, windowMs: 60_000 });
     if (!result.allowed) {
       return reply.header("retry-after", String(result.retryAfterSeconds)).status(429).send({ ok: false, error: "rate limit exceeded" });
@@ -127,7 +127,7 @@ export async function createServer() {
   registerPush(async (message, options) => {
     const job = await enqueuePushJob({
       userId: options?.userId,
-      backend: config.acp.backend,
+      backend: config.agent.backend,
       projectId: options?.projectId,
       instanceId: options?.instanceId,
       source: "scheduler",
@@ -182,34 +182,34 @@ export async function createServer() {
     };
   });
 
-  // ACP Agent 信息（OpenClaw 发现用）
+  // Agent discovery information.
   app.get("/.well-known/agent.json", async () => ({
     agent_id: agent.agentId,
     name: agent.agentName,
     description: "A 股投资选股智能助手，支持选股分析、持仓管理、复盘提醒",
     capabilities: agent.capabilities,
-    protocol: "acp-1.0",
-    endpoint: `/acp/message`,
+    protocol: "invest-agent-runtime-1.0",
+    endpoint: `/agent/message`,
   }));
 
-  // ACP 消息端点 — OpenClaw 转发微信消息到这里
-  app.post<{ Body: AcpMessage }>(
-    "/acp/message",
-    async (request, reply): Promise<AcpResponse> => {
+  // Channel adapters forward messages to this runtime endpoint.
+  app.post<{ Body: AgentMessage }>(
+    "/agent/message",
+    async (request, reply): Promise<AgentResponse> => {
       const message = request.body;
-      logger.info(`ACP 收到消息 from=${message.from}`);
+      logger.info(`Agent 收到消息 from=${message.from}`);
       return agent.handleMessage(message);
     }
   );
 
   // 待推送提醒 — OpenClaw 轮询取走
-  app.get("/acp/alerts", async () => {
+  app.get("/agent/alerts", async () => {
     const alerts = [...pendingAlerts];
     pendingAlerts = [];
     return { alerts };
   });
 
-  // 简单测试端点（不经过 ACP，直接对话）
+  // Simple local chat endpoint.
   app.post<{ Body: { message: string; userId?: string; workspacePath?: string; channel?: "weixin-mobile" | "api" } }>(
     "/api/chat",
     async (request, reply) => {
@@ -226,7 +226,7 @@ export async function createServer() {
         resolvedWorkspacePath = resolved.path;
       }
 
-      const acpMessage: AcpMessage = {
+      const agentMessage: AgentMessage = {
         id: `test-${Date.now()}`,
         from: userId || "test",
         timestamp: Date.now(),
@@ -242,7 +242,7 @@ export async function createServer() {
           : {}),
       };
 
-      const response = await agent.handleMessage(acpMessage);
+      const response = await agent.handleMessage(agentMessage);
       return response;
     }
   );
@@ -334,7 +334,7 @@ export async function createServer() {
       const job = await enqueuePushJob({
         userId,
         instanceId,
-        backend: "hermes",
+        backend: "mastra",
         source: "manual-alert-check",
         message: text,
       });
@@ -395,13 +395,13 @@ export async function createServer() {
 
     const [trace] = await db
       .select()
-      .from(codexAcpTraces)
+      .from(agentTraces)
       .where(and(
-        eq(codexAcpTraces.userId, userId),
-        eq(codexAcpTraces.instanceId, instanceId),
-        eq(codexAcpTraces.conversationId, `scheduler:${task === "market-watch" ? "market-watch" : `${task.replace("-review", "")}-review`}:${userId}:${instanceId}`),
+        eq(agentTraces.userId, userId),
+        eq(agentTraces.instanceId, instanceId),
+        eq(agentTraces.conversationId, `scheduler:${task === "market-watch" ? "market-watch" : `${task.replace("-review", "")}-review`}:${userId}:${instanceId}`),
       ))
-      .orderBy(desc(codexAcpTraces.createdAt))
+      .orderBy(desc(agentTraces.createdAt))
       .limit(1);
 
     const [pushJob] = result.pushJobId
@@ -436,8 +436,8 @@ export async function startServer() {
       `🚀 ${agent.agentName} 启动成功 — http://${config.host}:${config.port}`
     );
     logger.info(`健康检查: http://localhost:${config.port}/health`);
-    logger.info(`ACP 端点: http://localhost:${config.port}/acp/message`);
-    logger.info(`提醒轮询: http://localhost:${config.port}/acp/alerts`);
+    logger.info(`Agent 端点: http://localhost:${config.port}/agent/message`);
+    logger.info(`提醒轮询: http://localhost:${config.port}/agent/alerts`);
     logger.info(`平台管理: http://localhost:${config.port}/platform`);
 
     if (process.env.WEIXIN_AUTO_START !== "false" && weixinMobileManager.getState().stage === "connected") {

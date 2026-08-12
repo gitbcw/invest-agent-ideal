@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { buildMobilePrompt } from "../src/acp/mobile-prompt.js";
+import { buildMobilePrompt } from "../src/runtime/mobile-prompt.js";
 
 const reviewContext = {
   date: "2026-07-22",

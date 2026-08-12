@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { createAgent } from "../acp/agent.js";
-import type { AcpMessage, AcpResponse } from "../acp/protocol.js";
+import { createRuntimeAgent } from "../runtime/agent.js";
+import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import {
   appendConversationMessage,
@@ -40,11 +40,11 @@ export type AutomationRunResult = {
  * successful file-maintenance result. Keep the transport distinction here so
  * the staged working file is never committed after a failed ACP turn.
  */
-function assertAutomationAcpSucceeded(response: AcpResponse) {
+function assertAutomationAgentSucceeded(response: AgentResponse) {
   if (response.data?.executionStatus !== "failed") return;
   const errorCode = typeof response.data.executionErrorCode === "string"
     ? response.data.executionErrorCode
-    : "ACP_TURN_FAILED";
+    : "AGENT_TURN_FAILED";
   throw new Error(errorCode);
 }
 
@@ -67,7 +67,7 @@ function taskPrompt(task: AutomationTaskRecord) {
   ].join("\n");
 }
 
-async function executeAcp(
+async function executeAgent(
   scope: AutomationScope,
   task: AutomationTaskRecord,
   run: AutomationTaskRunRecord,
@@ -99,7 +99,7 @@ async function executeAcp(
     ]);
     await writeAutomationSpreadsheetHelper(stagingPath);
 
-    const message: AcpMessage = {
+    const message: AgentMessage = {
       id: run.runId,
       from: conversationId || `automation:${task.taskId}`,
       timestamp: Date.now(),
@@ -114,8 +114,8 @@ async function executeAcp(
         taskType: "scheduled-automation",
       },
     };
-    const response = await createAgent().handleMessage(message);
-    assertAutomationAcpSucceeded(response);
+    const response = await createRuntimeAgent().handleMessage(message);
+    assertAutomationAgentSucceeded(response);
     const stagedWorkingPath = path.join(workingPath, task.workingAsset.fileName);
     const stagedStat = await lstat(stagedWorkingPath).catch(() => null);
     if (!stagedStat || stagedStat.isSymbolicLink() || !stagedStat.isFile()) {
@@ -145,7 +145,7 @@ export async function runAutomationTaskNow(input: {
   origin: "manual" | "scheduled";
   idempotencyKey: string;
   scheduledFor?: string;
-  executor?: typeof executeAcp;
+  executor?: typeof executeAgent;
 }): Promise<AutomationRunResult> {
   const task = await getAutomationTask({ ...input.scope, taskId: input.taskId });
   if (!task) throw new Error(`AUTOMATION_TASK_NOT_FOUND:${input.taskId}`);
@@ -187,8 +187,8 @@ export async function runAutomationTaskNow(input: {
   const conversationId = undefined;
 
   try {
-    const response = await (input.executor || executeAcp)(input.scope, task, run, conversationId, run.leaseToken);
-    assertAutomationAcpSucceeded(response);
+    const response = await (input.executor || executeAgent)(input.scope, task, run, conversationId, run.leaseToken);
+    assertAutomationAgentSucceeded(response);
     await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
     const working = task.workingAsset ? await refreshAutomationTaskWorkingAsset({ ...input.scope, taskId: task.taskId, revisionId: task.currentRevisionId || undefined }) : null;
     const resultSummary = response.content.text || "自动化运行完成。";

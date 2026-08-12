@@ -8,7 +8,7 @@ import { hasActiveWeixinComplexTask } from "../channels/weixin-activity.js";
 import { sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { recordWeixinDeliveryAttempt, type WeixinDeliveryResult } from "./weixin-delivery.js";
 
-export type PushBackend = "hermes" | "codex";
+export type PushBackend = "mastra";
 export type PushChannel = "weixin-mobile";
 
 export interface PushJobInput {
@@ -62,7 +62,7 @@ export async function enqueuePushJob(input: PushJobInput) {
     projectId: input.projectId || DEFAULT_PROJECT_ID,
     instanceId: input.instanceId || DEFAULT_INSTANCE_ID,
     channel: input.channel || "weixin-mobile",
-    backend: input.backend || "codex",
+    backend: input.backend || "mastra",
     source: input.source || "scheduler",
     idempotencyKey: input.idempotencyKey,
     messageKind: input.messageKind,

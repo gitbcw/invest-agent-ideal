@@ -14,7 +14,7 @@
  */
 
 import { sqlite } from "../db/index.js";
-import { getMcpRegistry } from "../acp/mcp-registry.js";
+import { getMcpRegistry } from "../mcp/mcp-registry.js";
 
 export type McpServerOverride = {
   serverId: string;

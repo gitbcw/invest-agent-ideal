@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildChannelContextInstruction } from "../src/acp/agent.js";
+import { buildChannelContextInstruction } from "../src/runtime/agent.js";
 
 test("web channel teaches the proactive inline SVG selection policy", () => {
   const instruction = buildChannelContextInstruction("web") || "";

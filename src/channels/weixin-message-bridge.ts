@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { createAgent, type AcpAgent } from "../acp/agent.js";
-import { clearAcpSessions } from "../acp/stdio-agent.js";
+import { createRuntimeAgent, type RuntimeAgent } from "../runtime/agent.js";
 import { sanitizeCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
 import { resolveOrCreateChannelUser } from "../lib/user-identity.js";
@@ -181,7 +180,7 @@ export class InvestAgentMobileBridge {
     private readonly accountId: string,
     private readonly stateDir = config.weixin.stateDir,
     private readonly projectBinding?: WeixinProjectBinding,
-    private readonly agent: AcpAgent = createAgent(),
+    private readonly agent: RuntimeAgent = createRuntimeAgent(),
   ) {}
 
   async chat(request: WeixinChatRequest): Promise<{ text?: string }> {
@@ -257,7 +256,7 @@ export class InvestAgentMobileBridge {
     const contextToken = [...items].reverse().find((item) => item.contextToken)?.contextToken;
     const userContext = await resolveOrCreateChannelUser({
       channel: "weixin-mobile",
-      backend: config.acp.backend,
+      backend: config.agent.backend,
       externalUserId: conversationId,
       externalAccountId: this.accountId,
       conversationId,
@@ -436,7 +435,6 @@ export class InvestAgentMobileBridge {
       const batch = this.inboundBatches.get(conversationId);
       if (batch?.timer) clearTimeout(batch.timer);
       this.inboundBatches.delete(conversationId);
-      clearAcpSessions(conversationId);
     }
   }
 }

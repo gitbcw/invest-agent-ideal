@@ -1,33 +1,29 @@
-import type { AcpMessage, AcpResponse } from "./protocol.js";
+import type { AgentMessage, AgentResponse } from "./protocol.js";
 import { textResponse } from "./protocol.js";
 import { logger } from "../lib/logger.js";
-import { config } from "../lib/config.js";
-import { getCurrentAcpAgent, loadCurrentBackendId } from "./stdio-agent.js";
-import { AcpBudgetExhaustedError, TOOL_BUDGET_EXHAUSTED_CODE } from "./budget-convergence.js";
 import { dedupeRepeatedCustomerText, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
-import { recordAcpTrace } from "./trace.js";
+import { recordAgentTrace } from "../runtime/trace.js";
 import { DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import type { UserContext } from "../lib/user-context.js";
-import { buildAcpPromptContext } from "./prompt-context-builder.js";
+import { buildAgentPromptContext } from "./prompt-context-builder.js";
 import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 import { classifyTaskError } from "../services/task-execution.js";
 import { OUTPUT_VOLUME_POLICY } from "./spreadsheet-output-policy.js";
-import { selectExecutionBackend } from "../mastra/backend-selection.js";
 import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 
-const WEIXIN_DIRECT_ACP_TIMEOUT_MS =
-  resolvePositiveTimeoutMs("WEIXIN_DIRECT_ACP_TIMEOUT_MS", 600_000);
+const WEIXIN_DIRECT_AGENT_TIMEOUT_MS =
+  resolvePositiveTimeoutMs("WEIXIN_DIRECT_AGENT_TIMEOUT_MS", 600_000);
 // The Portal Relay keeps a small buffer beyond the total execution budget so
 // the connector can persist the runtime's terminal response.
-let portalDirectAcpTimeoutMs =
-  resolvePositiveTimeoutMs("PORTAL_DIRECT_ACP_TIMEOUT_MS", 600_000);
+let portalDirectAgentTimeoutMs =
+  resolvePositiveTimeoutMs("PORTAL_DIRECT_AGENT_TIMEOUT_MS", 600_000);
 export const PORTAL_EXECUTION_BUDGET_MS =
   resolvePositiveTimeoutMs("PORTAL_EXECUTION_BUDGET_MS", 1_200_000);
 try {
-  validatePortalRuntimeTimeouts(portalDirectAcpTimeoutMs, PORTAL_EXECUTION_BUDGET_MS);
+  validatePortalRuntimeTimeouts(portalDirectAgentTimeoutMs, PORTAL_EXECUTION_BUDGET_MS);
 } catch (error) {
   // Older production environments may have equal timeout values. Keep the
   // strict validator for explicit callers, but fail closed at startup with a
@@ -37,22 +33,22 @@ try {
   logger.warn(
     `Invalid Portal timeout configuration; using safe direct timeout ${safeDirectTimeoutMs}ms: ${formatUnknownError(error)}`,
   );
-  portalDirectAcpTimeoutMs = safeDirectTimeoutMs;
-  validatePortalRuntimeTimeouts(portalDirectAcpTimeoutMs, PORTAL_EXECUTION_BUDGET_MS);
+  portalDirectAgentTimeoutMs = safeDirectTimeoutMs;
+  validatePortalRuntimeTimeouts(portalDirectAgentTimeoutMs, PORTAL_EXECUTION_BUDGET_MS);
 }
-export const PORTAL_DIRECT_ACP_TIMEOUT_MS = portalDirectAcpTimeoutMs;
-const ACP_EVALUATION_CASE_TIMEOUT_MS = Number(process.env.ACP_EVAL_CASE_TIMEOUT_MS) || 0;
+export const PORTAL_DIRECT_AGENT_TIMEOUT_MS = portalDirectAgentTimeoutMs;
+const AGENT_EVALUATION_CASE_TIMEOUT_MS = Number(process.env.AGENT_EVAL_CASE_TIMEOUT_MS) || 0;
 
-export function validatePortalRuntimeTimeouts(directAcpTimeoutMs: number, executionBudgetMs: number): void {
-  if (!Number.isInteger(directAcpTimeoutMs) || directAcpTimeoutMs <= 0) {
-    throw new Error(`PORTAL_DIRECT_ACP_TIMEOUT_MS must be a positive integer: ${directAcpTimeoutMs}`);
+export function validatePortalRuntimeTimeouts(directAgentTimeoutMs: number, executionBudgetMs: number): void {
+  if (!Number.isInteger(directAgentTimeoutMs) || directAgentTimeoutMs <= 0) {
+    throw new Error(`PORTAL_DIRECT_AGENT_TIMEOUT_MS must be a positive integer: ${directAgentTimeoutMs}`);
   }
   if (!Number.isInteger(executionBudgetMs) || executionBudgetMs <= 0) {
     throw new Error(`PORTAL_EXECUTION_BUDGET_MS must be a positive integer: ${executionBudgetMs}`);
   }
-  if (directAcpTimeoutMs >= executionBudgetMs) {
+  if (directAgentTimeoutMs >= executionBudgetMs) {
     throw new Error(
-      `PORTAL_DIRECT_ACP_TIMEOUT_MS (${directAcpTimeoutMs}) must be less than PORTAL_EXECUTION_BUDGET_MS (${executionBudgetMs})`,
+      `PORTAL_DIRECT_AGENT_TIMEOUT_MS (${directAgentTimeoutMs}) must be less than PORTAL_EXECUTION_BUDGET_MS (${executionBudgetMs})`,
     );
   }
 }
@@ -67,17 +63,17 @@ function resolvePositiveTimeoutMs(name: string, fallback: number): number {
   return value;
 }
 
-export interface AcpAgent {
+export interface RuntimeAgent {
   agentId: string;
   agentName: string;
   capabilities: string[];
-  handleMessage(message: AcpMessage): Promise<AcpResponse>;
+  handleMessage(message: AgentMessage): Promise<AgentResponse>;
 }
 
-export function createAgent(): AcpAgent {
+export function createRuntimeAgent(): RuntimeAgent {
   return {
-    agentId: config.acp.agentId,
-    agentName: config.acp.agentName,
+    agentId: process.env.AGENT_ID || "invest-agent",
+    agentName: process.env.AGENT_NAME || "投资选股助手",
     capabilities: [
       "chat",
       "portfolio",
@@ -89,13 +85,13 @@ export function createAgent(): AcpAgent {
       "stock_plan",
     ],
 
-    async handleMessage(message: AcpMessage): Promise<AcpResponse> {
+    async handleMessage(message: AgentMessage): Promise<AgentResponse> {
       const text = message.content.text;
       if (!text) {
         return textResponse("请发送文字消息");
       }
 
-      logger.info(`ACP 主链路收到消息: ${text.slice(0, 100)}`);
+      logger.info(`Agent 主链路收到消息: ${text.slice(0, 100)}`);
       const startedAt = Date.now();
       const conversationId = String(
         message.context?.conversationId || message.from || "invest-agent"
@@ -107,7 +103,6 @@ export function createAgent(): AcpAgent {
       try {
         const userChannel: UserContext["channel"] =
           channel === "weixin-mobile" || channel === "dashboard" || channel === "api" || channel === "web" ? channel : "api";
-        const activeBackend = await loadCurrentBackendId();
         const userContext: UserContext = {
           userId,
           projectId: message.context?.projectId ? String(message.context.projectId) : undefined,
@@ -119,122 +114,59 @@ export function createAgent(): AcpAgent {
             ? message.context.mcpAllowedTools.filter((item): item is string => typeof item === "string")
             : undefined,
           channel: userChannel,
-          backend: activeBackend,
           conversationId,
         };
 
-        const promptContext = await buildAcpPromptContext({
+        const promptContext = await buildAgentPromptContext({
           userText: buildChannelForwardPrompt(text, userContext, message.context?.attachments),
           userContext,
           includeContextPacket: false,
         });
-        const executionBackend = selectExecutionBackend(userContext);
-        if (executionBackend.backend === "mastra") {
-          const mastraTools = await createMastraToolMap({ ...userContext, instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId) });
-          const externalMcp = await resolveExternalMastraToolsets("interactive");
-          try {
+        const mastraTools = await createMastraToolMap({ ...userContext, instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId) });
+        const externalMcp = await resolveExternalMastraToolsets("interactive");
+        try {
           const mastraResult = await runMastraTurn({
             conversationId,
             text: promptContext.promptText,
             messageId: message.id,
             timeoutMs: userChannel === "weixin-mobile"
-              ? WEIXIN_DIRECT_ACP_TIMEOUT_MS
+              ? WEIXIN_DIRECT_AGENT_TIMEOUT_MS
               : userChannel === "web"
-                ? PORTAL_DIRECT_ACP_TIMEOUT_MS
-                : ACP_EVALUATION_CASE_TIMEOUT_MS > 0 ? ACP_EVALUATION_CASE_TIMEOUT_MS : undefined,
-            cwd: resolveAcpWorkspaceCwd(userContext),
+                ? PORTAL_DIRECT_AGENT_TIMEOUT_MS
+                : AGENT_EVALUATION_CASE_TIMEOUT_MS > 0 ? AGENT_EVALUATION_CASE_TIMEOUT_MS : undefined,
+            cwd: resolveRuntimeWorkspaceCwd(userContext),
             userContext,
             toolsets: externalMcp.toolsets,
           }, { agentOptions: { tools: mastraTools } });
-          const postProcessed = await postProcessAcpReply({ reply: mastraResult.text, userContext, originalText: text });
+          const postProcessed = await postProcessAgentReply({ reply: mastraResult.text, userContext, originalText: text });
           const extractedVisuals = userChannel === "web"
             ? extractInlineSvgVisuals(postProcessed.finalReply)
             : { text: postProcessed.finalReply, visuals: [] };
           const deduped = dedupeRepeatedCustomerText(extractedVisuals.text);
           const cleaned = userChannel === "weixin-mobile" ? sanitizeWeixinCustomerText(deduped) : sanitizeCustomerText(deduped);
-          await recordAcpTrace({
+          await recordAgentTrace({
             userId, projectId: userContext.projectId, instanceId: userContext.instanceId,
             conversationId, messageId: message.id, channel, userText: text,
             promptText: promptContext.promptText, replyTextRaw: postProcessed.finalReply,
             replyTextSanitized: cleaned, mode, reviewContextSummary: { budget: mastraResult.budget },
             status: "success", elapsedMs: Date.now() - startedAt, usage: mastraResult.usage,
-            acpBackend: "mastra", acpModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
+            agentBackend: "mastra", agentModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
           });
           return textResponse(cleaned, true, extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined);
-          } finally {
-            await externalMcp.disconnect();
-          }
+        } finally {
+          await externalMcp.disconnect();
         }
-        const acpAgent = await getCurrentAcpAgent(userContext.workspacePath);
-        const acpResult = await acpAgent.chatWithUsage({
-          conversationId,
-          text: promptContext.promptText,
-          // Reuse the service message id so the ACP trace and external MCP observer
-          // share one stable per-turn correlation key.
-          messageId: message.id,
-          timeoutMs: userChannel === "weixin-mobile"
-            ? WEIXIN_DIRECT_ACP_TIMEOUT_MS
-            : userChannel === "web"
-              ? PORTAL_DIRECT_ACP_TIMEOUT_MS
-            : ACP_EVALUATION_CASE_TIMEOUT_MS > 0
-              ? ACP_EVALUATION_CASE_TIMEOUT_MS
-              : undefined,
-          cwd: resolveAcpWorkspaceCwd(userContext),
-          userContext,
-        });
-        const postProcessed = await postProcessAcpReply({
-          reply: acpResult.text,
-          userContext,
-          originalText: text,
-        });
-        const extractedVisuals = userChannel === "web"
-          ? extractInlineSvgVisuals(postProcessed.finalReply)
-          : { text: postProcessed.finalReply, visuals: [] };
-        const deduped = dedupeRepeatedCustomerText(extractedVisuals.text);
-        const cleaned = userChannel === "weixin-mobile"
-          ? sanitizeWeixinCustomerText(deduped)
-          : sanitizeCustomerText(deduped);
-        await recordAcpTrace({
-          userId,
-          projectId: userContext.projectId,
-          instanceId: userContext.instanceId,
-          conversationId,
-          messageId: message.id,
-          channel,
-          userText: text,
-          promptText: promptContext.promptText,
-          replyTextRaw: postProcessed.finalReply,
-          replyTextSanitized: cleaned,
-          mode,
-          reviewContextSummary: { budget: acpResult.budget },
-          status: "success",
-          elapsedMs: Date.now() - startedAt,
-          usage: acpResult.usage,
-          acpBackend: acpResult.backendId,
-          acpModel: acpResult.model,
-          mcpManifest: acpResult.mcpManifest,
-          toolCalls: acpResult.toolCalls,
-        });
-        return textResponse(
-          cleaned,
-          true,
-          extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined,
-        );
       } catch (error) {
-        logger.error("转发 ACP 后端失败:", error);
+        logger.error("Agent 运行失败:", error);
         const errorMessage = formatUnknownError(error);
         const taskError = classifyTaskError(errorMessage);
-        const budgetExhausted = error instanceof AcpBudgetExhaustedError
-          || errorMessage.includes(TOOL_BUDGET_EXHAUSTED_CODE);
-        const isBusy = errorMessage.includes("ACP_TURN_BUSY") || errorMessage.includes("turn.agent_busy");
+        const isBusy = errorMessage.includes("MASTRA_TURN_BUSY");
         const executionErrorCode = isBusy
-          ? "ACP_TURN_BUSY"
-          : budgetExhausted
-            ? TOOL_BUDGET_EXHAUSTED_CODE
+          ? "MASTRA_TURN_BUSY"
           : taskError.code === "TASK_TIMEOUT"
-            ? "ACP_TURN_TIMEOUT"
+            ? "MASTRA_TURN_TIMEOUT"
             : taskError.code;
-        await recordAcpTrace({
+        await recordAgentTrace({
           userId,
           projectId: message.context?.projectId ? String(message.context.projectId) : undefined,
           instanceId: message.context?.instanceId ? String(message.context.instanceId) : undefined,
@@ -243,14 +175,11 @@ export function createAgent(): AcpAgent {
           channel,
           userText: text,
           mode,
-          reviewContextSummary: budgetExhausted && error instanceof AcpBudgetExhaustedError
-            ? { budget: error.budget }
-            : undefined,
+          reviewContextSummary: undefined,
           status: errorMessage.includes("超时") ? "timeout" : "error",
           errorMessage,
           elapsedMs: Date.now() - startedAt,
-          acpBackend: config.acp.backend,
-          acpModel: config.codex.model,
+          agentBackend: "mastra",
         });
         if (isBusy) {
           return textResponse(
@@ -266,7 +195,7 @@ export function createAgent(): AcpAgent {
             executionStatus: "failed",
             executionErrorCode,
             executionErrorCategory: taskError.category,
-            executionRetryable: budgetExhausted ? false : taskError.retryable,
+            executionRetryable: taskError.retryable,
           },
         );
       }
@@ -274,7 +203,7 @@ export function createAgent(): AcpAgent {
   };
 }
 
-async function postProcessAcpReply(input: {
+async function postProcessAgentReply(input: {
   reply: string;
   userContext: UserContext;
   originalText: string;
@@ -343,6 +272,6 @@ export function buildChannelContextInstruction(channel: UserContext["channel"]):
   return null;
 }
 
-function resolveAcpWorkspaceCwd(context: UserContext): string | undefined {
+function resolveRuntimeWorkspaceCwd(context: UserContext): string | undefined {
   return context.workspacePath || undefined;
 }

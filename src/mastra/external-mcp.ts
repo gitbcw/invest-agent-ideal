@@ -1,4 +1,4 @@
-import { buildExternalRegistrations, isExternalRegistrationActivated } from "../acp/external-mcp-registrations.js";
+import { buildExternalRegistrations, isExternalRegistrationActivated } from "../mcp/external-mcp-registrations.js";
 
 export interface ResolvedExternalMcp {
   id: string;

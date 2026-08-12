@@ -16,7 +16,7 @@
  */
 
 const { getCurrentAcpAgent, disposeAcpForWorkspace } = await import("../dist/acp/stdio-agent.js");
-const { resetMcpRegistryForTest } = await import("../dist/acp/mcp-registry.js");
+const { resetMcpRegistryForTest } = await import("../dist/mcp/mcp-registry.js");
 
 const probeStart = new Date().toISOString();
 const MARKET_DATA_MCP_URL = process.env.MARKET_DATA_MCP_URL;

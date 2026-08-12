@@ -551,7 +551,7 @@ test("records an ACP failure as failed and never commits the staged working file
     executor: async () => ({
       content: { type: "text" as const, text: "这次回复生成失败了，请稍后重试。" },
       finished: true,
-      data: { executionStatus: "failed", executionErrorCode: "ACP_TURN_FAILED" },
+      data: { executionStatus: "failed", executionErrorCode: "AGENT_TURN_FAILED" },
     }),
   });
 

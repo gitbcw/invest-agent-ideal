@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { buildMarketWatchTaskPrompt } from "../src/acp/scheduled-tasks.js";
+import { buildMarketWatchTaskPrompt } from "../src/runtime/scheduled-tasks.js";
 
 test("R4: market-watch prompt does not force named tools or forbid NO_PUSH", () => {
   const prompt = buildMarketWatchTaskPrompt({ userId: "user-a", instanceId: "instance-a" }, "scheduled_intraday_brief");

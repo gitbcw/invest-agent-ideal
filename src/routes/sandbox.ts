@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "../db/index.js";
-import { alertEvents, alertRules, codexAcpTraces, indicatorResults, investmentProfiles, methodologyProfiles } from "../db/schema.js";
+import { agentTraces, alertEvents, alertRules, indicatorResults, investmentProfiles, methodologyProfiles } from "../db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
@@ -1032,7 +1032,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
           const all = await dailyPlanBackend.listInRange(ctx.userId, ctx.instanceId, startDate, endDate);
           return all.slice(0, 5);
         })(),
-        db.select().from(codexAcpTraces).where(and(eq(codexAcpTraces.userId, ctx.userId), eq(codexAcpTraces.instanceId, ctx.instanceId))).orderBy(desc(codexAcpTraces.createdAt)).limit(20),
+        db.select().from(agentTraces).where(and(eq(agentTraces.userId, ctx.userId), eq(agentTraces.instanceId, ctx.instanceId))).orderBy(desc(agentTraces.createdAt)).limit(20),
         // WP4.9:method_change_candidates 走 backend。
         // 只回最近 7 天的 proposed 候选,避免老候选当作"待确认操作"污染 agent 上下文。
         methodChangeBackend.list(ctx.userId, ctx.instanceId, { status: "proposed", limit: 20, maxAgeDays: 7 }),
@@ -1752,7 +1752,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     let pushed = false;
     let pushJobId: string | undefined;
     if (items.length > 0) {
-      const backend = "hermes" satisfies PushBackend;
+      const backend = "mastra" satisfies PushBackend;
       const job = await enqueuePushJob({
         userId: ctx.userId,
         projectId: ctx.projectId,
@@ -1763,9 +1763,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       });
       pushJobId = job.id;
       await processDuePushJobs(async (dueJob) => {
-        if (dueJob.backend === "hermes") {
-          // 旁路微信通道已下线,降级到主桥
-        }
         return weixinMobileManager.pushText(dueJob.message, { userId: dueJob.userId });
       }, { limit: 5 });
       const updated = await getPushJob(job.id);
@@ -1775,7 +1772,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       operation: "alerts.check_and_push",
       resourceType: "alert_check",
       requestBody: request.body,
-        resultSummary: `backend=${ctx.backend ?? "hermes"}; count=${items.length}; pushed=${pushed}; pushJobId=${pushJobId ?? "-"}`,
+      resultSummary: `backend=${ctx.backend ?? "mastra"}; count=${items.length}; pushed=${pushed}; pushJobId=${pushJobId ?? "-"}`,
     });
     return { ok: true, userId: ctx.userId, count: items.length, pushed, pushJobId, alerts: items, text };
   }));

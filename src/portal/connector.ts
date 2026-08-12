@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { initDb, sqlite } from "../db/index.js";
-import { disposeAllAcp } from "../acp/stdio-agent.js";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
@@ -1206,7 +1205,6 @@ export function startPortalConnector() {
     return {
       stop() {
         connector.stop();
-        disposeAllAcp();
       },
     };
   }
@@ -1251,7 +1249,6 @@ export function startPortalConnector() {
       if (keepAliveTimer) clearInterval(keepAliveTimer);
       for (const connector of connectors.values()) connector.stop();
       connectors.clear();
-      disposeAllAcp();
     },
   };
 }
