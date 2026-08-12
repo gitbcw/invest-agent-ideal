@@ -2,14 +2,17 @@
 // 含：对话/推送 scope 切换 + 用户/助手/条数筛选 + 时间线（原始 vs 清洗双列对比 + 技术字段 + token/cost badge）。
 
 export const AUDIT_JS = `
-function setAuditScope(scope){AUDIT_SCOPE=scope==='push'?'push':'conversation';renderAuditScope();loadAudit();}
+function setAuditScope(scope){AUDIT_SCOPE=scope==='push'?'push':(scope==='automation'?'automation':'conversation');renderAuditScope();loadAudit();}
 function renderAuditScope(){
-  const isPush=AUDIT_SCOPE==='push';
+  const segmented=document.querySelector('#auditScopePush')?.parentElement;
+  if(segmented&&!document.getElementById('auditScopeAutomation')){const button=document.createElement('button');button.id='auditScopeAutomation';button.className='segment';button.textContent='自动化任务';button.onclick=()=>setAuditScope('automation');segmented.appendChild(button);}
+  const isPush=AUDIT_SCOPE==='push';const isAutomation=AUDIT_SCOPE==='automation';
   document.getElementById('auditScopeConversation')?.classList.toggle('active',!isPush);
   document.getElementById('auditScopePush')?.classList.toggle('active',isPush);
-  document.getElementById('auditScopeHint').textContent=isPush?'推送审计':'对话审计';
-  document.getElementById('auditTimelineTitle').textContent=isPush?'推送时间线':'对话时间线';
-  document.getElementById('auditHelp').textContent=isPush?'推送审计查看主动推送入队正文、调度任务状态和关联的 scheduler LLM trace。':'对话审计查看微信/Web 用户消息进入 Codex 后的原始回复、清洗回复和入站提示。';
+  document.getElementById('auditScopeAutomation')?.classList.toggle('active',isAutomation);
+  document.getElementById('auditScopeHint').textContent=isPush?'推送审计':(isAutomation?'自动化任务':'对话审计');
+  document.getElementById('auditTimelineTitle').textContent=isPush?'推送时间线':(isAutomation?'自动化运行历史':'对话时间线');
+  document.getElementById('auditHelp').textContent=isPush?'推送审计查看主动推送入队正文、调度任务状态和关联的 scheduler LLM trace。':(isAutomation?'自动化任务查看每次运行、失败分类、重试属性和交付状态。':'对话审计查看微信/Web 用户消息进入 Codex 后的原始回复、清洗回复和入站提示。');
 }
 async function loadAudit(){
   const userId=document.getElementById('auditUser')?.value||'';
@@ -17,10 +20,10 @@ async function loadAudit(){
   const limit=document.getElementById('auditLimit')?.value||'30';
   const params=new URLSearchParams();if(userId)params.set('userId',userId);if(instanceId)params.set('instanceId',instanceId);params.set('limit',limit);params.set('scope',AUDIT_SCOPE);
   try{
-    const res=await fetch('/api/platform/audit?'+params.toString());
+    const res=await fetch((AUDIT_SCOPE==='automation'?'/api/platform/automation-runs?':'/api/platform/audit?')+params.toString());
     AUDIT=await res.json();
     if(!AUDIT.ok)throw new Error(AUDIT.error||'审计接口返回失败');
-    AUDIT_SCOPE=AUDIT.filters?.scope==='push'?'push':'conversation';
+    AUDIT_SCOPE=AUDIT_SCOPE==='automation'?'automation':(AUDIT.filters?.scope==='push'?'push':'conversation');
     renderAuditScope();renderAuditControls();renderAuditTimeline();
   }catch(error){document.getElementById('auditTimeline').innerHTML='<div class="error" style="display:block">审计加载失败: '+esc(error.message)+'</div>';}
 }
@@ -49,6 +52,7 @@ function renderAuditTimeline(){
 }
 function kindBadge(kind){if(kind==='push_run')return badge('推送链路','info');if(kind==='trace')return badge(AUDIT_SCOPE==='push'?'调度追踪':'对话追踪','info');if(kind==='push')return badge('微信推送','ok');if(kind==='task')return badge('任务','gray');return badge(kind||'-','gray');}
 function renderAuditItem(item){
+  if(AUDIT_SCOPE==='automation')return renderAutomationItem(item);
   const when=formatAuditTime(item.createdAt);
   const statusKind=item.status==='success'||item.status==='sent'?'ok':(item.status==='error'||item.status==='dead'?'warn':'gray');
   const meta=[item.userId?['user',item.userId]:null,item.instanceId?['instance',item.instanceId]:null,item.conversationId?['conversation',item.conversationId]:null,item.elapsedMs?['elapsed',item.elapsedMs+'ms']:null,item.totalTokens?['tokens',fmtNumber(item.totalTokens)]:null,item.usageSource?['usage',item.usageSource]:null,item.pushJobId?['pushJob',item.pushJobId]:null].filter(Boolean);
@@ -59,6 +63,7 @@ function renderAuditItem(item){
   const details=renderAuditDetails(item,primaryText);
   return '<div class="audit-item"><div class="audit-rail"><div><div class="audit-time">'+esc(when.time)+'</div><div class="audit-date">'+esc(when.date)+'</div></div><div class="audit-status">'+kindBadge(item.kind)+badge(item.status||'-',statusKind)+'</div></div><div class="audit-main"><div class="audit-head"><div class="audit-title"><div class="audit-title-row"><strong>'+esc(auditItemTitle(item))+'</strong><span class="mono">'+esc(item.mode||'-')+'</span></div><div class="audit-summary">'+esc(summary)+'</div></div><div class="audit-meta">'+meta.map((pair)=>'<span title="'+esc(pair[0]+'='+pair[1])+'">'+esc(pair[0]+'='+pair[1])+'</span>').join('')+'</div></div>'+(item.errorMessage?auditSection('错误',item.errorMessage,'audit-error'):'')+visibleBody+renderAuditUsage(item)+details+'</div></div>';
 }
+function renderAutomationItem(item){const statusKind=item.status==='succeeded'?'ok':(item.status==='failed'?'warn':'gray');const meta=[['user',item.userId],['origin',item.origin],['attempt',item.attempt],['run',item.runId],item.deliveryStatus?['delivery',item.deliveryStatus]:null].filter(Boolean);const duration=item.startedAt&&item.finishedAt?Math.max(0,new Date(item.finishedAt)-new Date(item.startedAt))+'ms':'-';const summary=item.errorMessage||item.resultSummary||'运行完成';return '<div class="audit-item"><div class="audit-rail"><div><div class="audit-time">'+esc(formatAuditTime(item.createdAt).time)+'</div><div class="audit-date">'+esc(formatAuditTime(item.createdAt).date)+'</div></div><div class="audit-status">'+badge('自动化运行','info')+badge(item.status||'-',statusKind)+'</div></div><div class="audit-main"><div class="audit-head"><div class="audit-title"><div class="audit-title-row"><strong>'+esc(item.taskName||'自动化任务')+'</strong><span class="mono">'+esc(item.taskId||'-')+'</span></div><div class="audit-summary">'+esc(summary)+'</div></div><div class="audit-meta">'+meta.map((pair)=>'<span>'+esc(pair[0]+'='+pair[1])+'</span>').join('')+'</div></div><div class="audit-section"><div class="audit-section-title">运行详情</div><div class="audit-text primary">duration='+esc(duration)+'\nstarted='+esc(fmtTime(item.startedAt))+'\nfinished='+esc(fmtTime(item.finishedAt))+'\nerrorCategory='+esc(item.errorCategory||'-')+'\nretryable='+(item.retryable===1?'true':item.retryable===0?'false':'-')+'</div></div>'+(item.traceId?'<div class="audit-meta"><span>trace='+esc(item.traceId)+'</span></div>':'')+'</div></div>';}
 function renderAuditUsage(item){if(!item.totalTokens&&!item.inputTokens&&!item.outputTokens&&!item.costAmount)return '';return '<div class="cost-source">'+badge('total '+fmtNumber(item.totalTokens||0),'info')+badge('in '+fmtNumber(item.inputTokens||0),'gray')+badge('out '+fmtNumber(item.outputTokens||0),'gray')+(item.thoughtTokens?badge('thought '+fmtNumber(item.thoughtTokens),'gray'):'')+(item.costAmount?badge(formatCost(item.costAmount),'ok'):'')+badge(item.usageSource||'unknown',item.usageSource==='actual'?'ok':'warn')+'</div>';}
 function auditPrimaryLabel(kind){if(kind==='push_run')return '最终微信正文';if(kind==='push')return '入队准备发送给微信的正文';if(kind==='task')return '调度任务';return AUDIT_SCOPE==='push'?'Scheduler 清洗后回复 / 主要内容':'清洗后回复';}
 function auditItemTitle(item){if(item.kind==='push_run')return '调度推送链路';if(item.kind==='push')return '微信推送正文';if(item.kind==='task')return '调度任务记录';return AUDIT_SCOPE==='push'?'推送生成 Trace':'对话 Trace';}

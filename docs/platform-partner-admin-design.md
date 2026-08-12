@@ -59,6 +59,10 @@ Partner API：
 - `GET /api/platform/partner/quality`
 - `GET /api/platform/partner/runtime-health`
 
+Owner 审计 API：
+
+- `GET /api/platform/automation-runs`：按用户、助手、任务、状态和来源查看自动化运行历史，返回失败分类、重试属性、交付状态及汇总计数；权限为 `admin_audit.read`。
+
 所有 Partner response 使用 allowlist 构造，不能透传 Owner API 对象。Partner query 中伪造 userId 或 instanceId 不能扩大数据范围。
 
 ## 页面与部署边界

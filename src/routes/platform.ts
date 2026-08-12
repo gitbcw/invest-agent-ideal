@@ -12,6 +12,8 @@ import {
   aiInstances,
   alertEvents,
   alertRules,
+  automationTaskRevisions,
+  automationTaskRuns,
   channelIdentities,
   channelIdentityInstances,
   codexAcpTraces,
@@ -148,6 +150,57 @@ async function auditUsers() {
 }
 
 type AuditScope = "all" | "conversation" | "push";
+
+async function loadAutomationRunAudit(input: { userId?: string; instanceId?: string; taskId?: string; status?: string; origin?: string; limit?: number }) {
+  const limit = Math.max(1, Math.min(Number(input.limit || 60), 200));
+  const conditions = [];
+  if (input.userId) conditions.push(eq(automationTaskRuns.userId, input.userId));
+  if (input.instanceId) conditions.push(eq(automationTaskRuns.instanceId, input.instanceId));
+  if (input.taskId) conditions.push(eq(automationTaskRuns.taskId, input.taskId));
+  if (input.status) conditions.push(eq(automationTaskRuns.status, input.status));
+  if (input.origin) conditions.push(eq(automationTaskRuns.origin, input.origin));
+  const rows = await db.select({
+    runId: automationTaskRuns.runId,
+    taskId: automationTaskRuns.taskId,
+    revisionId: automationTaskRuns.revisionId,
+    taskName: automationTaskRevisions.name,
+    userId: automationTaskRuns.userId,
+    projectId: automationTaskRuns.projectId,
+    instanceId: automationTaskRuns.instanceId,
+    origin: automationTaskRuns.origin,
+    attempt: automationTaskRuns.attempt,
+    status: automationTaskRuns.status,
+    scheduledFor: automationTaskRuns.scheduledFor,
+    claimedAt: automationTaskRuns.claimedAt,
+    startedAt: automationTaskRuns.startedAt,
+    finishedAt: automationTaskRuns.finishedAt,
+    executionDeadlineAt: automationTaskRuns.executionDeadlineAt,
+    deliveryStatus: automationTaskRuns.deliveryStatus,
+    pushJobId: automationTaskRuns.pushJobId,
+    resultSummary: automationTaskRuns.resultSummary,
+    errorMessage: automationTaskRuns.errorMessage,
+    errorCategory: automationTaskRuns.errorCategory,
+    retryable: automationTaskRuns.retryable,
+    traceId: automationTaskRuns.traceId,
+    conversationId: automationTaskRuns.conversationId,
+    createdAt: automationTaskRuns.createdAt,
+    updatedAt: automationTaskRuns.updatedAt,
+  }).from(automationTaskRuns)
+    .innerJoin(automationTaskRevisions, eq(automationTaskRevisions.revisionId, automationTaskRuns.revisionId))
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(automationTaskRuns.createdAt))
+    .limit(limit);
+  const summary = {
+    total: rows.length,
+    succeeded: rows.filter((row) => row.status === "succeeded").length,
+    failed: rows.filter((row) => row.status === "failed").length,
+    running: rows.filter((row) => row.status === "running").length,
+    cancelled: rows.filter((row) => row.status === "cancelled").length,
+    skipped: rows.filter((row) => row.status === "skipped").length,
+    retryableFailures: rows.filter((row) => row.status === "failed" && row.retryable === true).length,
+  };
+  return { items: rows, summary, limit };
+}
 
 async function loadAuditTimeline(input: { userId?: string; instanceId?: string; limit?: number; scope?: AuditScope }) {
   const limit = Math.max(1, Math.min(Number(input.limit || 40), 120));
@@ -1016,7 +1069,7 @@ function partnerRoutePermission(pathname: string, method: string): PlatformPermi
   if (pathname === "/api/platform/audit/usage") return "cost.read";
   if (pathname === "/api/platform/instances/" && method === "GET") return "customers.sensitive.read";
   if (pathname.includes("/investment-state")) return "customers.sensitive.read";
-  if (pathname === "/api/platform/audit" || pathname === "/api/platform/rule-alerts") return "admin_audit.read";
+  if (pathname === "/api/platform/audit" || pathname === "/api/platform/automation-runs" || pathname === "/api/platform/rule-alerts") return "admin_audit.read";
   if (pathname === "/api/platform/source-quality") return "admin_audit.read";
   if (pathname === "/api/platform/mcp-tools/status") return "admin_audit.read";
   if (pathname.startsWith("/api/platform/mcp/servers/")) return "mcp.manage";
@@ -1478,6 +1531,29 @@ export function registerPlatformRoutes(app: FastifyInstance) {
         status: item.status,
       })),
       items: timeline.items,
+    };
+  }));
+
+  app.get<{ Querystring: { userId?: string; instanceId?: string; taskId?: string; status?: string; origin?: string; limit?: string } }>("/api/platform/automation-runs", safe(async (request) => {
+    const users = await auditUsers();
+    const userId = request.query.userId?.trim();
+    const instanceId = request.query.instanceId?.trim();
+    const instances = await listProjectRuntimeContexts({ ownerUserId: userId || undefined });
+    const audit = await loadAutomationRunAudit({
+      userId,
+      instanceId,
+      taskId: request.query.taskId?.trim(),
+      status: request.query.status?.trim(),
+      origin: request.query.origin?.trim(),
+      limit: Number(request.query.limit || 60),
+    });
+    return {
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      filters: { userId: userId || "", instanceId: instanceId || "", taskId: request.query.taskId?.trim() || "", status: request.query.status?.trim() || "", origin: request.query.origin?.trim() || "", limit: audit.limit },
+      users,
+      instances: instances.map((item) => ({ instanceId: item.instanceId, name: item.name, ownerUserId: item.ownerUserId, status: item.status })),
+      ...audit,
     };
   }));
 

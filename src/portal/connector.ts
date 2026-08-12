@@ -1162,12 +1162,13 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
             return;
           }
           if (error instanceof UserAssetError) {
+            const leaseLost = error.code === "ASSET_LEASE_LOST";
             send(socket, withProtocolVersion(fail(
               message.type,
               message.requestId,
               error.code,
-              error.message,
-              error.code === "ASSET_VERSION_CONFLICT" || error.code === "ASSET_LEASE_LOST",
+              leaseLost ? "自动化运行已结束，当前文件未保存；请重新打开任务后再操作。" : error.message,
+              error.code === "ASSET_VERSION_CONFLICT",
             ), message.protocolVersion));
             return;
           }
