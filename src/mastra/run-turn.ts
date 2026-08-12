@@ -14,6 +14,7 @@ export const DEFAULT_MASTRA_TURN_TIMEOUT_MS = 1_800_000;
 export type MastraTurnErrorCode =
   | "MASTRA_TURN_BUSY"
   | "MASTRA_TURN_TIMEOUT"
+  | "TASK_CANCELLED"
   | "MASTRA_EMPTY_RESPONSE"
   | "MASTRA_TURN_ERROR";
 
@@ -75,6 +76,8 @@ export interface MastraTurnParams {
   messages?: readonly MastraMessage[];
   /** External read-only MCP toolsets, resolved separately from service tools. */
   toolsets?: Record<string, unknown>;
+  /** Caller-owned cancellation signal for the active turn. */
+  signal?: AbortSignal;
 }
 
 export interface MastraTurnDependencies {
@@ -361,6 +364,9 @@ function normalizeTimeout(timeoutMs: number | undefined): number {
 function mapError(error: unknown, conversationId: string): MastraTurnError {
   if (error instanceof MastraTurnError) return error;
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("TASK_CANCELLED") || message.includes("aborted") || message.includes("AbortError")) {
+    return new MastraTurnError("TASK_CANCELLED", "TASK_CANCELLED", conversationId, { cause: error });
+  }
   return new MastraTurnError(
     `MASTRA_TURN_ERROR: ${message || "Mastra agent execution failed"}`,
     "MASTRA_TURN_ERROR",
@@ -376,9 +382,7 @@ function resolveGateway(value: MastraTurnDependencies["gateway"]): MastraModelGa
 }
 
 /**
- * Execute one turn behind the Mastra seam. This function is intentionally
- * unreachable from current ACP request callers; stage 2 can wire it in after
- * the result and security contracts have been reviewed.
+ * Execute one turn through the Mastra-native runtime.
  */
 export async function runMastraTurn(
   params: MastraTurnParams,
@@ -389,11 +393,20 @@ export async function runMastraTurn(
   if (active.has(conversationId)) throw new MastraTurnBusyError(conversationId);
   active.add(conversationId);
   let timer: NodeJS.Timeout | undefined;
+  let abortFromExternal: (() => void) | undefined;
   try {
     const startedAtMs = (dependencies.now ?? Date.now)();
     const startedAt = new Date(startedAtMs).toISOString();
     const timeoutMs = normalizeTimeout(params.timeoutMs);
     const abortController = new AbortController();
+    const externalSignal = params.signal;
+    abortFromExternal = () => abortController.abort(externalSignal?.reason);
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        throw new MastraTurnError("TASK_CANCELLED", "TASK_CANCELLED", conversationId);
+      }
+      externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+    }
     const gateway = resolveGateway(dependencies.gateway);
     const factory = dependencies.agentFactory ?? dependencies.createAgent;
     let agent: MastraAgentLike;
@@ -463,6 +476,9 @@ export async function runMastraTurn(
     throw mapError(error, conversationId);
   } finally {
     if (timer) clearTimeout(timer);
+    if (params.signal && abortFromExternal) {
+      params.signal.removeEventListener("abort", abortFromExternal);
+    }
     active.delete(conversationId);
   }
 }

@@ -101,8 +101,12 @@ export function createRuntimeAgent(): RuntimeAgent {
       const channel = String(message.context?.channel || "unknown");
       const userId = String(message.context?.userId || DEFAULT_USER_ID);
       const mode = "chat";
+      const cancelSignal = message.context?._cancelSignal instanceof AbortSignal
+        ? message.context._cancelSignal
+        : undefined;
 
       try {
+        if (cancelSignal?.aborted) throw new Error("TASK_CANCELLED");
         const userChannel: UserContext["channel"] =
           channel === "weixin-mobile" || channel === "dashboard" || channel === "api" || channel === "web" ? channel : "api";
         const userContext: UserContext = {
@@ -139,6 +143,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             cwd: resolveRuntimeWorkspaceCwd(userContext),
             userContext,
             toolsets: externalMcp.toolsets,
+            signal: cancelSignal,
           }, { agentOptions: { tools: mastraTools } });
           const postProcessed = await postProcessAgentReply({ reply: mastraResult.text, userContext, originalText: text });
           const extractedVisuals = userChannel === "web"
