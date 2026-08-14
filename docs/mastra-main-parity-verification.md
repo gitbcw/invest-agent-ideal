@@ -261,8 +261,8 @@ confirmation gate 逻辑在 `service-tools-core.ts` 的共享 case 中（WP-P3 �
 | G19 | 代码盘点 | 卫生项：file-retention 空附件目录修剪只扫 legacy 根；file-retention.ts:6 死导入；backfill 治理作业不感知 mastra 根 | `accepted` | 纯 cosmetic / 一次性作业范围，不阻断 |
 | G20 | 代码盘点 | `preparedReviewPath` 依赖已注册项目根；scope 启用调度但未注册项目时预生成阶段每日常态 error 日志 | `verified` | 设计上闭环：onboarding 完成发生在会话内（confirm 工具需 conversationId），而会话路径 `ensureConversationRuntime` 在 mastra 模式先 bootstrap 项目根，故完成 onboarding 的 scope 必有已注册项目根。兜底行为：预生成失败记 error 并回落 `runScheduledReviewTask`，非致命 |
 | G21 | 产品决议记录 | 巡检（scheduler/automation 运行）需要**可见性**便于管理，但当前 Portal 无对应承载页面 | `future-design` | 用户已确认属后续 Portal 设计点：调度/巡检运行状态、最近结果、手动触发与启停的管理面。在 Portal 同仓契约矩阵（B2）扩展时一并设计，不算当前幂等缺口 |
-| G22 | Portal 实测 | 对话内文件交付缺直链：`spreadsheet.create` 成功后助手回复中的链接是模型虚构的 `sandbox:/mnt/data/...` 格式，消息 metadata 无 artifact 附件；文件仅能从 Portal「我的文件」访问（已验证可见、可下载） | `pending-fix` | H1 观感项：需让工具结果/prompt 指示 agent 以资产库引用措辞回复，或把 artifact 挂到助手消息。实测证据见 2026-08-14 Portal smoke |
-| G23 | Portal 实测 | trace `tool_calls` 系统性为空：候选 DB 全部 13 条 trace 均无工具终态记录（`run-turn` 的事件映射未捕获当前 Mastra 版本的 tool-call 流形状） | `pending-fix` | 属 next-phase-plan 工作流 A 的"缺工具终态"覆盖率缺口；影响审计/调试，不影响用户功能 |
+| G22 | Portal 实测 | 对话内文件交付缺直链：`spreadsheet.create` 成功后助手回复中的链接是模型虚构的 `sandbox:/mnt/data/...` 格式，消息 metadata 无 artifact 附件；文件仅能从 Portal「我的文件」访问（已验证可见、可下载） | `fixed` | ✅ 已修复（2026-08-14 E5）：工具结果新增 delivery 指引（指名文件 + 「我的文件」入口，明令禁止编造 sandbox:/mnt/data 或任何 URL 直链）+ web 通道指令同步强化；测试 `mastra-spreadsheet-delivery-guidance.test.ts`。消息内资产卡片（artifact 附件）受发布路径白名单限制，留 G21/E9 Portal 设计一并考虑 |
+| G23 | Portal 实测 | trace `tool_calls` 系统性为空：候选 DB 全部 13 条 trace 均无工具终态记录（`run-turn` 的事件映射未捕获当前 Mastra 版本的 tool-call 流形状） | `fixed` | ✅ 已修复（2026-08-14 E6）：根因为 Mastra≥1.5x 聚合/流 chunk 将数据包在 `payload` 对象内而映射器只读顶层字段；现已 payload 解包 + `toolCalls`/`toolResults` 聚合按 toolCallId 合并出终态（isError→success/error、输出尺寸、完成时间）+ v5 tool-input/tool-output 流事件识别；测试 `mastra-turn-tool-call-capture.test.ts`（4 例） |
 
 #### 幂等结论
 

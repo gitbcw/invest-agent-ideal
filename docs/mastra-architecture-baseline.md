@@ -205,6 +205,7 @@ db/         schema + drizzle
 | D19 | 规则巡检边界定稿（2026-08-14 议程 4 核对，agent 按最优判断落地）：维持 v1 设计划界——规则巡检不并入自动化任务（事件驱动条件评估 ≠ 节奏性工作），保持调度器内确定性 patrol + scheduled_task_runs 留痕；优先级定稿为 service-owned 产品常量（HARDWIRED_PRIORITY_MAP 升格，risk_taxonomy.yaml workspace 死路径随 T1 清理）；watch_rules 四件（catalog/list/validate/dry_run）定稿服务核心；非价格条件外部化（qsse-qlib）维持划界按需开专项；G21 可见性留待 Portal 管理面设计 |
 | D20 | 投资画像移除范围定稿（2026-08-14 议程 5 核对，agent 按最优判断落地）：范围清单见 §7——三端点清理、投影画像键迁移剔除（兄弟键保留）、investment_profiles 表候选分支移除（生产 drop 挂真实数据迁移按 db-migration 规范）、platform investment-state 端点+UI 区块移除、invest.profile.read/write scope 保留但 resourceType 改标 methodology_profile；实施为独立工程项 |
 | D21 | 数据层收敛定稿（2026-08-14 议程 6 核对，agent 按最优判断落地）：T1 backend 接口化收拢（28 文件实测，portfolio/watchlist/plans 已示范，验收 = ACTIVE_BACKEND 仅存 lib/）；T2 投影维持单行 + 兄弟键显性契约；T3 表命名不改（迁移成本 > 一致性收益）；T4 已随 D16 消解；T5 挂工程项。**workspace 回滚后端拆除时机：保留至真实数据迁移验证 + H1 验收通过后独立清理（convergence scan 防回潮）**；G23 修为 run-turn 事件捕获、G22/G23 均 H1 前工程项。逐层核对议程 1-8 全部走完，转工程项执行期 |
+| D22 | 工程执行轮记录（2026-08-14）：E1/E3/E5/E6 已实施并各有 commit+测试证据（npm test 460/460）。**E2 全量收隆重定界为 H1 后独立提交系列**——两个 mastra 根解析器（resolveRegisteredMastraProjectRoot 返回 undefined vs resolveProjectStorageRoot 抛错）失败语义不同、各站点 workspace 回退细节各异，H1 前硬推属拿回归风险换可读性；本轮仅随 E3 落地 alert-check 增量。D20 清单执行修正：/investment-state 为 admin 持仓总览（非画像消费）保留；投影键剔除保守跳过与 StrategyYaml 同名的 allocation/notes/markets（来源不可区分，防数据丢失）。G22 落地形态为"工具结果+prompt 双重交付指引"，消息内资产卡片受 artifact 路径白名单限制留 E9 |
 
 ## 12. 逐层核对议程（建议顺序）
 
@@ -220,15 +221,15 @@ db/         schema + drizzle
 
 **逐层核对议程已全部走完（2026-08-14）。后续为工程项执行期 + H1 验收门：**
 
-| # | 工程项 | 来源 | 建议时点 |
+| # | 工程项 | 来源 | 状态（2026-08-14 执行轮） |
 | --- | --- | --- | --- |
-| E1 | 投资画像移除实施（五项清单） | D20/§7 | 随下一批改动 |
-| E2 | T1 backend 接口化收拢（ACTIVE_BACKEND 仅存 lib/） | D21/§3 | 随下一批改动 |
-| E3 | risk_taxonomy.yaml workspace 死路径清理 | D19/§6 | 随 E2 一并 |
-| E4 | P4b 偏好散读点与 schedulerActivation 废除 | D13 | 全量迁移验证后 |
-| E5 | G22 对话内文件直链修复 | §10.1 | H1 前 |
-| E6 | G23 trace tool_calls 事件捕获修复 | §8 | H1 前 |
-| E7 | runtime 进 apps/ 物理迁移 | T5 | 低优先 |
-| E8 | workspace 回滚后端拆除 | D21/§4 | 真实数据迁移验证 + H1 后 |
-| E9 | G21 Portal 巡检/调度可见性管理面 | §6 | 后续 Portal 设计 |
-| — | **Gate H1 本地最终体验验收** | 长工作包 | E5/E6 完成后（用户 gate） |
+| E1 | 投资画像移除实施（五项清单） | D20/§7 | ✅ 已实施（commit；清单修正：/investment-state admin 总览保留——读的是持仓/预案非画像；投影键剔除迁移保守跳过与 StrategyYaml 冲突的 allocation/notes/markets） |
+| E2 | T1 backend 接口化收拢（ACTIVE_BACKEND 仅存 lib/） | D21/§3 | ⏸ 重定界为 H1 后独立提交系列（见 D22）；本轮仅落地 alert-check 增量（随 E3） |
+| E3 | risk_taxonomy.yaml workspace 死路径清理 | D19/§6 | ✅ 已实施（loadPriorityConfig 收敛为 SERVICE_PRIORITY_CONFIG 常量） |
+| E4 | P4b 偏好散读点与 schedulerActivation 废除 | D13 | ⏸ 等全量迁移验证 |
+| E5 | G22 对话内文件直链修复 | §10.1 | ✅ 已实施（工具结果 delivery 指引 + web 通道指令强化；消息内资产卡片留 E9 Portal 设计——资产路径不在可发布 artifact 根内） |
+| E6 | G23 trace tool_calls 事件捕获修复 | §8 | ✅ 已实施（Mastra≥1.5x payload 包装形状解包 + toolCalls/toolResults 聚合合并出终态；4 测试证据） |
+| E7 | runtime 进 apps/ 物理迁移 | T5 | ⏸ 低优先 |
+| E8 | workspace 回滚后端拆除 | D21/§4 | ⏸ 真实数据迁移验证 + H1 后 |
+| E9 | G21 Portal 巡检/调度可见性管理面 | §6 | ⏸ 后续 Portal 设计 |
+| — | **Gate H1 本地最终体验验收** | 长工作包 | **E5/E6 前置已满足，可约验收** |
