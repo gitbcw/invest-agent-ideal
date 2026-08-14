@@ -15,7 +15,6 @@ import { OVERVIEW_JS } from "./partner/view-overview";
 import { CUSTOMERS_JS } from "./partner/view-customers";
 import { QUALITY_JS } from "./partner/view-quality";
 import { RUNTIME_JS } from "./partner/view-runtime";
-import { PRICING_JS } from "./pricing";
 
 // Partner 专属 CSS（登录卡 / 改密卡 / detail-grid / grid）。
 const PARTNER_CSS = `
@@ -240,7 +239,6 @@ ${isAdmin ? dashboardShell("owner") : dashboardShell("partner")}
 const authenticated=true;
 const IS_PARTNER=${isAdmin ? "false" : "true"};
 ${SHARED_HELPERS_JS}
-${PRICING_JS}
 ${DOTS_DEF_JS}
 ${coreJs}
 ${DASHBOARD_JS}

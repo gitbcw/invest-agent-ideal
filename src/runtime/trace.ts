@@ -3,6 +3,7 @@ import { agentTraces } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { redactSensitiveText } from "../lib/customer-output.js";
+import { computeModelCost } from "../services/model-pricing.js";
 
 const TEXT_LIMIT = 8000;
 const ERROR_LIMIT = 1200;
@@ -89,6 +90,15 @@ function serializeJsonForStorage(value: unknown, limit = JSON_FIELD_LIMIT) {
 /** Records bounded, redacted agent observability independently of any transport. */
 export async function recordAgentTrace(input: AgentTraceInput) {
   try {
+    // E10: costs are priced at write time so a trace row is the cost record
+    // (per-model registry; provider-reported cost wins when present). The
+    // computed source rides along in the bounded usageRaw envelope.
+    const priced = input.usage
+      ? computeModelCost(input.agentModel, input.usage)
+      : undefined;
+    const usageRawEnvelope = input.usage && priced
+      ? { costSource: priced.source, raw: input.usage.raw }
+      : input.usage?.raw;
     await db.insert(agentTraces).values({
       traceId: truncate(input.traceId, 300),
       runId: truncate(input.runId, 300),
@@ -125,10 +135,10 @@ export async function recordAgentTrace(input: AgentTraceInput) {
       totalTokens: input.usage?.totalTokens,
       contextWindowUsed: input.usage?.contextWindowUsed,
       contextWindowSize: input.usage?.contextWindowSize,
-      costAmount: input.usage?.costAmount,
-      costCurrency: truncate(input.usage?.costCurrency, 12),
+      costAmount: priced ? priced.amount : input.usage?.costAmount,
+      costCurrency: priced ? priced.currency : truncate(input.usage?.costCurrency, 12),
       usageSource: input.usage?.source,
-      usageRaw: truncate(input.usage?.raw, 2000),
+      usageRaw: serializeJsonForStorage(usageRawEnvelope, 2000),
       createdAt: new Date().toISOString(),
     });
   } catch (error) {

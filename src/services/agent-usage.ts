@@ -1,5 +1,6 @@
 import { sqlite } from "../db/index.js";
 import type { AiProjectRuntimeContext } from "../platform/project-registry.js";
+import { isPricedModel, pricingSummary } from "./model-pricing.js";
 
 export type AgentUsageGroupBy = "day" | "instance" | "user" | "model";
 
@@ -15,6 +16,8 @@ export interface AgentUsageSummaryRow {
   costAmount: number;
   actualCalls: number;
   estimatedCalls: number;
+  /** Turns whose model is not in the pricing registry (priced at DEFAULT_TIER). */
+  unpricedCalls: number;
 }
 
 export interface AgentUsageSummary {
@@ -29,6 +32,8 @@ export interface AgentUsageSummary {
   source: "agent_traces";
   totals: AgentUsageSummaryRow;
   groups: AgentUsageSummaryRow[];
+  /** Active rate card so views never need a client-side price table. */
+  pricing: ReturnType<typeof pricingSummary>;
 }
 
 interface AgentUsageEntry {
@@ -82,6 +87,7 @@ function emptyRow(bucket = "total"): AgentUsageSummaryRow {
     costAmount: 0,
     actualCalls: 0,
     estimatedCalls: 0,
+    unpricedCalls: 0,
   };
 }
 
@@ -96,6 +102,7 @@ function addEntry(row: AgentUsageSummaryRow, entry: AgentUsageEntry) {
   row.costAmount += entry.costAmount;
   if (entry.estimated) row.estimatedCalls += 1;
   else row.actualCalls += 1;
+  if (!isPricedModel(entry.model)) row.unpricedCalls += 1;
 }
 
 function bucketFor(entry: AgentUsageEntry, groupBy: AgentUsageGroupBy) {
@@ -227,5 +234,6 @@ export function loadAgentUsageSummary(input: {
     source: "agent_traces",
     totals,
     groups: sortedGroups,
+    pricing: pricingSummary(),
   };
 }
