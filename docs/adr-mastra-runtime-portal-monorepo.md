@@ -59,6 +59,7 @@ packages/contracts/  无存储实现的共享 DTO
 
 - 新的 runtime 能力必须**优先映射到 Portal 既有交互契约**（artifact 附件卡片、文件预览面板、自动化工作区、资产库、对话流），而不是发明新交付形态。G22 的教训：`spreadsheet.create` 交付在前两轮被做成"回复内链接 + 门户端下载路由/点击拦截"的自创交互，第四轮回归官方 artifact 卡片管线后撤销，`apps/portal/src` 恢复与正式仓字节对齐。
 - 只有当能力**本质需要新交互面**时才新增 UI，且必须作为显式批准的工作包立项（先例：新 onboarding 向导，D15）。
+- **架构驱动的交互演进是预期内的例外**：为承接重构后 runtime 的新能力（如按回合模型选择），交互层会有受控改变——首个在途实例是模型选择器（正式仓 WIP `local/ea43db2` 分支 commit `4dd6d0d`：对话框模型下拉，`model` 经 `conversation.chat` 协议透传；runtime 侧 model-gateway 按回合选择已就绪，仅差交互合入）。此类改变按"显式立项 → 合入正式仓 → 导入候选"路径走，不走顺手改。
 - 边界校验手段：`diff -rq /Users/combo/MyFile/projects/invest-agent-portal/src apps/portal/src`，预期差异仅限已批准工作包；出现未登记差异即视为越界，回滚或补立项。
 
 ## 暂停门
