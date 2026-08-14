@@ -1985,7 +1985,18 @@ async function createSpreadsheetTool(input: Record<string, unknown> | undefined,
     idempotencyKey: `spreadsheet:${context.conversationId ?? "unknown"}:${fileName}`,
   });
   await audit(context, { operation: "spreadsheet.create", resourceType: "user_asset", resourceId: saved.assetId, requestBody: { fileName, columns: columns.length, rows: rows.length }, resultSummary: `created xlsx asset=${saved.assetId}; bytes=${bytes.length}` });
-  return { ok: true, asset: publicAssetDescriptor(saved), version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null, fileName, rows: rows.length, columns: columns.length };
+  return {
+    ok: true,
+    asset: publicAssetDescriptor(saved),
+    version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null,
+    fileName,
+    rows: rows.length,
+    columns: columns.length,
+    delivery: {
+      location: "portal_my_files",
+      instruction: "文件已保存到用户资产库（Portal「我的文件」）。回复时告知用户文件已生成并给出文件名，指引用户在「我的文件」中查看和下载。禁止编造任何下载链接或文件路径（包括 sandbox:/mnt/data/…、http 直链或本地绝对路径）——对话内没有文件直链能力，「我的文件」是唯一交付入口。",
+    },
+  };
 }
 
 async function attachPublishedArtifactToUserFiles(
