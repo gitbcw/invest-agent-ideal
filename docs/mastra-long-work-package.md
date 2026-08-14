@@ -1,6 +1,6 @@
 # Mastra 重构长工作包
 
-状态：WP0-WP7 技术候选已完成；H1 本地体验验收仍 pending
+状态：**WP0-WP7 技术候选已完成；Gate H1 本地体验验收已通过（2026-08-15，用户核验对话/文件/表格卡片交互/自动化列表/审计）——本工作包完成**；后续 R1 发布阶段须用户另行授权
 工作分支：`feat/mastra-migration`
 工作树：`/Users/combo/MyFile/projects/invest-agent-ideal-mastra`
 

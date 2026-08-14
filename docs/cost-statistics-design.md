@@ -1,6 +1,6 @@
 # 开销统计重建设计（Cost Statistics Design）
 
-状态：v1 草案（2026-08-15）——E10/D24 的规划落稿，**请审**；费率数值等开放问题裁决后实施
+状态：**已采纳并实施**（2026-08-15，C1-C4 全部落地，npm test 463/463）；费率为网络检索临时值（见 §3），owner 终定后换表即可——换表只影响未来回合，历史重述用回填脚本 `--force`
 关联：[mastra-architecture-baseline.md](./mastra-architecture-baseline.md) D24/E10、[mastra-main-parity-verification.md](./mastra-main-parity-verification.md)
 裁决来源：D24（2026-08-15 用户提出：ACP 时代开销统计一直不准，换内核后须重建配套，含按模型计费）
 
@@ -48,7 +48,9 @@ interface ModelPricingEntry {
 // + computeModelCost(model, usage): { amount, currency, priced: boolean }
 ```
 
-- 费率数值：**待用户提供**（开放问题 1——这是实施前唯一的硬依赖）
+- 费率数值（临时默认，2026-08-15 网络检索，降价后口径）：
+  - `gpt-5.6-sol`：$5 / $30；`gpt-5.6-terra`：$2 / $12；`gpt-5.6-luna`：$0.2 / $1.2
+  - 其余模型（gpt-5.5/gpt-5.4/deepseek-v4-*/doubao-*）走 DEFAULT_TIER（=terra 档）并在聚合层计 `unpricedCalls` 暴露；**owner 终定后改 `src/services/model-pricing.ts` 一处即可**
 - `run-turn` 记录的 `agent_model` 为裸名（`gpt-5.6-terra`），注册表键与之对齐；`gateway/` 前缀在查询时剥离
 
 ## 4. 计价管线
