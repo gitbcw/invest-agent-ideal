@@ -53,6 +53,14 @@ packages/contracts/  无存储实现的共享 DTO
 - 两套 `better-sqlite3`/Node 依赖版本冲突：使用应用级 package 边界，不强制一次性统一。
 - 协议错误码变更破坏旧 connector：Portal 暂时同时识别 `ACP_FAILED` 和 `AGENT_RUNTIME_FAILED`，待旧正式 runtime 下线后清理。
 
+## 交互复用边界（2026-08-15 用户裁决，D23）
+
+重构的主战场是 **runtime**（Mastra 内核、服务层、数据架构、调度）。Portal 交互层是**已实现的资产，直接复用，不重设计**：
+
+- 新的 runtime 能力必须**优先映射到 Portal 既有交互契约**（artifact 附件卡片、文件预览面板、自动化工作区、资产库、对话流），而不是发明新交付形态。G22 的教训：`spreadsheet.create` 交付在前两轮被做成"回复内链接 + 门户端下载路由/点击拦截"的自创交互，第四轮回归官方 artifact 卡片管线后撤销，`apps/portal/src` 恢复与正式仓字节对齐。
+- 只有当能力**本质需要新交互面**时才新增 UI，且必须作为显式批准的工作包立项（先例：新 onboarding 向导，D15）。
+- 边界校验手段：`diff -rq /Users/combo/MyFile/projects/invest-agent-portal/src apps/portal/src`，预期差异仅限已批准工作包；出现未登记差异即视为越界，回滚或补立项。
+
 ## 暂停门
 
 `apps/portal/` 已从授权的正式 Portal 仓库以可追溯方式导入，并通过独立构建与测试；本 ADR 不批准改变正式 Portal 发布源、部署生产服务、生产数据迁移或分支合并。
