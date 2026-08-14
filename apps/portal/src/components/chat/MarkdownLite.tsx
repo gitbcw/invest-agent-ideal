@@ -13,13 +13,6 @@ interface MarkdownLiteProps {
    * artifacts. If unset, the link falls back to a forced-download URL.
    */
   onLegacyReportPath?: (relativePath: string) => void;
-  /**
-   * Called when a chat-delivered asset link (`/api/assets/:assetId/versions/
-   * :versionId/download`, the URL spreadsheet.create returns as delivery.url)
-   * is clicked. The parent should open the file-panel preview. If unset, the
-   * link falls back to opening the raw download URL in a new tab.
-   */
-  onAssetDownloadPath?: (target: { assetId: string; versionId: string; label: string }) => void;
 }
 
 /**
@@ -28,7 +21,7 @@ interface MarkdownLiteProps {
  * react-markdown escapes raw HTML by default. Do not add rehype-raw here unless
  * we also add a strict sanitizer.
  */
-export function MarkdownLite({ text, onLegacyReportPath, onAssetDownloadPath }: MarkdownLiteProps) {
+export function MarkdownLite({ text, onLegacyReportPath }: MarkdownLiteProps) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -37,19 +30,6 @@ export function MarkdownLite({ text, onLegacyReportPath, onAssetDownloadPath }: 
           return <p className="whitespace-pre-wrap break-words">{children}</p>;
         },
         a({ children, href }) {
-          const assetTarget = extractAssetDownloadTarget(href);
-          if (assetTarget && onAssetDownloadPath) {
-            const label = nodeText(children) || assetTarget.versionId;
-            return (
-              <button
-                type="button"
-                className="text-accent-600 underline underline-offset-2 hover:text-accent-700"
-                onClick={() => onAssetDownloadPath({ ...assetTarget, label })}
-              >
-                {children}
-              </button>
-            );
-          }
           const legacyPath = extractLegacyReportRelativePath(href);
           if (legacyPath && onLegacyReportPath) {
             return (
@@ -179,19 +159,4 @@ function extractLegacyReportRelativePath(href: string | undefined): string | und
   );
   if (!match) return undefined;
   return match[1];
-}
-
-/** Matches the chat-delivered asset download URL returned as delivery.url. */
-function extractAssetDownloadTarget(href: string | undefined): { assetId: string; versionId: string } | undefined {
-  if (!href) return undefined;
-  const match = href.match(/^\/api\/assets\/([^/?#]+)\/versions\/([^/?#]+)\/download(?:[?#].*)?$/);
-  if (!match) return undefined;
-  return { assetId: decodeURIComponent(match[1]), versionId: decodeURIComponent(match[2]) };
-}
-
-function nodeText(node: ReactNode): string {
-  if (typeof node === "string") return node;
-  if (typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(nodeText).join("");
-  return "";
 }

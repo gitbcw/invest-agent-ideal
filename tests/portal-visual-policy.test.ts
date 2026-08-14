@@ -14,7 +14,8 @@ test("web channel teaches the proactive inline SVG selection policy", () => {
   assert.match(instruction, /纯词义解释、单一事实或简短行情问答/);
   assert.match(instruction, /数据行不超过 7 条且列不超过 5 列/);
   assert.match(instruction, /超过 7 条数据行或超过 5 列/);
-  assert.match(instruction, /Excel（\.xlsx）文件到 `deliveries\/` 下/);
+  assert.match(instruction, /必须调用 `spreadsheet\.create` 生成真实 \.xlsx 文件交付/);
+  assert.match(instruction, /服务端会自动把附件卡片挂到回复下方/);
   assert.match(instruction, /表头不计入 7 条数据行/);
   assert.match(instruction, /冻结表头、筛选和适合阅读的列宽/);
   assert.match(instruction, /量化选股默认最多展示工具返回顺序的前 100 个候选/);
