@@ -234,5 +234,5 @@ db/         schema + drizzle
 | E7 | runtime 进 apps/ 物理迁移 | T5 | ⏸ 低优先 |
 | E8 | workspace 回滚后端拆除 | D21/§4 | ⏸ 真实数据迁移验证 + H1 后 |
 | E9 | G21 Portal 巡检/调度可见性管理面 | §6 | ⏸ 后续 Portal 设计（按 D23 须显式立项） |
-| E10 | **开销统计配套（按模型计费）** | D24 | ⏸ 待规划（用户提出，2026-08-15） |
+| E10 | **开销统计配套（按模型计费）** | D24 | ⏸ 设计稿已出（2026-08-15）：[cost-statistics-design.md](./cost-statistics-design.md) v1 请审——费率数值等 6 个开放问题裁决后实施（C1-C4 全 runtime 侧，无 Portal 改动） |
 | — | **Gate H1 本地最终体验验收** | 长工作包 | **E5/E6 前置已满足，可约验收** |
