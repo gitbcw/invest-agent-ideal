@@ -8,6 +8,7 @@ import { MarkdownLite } from "./MarkdownLite";
 import { useTypewriter } from "./useTypewriter";
 import { useWaitingHint } from "./useElapsedTime";
 import { fetchAttachment } from "./api";
+import { useFilePanel } from "@/components/file-panel/FilePanelProvider";
 import { base64ToBytes, formatBytes, formatExpiry, sha256Hex, svgToDataUrl, svgToPngBytes, triggerBrowserDownload } from "./media-helpers";
 import type { ArtifactCardView, AttachmentView, ChatMessageView, InlineSvgVisual } from "./types";
 import type { AttachmentGetResult } from "@/lib/protocol";
@@ -44,6 +45,7 @@ export function MessageBubble({
   onAttachmentImageOpen,
   deletedArtifactIds
 }: MessageBubbleProps) {
+  const filePanel = useFilePanel();
   const [animationDone, setAnimationDone] = useState(false);
   const [copied, setCopied] = useState(false);
   const copyResetTimer = useRef<number | null>(null);
@@ -122,6 +124,9 @@ export function MessageBubble({
                   text={typewriter.displayed || message.content}
                   onLegacyReportPath={(relativePath) =>
                     onArtifactLegacyPath?.(relativePath, message.messageId, message.conversationId)
+                  }
+                  onAssetDownloadPath={({ assetId, versionId, label }) =>
+                    filePanel.openAssetPreview({ kind: "asset", assetId, versionId, title: label })
                   }
                 />
                 {/* 等正文打字机结束后再出现图示,避免图先出现再被文字往下推。 */}
