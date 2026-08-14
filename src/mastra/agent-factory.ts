@@ -15,8 +15,12 @@ export interface MastraAgentFactoryOptions {
   name?: string;
   instructions?: unknown;
   tools?: Record<string, unknown>;
+  /** Optional, service-resolved Workspace. Never pass a user-provided path here. */
+  workspace?: unknown;
   /** Tests or a later caller may provide an already resolved model descriptor. */
   modelConfig?: MastraModelConfig;
+  /** Server-owned upper bound for tool/model iterations in one turn. */
+  maxSteps?: number;
 }
 
 export type MastraAgentFactory = (
@@ -48,6 +52,13 @@ export async function createMastraAgent(options: MastraAgentFactoryOptions = {})
     model: modelConfig,
   };
   if (options.tools !== undefined) agentOptions.tools = options.tools;
+  if (options.workspace !== undefined) agentOptions.workspace = options.workspace;
+  if (options.maxSteps !== undefined) {
+    if (!Number.isInteger(options.maxSteps) || options.maxSteps < 1 || options.maxSteps > 20) {
+      throw new Error(`MASTRA_MAX_STEPS_INVALID: ${options.maxSteps}`);
+    }
+    agentOptions.defaultOptions = { maxSteps: options.maxSteps };
+  }
   return new bindings.Agent(agentOptions);
 }
 

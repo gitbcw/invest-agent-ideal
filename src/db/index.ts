@@ -262,6 +262,74 @@ export function initDb() {
       updated_at TEXT NOT NULL,
       UNIQUE(user_id, instance_id)
     );
+    CREATE TABLE IF NOT EXISTS mastra_project_profiles (
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      profile_json TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      source_checksum TEXT NOT NULL,
+      source_revision TEXT,
+      migration_batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, project_id, instance_id)
+    );
+    CREATE TABLE IF NOT EXISTS mastra_portfolio_states (
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      portfolio_json TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      source_checksum TEXT NOT NULL,
+      source_revision TEXT,
+      migration_batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, project_id, instance_id)
+    );
+    CREATE TABLE IF NOT EXISTS mastra_runtime_preferences (
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      preferences_json TEXT NOT NULL,
+      source_checksums_json TEXT NOT NULL,
+      source_revision TEXT,
+      migration_batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, project_id, instance_id)
+    );
+    CREATE TABLE IF NOT EXISTS mastra_review_memory_records (
+      record_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      record_type TEXT NOT NULL,
+      business_key TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      source_line INTEGER,
+      source_checksum TEXT NOT NULL,
+      migration_batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS mastra_workspace_asset_records (
+      record_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      disposition TEXT NOT NULL,
+      retention_class TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      checksum TEXT NOT NULL,
+      target_path TEXT NOT NULL,
+      executable INTEGER NOT NULL DEFAULT 0,
+      migration_batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS method_change_candidates (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL DEFAULT 'primary',
@@ -747,6 +815,7 @@ export function initDb() {
     CREATE TABLE IF NOT EXISTS conversation_attachments (
       attachment_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
       instance_id TEXT NOT NULL,
       conversation_id TEXT NOT NULL,
       message_id TEXT,
@@ -1107,6 +1176,7 @@ export function initDb() {
   ensureColumn("onboarding_drafts", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("onboarding_drafts", "handoff_message_id", "TEXT");
   ensureColumn("conversation_tasks", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
+  ensureColumn("conversation_attachments", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("conversation_tasks", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("channel_identities", "welcomed_at", "TEXT");
   ensureColumn("push_jobs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
@@ -1157,6 +1227,16 @@ export function initDb() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identity_instances_default ON channel_identity_instances(channel_identity_id, project_id, is_default);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_profiles_scope ON investment_profiles(user_id, instance_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_methodology_profiles_scope ON methodology_profiles(user_id, instance_id);
+    CREATE INDEX IF NOT EXISTS idx_mastra_project_profiles_source
+      ON mastra_project_profiles(user_id, project_id, instance_id, source_checksum);
+    CREATE INDEX IF NOT EXISTS idx_mastra_portfolio_states_source
+      ON mastra_portfolio_states(user_id, project_id, instance_id, source_checksum);
+    CREATE INDEX IF NOT EXISTS idx_mastra_runtime_preferences_source
+      ON mastra_runtime_preferences(user_id, project_id, instance_id, source_revision);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_mastra_review_memory_scope_key
+      ON mastra_review_memory_records(user_id, project_id, instance_id, record_type, business_key);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_mastra_workspace_asset_scope_path
+      ON mastra_workspace_asset_records(user_id, project_id, instance_id, source_path, checksum);
     CREATE INDEX IF NOT EXISTS idx_method_change_candidates_scope_status ON method_change_candidates(user_id, instance_id, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_watchlist_user_stock ON watchlist(user_id, stock_code);
     CREATE INDEX IF NOT EXISTS idx_watchlist_instance_user_stock ON watchlist(instance_id, user_id, stock_code);
@@ -1237,6 +1317,7 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_retention ON conversation_artifacts(retention_class, expires_at, deleted_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_artifacts_purge ON conversation_artifacts(retention_class, purge_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_attachments_scope ON conversation_attachments(user_id, instance_id, conversation_id, message_id);
+    CREATE INDEX IF NOT EXISTS idx_conversation_attachments_project_scope ON conversation_attachments(user_id, project_id, instance_id, conversation_id, message_id);
     CREATE INDEX IF NOT EXISTS idx_conversation_attachments_expiry ON conversation_attachments(expires_at, deleted_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_attachments_message ON conversation_attachments(message_id);
     CREATE INDEX IF NOT EXISTS idx_file_lifecycle_events_scope_time ON file_lifecycle_events(user_id, instance_id, created_at);

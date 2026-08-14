@@ -17,6 +17,7 @@ import { methodChangeCandidates } from "../db/schema.js";
 import { ensureWorkspace } from "./workspace.js";
 import { WorkspaceStore } from "./workspace-store.js";
 import { ACTIVE_BACKEND, type BackendKind } from "./data-backend.js";
+import { sqlite } from "../db/index.js";
 
 export type MethodChangeStatus = "proposed" | "confirmed" | "rejected";
 
@@ -281,10 +282,93 @@ export const workspaceMethodChangeBackend: MethodChangeBackend = {
   },
 };
 
+/** Mastra ledger read adapter; no Workspace fallback and no writes yet. */
+export const mastraMethodChangeBackend: MethodChangeBackend = {
+  async propose(input) {
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const payload = {
+      candidate_id: id, user_id: input.userId, instance_id: input.instanceId,
+      source_review_id: input.sourceReviewId ?? null, source_type: input.sourceType || "review",
+      proposed_change: input.proposedChange, reason: input.reason,
+      affected_resource: input.affectedResource || "methodology_profile", status: "proposed",
+      decision_note: input.decisionNote ?? null, confirmed_at: null, created_at: now, updated_at: now,
+    };
+    sqlite.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(
+      `method-change-${id}`, input.userId, process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent", input.instanceId,
+      "method_change_service_migration", `service:${id}:${now}`, JSON.stringify(payload), "service-owned://method-changes", `service:${now}`, "service-owned", now,
+    );
+    return payloadToMethod(payload);
+  },
+  async get(userId, instanceId, id) {
+    return mastraMethodChanges(userId, instanceId).find((row) => row.id === id) || null;
+  },
+  async decide(input) {
+    const existing = await this.get(input.userId, input.instanceId, input.id);
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    const payload = { candidate_id: existing.id, user_id: existing.userId, instance_id: existing.instanceId, source_review_id: existing.sourceReviewId, source_type: existing.sourceType, proposed_change: existing.proposedChange, reason: existing.reason, affected_resource: existing.affectedResource, status: input.status, decision_note: input.decisionNote ?? null, confirmed_at: input.status === "confirmed" ? now : null, created_at: existing.createdAt, updated_at: now };
+    const projectId = process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent";
+    const existingLedger = sqlite.prepare("SELECT record_id AS recordId FROM mastra_review_memory_records WHERE user_id = ? AND project_id = ? AND instance_id = ? AND record_type = 'method_change_service_migration' AND payload_json LIKE ? ORDER BY created_at DESC LIMIT 1").get(input.userId, projectId, input.instanceId, `%%\"candidate_id\":\"${input.id}\"%%`) as { recordId?: string } | undefined;
+    if (existingLedger?.recordId) {
+      sqlite.prepare("UPDATE mastra_review_memory_records SET payload_json = ?, source_path = ?, source_checksum = ?, migration_batch_id = ?, created_at = ? WHERE record_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?").run(JSON.stringify(payload), "service-owned://method-changes", `service:${now}`, "service-owned", now, existingLedger.recordId, input.userId, projectId, input.instanceId);
+    } else {
+      sqlite.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(`method-change-${input.id}-${now}`, input.userId, projectId, input.instanceId, "method_change_service_migration", `service:${input.id}:${now}`, JSON.stringify(payload), "service-owned://method-changes", `service:${now}`, "service-owned", now);
+    }
+    return payloadToMethod(payload);
+  },
+  async list(userId, instanceId, options) {
+    let rows = mastraMethodChanges(userId, instanceId);
+    if (options.status) rows = rows.filter((row) => row.status === options.status);
+    if (options.maxAgeDays && options.maxAgeDays > 0) {
+      const cutoff = Date.now() - options.maxAgeDays * 24 * 3600 * 1000;
+      rows = rows.filter((row) => Date.parse(row.createdAt) >= cutoff);
+    }
+    return rows.slice(0, options.limit ?? 100);
+  },
+};
+
+function mastraMethodChanges(userId: string, instanceId: string): MethodChangeRecord[] {
+  const rows = sqlite.prepare(
+    "SELECT business_key AS businessKey, payload_json AS payloadJson FROM mastra_review_memory_records " +
+      "WHERE user_id = ? AND project_id = ? AND instance_id = ? AND record_type = 'method_change_service_migration' " +
+      "ORDER BY created_at DESC, record_id DESC",
+  ).all(userId, process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent", instanceId) as Array<{ businessKey: string; payloadJson: string }>;
+  const latest = new Map<string, MethodChangeRecord>();
+  for (const row of rows) {
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(row.payloadJson) as Record<string, unknown>; } catch { continue; }
+    const candidateId = typeof payload.candidate_id === "string" ? payload.candidate_id : undefined;
+    if (!candidateId || payload.type === "template_init" || latest.has(candidateId)) continue;
+    if (typeof payload.proposed_change !== "string" || typeof payload.reason !== "string") continue;
+    const status = payload.status === "confirmed" || payload.status === "rejected" ? payload.status : "proposed";
+    latest.set(candidateId, {
+      id: candidateId,
+      userId,
+      instanceId,
+      sourceReviewId: typeof payload.source_review_id === "string" ? payload.source_review_id : null,
+      sourceType: typeof payload.source_type === "string" ? payload.source_type : "review",
+      proposedChange: payload.proposed_change,
+      reason: payload.reason,
+      affectedResource: typeof payload.affected_resource === "string" ? payload.affected_resource : "methodology_profile",
+      status,
+      decisionNote: typeof payload.decision_note === "string" ? payload.decision_note : null,
+      confirmedAt: typeof payload.confirmed_at === "string" ? payload.confirmed_at : null,
+      createdAt: typeof payload.created_at === "string" ? payload.created_at : "",
+      updatedAt: typeof payload.updated_at === "string" ? payload.updated_at : "",
+    });
+  }
+  return [...latest.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function payloadToMethod(payload: Record<string, any>): MethodChangeRecord {
+  return { id: payload.candidate_id, userId: payload.user_id, instanceId: payload.instance_id, sourceReviewId: payload.source_review_id ?? null, sourceType: payload.source_type || "review", proposedChange: payload.proposed_change, reason: payload.reason, affectedResource: payload.affected_resource || "methodology_profile", status: payload.status === "confirmed" || payload.status === "rejected" ? payload.status : "proposed", decisionNote: payload.decision_note ?? null, confirmedAt: payload.confirmed_at ?? null, createdAt: payload.created_at || "", updatedAt: payload.updated_at || "" };
+}
+
 // ============ 出口:由 WORKSPACE_BACKEND 选择 ============
 
 function selectBackend(kind: BackendKind): MethodChangeBackend {
-  return kind === "workspace" ? workspaceMethodChangeBackend : sqliteMethodChangeBackend;
+  return kind === "workspace" ? workspaceMethodChangeBackend : kind === "mastra" ? mastraMethodChangeBackend : sqliteMethodChangeBackend;
 }
 
 export const methodChangeBackend: MethodChangeBackend = selectBackend(ACTIVE_BACKEND);

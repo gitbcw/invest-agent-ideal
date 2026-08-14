@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "../db/index.js";
-import { agentTraces, alertEvents, alertRules, indicatorResults, investmentProfiles, methodologyProfiles } from "../db/schema.js";
+import { agentTraces, alertEvents, alertRules, indicatorResults, investmentProfiles, mastraProjectProfiles, methodologyProfiles } from "../db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
@@ -23,6 +23,7 @@ import {
 } from "../services/onboarding.js";
 import { mutationResourceKeysForOperation } from "../services/mutation-resource-keys.js";
 import { withResourceMutationLock } from "../services/resource-mutation-lock.js";
+import { MastraUserPreferenceStore } from "../services/user-preferences.js";
 
 function normalizeWatchlistReason(reason: string) {
   return reason.replace(/观察池/g, "自选池").trim();
@@ -151,6 +152,28 @@ function serializeInvestmentProfileFromYaml(strategy: StrategyYaml | null) {
   };
 }
 
+function serializeInvestmentProfileFromMastra(value: Record<string, unknown> | null) {
+  if (!value) return null;
+  return {
+    style: value.style ?? null,
+    selectedStylePack: value.selectedStylePack ?? null,
+    customStyle: {},
+    riskPreference: value.riskPreference ?? null,
+    investmentHorizon: value.investmentHorizon ?? null,
+    markets: Array.isArray(value.markets) ? value.markets : [],
+    allocation: value.allocation && typeof value.allocation === "object" ? value.allocation : {},
+    positionRoles: value.positionRoles && typeof value.positionRoles === "object" ? value.positionRoles : {},
+    buyRules: Array.isArray(value.buyRules) ? value.buyRules : [],
+    sellRules: Array.isArray(value.sellRules) ? value.sellRules : [],
+    rebalanceRules: Array.isArray(value.rebalanceRules) ? value.rebalanceRules : [],
+    riskRules: Array.isArray(value.riskRules) ? value.riskRules : [],
+    notificationPolicy: {},
+    decisionPolicy: {},
+    notes: value.notes ?? null,
+    updatedAt: value.sourceRevision ?? null,
+  };
+}
+
 function serializeMethodologyProfileFromMd(methods: { fundamental: string; technical: string; macro: string; risk: string }) {
   if (!methods.fundamental && !methods.technical && !methods.macro && !methods.risk) return null;
   return {
@@ -165,6 +188,18 @@ function serializeMethodologyProfileFromMd(methods: { fundamental: string; techn
 }
 
 async function loadInvestmentProfile(ctx: { userId: string; instanceId: string }) {
+  if (ACTIVE_BACKEND === "mastra") {
+    const rows = await db.select().from(mastraProjectProfiles).where(and(
+      eq(mastraProjectProfiles.userId, ctx.userId),
+      eq(mastraProjectProfiles.projectId, process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent"),
+      eq(mastraProjectProfiles.instanceId, ctx.instanceId),
+    )).limit(1);
+    if (!rows[0]) return null;
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(rows[0].profileJson) as Record<string, unknown>; }
+    catch (error) { throw new Error(`MASTRA_PROJECTION_INVALID: investment profile payload is invalid: ${(error as Error).message}`); }
+    return serializeInvestmentProfileFromMastra(payload);
+  }
   if (ACTIVE_BACKEND !== "workspace") {
     const rows = await db.select().from(investmentProfiles).where(and(eq(investmentProfiles.userId, ctx.userId), eq(investmentProfiles.instanceId, ctx.instanceId))).limit(1);
     return serializeInvestmentProfile(rows[0]);
@@ -187,6 +222,18 @@ async function loadMethodologyProfile(ctx: { userId: string; instanceId: string 
 
 function sandboxError(reply: any, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith("MASTRA_ONBOARDING_WRITE_NOT_READY")) {
+    return reply.status(409).send({ ok: false, error: "MASTRA_ONBOARDING_WRITE_NOT_READY" });
+  }
+  if (message.startsWith("MASTRA_REVISION_CONFLICT")) {
+    return reply.status(409).send({ ok: false, error: "MASTRA_REVISION_CONFLICT" });
+  }
+  if (message.startsWith("MASTRA_PROJECTION_NOT_FOUND")) {
+    return reply.status(409).send({ ok: false, error: "MASTRA_PROJECTION_NOT_FOUND" });
+  }
+  if (message.startsWith("MASTRA_PROJECTION_INVALID")) {
+    return reply.status(500).send({ ok: false, error: "MASTRA_PROJECTION_INVALID" });
+  }
   if (message === "SANDBOX_TOKEN_REQUIRED") {
     return reply.status(401).send({ ok: false, error: "sandbox token required" });
   }
@@ -1100,8 +1147,9 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   }));
 
   app.get("/api/sandbox/onboarding/state", sandboxSafe("invest.onboarding.read", async (ctx) => {
-    const store = new WorkspaceStore(ctx.userId);
-    const state = normalizeSharedOnboardingState(await store.readOnboardingState());
+    const state = ACTIVE_BACKEND === "mastra"
+      ? normalizeSharedOnboardingState(await new MastraUserPreferenceStore(ctx.userId, ctx.instanceId, ctx.projectId).readOnboardingState())
+      : normalizeSharedOnboardingState(await new WorkspaceStore(ctx.userId).readOnboardingState());
     await audit(ctx, {
       operation: "onboarding.state.read",
       resourceType: "onboarding_state",
@@ -1118,6 +1166,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       notes?: string;
     };
   }>("/api/sandbox/onboarding/confirm-portfolio", sandboxMutationSafe(["invest.onboarding.write", "invest.portfolio.write"], "onboarding.confirm_portfolio", async (ctx, request, reply) => {
+    if (ACTIVE_BACKEND === "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_ONBOARDING_WRITE_NOT_READY" });
     const holdingInputs = normalizeOnboardingAssetList(request.body?.holdings);
     const watchInputs = normalizeOnboardingAssetList(request.body?.watchlist);
     if (!holdingInputs.length && !watchInputs.length) {
@@ -1264,6 +1313,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       complete?: boolean;
     };
   }>("/api/sandbox/onboarding/confirm-step", sandboxMutationSafe("invest.onboarding.write", "onboarding.confirm_step", async (ctx, request, reply) => {
+    if (ACTIVE_BACKEND === "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_ONBOARDING_WRITE_NOT_READY" });
     const step = request.body?.step;
     if (!isSharedOnboardingStep(step)) {
       return reply.status(400).send({ ok: false, error: `非法 onboarding step: ${String(step ?? "")}` });
@@ -1344,7 +1394,43 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     if (request.body?.decisionPolicy !== undefined) ignoredFields.push("decisionPolicy");
 
     let investmentProfile;
-    if (ACTIVE_BACKEND === "workspace") {
+    if (ACTIVE_BACKEND === "mastra") {
+      const projectId = process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent";
+      const existing = await db.select().from(mastraProjectProfiles).where(and(
+        eq(mastraProjectProfiles.userId, ctx.userId), eq(mastraProjectProfiles.projectId, projectId), eq(mastraProjectProfiles.instanceId, ctx.instanceId),
+      )).limit(1);
+      let current: Record<string, unknown> = {};
+      if (existing[0]) {
+        try { current = JSON.parse(existing[0].profileJson) as Record<string, unknown>; }
+        catch (error) { throw new Error(`MASTRA_PROJECTION_INVALID: investment profile payload is invalid: ${(error as Error).message}`); }
+      }
+      const next = {
+        ...current,
+        ...(request.body?.style !== undefined ? { style: request.body.style } : {}),
+        ...(request.body?.selectedStylePack !== undefined ? { selectedStylePack: request.body.selectedStylePack } : {}),
+        ...(request.body?.riskPreference !== undefined ? { riskPreference: request.body.riskPreference } : {}),
+        ...(request.body?.investmentHorizon !== undefined ? { investmentHorizon: request.body.investmentHorizon } : {}),
+        ...(request.body?.markets !== undefined ? { markets: request.body.markets } : {}),
+        ...(request.body?.allocation !== undefined ? { allocation: request.body.allocation } : {}),
+        ...(request.body?.positionRoles !== undefined ? { positionRoles: request.body.positionRoles } : {}),
+        ...(request.body?.buyRules !== undefined ? { buyRules: request.body.buyRules } : {}),
+        ...(request.body?.sellRules !== undefined ? { sellRules: request.body.sellRules } : {}),
+        ...(request.body?.rebalanceRules !== undefined ? { rebalanceRules: request.body.rebalanceRules } : {}),
+        ...(request.body?.riskRules !== undefined ? { riskRules: request.body.riskRules } : {}),
+        ...(request.body?.notes !== undefined ? { notes: request.body.notes } : {}),
+        sourceRevision: now,
+      };
+      const values = {
+        userId: ctx.userId, projectId, instanceId: ctx.instanceId, profileJson: JSON.stringify(next),
+        sourcePath: "service-owned://strategy", sourceChecksum: `service:${now}`, sourceRevision: now,
+        migrationBatchId: "service-owned", createdAt: existing[0]?.createdAt ?? now, updatedAt: now,
+      };
+      if (existing[0]) await db.update(mastraProjectProfiles).set(values).where(and(
+        eq(mastraProjectProfiles.userId, ctx.userId), eq(mastraProjectProfiles.projectId, projectId), eq(mastraProjectProfiles.instanceId, ctx.instanceId),
+      ));
+      else await db.insert(mastraProjectProfiles).values(values);
+      investmentProfile = serializeInvestmentProfileFromMastra(next);
+    } else if (ACTIVE_BACKEND === "workspace") {
       investmentProfile = await writeInvestmentProfileToWorkspace(ctx.userId, request.body ?? {}, now);
     } else {
       const existing = await db.select().from(investmentProfiles).where(and(eq(investmentProfiles.userId, ctx.userId), eq(investmentProfiles.instanceId, ctx.instanceId))).limit(1);
@@ -1659,12 +1745,14 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   // ─── 交易策略 CRUD(workspace/config/trading_strategies.yaml) ───
 
   app.get("/api/sandbox/strategies", sandboxSafe("invest.strategy.read", async (ctx) => {
+    if (ACTIVE_BACKEND === "mastra") return { ok: false, error: "MASTRA_STRATEGY_LIBRARY_NOT_READY", userId: ctx.userId, projectId: ctx.projectId, instanceId: ctx.instanceId };
     const store = new WorkspaceStore(ctx.userId);
     const list = await store.readTradingStrategies();
     return { ok: true, userId: ctx.userId, strategies: list };
   }));
 
   app.post<{ Body: { key?: string; name?: string; applicability?: string; body?: string; enabled?: boolean; userId?: string } }>("/api/sandbox/strategies/set", sandboxMutationSafe("invest.strategy.write", "strategies.set", async (ctx, request, reply) => {
+    if (ACTIVE_BACKEND === "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_STRATEGY_LIBRARY_NOT_READY" });
     const { key, name, applicability, body, enabled } = request.body ?? {};
     if (!key) return reply.status(400).send({ ok: false, error: "缺少策略 key" });
     if (!name) return reply.status(400).send({ ok: false, error: "缺少策略 name" });
@@ -1683,6 +1771,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   }));
 
   app.post<{ Body: { key?: string; userId?: string; confirmationId?: string } }>("/api/sandbox/strategies/remove", sandboxMutationSafe("invest.strategy.write", "strategies.remove", async (ctx, request, reply) => {
+    if (ACTIVE_BACKEND === "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_STRATEGY_LIBRARY_NOT_READY" });
     const { key } = request.body ?? {};
     if (!key) return reply.status(400).send({ ok: false, error: "缺少策略 key" });
     const store = new WorkspaceStore(ctx.userId);

@@ -3,7 +3,7 @@ import { lstat, mkdir, realpath, rename, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { sqlite } from "../db/index.js";
-import { resolveWorkspacePath } from "../lib/workspace.js";
+import { resolveProjectStorageRoot } from "./project-storage-root.js";
 import { logger } from "../lib/logger.js";
 import {
   ARTIFACT_SELECT_COLUMNS,
@@ -201,9 +201,12 @@ export async function confirmArtifactDeletion(input: {
       tombstoneAndPersist();
     }
 
+    const currentRecord = requireArtifactRecord(current.artifactId, input.userId, input.instanceId);
     try {
       await moveArtifactToTrash({
         userId: input.userId,
+        projectId: currentRecord.projectId,
+        instanceId: input.instanceId,
         sourceRelativePath: current.relativePath,
         trashRelativePath,
       });
@@ -287,6 +290,8 @@ export function tombstoneArtifactPath(input: {
 
 async function moveArtifactToTrash(input: {
   userId: string;
+  projectId?: string;
+  instanceId?: string;
   sourceRelativePath: string;
   trashRelativePath: string;
 }): Promise<string> {
@@ -294,7 +299,7 @@ async function moveArtifactToTrash(input: {
     failNextMoveForTest = false;
     throw new Error("injected artifact move failure");
   }
-  const workspacePath = resolveWorkspacePath(input.userId);
+  const workspacePath = await resolveProjectStorageRoot(input);
   const reportsRoot = path.join(workspacePath, "reports");
   const sourcePath = path.resolve(workspacePath, input.sourceRelativePath);
   let realReportsRoot: string;
@@ -377,7 +382,8 @@ export async function purgeExpiredArtifactTrash(input: {
       if (!input.dryRun) recordPurgeAudit(row, "failure", "unsafe_trash_path");
       continue;
     }
-    const workspacePath = resolveWorkspacePath(row.userId);
+    const artifact = sqlite.prepare("SELECT project_id AS projectId FROM conversation_artifacts WHERE artifact_id = ? LIMIT 1").get(row.artifactId) as { projectId?: string } | undefined;
+    const workspacePath = await resolveProjectStorageRoot({ userId: row.userId, projectId: artifact?.projectId, instanceId: row.instanceId });
     const trashRoot = path.join(workspacePath, TRASH_ROOT);
     const targetPath = path.resolve(workspacePath, row.trashRelativePath);
     let realTrashRoot: string;

@@ -1,6 +1,6 @@
 # ADR: Mastra Runtime 与 Portal 同仓
 
-状态：Proposed，等待实现阶段确认
+状态：Accepted for isolated candidate；生产发布源切换仍未批准
 
 ## 决策
 
@@ -34,7 +34,7 @@ packages/contracts/  无存储实现的共享 DTO
 2. 建立 workspace package manager 和根脚本，但暂不移动 runtime 文件。
 3. 先导入 `packages/protocol`，让两边适配共享 schema，保留协议版本兼容测试。
 4. 将正式 Portal 历史按可追溯方式导入 `apps/portal`，验证 43 项测试及浏览器 acceptance。
-5. 将现有 runtime 移至 `apps/runtime`，保持 23655、状态根和启动行为不变。
+5. 将现有 runtime 移至 `apps/runtime`，仅在目录重组已明确带来收益时进行；当前根 `src/` runtime + `apps/portal/` 已满足同仓、独立进程和独立状态边界，不以无价值移动制造 churn。
 6. 增加根级 `dev`, `build`, `test`, `acceptance` 命令和独立应用命令。
 7. Portal 的 Workspace tree 改为 asset library 后，移除 `workspace.file.*` 当前依赖。
 
@@ -55,4 +55,4 @@ packages/contracts/  无存储实现的共享 DTO
 
 ## 暂停门
 
-本 ADR 当前只批准设计，不批准移动 Portal 源码、改变正式 Portal 发布源或部署生产服务。
+`apps/portal/` 已从授权的正式 Portal 仓库以可追溯方式导入，并通过独立构建与测试；本 ADR 不批准改变正式 Portal 发布源、部署生产服务、生产数据迁移或分支合并。

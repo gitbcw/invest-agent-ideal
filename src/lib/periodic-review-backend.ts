@@ -18,6 +18,9 @@ import { parse, stringify } from "yaml";
 import { ensureWorkspace, resolveWorkspacePath } from "./workspace.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "./user-context.js";
 import { logger } from "./logger.js";
+import { sqlite } from "../db/index.js";
+import { ACTIVE_BACKEND } from "./data-backend.js";
+import { DEFAULT_PROJECT_ID } from "./user-context.js";
 
 export type PeriodicReviewKind = "weekly" | "monthly";
 
@@ -76,7 +79,7 @@ function yamlFilePath(userId: string, kind: PeriodicReviewKind, reportKey: strin
   return join(wsRoot, "reports", kind, `${reportKey}.yaml`);
 }
 
-export const periodicReviewBackend: PeriodicReviewBackend = {
+const workspacePeriodicReviewBackend: PeriodicReviewBackend = {
   async upsert(userId, _instanceId, record) {
     // R1: 校验 reportKey
     const keyError = validateReportKey(record.kind, record.reportKey);
@@ -133,5 +136,36 @@ export const periodicReviewBackend: PeriodicReviewBackend = {
     }
   },
 };
+
+const mastraPeriodicReviewBackend: PeriodicReviewBackend = {
+  async upsert(userId, instanceId, record) {
+    const keyError = validateReportKey(record.kind, record.reportKey);
+    if (keyError) throw new Error(`periodicReviewBackend.upsert rejected: ${keyError}`);
+    const now = new Date().toISOString();
+    const projectId = process.env.MASTRA_PROJECT_ID?.trim() || DEFAULT_PROJECT_ID;
+    const businessKey = `${record.kind}:${record.reportKey}`;
+    const payload = JSON.stringify({ kind: record.kind, report_key: record.reportKey, generated_at: record.generatedAt, summary: record.summary ?? null, content: record.content, data: record.data ?? null });
+    sqlite.transaction(() => {
+      const row = sqlite.prepare("SELECT record_id AS recordId FROM mastra_review_memory_records WHERE user_id=? AND project_id=? AND instance_id=? AND record_type='periodic_review' AND business_key=? LIMIT 1")
+        .get(userId, projectId, instanceId, businessKey) as { recordId?: string } | undefined;
+      if (row?.recordId) sqlite.prepare("UPDATE mastra_review_memory_records SET payload_json=?, source_path=?, source_checksum=?, migration_batch_id=?, created_at=? WHERE record_id=?")
+        .run(payload, "service-owned://periodic-reviews", `service:${now}`, "service-owned", now, row.recordId);
+      else sqlite.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_line,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(`periodic-review-${userId}-${instanceId}-${businessKey}`, userId, projectId, instanceId, "periodic_review", businessKey, payload, "service-owned://periodic-reviews", null, `service:${now}`, "service-owned", now);
+    })();
+  },
+  async get(userId, instanceId, kind, reportKey) {
+    const projectId = process.env.MASTRA_PROJECT_ID?.trim() || DEFAULT_PROJECT_ID;
+    const row = sqlite.prepare("SELECT payload_json AS payloadJson FROM mastra_review_memory_records WHERE user_id=? AND project_id=? AND instance_id=? AND record_type='periodic_review' AND business_key=? LIMIT 1")
+      .get(userId, projectId, instanceId, `${kind}:${reportKey}`) as { payloadJson?: string } | undefined;
+    if (!row) return null;
+    try {
+      const value = JSON.parse(row.payloadJson || "{}") as Record<string, unknown>;
+      return { kind, reportKey, generatedAt: String(value.generated_at ?? ""), summary: typeof value.summary === "string" ? value.summary : null, content: String(value.content ?? ""), data: value.data ?? null };
+    } catch { throw new Error("MASTRA_PROJECTION_INVALID: periodic review payload is invalid"); }
+  },
+};
+
+export const periodicReviewBackend: PeriodicReviewBackend = ACTIVE_BACKEND === "mastra" ? mastraPeriodicReviewBackend : workspacePeriodicReviewBackend;
 
 export { DEFAULT_USER_ID as _defaultUser, DEFAULT_INSTANCE_ID as _defaultInstance };

@@ -227,6 +227,88 @@ export const methodologyProfiles = sqliteTable("methodology_profiles", {
   updatedAt: text("updated_at").notNull(),
 });
 
+/**
+ * Mastra-era, service-owned projection of a user project's structured profile.
+ * It deliberately does not replace the user's readable methods/project files.
+ */
+export const mastraProjectProfiles = sqliteTable("mastra_project_profiles", {
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  profileJson: text("profile_json").notNull(),
+  sourcePath: text("source_path").notNull(),
+  sourceChecksum: text("source_checksum").notNull(),
+  sourceRevision: text("source_revision"),
+  migrationBatchId: text("migration_batch_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/**
+ * Mastra-era, service-owned projection of the user's current investment state.
+ * The complete structured payload preserves fields that legacy row tables
+ * cannot represent; it is distinct from any historical Workspace YAML.
+ */
+export const mastraPortfolioStates = sqliteTable("mastra_portfolio_states", {
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  portfolioJson: text("portfolio_json").notNull(),
+  sourcePath: text("source_path").notNull(),
+  sourceChecksum: text("source_checksum").notNull(),
+  sourceRevision: text("source_revision"),
+  migrationBatchId: text("migration_batch_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Mastra-era, service-owned user scheduling, notification and onboarding state. */
+export const mastraRuntimePreferences = sqliteTable("mastra_runtime_preferences", {
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  preferencesJson: text("preferences_json").notNull(),
+  sourceChecksumsJson: text("source_checksums_json").notNull(),
+  sourceRevision: text("source_revision"),
+  migrationBatchId: text("migration_batch_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Scope-bound migration ledger for daily state and review/memory records. */
+export const mastraReviewMemoryRecords = sqliteTable("mastra_review_memory_records", {
+  recordId: text("record_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  recordType: text("record_type").notNull(),
+  businessKey: text("business_key").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  sourcePath: text("source_path").notNull(),
+  sourceLine: integer("source_line"),
+  sourceChecksum: text("source_checksum").notNull(),
+  migrationBatchId: text("migration_batch_id").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Generic migration asset ledger; supports formats outside the Portal upload contract. */
+export const mastraWorkspaceAssetRecords = sqliteTable("mastra_workspace_asset_records", {
+  recordId: text("record_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  sourcePath: text("source_path").notNull(),
+  disposition: text("disposition").notNull(),
+  retentionClass: text("retention_class").notNull(),
+  mimeType: text("mime_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  checksum: text("checksum").notNull(),
+  targetPath: text("target_path").notNull(),
+  executable: integer("executable", { mode: "boolean" }).notNull().default(false),
+  migrationBatchId: text("migration_batch_id").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
 export const methodChangeCandidates = sqliteTable("method_change_candidates", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull().default("primary"),
@@ -770,6 +852,7 @@ export const conversationArtifacts = sqliteTable("conversation_artifacts", {
 export const conversationAttachments = sqliteTable("conversation_attachments", {
   attachmentId: text("attachment_id").primaryKey(),
   userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull().default("invest-agent"),
   instanceId: text("instance_id").notNull(),
   conversationId: text("conversation_id").notNull(),
   messageId: text("message_id"),

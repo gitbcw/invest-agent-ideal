@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 
@@ -34,7 +35,8 @@ const checks = [
 let failed = false;
 
 for (const check of checks) {
-  const result = spawnSync("rg", ["-n", "--pcre2", check.pattern, ...targets], {
+  const existingTargets = targets.filter((target) => existsSync(`${repoRoot}/${target}`));
+  const result = spawnSync("rg", ["-n", "--pcre2", check.pattern, ...existingTargets], {
     cwd: repoRoot,
     encoding: "utf8",
   });

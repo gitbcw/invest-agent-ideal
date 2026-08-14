@@ -43,6 +43,13 @@ export interface MastraBudgetSnapshot {
   state: "completed";
   startedAt: number;
   toolCallsAfterExhaustion: 0;
+  timing?: {
+    agentFactoryMs: number;
+    streamInvokeMs: number;
+    outputCollectMs: number;
+    totalMs: number;
+    toolCallEvents: number;
+  };
 }
 
 export interface MastraTurnResult {

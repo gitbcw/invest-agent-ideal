@@ -1,4 +1,70 @@
-import { WorkspaceStore, type NotificationYaml, type SchedulesYaml } from "../lib/workspace-store.js";
+import { sqlite } from "../db/index.js";
+import { DEFAULT_PROJECT_ID } from "../lib/user-context.js";
+import { WorkspaceStore, type NotificationYaml, type SchedulesYaml, type OnboardingStateYaml, type WatchYaml } from "../lib/workspace-store.js";
+
+export interface UserPreferenceStore {
+  readSchedules(): Promise<SchedulesYaml | null>;
+  readNotification(): Promise<NotificationYaml | null>;
+  writeSchedules(value: SchedulesYaml): Promise<void>;
+  writeNotification(value: NotificationYaml): Promise<void>;
+  readOnboardingState?(): Promise<OnboardingStateYaml | null>;
+  writeOnboardingState?(value: OnboardingStateYaml): Promise<void>;
+  readWatch?(): Promise<WatchYaml | null>;
+  writeWatch?(value: WatchYaml): Promise<void>;
+  appendChangeLogOnce?: (...args: any[]) => Promise<any>;
+}
+
+export class MastraUserPreferenceStore implements UserPreferenceStore {
+  constructor(private readonly userId: string, private readonly instanceId: string, private readonly projectId = process.env.MASTRA_PROJECT_ID?.trim() || DEFAULT_PROJECT_ID) {}
+
+  private read(): { schedules: SchedulesYaml; notification: NotificationYaml; onboardingState: OnboardingStateYaml | null; watch: WatchYaml } {
+    const row = sqlite.prepare(
+      "SELECT preferences_json AS preferencesJson FROM mastra_runtime_preferences WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
+    ).get(this.userId, this.projectId, this.instanceId) as { preferencesJson?: string } | undefined;
+    if (!row) return { schedules: {}, notification: {}, onboardingState: null, watch: {} };
+    try {
+      const value = JSON.parse(row.preferencesJson || "{}");
+      return {
+        schedules: record(value?.schedules) as SchedulesYaml,
+        notification: record(value?.notification) as NotificationYaml,
+        onboardingState: record(value?.onboardingState) as OnboardingStateYaml,
+        watch: record(value?.watch) as WatchYaml,
+      };
+    } catch (error) {
+      throw new Error(`MASTRA_PROJECTION_INVALID: runtime preferences payload is invalid: ${(error as Error).message}`);
+    }
+  }
+
+  private write(next: { schedules: SchedulesYaml; notification: NotificationYaml; onboardingState?: OnboardingStateYaml | null; watch?: WatchYaml }): void {
+    const now = new Date().toISOString();
+    const current = this.read();
+    const payload = JSON.stringify({ schedules: next.schedules, notification: next.notification, onboardingState: next.onboardingState ?? current.onboardingState, watch: next.watch ?? current.watch });
+    sqlite.transaction(() => {
+      const existing = sqlite.prepare(
+        "SELECT source_checksums_json AS sourceChecksumsJson FROM mastra_runtime_preferences WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
+      ).get(this.userId, this.projectId, this.instanceId) as { sourceChecksumsJson?: string } | undefined;
+      const checksums = existing?.sourceChecksumsJson || "{}";
+      if (existing) {
+        sqlite.prepare(
+          "UPDATE mastra_runtime_preferences SET preferences_json = ?, source_checksums_json = ?, source_revision = ?, migration_batch_id = ?, updated_at = ? WHERE user_id = ? AND project_id = ? AND instance_id = ?",
+        ).run(payload, checksums, currentRevision(next.schedules, next.notification), "service-owned", now, this.userId, this.projectId, this.instanceId);
+      } else {
+        sqlite.prepare(
+          "INSERT INTO mastra_runtime_preferences (user_id,project_id,instance_id,preferences_json,source_checksums_json,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        ).run(this.userId, this.projectId, this.instanceId, payload, checksums, currentRevision(next.schedules, next.notification), "service-owned", now, now);
+      }
+    })();
+  }
+
+  async readSchedules() { return this.read().schedules; }
+  async readNotification() { return this.read().notification; }
+  async writeSchedules(value: SchedulesYaml) { const current = this.read(); this.write({ schedules: value, notification: current.notification }); }
+  async writeNotification(value: NotificationYaml) { const current = this.read(); this.write({ schedules: current.schedules, notification: value }); }
+  async readOnboardingState() { return this.read().onboardingState; }
+  async writeOnboardingState(value: OnboardingStateYaml) { const current = this.read(); this.write({ schedules: current.schedules, notification: current.notification, onboardingState: value }); }
+  async readWatch() { return this.read().watch; }
+  async writeWatch(value: WatchYaml) { const current = this.read(); this.write({ schedules: current.schedules, notification: current.notification, onboardingState: current.onboardingState, watch: value }); }
+}
 
 export type NotificationPreferenceMode = "low_disturbance" | "active_watch" | "evening_summary";
 
@@ -89,7 +155,7 @@ function marketWatchPolicy(mode: NotificationPreferenceMode) {
     : { only_push_on_exception: true, push_mode: "exception_only" };
 }
 
-export async function planUserPreferenceChange(store: WorkspaceStore, input: UserPreferenceChangeInput): Promise<UserPreferenceChangePlan> {
+export async function planUserPreferenceChange(store: UserPreferenceStore, input: UserPreferenceChangeInput): Promise<UserPreferenceChangePlan> {
   const schedules = await store.readSchedules() ?? {};
   const notification = await store.readNotification() ?? {};
   const hasReview = input.reviewSchedule !== undefined;
@@ -194,7 +260,7 @@ export async function planUserPreferenceChange(store: WorkspaceStore, input: Use
   };
 }
 
-export async function applyUserPreferenceChange(store: WorkspaceStore, input: UserPreferenceChangeInput): Promise<UserPreferenceChangePlan & { revision: string }> {
+export async function applyUserPreferenceChange(store: UserPreferenceStore, input: UserPreferenceChangeInput): Promise<UserPreferenceChangePlan & { revision: string }> {
   const previousSchedules = await store.readSchedules();
   const previousNotification = await store.readNotification();
   const plan = await planUserPreferenceChange(store, input);

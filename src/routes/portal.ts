@@ -5,6 +5,24 @@ import { logger } from "../lib/logger.js";
 import { AttachmentStoreError, type IncomingPortalAttachment } from "../lib/attachment-store.js";
 import { listWorkspaceFiles, readWorkspaceFile, WorkspaceFileError } from "../services/workspace-files.js";
 
+export const PORTAL_HEALTH_CAPABILITIES = [
+  "conversation.chat",
+  "conversation.list",
+  "conversation.get",
+  "conversation.attachments",
+  // The asset contract is the primary file surface in the Mastra runtime.
+  "asset.list",
+  "asset.get",
+  "asset.version.get",
+  "asset.versions.list",
+  "asset.upload",
+  "asset.archive",
+  "asset.delete",
+  // Read-only compatibility for older Portal clients.
+  "workspace.file.list",
+  "workspace.file.get",
+] as const;
+
 function scopeFrom(input: {
   userId?: string;
   assistantId?: string;
@@ -39,7 +57,7 @@ export function registerPortalRoutes(app: FastifyInstance) {
           return reply.status(403).send({ ok: false, error: "conversation does not belong to this scope", code: "CONVERSATION_SCOPE_MISMATCH" });
         }
         if (error instanceof WorkspaceFileError) {
-          const status = error.code === "WORKSPACE_FILE_NOT_FOUND" ? 404 : error.code === "WORKSPACE_FILE_TOO_LARGE" ? 413 : 403;
+          const status = error.code === "WORKSPACE_FILE_NOT_FOUND" ? 404 : error.code === "WORKSPACE_FILE_TOO_LARGE" ? 413 : error.code === "WORKSPACE_FILE_SCOPE_UNAVAILABLE" ? 409 : 403;
           return reply.status(status).send({ ok: false, error: error.message, code: error.code });
         }
         logger.error("Portal 本地接口失败:", error);
@@ -53,7 +71,7 @@ export function registerPortalRoutes(app: FastifyInstance) {
   app.get("/api/portal/health", safe(async () => ({
     ok: true,
     mode: "local-runtime",
-    capabilities: ["conversation.chat", "conversation.list", "conversation.get", "conversation.attachments", "workspace.file.list", "workspace.file.get"],
+    capabilities: [...PORTAL_HEALTH_CAPABILITIES],
     timestamp: new Date().toISOString(),
   })));
 
@@ -61,7 +79,7 @@ export function registerPortalRoutes(app: FastifyInstance) {
     "/api/portal/workspace/files",
     safe(async (request) => {
       const scope = scopeFrom(request.query);
-      return { ok: true, ...(await listWorkspaceFiles({ userId: scope.userId })) };
+      return { ok: true, ...(await listWorkspaceFiles(scope)) };
     }),
   );
 
@@ -71,7 +89,7 @@ export function registerPortalRoutes(app: FastifyInstance) {
     const relativePath = String(request.query.relativePath || "");
     if (!relativePath) return reply.status(400).send({ ok: false, error: "relativePath is required", code: "INVALID_REQUEST" });
     const scope = scopeFrom(request.query);
-    return { ok: true, ...(await readWorkspaceFile({ userId: scope.userId, relativePath })) };
+    return { ok: true, ...(await readWorkspaceFile({ ...scope, relativePath })) };
   }));
 
   app.get<{

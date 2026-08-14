@@ -709,6 +709,8 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
     case TYPES.REPORT_ASSET_GET:
       return finish(ok(message.type, message.requestId, await readWorkspaceReportAsset({
         userId: scope.userId,
+        projectId: scope.projectId,
+        instanceId: scope.instanceId,
         relativePath: String(message.payload?.relativePath || ""),
       })));
     case TYPES.REPORT_MAPPING_GET: {
@@ -736,7 +738,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
           }));
         }
         if (!mapping.readPath) return finish(fail(message.type, message.requestId, "REPORT_MAPPING_NOT_FOUND", mappingId));
-        const payload = await readWorkspaceReportAsset({ userId: scope.userId, relativePath: mapping.readPath });
+        const payload = await readWorkspaceReportAsset({ userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId, relativePath: mapping.readPath });
         return finish(ok(message.type, message.requestId, {
           mappingId: mapping.mappingId,
           reportId: mapping.reportId,
@@ -814,6 +816,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       }
       const result = await listCuratedArtifactLibrary({
         userId: scope.userId,
+        projectId: scope.projectId,
         instanceId: scope.instanceId,
         cursor: payload.cursor as string | undefined,
         limit: payload.limit as number | undefined,
@@ -825,7 +828,11 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       if (Object.keys(payload).length > 0) {
         return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "workspace file list does not accept filters", false));
       }
-      return finish(ok(message.type, message.requestId, await listWorkspaceFiles({ userId: scope.userId })));
+      return finish(ok(message.type, message.requestId, await listWorkspaceFiles({
+        userId: scope.userId,
+        projectId: scope.projectId,
+        instanceId: scope.instanceId,
+      })));
     }
     case TYPES.WORKSPACE_FILE_GET: {
       const relativePath = String(message.payload?.relativePath || "");
@@ -835,6 +842,8 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       try {
         return finish(ok(message.type, message.requestId, await readWorkspaceFile({
           userId: scope.userId,
+          projectId: scope.projectId,
+          instanceId: scope.instanceId,
           relativePath,
         })));
       } catch (error) {
@@ -913,7 +922,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       if (!attachmentId) {
         return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "attachmentId is required", false));
       }
-      const preview = findAttachmentRecord({ attachmentId, userId: scope.userId, instanceId: scope.instanceId });
+      const preview = findAttachmentRecord({ attachmentId, userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId });
       if (!preview) {
         return finish(fail(message.type, message.requestId, "ATTACHMENT_NOT_FOUND", attachmentId, false));
       }
@@ -930,7 +939,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         }));
       }
       try {
-        const { bytes, record } = await readAttachmentBytes({ attachmentId, userId: scope.userId, instanceId: scope.instanceId });
+        const { bytes, record } = await readAttachmentBytes({ attachmentId, userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId });
         return finish(ok(message.type, message.requestId, {
           attachmentId: record.attachmentId,
           status: "active" as const,

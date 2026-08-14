@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { lstat, opendir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
+import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
 
 const MAX_LISTED_FILES = 5_000;
 const MAX_PREVIEW_BYTES = 15 * 1024 * 1024;
@@ -99,7 +101,8 @@ export class WorkspaceFileError extends Error {
       | "WORKSPACE_FILE_NOT_FOUND"
       | "WORKSPACE_FILE_FORBIDDEN"
       | "WORKSPACE_FILE_TOO_LARGE"
-      | "WORKSPACE_FILE_LIMIT_EXCEEDED",
+      | "WORKSPACE_FILE_LIMIT_EXCEEDED"
+      | "WORKSPACE_FILE_SCOPE_UNAVAILABLE",
     message: string,
   ) {
     super(`${code}:${message}`);
@@ -107,8 +110,14 @@ export class WorkspaceFileError extends Error {
   }
 }
 
-export async function listWorkspaceFiles(input: { userId: string }): Promise<{ items: WorkspaceFileItem[] }> {
-  const workspacePath = resolveWorkspacePath(input.userId);
+export interface WorkspaceFileScope {
+  userId: string;
+  projectId?: string;
+  instanceId?: string;
+}
+
+export async function listWorkspaceFiles(input: WorkspaceFileScope): Promise<{ items: WorkspaceFileItem[] }> {
+  const workspacePath = await resolveWorkspaceFileRoot(input);
   const realWorkspacePath = await realpath(workspacePath).catch(() => {
     throw new WorkspaceFileError("WORKSPACE_FILE_NOT_FOUND", "workspace");
   });
@@ -119,10 +128,10 @@ export async function listWorkspaceFiles(input: { userId: string }): Promise<{ i
   return { items };
 }
 
-export async function readWorkspaceFile(input: { userId: string; relativePath: string }): Promise<WorkspaceFilePayload> {
+export async function readWorkspaceFile(input: WorkspaceFileScope & { relativePath: string }): Promise<WorkspaceFilePayload> {
   const relativePath = normalizeRelativePath(input.relativePath);
   assertVisiblePath(relativePath);
-  const workspacePath = resolveWorkspacePath(input.userId);
+  const workspacePath = await resolveWorkspaceFileRoot(input);
   const targetPath = path.resolve(workspacePath, relativePath);
 
   const rawTargetStat = await lstat(targetPath).catch(() => null);
@@ -160,6 +169,26 @@ export async function readWorkspaceFile(input: { userId: string; relativePath: s
     base64: bytes.toString("base64"),
     checksum: createHash("sha256").update(bytes).digest("hex"),
   };
+}
+
+/**
+ * The old browser is a project-file compatibility surface, never a source of
+ * service facts. In Mastra mode it may only read a service-registered project
+ * root for the complete authenticated scope; it must not fall back to the
+ * legacy per-user Workspace directory.
+ */
+async function resolveWorkspaceFileRoot(input: WorkspaceFileScope): Promise<string> {
+  if (ACTIVE_BACKEND !== "mastra") return resolveWorkspacePath(input.userId);
+  const projectId = input.projectId?.trim();
+  const instanceId = input.instanceId?.trim();
+  if (!projectId || !instanceId) {
+    throw new WorkspaceFileError("WORKSPACE_FILE_SCOPE_UNAVAILABLE", "Mastra project scope is required");
+  }
+  const project = await mastraWorkspaceRegistry.resolve({ userId: input.userId, projectId, instanceId });
+  if (!project) {
+    throw new WorkspaceFileError("WORKSPACE_FILE_SCOPE_UNAVAILABLE", "Mastra project is not registered");
+  }
+  return project.realProjectRoot;
 }
 
 async function walk(rootPath: string, relativeDirectory: string, items: WorkspaceFileItem[]): Promise<void> {

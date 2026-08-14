@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import ExcelJS from "exceljs";
 import { db } from "../db/index.js";
-import { alertRules, conversationArtifacts, conversationMessages, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
+import { alertRules, conversationArtifacts, conversationMessages, mastraProjectProfiles, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
 import {
   publishConversationArtifact,
   readConversationArtifactPayload,
@@ -33,7 +34,8 @@ import {
   pauseAutomationTask,
   updateAutomationTask,
 } from "../services/automation-tasks.js";
-import { isWorkspaceBackend, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
+import { ACTIVE_BACKEND, isWorkspaceBackend, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
+import { getMastraPortfolioRevision, readMastraPortfolioProjection, replaceMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
@@ -72,7 +74,7 @@ import {
 } from "../services/onboarding-drafts.js";
 import { mutationResourceKeysForOperation } from "../services/mutation-resource-keys.js";
 import { withResourceMutationLock } from "../services/resource-mutation-lock.js";
-import { applyUserPreferenceChange, planUserPreferenceChange, type UserPreferenceChangeInput } from "../services/user-preferences.js";
+import { applyUserPreferenceChange, MastraUserPreferenceStore, planUserPreferenceChange, type UserPreferenceChangeInput, type UserPreferenceStore } from "../services/user-preferences.js";
 
 export interface ServiceToolContext {
   userId: string;
@@ -196,6 +198,7 @@ async function dispatchServiceTool(
       const { bytes, record } = await readAttachmentBytes({
         attachmentId,
         userId: context.userId,
+        projectId: context.projectId,
         instanceId: context.instanceId,
       });
       const result = await parseAttachmentWithMineru({
@@ -280,19 +283,24 @@ async function dispatchServiceTool(
     }
     case "portfolio.read": {
       const rows = await portfolioBackend.listActive(context.userId, context.instanceId);
-      const portfolio = await new WorkspaceStore(context.userId).readPortfolio();
+      const portfolio = ACTIVE_BACKEND === "mastra"
+        ? readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml
+        : await new WorkspaceStore(context.userId).readPortfolio();
+      const revision = ACTIVE_BACKEND === "mastra"
+        ? getMastraPortfolioRevision(context.userId, context.instanceId)
+        : portfolio?.last_confirmed_at ?? null;
       await audit(context, {
         operation: "portfolio.read",
         resourceType: "portfolio",
         resourceId: context.instanceId,
-        resultSummary: `holdings=${rows.length}; revision=${portfolio?.last_confirmed_at ?? "null"}`,
+        resultSummary: `holdings=${rows.length}; revision=${revision ?? "null"}`,
       });
       return {
         ok: true,
         userId: context.userId,
         instanceId: context.instanceId,
         count: rows.length,
-        revision: portfolio?.last_confirmed_at ?? null,
+        revision,
         cash: portfolio?.cash ?? null,
         items: rows.map((row) => {
           const holding = portfolio?.holdings?.find((item) => item.code === row.code);
@@ -435,6 +443,8 @@ async function dispatchServiceTool(
       return saveReview(input, context);
     case "artifacts.publish":
       return publishArtifact(input, context);
+    case "spreadsheet.create":
+      return createSpreadsheetTool(input, context);
     case "watch_rules.catalog":
       return { ok: true, userId: context.userId, instanceId: context.instanceId, items: listWatchRuleCatalog() };
     case "watch_rules.list":
@@ -812,6 +822,7 @@ async function saveAttachmentAsAssetTool(input: Record<string, unknown> | undefi
   const { bytes, record } = await readAttachmentBytes({
     attachmentId,
     userId: context.userId,
+    projectId: context.projectId,
     instanceId: context.instanceId,
   });
   const saved = await saveConversationAttachmentAsUserAsset({
@@ -1035,6 +1046,7 @@ async function readPendingConfirmations(input: Record<string, unknown> | undefin
 }
 
 async function confirmOnboardingPortfolio(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  if (ACTIVE_BACKEND === "mastra") throw new Error("MASTRA_ONBOARDING_WRITE_NOT_READY: onboarding portfolio transaction still requires service-owned multi-domain commit");
   const confirmation = await prepareBoundConfirmation(input, context, "onboarding.confirm_portfolio");
   const holdingInputs = normalizeOnboardingAssetList(input?.holdings);
   const watchInputs = normalizeOnboardingAssetList(input?.watchlist);
@@ -1286,6 +1298,7 @@ async function enqueueOnboardingDraft(input: Record<string, unknown> | undefined
 }
 
 async function confirmOnboardingStep(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  if (ACTIVE_BACKEND === "mastra") throw new Error("MASTRA_ONBOARDING_WRITE_NOT_READY: onboarding step transaction still requires service-owned multi-domain commit");
   const step = stringInput(input?.step);
   if (!isSharedOnboardingStep(step)) throw new Error(`非法 onboarding step: ${String(step ?? "")}`);
   const confirmation = await prepareBoundConfirmation(input, context, "onboarding.confirm_step");
@@ -1319,6 +1332,7 @@ async function confirmOnboardingStep(input: Record<string, unknown> | undefined,
 }
 
 async function completeOnboardingWatchSetup(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  if (ACTIVE_BACKEND === "mastra") throw new Error("MASTRA_ONBOARDING_WRITE_NOT_READY: onboarding watch setup transaction still requires service-owned multi-domain commit");
   const branch = stringInput(input?.branch);
   if (branch !== "skip" && branch !== "configured") throw new Error("branch must be skip or configured");
   if (!context.conversationId) throw new Error("conversationId is required to complete onboarding watch setup");
@@ -1448,11 +1462,13 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
     return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: context.userId };
   }
   const stockName = name || stockCode;
+  const expectedRevision = ACTIVE_BACKEND === "mastra" ? getMastraPortfolioRevision(context.userId, context.instanceId) : undefined;
   await watchlistBackend.add(context.userId, context.instanceId, {
     code: stockCode,
     name: stockName,
     reason: normalizeWatchlistReason(stringInput(input?.reason) || "AI 助手根据对话加入"),
     source: "ai_conversation",
+    expectedRevision,
   });
   await confirmation.consume();
   await audit(context, {
@@ -1487,6 +1503,7 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
   if (!/^\d{6}$/.test(stockCode)) throw new Error("stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀");
   const stockName = stringInput(input?.stockName ?? input?.name) || stockCode;
   const existing = await planBackend.find(context.userId, context.instanceId, stockCode);
+  const expectedRevision = ACTIVE_BACKEND === "mastra" ? getMastraPortfolioRevision(context.userId, context.instanceId) : undefined;
   await planBackend.upsert(context.userId, context.instanceId, {
     code: stockCode,
     name: stockName,
@@ -1499,6 +1516,7 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
     linkedAlertRuleIds: Array.isArray(input?.linkedAlertRuleIds) ? input.linkedAlertRuleIds.map(String) : existing?.linkedAlertRuleIds,
     planType: stringInput(input?.planType) || existing?.planType || "manual",
     strategyKey: input?.strategyKey !== undefined ? stringInput(input.strategyKey) : existing?.strategyKey ?? null,
+    expectedRevision,
   });
   await confirmation.consume();
   await audit(context, {
@@ -1576,7 +1594,9 @@ async function proposeMethodChange(input: Record<string, unknown> | undefined, c
     requestBody: input,
     resultSummary: "proposed method change",
   });
-  const strategy = isWorkspaceBackend() ? await new WorkspaceStore(context.userId).readStrategy() : null;
+  const strategy = ACTIVE_BACKEND === "mastra"
+    ? await readMastraStrategyProjection(context)
+    : isWorkspaceBackend() ? await new WorkspaceStore(context.userId).readStrategy() : null;
   return {
     ok: true,
     userId: context.userId,
@@ -1704,15 +1724,68 @@ function mergeStrategyPatch(
   return next;
 }
 
+async function readMastraStrategyProjection(context: ServiceToolContext): Promise<StrategyYaml | null> {
+  const rows = await db.select().from(mastraProjectProfiles).where(and(
+    eq(mastraProjectProfiles.userId, context.userId),
+    eq(mastraProjectProfiles.projectId, context.projectId || DEFAULT_PROJECT_ID),
+    eq(mastraProjectProfiles.instanceId, context.instanceId),
+  )).limit(1);
+  if (!rows[0]) return null;
+  try {
+    const value = JSON.parse(rows[0].profileJson) as Record<string, unknown>;
+    const profile = (value.profile && typeof value.profile === "object" ? value.profile : value) as Record<string, unknown>;
+    return {
+      profile: {
+        style: typeof profile.style === "string" ? profile.style : undefined,
+        selected_style_pack: typeof (profile.selected_style_pack ?? profile.selectedStylePack) === "string" ? (profile.selected_style_pack ?? profile.selectedStylePack) as string : undefined,
+        risk_preference: typeof (profile.risk_preference ?? profile.riskPreference) === "string" ? (profile.risk_preference ?? profile.riskPreference) as string : undefined,
+        investment_horizon: typeof (profile.investment_horizon ?? profile.investmentHorizon) === "string" ? (profile.investment_horizon ?? profile.investmentHorizon) as string : undefined,
+        markets: Array.isArray(profile.markets) ? profile.markets as string[] : [],
+      },
+      allocation: (value.allocation && typeof value.allocation === "object" ? value.allocation : {}) as Record<string, unknown>,
+      position_roles: (value.position_roles ?? value.positionRoles ?? {}) as Record<string, unknown>,
+      buy_rules: Array.isArray(value.buy_rules ?? value.buyRules) ? (value.buy_rules ?? value.buyRules) as unknown[] : [],
+      sell_rules: Array.isArray(value.sell_rules ?? value.sellRules) ? (value.sell_rules ?? value.sellRules) as unknown[] : [],
+      rebalance_rules: Array.isArray(value.rebalance_rules ?? value.rebalanceRules) ? (value.rebalance_rules ?? value.rebalanceRules) as unknown[] : [],
+      risk_rules: Array.isArray(value.risk_rules ?? value.riskRules) ? (value.risk_rules ?? value.riskRules) as unknown[] : [],
+      do_not_do_rules: Array.isArray(value.do_not_do_rules ?? value.doNotDoRules) ? (value.do_not_do_rules ?? value.doNotDoRules) as string[] : [],
+      decision_boundaries: (value.decision_boundaries ?? value.decisionBoundaries ?? {}) as Record<string, unknown>,
+      notes: typeof value.notes === "string" ? value.notes : undefined,
+      last_confirmed_at: rows[0].sourceRevision ?? undefined,
+    };
+  } catch (error) {
+    throw new Error(`MASTRA_PROJECTION_INVALID: strategy profile payload is invalid: ${(error as Error).message}`);
+  }
+}
+
+async function writeMastraStrategyProjection(context: ServiceToolContext, strategy: StrategyYaml): Promise<void> {
+  const now = new Date().toISOString();
+  const projectId = context.projectId || DEFAULT_PROJECT_ID;
+  const payload = JSON.stringify(strategy);
+  const existing = await db.select().from(mastraProjectProfiles).where(and(
+    eq(mastraProjectProfiles.userId, context.userId), eq(mastraProjectProfiles.projectId, projectId), eq(mastraProjectProfiles.instanceId, context.instanceId),
+  )).limit(1);
+  const values = {
+    userId: context.userId, projectId, instanceId: context.instanceId, profileJson: payload,
+    sourcePath: "service-owned://strategy", sourceChecksum: `service:${now}`, sourceRevision: strategy.last_confirmed_at ?? now,
+    migrationBatchId: "service-owned", createdAt: existing[0]?.createdAt ?? now, updatedAt: now,
+  };
+  if (existing[0]) await db.update(mastraProjectProfiles).set(values).where(and(
+    eq(mastraProjectProfiles.userId, context.userId), eq(mastraProjectProfiles.projectId, projectId), eq(mastraProjectProfiles.instanceId, context.instanceId),
+  ));
+  else await db.insert(mastraProjectProfiles).values(values);
+}
+
 async function planMethodChangeApplication(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  if (!isWorkspaceBackend()) throw new Error("method_changes.apply 目前只支持 Workspace 策略后端");
+  if (ACTIVE_BACKEND !== "workspace" && ACTIVE_BACKEND !== "mastra") throw new Error("method_changes.apply 当前 backend 不支持策略写入");
   const candidateId = stringInput(input?.candidateId);
   if (!candidateId) throw new Error("candidateId 是必填项");
   const candidate = await methodChangeBackend.get(context.userId, context.instanceId, candidateId);
   if (!candidate) throw new Error("方法变更候选不存在");
 
-  const store = new WorkspaceStore(context.userId);
-  const current = await store.readStrategy();
+  const current = ACTIVE_BACKEND === "mastra"
+    ? await readMastraStrategyProjection(context)
+    : await new WorkspaceStore(context.userId).readStrategy();
   if (!current) throw new Error("当前策略配置不存在，无法采用方法变更");
   const patch = normalizeStrategyPatch(input?.strategyPatch);
   const confirmationId = stringInput(input?.confirmationId);
@@ -1738,19 +1811,21 @@ async function applyMethodChange(input: Record<string, unknown> | undefined, con
   const plan = await planMethodChangeApplication(input, context);
   const candidateId = plan.candidate.id;
   const now = new Date().toISOString();
-  const store = new WorkspaceStore(context.userId);
+  const store = ACTIVE_BACKEND === "workspace" ? new WorkspaceStore(context.userId) : null;
   let saved = plan.current;
   let confirmedCandidate = plan.candidate;
   if (!plan.alreadyApplied) {
     const next = mergeStrategyPatch(plan.current, plan.patch, now, confirmation.confirmationId, candidateId);
-    await store.writeStrategy(next);
-    const savedStrategy = await store.readStrategy();
+    if (ACTIVE_BACKEND === "mastra") await writeMastraStrategyProjection(context, next);
+    else await store!.writeStrategy(next);
+    const savedStrategy = ACTIVE_BACKEND === "mastra" ? await readMastraStrategyProjection(context) : await store!.readStrategy();
     if (
       savedStrategy?.last_confirmed_at !== now
       || savedStrategy.last_confirmation_id !== confirmation.confirmationId
       || savedStrategy.last_method_change_candidate_id !== candidateId
     ) {
-      await store.writeStrategy(plan.current);
+      if (ACTIVE_BACKEND === "mastra") await writeMastraStrategyProjection(context, plan.current);
+      else await store!.writeStrategy(plan.current);
       throw new Error("策略写入后回读校验失败，已恢复原策略");
     }
     saved = savedStrategy;
@@ -1766,13 +1841,14 @@ async function applyMethodChange(input: Record<string, unknown> | undefined, con
       if (!decidedCandidate) throw new Error("方法变更候选不存在");
       confirmedCandidate = decidedCandidate;
     } catch (error) {
-      await store.writeStrategy(plan.current);
+      if (ACTIVE_BACKEND === "mastra") await writeMastraStrategyProjection(context, plan.current);
+      else await store!.writeStrategy(plan.current);
       throw error;
     }
   }
 
   const appliedRevision = saved.last_confirmed_at ?? now;
-  await store.appendChangeLogOnce({
+  if (store?.appendChangeLogOnce) await store.appendChangeLogOnce({
     ts: appliedRevision,
     source: "mcp",
     type: "method_change_applied",
@@ -1793,12 +1869,12 @@ async function applyMethodChange(input: Record<string, unknown> | undefined, con
     requestBody: input,
     resultSummary: `applied method change candidate fields=${plan.changedFields.join(",")}`,
   });
-  const publication = await publishWorkspaceArtifacts(
+  const publication = isWorkspaceBackend() ? await publishWorkspaceArtifacts(
     context,
     [{ relativePath: "config/strategy.yaml", kind: "data", title: "当前投资策略" }],
     "method_changes.apply",
     { required: true, idempotencyKey: `method_changes.apply:${confirmation.confirmationId}` },
-  );
+  ) : { artifacts: [], failures: [] };
   await confirmation.consume();
   return {
     ok: true,
@@ -1842,9 +1918,11 @@ function userPreferenceChangeInput(input: Record<string, unknown> | undefined): 
 
 async function applyUserPreferences(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "preferences.apply");
-  const store = new WorkspaceStore(context.userId);
+  const store: UserPreferenceStore = ACTIVE_BACKEND === "mastra"
+    ? new MastraUserPreferenceStore(context.userId, context.instanceId, context.projectId || DEFAULT_PROJECT_ID)
+    : new WorkspaceStore(context.userId);
   const result = await applyUserPreferenceChange(store, userPreferenceChangeInput(input));
-  await store.appendChangeLogOnce({
+  if (store.appendChangeLogOnce) await store.appendChangeLogOnce({
     ts: result.revision,
     source: "mcp",
     type: "user_preferences_applied",
@@ -1864,7 +1942,7 @@ async function applyUserPreferences(input: Record<string, unknown> | undefined, 
     requestBody: input,
     resultSummary: `updated ${result.changedPaths.join(",")}`,
   });
-  const publication = await publishWorkspaceArtifacts(
+  const publication = isWorkspaceBackend() ? await publishWorkspaceArtifacts(
     context,
     result.changedPaths.map((relativePath) => ({
       relativePath,
@@ -1873,7 +1951,7 @@ async function applyUserPreferences(input: Record<string, unknown> | undefined, 
     })),
     "preferences.apply",
     { required: true, idempotencyKey: `preferences.apply:${confirmation.confirmationId}` },
-  );
+  ) : { artifacts: [], failures: [] };
   await confirmation.consume();
   return {
     ok: true,
@@ -1945,25 +2023,23 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
 
   const resourceId = saved.date ?? saved.reportKey ?? "unknown";
   const resourceType = kind === "daily" ? "daily_review" : `${kind}_review`;
-  const store = new WorkspaceStore(context.userId);
   const publishedAt = new Date().toISOString();
-  for (const [index, record] of decisionRecords.entries()) {
-    await store.appendDecision({
-      ...record,
-      source_review_date: resourceId,
-      source_review_conversation_id: context.conversationId ?? null,
-      recorded_at: record.recorded_at ?? publishedAt,
-      record_index: index,
-    });
-  }
-  for (const [index, record] of sourceEvents.entries()) {
-    await store.appendSourceEvent({
-      ...record,
-      source_review_date: resourceId,
-      source_review_conversation_id: context.conversationId ?? null,
-      recorded_at: record.recorded_at ?? publishedAt,
-      record_index: index,
-    });
+  if (ACTIVE_BACKEND === "mastra") {
+    const projectId = context.projectId || DEFAULT_PROJECT_ID;
+    for (const [index, record] of decisionRecords.entries()) {
+      const payload = { ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index };
+      db.$client.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_line,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(`decision-${context.userId}-${context.instanceId}-${resourceId}-${index}-${publishedAt}`, context.userId, projectId, context.instanceId, "service_event", `decision:${resourceId}:${index}:${publishedAt}`, JSON.stringify(payload), "service-owned://reviews", null, `service:${publishedAt}`, "service-owned", publishedAt);
+    }
+    for (const [index, record] of sourceEvents.entries()) {
+      const payload = { ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index };
+      db.$client.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_line,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(`source-event-${context.userId}-${context.instanceId}-${resourceId}-${index}-${publishedAt}`, context.userId, projectId, context.instanceId, "service_event", `source-event:${resourceId}:${index}:${publishedAt}`, JSON.stringify(payload), "service-owned://reviews", null, `service:${publishedAt}`, "service-owned", publishedAt);
+    }
+  } else {
+    const store = new WorkspaceStore(context.userId);
+    for (const [index, record] of decisionRecords.entries()) await store.appendDecision({ ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index });
+    for (const [index, record] of sourceEvents.entries()) await store.appendSourceEvent({ ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index });
   }
   await audit(context, {
     operation: "reviews.save",
@@ -2058,6 +2134,58 @@ async function publishArtifact(input: Record<string, unknown> | undefined, conte
     instanceId: context.instanceId,
     artifact: available,
   };
+}
+
+async function createSpreadsheetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const value = input ?? {};
+  const fileName = stringInput(value.fileName);
+  const columns = Array.isArray(value.columns) ? value.columns.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+  const rows = Array.isArray(value.rows) ? value.rows : [];
+  if (!fileName || !/^[^/\\]+\.xlsx$/i.test(fileName)) throw new UserAssetError("ASSET_INVALID_CONTENT", "fileName must be a plain .xlsx file name");
+  if (columns.length < 1 || columns.length > 30) throw new UserAssetError("ASSET_INVALID_CONTENT", "columns must contain 1-30 labels");
+  if (rows.length > 100) throw new UserAssetError("ASSET_INVALID_CONTENT", "rows may contain at most 100 records");
+  for (const row of rows) if (!Array.isArray(row) || row.length > columns.length) throw new UserAssetError("ASSET_INVALID_CONTENT", "each row must be an array no wider than columns");
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "Invest Agent (Mastra)";
+  workbook.created = new Date();
+  const sheet = workbook.addWorksheet("数据", { views: [{ state: "frozen", ySplit: 1 }] });
+  const title = stringInput(value.title);
+  if (title) sheet.addRow([title]);
+  const header = sheet.addRow(columns);
+  header.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1C7C7D" } };
+  header.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+  sheet.autoFilter = { from: { row: title ? 2 : 1, column: 1 }, to: { row: (title ? 2 : 1) + rows.length, column: columns.length } };
+  for (const row of rows) sheet.addRow(row.map((cell: unknown) => cell === null || cell === undefined ? "" : typeof cell === "object" ? JSON.stringify(cell) : cell));
+  if (title) {
+    sheet.mergeCells(1, 1, 1, columns.length);
+    sheet.getCell(1, 1).font = { bold: true, size: 14, color: { argb: "FF12343B" } };
+  }
+  for (let index = 1; index <= columns.length; index += 1) {
+    const values = [columns[index - 1], ...rows.map((row) => row[index - 1])];
+    const width = Math.min(42, Math.max(12, Math.max(...values.map((item) => String(item ?? "").length), 0) + 2));
+    sheet.getColumn(index).width = width;
+  }
+  if (typeof value.notes === "string" && value.notes.trim()) {
+    const noteRow = sheet.addRow([`备注：${value.notes.trim()}`]);
+    sheet.mergeCells(noteRow.number, 1, noteRow.number, columns.length);
+    noteRow.alignment = { wrapText: true, vertical: "top" };
+  }
+  const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
+  const saved = await saveConversationArtifactAsUserAsset({
+    ...assetScope(context),
+    name: title || fileName.replace(/\.xlsx$/i, ""),
+    fileName,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    bytes,
+    confirmedByUser: true,
+    conversationId: context.conversationId ?? null,
+    runId: context.runId ?? null,
+    idempotencyKey: `spreadsheet:${context.conversationId ?? "unknown"}:${fileName}`,
+  });
+  await audit(context, { operation: "spreadsheet.create", resourceType: "user_asset", resourceId: saved.assetId, requestBody: { fileName, columns: columns.length, rows: rows.length }, resultSummary: `created xlsx asset=${saved.assetId}; bytes=${bytes.length}` });
+  return { ok: true, asset: publicAssetDescriptor(saved), version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null, fileName, rows: rows.length, columns: columns.length };
 }
 
 async function attachPublishedArtifactToUserFiles(
@@ -2192,9 +2320,12 @@ async function planPortfolioChanges(
     throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
   }
 
-  const store = new WorkspaceStore(context.userId);
-  const current = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
-  const currentRevision = current.last_confirmed_at ?? null;
+  const current = ACTIVE_BACKEND === "mastra"
+    ? readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml
+    : (await new WorkspaceStore(context.userId).readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
+  const currentRevision = ACTIVE_BACKEND === "mastra"
+    ? getMastraPortfolioRevision(context.userId, context.instanceId)
+    : current.last_confirmed_at ?? null;
   if (currentRevision !== expectedLastConfirmedAt) {
     throw new Error(`portfolio state changed; expected revision ${expectedLastConfirmedAt ?? "null"}, current revision ${currentRevision ?? "null"}`);
   }
@@ -2309,8 +2440,9 @@ async function planPortfolioChanges(
 
 async function applyPortfolioChanges(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "portfolio.apply_changes");
-  const store = new WorkspaceStore(context.userId);
-  const existing = await store.readPortfolio();
+  const existing = ACTIVE_BACKEND === "mastra"
+    ? readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml
+    : await new WorkspaceStore(context.userId).readPortfolio();
   const confirmationId = stringInput(input?.confirmationId)!;
   if (existing?.last_confirmation_id === confirmationId) {
     await confirmation.consume();
@@ -2325,21 +2457,26 @@ async function applyPortfolioChanges(input: Record<string, unknown> | undefined,
     last_confirmed_by: "user",
     last_confirmation_id: confirmationId,
   };
-  await store.writePortfolio(saved);
-  await store.appendChangeLog({
-    ts: now,
-    source: "mcp",
-    type: "portfolio_changed",
-    summary: stringInput(input?.summary) || "用户确认更新持仓组合",
-    details: {
-      confirmation_id: confirmationId,
-      removed_holding_codes: plan.removedHoldings.map((item) => item.code),
-      upserted_holding_codes: plan.upsertedHoldings.map((item) => item.code),
-      removed_watchlist_codes: plan.removedWatchlist.map((item) => item.code),
-      kept_watchlist_codes: plan.keptWatchlistCodes,
-      cash_ratio_percent: plan.allocation.cashRatioPercent,
-    },
-  });
+  if (ACTIVE_BACKEND === "mastra") {
+    replaceMastraPortfolioProjection(context.userId, context.instanceId, saved as Record<string, unknown>, plan.expectedLastConfirmedAt);
+  } else {
+    const store = new WorkspaceStore(context.userId);
+    await store.writePortfolio(saved);
+    await store.appendChangeLog({
+      ts: now,
+      source: "mcp",
+      type: "portfolio_changed",
+      summary: stringInput(input?.summary) || "用户确认更新持仓组合",
+      details: {
+        confirmation_id: confirmationId,
+        removed_holding_codes: plan.removedHoldings.map((item) => item.code),
+        upserted_holding_codes: plan.upsertedHoldings.map((item) => item.code),
+        removed_watchlist_codes: plan.removedWatchlist.map((item) => item.code),
+        kept_watchlist_codes: plan.keptWatchlistCodes,
+        cash_ratio_percent: plan.allocation.cashRatioPercent,
+      },
+    });
+  }
   await confirmation.consume();
   await audit(context, {
     operation: "portfolio.apply_changes",
@@ -2348,7 +2485,7 @@ async function applyPortfolioChanges(input: Record<string, unknown> | undefined,
     requestBody: input,
     resultSummary: `removedHoldings=${plan.removedHoldings.length}; upsertedHoldings=${plan.upsertedHoldings.length}; removedWatchlist=${plan.removedWatchlist.length}; totalPercent=${plan.allocation.totalPercent ?? "unknown"}`,
   });
-  const artifact = await publishPortfolioFileArtifact(context);
+  const artifact = isWorkspaceBackend() ? await publishPortfolioFileArtifact(context) : undefined;
   return portfolioChangeResult(
     context,
     saved,
@@ -2651,7 +2788,10 @@ async function validateConfirmationDraft(
     };
   }
   if (operation === "preferences.apply") {
-    const plan = await planUserPreferenceChange(new WorkspaceStore(context.userId), userPreferenceChangeInput(payload));
+    const store: UserPreferenceStore = ACTIVE_BACKEND === "mastra"
+      ? new MastraUserPreferenceStore(context.userId, context.instanceId, context.projectId || DEFAULT_PROJECT_ID)
+      : new WorkspaceStore(context.userId);
+    const plan = await planUserPreferenceChange(store, userPreferenceChangeInput(payload));
     return {
       changedPaths: plan.changedPaths,
       currentRevision: plan.currentRevision,

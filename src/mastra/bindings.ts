@@ -10,10 +10,25 @@ import type { MastraAgentLike } from "./types.js";
 
 export type MastraAgentConstructor = new (options: Record<string, unknown>) => MastraAgentLike;
 export type MastraCreateTool = (options: Record<string, unknown>) => unknown;
+export type MastraWorkspaceConstructor = new (options: Record<string, unknown>) => MastraWorkspaceLike;
+export type MastraLocalFilesystemConstructor = new (options: Record<string, unknown>) => unknown;
+export type MastraRequestContextConstructor = new () => MastraRequestContextLike;
+
+export interface MastraWorkspaceLike {
+  destroy?: () => Promise<void> | void;
+}
+
+export interface MastraRequestContextLike {
+  set(key: string, value: unknown): void;
+  get?(key: string): unknown;
+}
 
 export interface MastraBindings {
   Agent: MastraAgentConstructor;
   createTool?: MastraCreateTool;
+  Workspace?: MastraWorkspaceConstructor;
+  LocalFilesystem?: MastraLocalFilesystemConstructor;
+  RequestContext?: MastraRequestContextConstructor;
 }
 
 export type MastraBindingsProvider =
@@ -34,7 +49,24 @@ async function loadDefaultBindings(): Promise<MastraBindings> {
   if (typeof createTool !== "function") {
     throw new Error("MASTRA_BINDINGS_INVALID: @mastra/core/tools did not export createTool");
   }
-  return { Agent: Agent as MastraAgentConstructor, createTool: createTool as MastraCreateTool };
+  const workspaceModule = await import("@mastra/core/workspace");
+  const Workspace = (workspaceModule as unknown as { Workspace?: unknown }).Workspace;
+  const LocalFilesystem = (workspaceModule as unknown as { LocalFilesystem?: unknown }).LocalFilesystem;
+  if (typeof Workspace !== "function" || typeof LocalFilesystem !== "function") {
+    throw new Error("MASTRA_BINDINGS_INVALID: @mastra/core/workspace did not export Workspace and LocalFilesystem");
+  }
+  const contextModule = await import("@mastra/core/request-context");
+  const RequestContext = (contextModule as unknown as { RequestContext?: unknown }).RequestContext;
+  if (typeof RequestContext !== "function") {
+    throw new Error("MASTRA_BINDINGS_INVALID: @mastra/core/request-context did not export RequestContext");
+  }
+  return {
+    Agent: Agent as MastraAgentConstructor,
+    createTool: createTool as MastraCreateTool,
+    Workspace: Workspace as MastraWorkspaceConstructor,
+    LocalFilesystem: LocalFilesystem as MastraLocalFilesystemConstructor,
+    RequestContext: RequestContext as MastraRequestContextConstructor,
+  };
 }
 
 /** Load real Mastra bindings lazily and cache only the package import. */
@@ -53,4 +85,13 @@ export async function resolveMastraBindings(provider?: MastraBindingsProvider): 
 /** Test-only cache reset; no production caller uses it. */
 export function resetMastraBindingsForTest(): void {
   defaultBindingsPromise = undefined;
+}
+
+/** Build a real RequestContext at the ESM boundary, never a plain browser payload. */
+export async function createMastraRequestContext(values: Record<string, unknown>): Promise<MastraRequestContextLike> {
+  const bindings = await getMastraBindings();
+  if (!bindings.RequestContext) throw new Error("MASTRA_BINDINGS_INVALID: RequestContext is unavailable");
+  const requestContext = new bindings.RequestContext();
+  for (const [key, value] of Object.entries(values)) requestContext.set(key, value);
+  return requestContext;
 }

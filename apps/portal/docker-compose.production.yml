@@ -1,0 +1,31 @@
+services:
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: invest-agent-portal
+    restart: always
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      PORTAL_PORT: 3100
+      PORTAL_RELAY_PORT: 3199
+      PORTAL_DB_PATH: /app/data/portal.db
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "3100"
+      - "3199"
+
+  nginx:
+    image: nginx:alpine
+    container_name: invest-agent-portal-nginx
+    restart: always
+    depends_on:
+      - portal
+    ports:
+      - "8088:8088"
+      - "18088:18088"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro

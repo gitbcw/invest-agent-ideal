@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body {
+  height: 100%;
+  background: #ffffff;
+  color: #202123;
+}
+
+body {
+  font-family: theme("fontFamily.sans");
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(130, 130, 130, 0.28);
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(130, 130, 130, 0.44);
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-md bg-accent-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-accent-600 active:bg-accent-700 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center gap-2 rounded-md border border-ink-200 bg-white px-4 py-2 text-sm font-medium text-ink-700 transition hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-100 dark:hover:bg-ink-700;
+}
+
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium text-ink-600 transition hover:bg-ink-100 dark:text-ink-200 dark:hover:bg-ink-700;
+}
+
+.input-base {
+  @apply block w-full rounded-md border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 placeholder-ink-400 transition focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30 dark:border-ink-700 dark:bg-ink-800 dark:text-ink-100;
+}
+
+/* Asset details use the same right-side surface as the chat workspace. */
+[role="dialog"][aria-labelledby="file-dialog-title"] {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: min(100vw, 36rem) !important;
+  max-width: none !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+}
+
+@media (max-width: 639px) {
+  [role="dialog"][aria-labelledby="file-dialog-title"] {
+    width: 100vw !important;
+  }
+}
+
+.chatgpt-prose {
+  line-height: 1.75;
+}
+
+.chatgpt-prose p + p,
+.chatgpt-prose ul + p,
+.chatgpt-prose ol + p {
+  margin-top: 0.8rem;
+}
+
+.responsive-data-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.responsive-data-table th,
+.responsive-data-table td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Editor actions live in the persistent automation header. */
+main.max-w-3xl > a:has(+ div[class*="shadow-"]) {
+  display: none;
+}
+
+main.max-w-3xl > a + div[class*="shadow-"] {
+  margin-top: 0;
+}
+
+main.max-w-3xl > a + div[class*="shadow-"] > div:first-child,
+main.max-w-3xl > a + div[class*="shadow-"] > form > div:last-child {
+  display: none;
+}
+
+main.max-w-3xl > a + div[class*="shadow-"] > form {
+  margin-top: 0;
+}

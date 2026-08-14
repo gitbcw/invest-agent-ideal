@@ -5,6 +5,7 @@ import { channelIdentities, channelIdentityInstances, users } from "../db/schema
 import type { UserContext } from "./user-context.js";
 import { DEFAULT_PROJECT_ID } from "./user-context.js";
 import { ensureDefaultProjectForUser, getProjectRuntimeContext } from "../platform/project-registry.js";
+import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
 import { ensureWorkspace, resolveWorkspacePath } from "./workspace.js";
 
 function suffix(value: string) {
@@ -23,7 +24,11 @@ function makeInstanceId(userId: string) {
 
 export async function ensureDefaultAiInstanceForUser(userId: string, backend: "mastra" = "mastra", displayName?: string) {
   const context = await ensureDefaultProjectForUser(userId, backend, displayName);
-  await ensureWorkspace({ userId, tenantId: userId, projectId: context.projectId });
+  if (backend === "mastra") {
+    await mastraWorkspaceRegistry.bootstrap({ userId, projectId: context.projectId, instanceId: context.instanceId });
+  } else {
+    await ensureWorkspace({ userId, tenantId: userId, projectId: context.projectId });
+  }
   return { projectId: context.projectId, instanceId: context.instanceId };
 }
 
@@ -64,7 +69,11 @@ export async function resolveOrCreateChannelUser(params: {
       })
       .where(eq(channelIdentities.id, existing[0].id));
     const instance = await ensureDefaultInstanceForChannelIdentity(existing[0].id, bindingUserId, params.backend, projectBinding);
-    await ensureWorkspace({ userId: bindingUserId, tenantId: bindingUserId, projectId: instance.projectId });
+    if (params.backend === "mastra") {
+      await mastraWorkspaceRegistry.bootstrap({ userId: bindingUserId, projectId: instance.projectId, instanceId: instance.instanceId });
+    } else {
+      await ensureWorkspace({ userId: bindingUserId, tenantId: bindingUserId, projectId: instance.projectId });
+    }
     return {
       userId: bindingUserId,
       projectId: instance.projectId,
@@ -76,7 +85,9 @@ export async function resolveOrCreateChannelUser(params: {
       conversationId: params.conversationId,
       externalUserId: params.externalUserId,
       channelAccountId: params.externalAccountId,
-      workspacePath: resolveWorkspacePath(bindingUserId),
+      workspacePath: params.backend === "mastra"
+        ? (await mastraWorkspaceRegistry.resolve({ userId: bindingUserId, projectId: instance.projectId, instanceId: instance.instanceId }))?.realProjectRoot
+        : resolveWorkspacePath(bindingUserId),
       welcomedAt: existing[0].welcomedAt,
     };
   }
@@ -127,7 +138,9 @@ export async function resolveOrCreateChannelUser(params: {
     conversationId: params.conversationId,
     externalUserId: params.externalUserId,
     channelAccountId: params.externalAccountId,
-    workspacePath: resolveWorkspacePath(userId),
+    workspacePath: params.backend === "mastra"
+      ? (await mastraWorkspaceRegistry.resolve({ userId, projectId: context.projectId, instanceId: context.instanceId }))?.realProjectRoot
+      : resolveWorkspacePath(userId),
     welcomedAt: null,
   };
 }

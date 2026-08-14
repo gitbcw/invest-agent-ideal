@@ -1,5 +1,6 @@
 import type { UserContext } from "../lib/user-context.js";
 import { createMastraAgent, type MastraAgentFactory, type MastraAgentFactoryOptions } from "./agent-factory.js";
+import { createMastraRequestContext } from "./bindings.js";
 import { createModelGateway, type MastraModelGateway, type ModelGatewayOptions } from "./model-gateway.js";
 import {
   type MastraAgentLike,
@@ -10,6 +11,7 @@ import {
 } from "./types.js";
 
 export const DEFAULT_MASTRA_TURN_TIMEOUT_MS = 1_800_000;
+export const DEFAULT_MASTRA_MAX_STEPS = 20;
 
 export type MastraTurnErrorCode =
   | "MASTRA_TURN_BUSY"
@@ -78,6 +80,10 @@ export interface MastraTurnParams {
   toolsets?: Record<string, unknown>;
   /** Caller-owned cancellation signal for the active turn. */
   signal?: AbortSignal;
+  /** Server-owned values passed to Mastra dynamic resolvers and tools. */
+  requestContext?: Record<string, unknown>;
+  /** Server-owned upper bound; callers cannot exceed the runtime ceiling. */
+  maxSteps?: number;
 }
 
 export interface MastraTurnDependencies {
@@ -89,6 +95,7 @@ export interface MastraTurnDependencies {
   agentOptions?: Omit<MastraAgentFactoryOptions, "gateway" | "model" | "bindings">;
   now?: () => number;
   activeConversations?: Set<string>;
+  maxSteps?: number;
 }
 
 const activeConversations = new Set<string>();
@@ -361,6 +368,14 @@ function normalizeTimeout(timeoutMs: number | undefined): number {
   return Math.round(timeoutMs);
 }
 
+function normalizeMaxSteps(value: number | undefined): number {
+  const maxSteps = value ?? DEFAULT_MASTRA_MAX_STEPS;
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 20) {
+    throw new Error(`MASTRA_MAX_STEPS_INVALID: ${maxSteps}`);
+  }
+  return maxSteps;
+}
+
 function mapError(error: unknown, conversationId: string): MastraTurnError {
   if (error instanceof MastraTurnError) return error;
   const message = error instanceof Error ? error.message : String(error);
@@ -396,8 +411,13 @@ export async function runMastraTurn(
   let abortFromExternal: (() => void) | undefined;
   try {
     const startedAtMs = (dependencies.now ?? Date.now)();
+    const timingStartedAtMs = Date.now();
+    let agentFactoryMs = 0;
+    let streamInvokeMs = 0;
+    let outputCollectMs = 0;
     const startedAt = new Date(startedAtMs).toISOString();
     const timeoutMs = normalizeTimeout(params.timeoutMs);
+    const maxSteps = normalizeMaxSteps(params.maxSteps ?? dependencies.maxSteps);
     const abortController = new AbortController();
     const externalSignal = params.signal;
     abortFromExternal = () => abortController.abort(externalSignal?.reason);
@@ -413,17 +433,23 @@ export async function runMastraTurn(
     if (dependencies.agent) {
       agent = dependencies.agent;
     } else if (factory) {
+      const factoryStartedAtMs = Date.now();
       agent = await factory({
         ...(dependencies.agentOptions ?? {}),
         ...(dependencies.gateway !== undefined ? { gateway: dependencies.gateway } : {}),
         ...(params.model !== undefined ? { model: params.model } : {}),
+        maxSteps,
       });
+      agentFactoryMs = Math.max(0, Date.now() - factoryStartedAtMs);
     } else {
+      const factoryStartedAtMs = Date.now();
       agent = await createMastraAgent({
         ...(dependencies.agentOptions ?? {}),
         ...(dependencies.gateway !== undefined ? { gateway: dependencies.gateway } : {}),
         ...(params.model !== undefined ? { model: params.model } : {}),
+        maxSteps,
       });
+      agentFactoryMs = Math.max(0, Date.now() - factoryStartedAtMs);
     }
 
     const history = params.history ?? params.messages ?? [];
@@ -440,11 +466,17 @@ export async function runMastraTurn(
         ...(params.cwd ? { cwd: params.cwd } : {}),
         ...(params.userContext ? { userContext: params.userContext } : {}),
       },
+      maxSteps,
     };
+    if (params.requestContext && Object.keys(params.requestContext).length > 0) {
+      streamOptions.requestContext = await createMastraRequestContext(params.requestContext);
+    }
     if (params.toolsets && Object.keys(params.toolsets).length > 0) streamOptions.toolsets = params.toolsets;
     if (params.model && gateway) streamOptions.model = gateway.resolve(params.model);
 
+    const streamStartedAtMs = Date.now();
     const streamPromise = Promise.resolve().then(() => agent.stream(messages, streamOptions));
+    streamPromise.then(() => { streamInvokeMs = Math.max(0, Date.now() - streamStartedAtMs); }, () => { streamInvokeMs = Math.max(0, Date.now() - streamStartedAtMs); });
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         abortController.abort();
@@ -452,10 +484,12 @@ export async function runMastraTurn(
       }, timeoutMs);
     });
     const output = await Promise.race([streamPromise, timeoutPromise]);
+    const outputStartedAtMs = Date.now();
     const mapped = await Promise.race([
       resolveOutput(output, params.text, startedAt),
       timeoutPromise,
     ]);
+    outputCollectMs = Math.max(0, Date.now() - outputStartedAtMs);
     const text = mapped.text.trim();
     if (!text) throw new MastraEmptyResponseError(conversationId);
     const toolCalls = mapMastraToolCalls(mapped.toolCalls, new Date(startedAtMs));
@@ -467,6 +501,13 @@ export async function runMastraTurn(
         state: "completed",
         startedAt: startedAtMs,
         toolCallsAfterExhaustion: 0,
+        timing: {
+          agentFactoryMs,
+          streamInvokeMs,
+          outputCollectMs,
+          totalMs: Math.max(0, Date.now() - timingStartedAtMs),
+          toolCallEvents: toolCalls?.length ?? 0,
+        },
       },
       backendId: "mastra",
       ...(model ? { model } : {}),

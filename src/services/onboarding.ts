@@ -1,4 +1,6 @@
-import { WorkspaceStore, type OnboardingStateYaml, type OnboardingStepKey } from "../lib/workspace-store.js";
+import { sqlite } from "../db/index.js";
+import { DEFAULT_PROJECT_ID } from "../lib/user-context.js";
+import { WorkspaceStore, type NotificationYaml, type OnboardingStateYaml, type OnboardingStepKey, type PortfolioYaml, type SchedulesYaml, type StrategyYaml } from "../lib/workspace-store.js";
 
 const ONBOARDING_STEPS: OnboardingStepKey[] = [
   "welcome",
@@ -226,6 +228,77 @@ export async function applyOnboardingDraftCommit(input: {
   // Rules are service-owned and are created after these files. The caller must
   // finalize the visible onboarding state only after rule creation also succeeds.
   return state;
+}
+
+/**
+ * Reuses the draft's canonical merge/validation contract, then persists all
+ * service-owned configuration projections in one SQLite transaction. It never
+ * creates a Workspace or enables scheduler/push execution.
+ */
+export async function prepareMastraOnboardingDraftCommit(input: {
+  userId: string;
+  instanceId: string;
+  projectId?: string;
+  steps: Partial<Record<OnboardingStepKey, Record<string, unknown>>>;
+  now?: string;
+}): Promise<{ state: OnboardingStateYaml; persist(): void }> {
+  const projectId = input.projectId || process.env.MASTRA_PROJECT_ID?.trim() || DEFAULT_PROJECT_ID;
+  const portfolioRow = sqlite.prepare("SELECT portfolio_json AS value FROM mastra_portfolio_states WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
+    .get(input.userId, projectId, input.instanceId) as { value?: string } | undefined;
+  const profileRow = sqlite.prepare("SELECT profile_json AS value FROM mastra_project_profiles WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
+    .get(input.userId, projectId, input.instanceId) as { value?: string } | undefined;
+  const preferenceRow = sqlite.prepare("SELECT preferences_json AS value, source_checksums_json AS checksums FROM mastra_runtime_preferences WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
+    .get(input.userId, projectId, input.instanceId) as { value?: string; checksums?: string } | undefined;
+  if (!portfolioRow || !profileRow || !preferenceRow) throw new OnboardingContractError("MASTRA_PROJECTION_NOT_FOUND: onboarding requires imported portfolio, strategy and preferences projections", 409);
+  const parse = (raw: string | undefined, label: string) => {
+    try { const value = JSON.parse(raw || "{}"); if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object"); return value as Record<string, any>; }
+    catch (error) { throw new OnboardingContractError(`MASTRA_PROJECTION_INVALID: ${label}: ${(error as Error).message}`, 500); }
+  };
+  let portfolio = parse(portfolioRow.value, "portfolio") as PortfolioYaml;
+  let strategy = parse(profileRow.value, "strategy") as StrategyYaml;
+  const preferences = parse(preferenceRow.value, "runtime preferences");
+  let schedules = (preferences.schedules && typeof preferences.schedules === "object" ? preferences.schedules : {}) as SchedulesYaml;
+  let notification = (preferences.notification && typeof preferences.notification === "object" ? preferences.notification : {}) as NotificationYaml;
+  let watch = (preferences.watch && typeof preferences.watch === "object" ? preferences.watch : {}) as Record<string, unknown>;
+  let state = normalizeOnboardingState(preferences.onboardingState as OnboardingStateYaml | null);
+  const store: any = {
+    readPortfolio: async () => portfolio, writePortfolio: async (value: PortfolioYaml) => { portfolio = value; },
+    readStrategy: async () => strategy, writeStrategy: async (value: StrategyYaml) => { strategy = value; },
+    readSchedules: async () => schedules, writeSchedules: async (value: SchedulesYaml) => { schedules = value; },
+    readNotification: async () => notification, writeNotification: async (value: NotificationYaml) => { notification = value; },
+    readWatch: async () => watch, writeWatch: async (value: Record<string, unknown>) => { watch = value; },
+    readOnboardingState: async () => state, writeOnboardingState: async (value: OnboardingStateYaml) => { state = value; },
+  };
+  const nextState = await applyOnboardingDraftCommit({ store, steps: input.steps, now: input.now });
+  const now = input.now || new Date().toISOString();
+  const nextPreferences = {
+    ...preferences, schedules, notification, watch, onboardingState: nextState,
+    sourceRevision: now,
+    schedulerActivation: preferences.schedulerActivation || "disabled_until_target_cold_start_and_explicit_enable",
+  };
+  return {
+    state: nextState,
+    persist() {
+      sqlite.prepare("UPDATE mastra_portfolio_states SET portfolio_json=?, source_path=?, source_checksum=?, source_revision=?, migration_batch_id=?, updated_at=? WHERE user_id=? AND project_id=? AND instance_id=?")
+        .run(JSON.stringify(portfolio), "service-owned://onboarding", `service:${now}`, now, "service-owned", now, input.userId, projectId, input.instanceId);
+      sqlite.prepare("UPDATE mastra_project_profiles SET profile_json=?, source_path=?, source_checksum=?, source_revision=?, migration_batch_id=?, updated_at=? WHERE user_id=? AND project_id=? AND instance_id=?")
+        .run(JSON.stringify(strategy), "service-owned://onboarding", `service:${now}`, now, "service-owned", now, input.userId, projectId, input.instanceId);
+      sqlite.prepare("UPDATE mastra_runtime_preferences SET preferences_json=?, source_revision=?, migration_batch_id=?, updated_at=? WHERE user_id=? AND project_id=? AND instance_id=?")
+        .run(JSON.stringify(nextPreferences), now, "service-owned", now, input.userId, projectId, input.instanceId);
+    },
+  };
+}
+
+export async function applyMastraOnboardingDraftCommit(input: {
+  userId: string;
+  instanceId: string;
+  projectId?: string;
+  steps: Partial<Record<OnboardingStepKey, Record<string, unknown>>>;
+  now?: string;
+}): Promise<OnboardingStateYaml> {
+  const prepared = await prepareMastraOnboardingDraftCommit(input);
+  sqlite.transaction(() => prepared.persist())();
+  return prepared.state;
 }
 
 /**

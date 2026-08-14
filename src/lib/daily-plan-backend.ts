@@ -10,11 +10,11 @@
  */
 
 import { and, desc, eq, gte, lt, lte } from "drizzle-orm";
-import { db } from "../db/index.js";
+import { db, sqlite } from "../db/index.js";
 import { dailyPlans } from "../db/schema.js";
 import { ensureWorkspace } from "./workspace.js";
 import { WorkspaceStore, type DailyPlanYaml } from "./workspace-store.js";
-import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "./user-context.js";
+import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "./user-context.js";
 import { ACTIVE_BACKEND, type BackendKind } from "./data-backend.js";
 
 export interface DailyPlanRecord {
@@ -183,10 +183,102 @@ export const workspaceDailyPlanBackend: DailyPlanBackend = {
   },
 };
 
+/**
+ * Mastra service-owned read projection. Imported daily plans live in the
+ * review/memory ledger; this adapter never reads or creates a Workspace file.
+ */
+export const mastraDailyPlanBackend: DailyPlanBackend = {
+  async upsert(userId, instanceId, plan) {
+    const now = new Date().toISOString();
+    const payload = JSON.stringify({
+      plan_date: plan.planDate,
+      generated_at: plan.generatedAt,
+      summary: plan.summary ?? null,
+      content: plan.content,
+      data: plan.data ?? null,
+    });
+    const projectId = process.env.MASTRA_PROJECT_ID?.trim() || DEFAULT_PROJECT_ID;
+    sqlite.transaction(() => {
+      const existing = sqlite.prepare(
+        "SELECT record_id AS recordId FROM mastra_review_memory_records WHERE user_id = ? AND project_id = ? AND instance_id = ? AND record_type = 'daily_plan' AND business_key = ? LIMIT 1",
+      ).get(userId, projectId, instanceId, plan.planDate) as { recordId?: string } | undefined;
+      if (existing?.recordId) {
+        sqlite.prepare(
+          "UPDATE mastra_review_memory_records SET payload_json = ?, source_path = ?, source_checksum = ?, migration_batch_id = ?, created_at = ? WHERE record_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
+        ).run(payload, "service-owned://daily-plans", `service:${now}`, "service-owned", now, existing.recordId, userId, projectId, instanceId);
+      } else {
+        sqlite.prepare(
+          "INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_line,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        ).run(`daily-plan-${userId}-${instanceId}-${plan.planDate}`, userId, projectId, instanceId, "daily_plan", plan.planDate, payload, "service-owned://daily-plans", null, `service:${now}`, "service-owned", now);
+      }
+    })();
+  },
+
+  async get(userId, instanceId, planDate) {
+    const record = await readMastraDailyPlan(userId, instanceId, planDate);
+    return record;
+  },
+
+  async getPrevious(userId, instanceId, beforeDate) {
+    const rows = readMastraDailyRows(userId, instanceId)
+      .filter((row) => row.planDate < beforeDate)
+      .sort((a, b) => b.planDate.localeCompare(a.planDate));
+    return rows[0] || null;
+  },
+
+  async listInRange(userId, instanceId, startDate, endDate) {
+    return readMastraDailyRows(userId, instanceId)
+      .filter((row) => row.planDate >= startDate && row.planDate <= endDate)
+      .sort((a, b) => b.planDate.localeCompare(a.planDate));
+  },
+
+  async getLatest(userId, instanceId) {
+    return readMastraDailyRows(userId, instanceId)
+      .sort((a, b) => b.planDate.localeCompare(a.planDate))[0] || null;
+  },
+};
+
+function readMastraDailyRows(userId: string, instanceId: string): DailyPlanRecord[] {
+  const rows = sqlite
+    .prepare(
+      "SELECT payload_json AS payloadJson FROM mastra_review_memory_records " +
+        "WHERE user_id = ? AND project_id = ? AND instance_id = ? AND record_type = 'daily_plan'",
+    )
+    .all(userId, process.env.MASTRA_PROJECT_ID?.trim() || DEFAULT_PROJECT_ID, instanceId) as Array<{ payloadJson: string }>;
+  return rows.map((row) => parseMastraDailyPayload(row.payloadJson));
+}
+
+async function readMastraDailyPlan(userId: string, instanceId: string, planDate: string): Promise<DailyPlanRecord | null> {
+  return readMastraDailyRows(userId, instanceId).find((row) => row.planDate === planDate) || null;
+}
+
+function parseMastraDailyPayload(raw: string): DailyPlanRecord {
+  try {
+    const payload = JSON.parse(raw) as Record<string, unknown>;
+    if (
+      !payload ||
+      typeof payload.plan_date !== "string" ||
+      typeof payload.generated_at !== "string" ||
+      typeof payload.content !== "string"
+    ) {
+      throw new Error("daily plan payload is missing required fields");
+    }
+    return {
+      planDate: payload.plan_date,
+      generatedAt: payload.generated_at,
+      summary: typeof payload.summary === "string" ? payload.summary : null,
+      content: payload.content,
+      data: payload.data ?? null,
+    };
+  } catch (error) {
+    throw new Error(`MASTRA_PROJECTION_INVALID: daily plan payload is invalid: ${(error as Error).message}`);
+  }
+}
+
 // ============ 出口:由 WORKSPACE_BACKEND 选择 ============
 
 function selectBackend(kind: BackendKind): DailyPlanBackend {
-  return kind === "workspace" ? workspaceDailyPlanBackend : sqliteDailyPlanBackend;
+  return kind === "workspace" ? workspaceDailyPlanBackend : kind === "mastra" ? mastraDailyPlanBackend : sqliteDailyPlanBackend;
 }
 
 export const dailyPlanBackend: DailyPlanBackend = selectBackend(ACTIVE_BACKEND);

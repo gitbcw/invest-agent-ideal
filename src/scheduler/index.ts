@@ -2,12 +2,14 @@ import { startReviewScheduler, stopReviewScheduler, getReviewPushTime, triggerRe
 import { startDataQualityScheduler, stopDataQualityScheduler } from "./data-quality.js";
 import { startAutomationScheduler, stopAutomationScheduler } from "./automation.js";
 import { logger } from "../lib/logger.js";
-import { db } from "../db/index.js";
+import { db, sqlite } from "../db/index.js";
 import { aiInstances, alertRules, channelIdentities, channelIdentityInstances, settings, users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { beijingDateKey, beijingNow, isBeijingTradingDay, readSchedules, type SchedulesYaml } from "../lib/schedules-loader.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
+import { MastraUserPreferenceStore } from "../services/user-preferences.js";
 import { runScheduledMarketWatchTask } from "../runtime/scheduled-tasks.js";
 import {
   claimScheduledTaskRun,
@@ -137,7 +139,22 @@ async function getSchedulableScopes(): Promise<SchedulableScope[]> {
   for (const scope of enabledAlertRules) {
     if (activeUserIds.has(scope.userId)) addScope(scopes, scope);
   }
-  return [...scopes.values()];
+  const candidates = [...scopes.values()];
+  if (ACTIVE_BACKEND !== "mastra") return candidates;
+  // Imported Mastra targets remain inert until an operator explicitly enables
+  // scheduler activation. This prevents a cold-start process from pushing
+  // migrated data merely because an active instance exists in SQLite.
+  const enabled: SchedulableScope[] = [];
+  for (const scope of candidates) {
+    const row = sqlite.prepare(
+      "SELECT preferences_json AS preferencesJson FROM mastra_runtime_preferences WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
+    ).get(scope.userId, scope.projectId ?? DEFAULT_PROJECT_ID, scope.instanceId) as { preferencesJson?: string } | undefined;
+    let activation: unknown;
+    try { activation = row?.preferencesJson ? JSON.parse(row.preferencesJson).schedulerActivation : undefined; } catch { activation = undefined; }
+    if (activation === "enabled") enabled.push(scope);
+    else logger.info(`Mastra scheduler scope disabled user=${scope.userId} instance=${scope.instanceId} activation=${String(activation ?? "missing")}`);
+  }
+  return enabled;
 }
 
 export async function listSchedulableScopes() {
@@ -388,7 +405,7 @@ export async function startScheduler() {
   await startAutomationScheduler();
 
   const pushTime = await getReviewPushTime();
-  logger.info(`定时任务已启动（每分钟扫描 workspace 配置；Onboarding 草稿提交 5s；盘中定时简报并发 ${MARKET_WATCH_CONCURRENCY}；规则巡检默认间隔 ${intervalMin}min；复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}；数据质量 15:30）`);
+  logger.info(`定时任务已启动（每分钟扫描 ${ACTIVE_BACKEND === "mastra" ? "service-owned preferences" : "Workspace 配置"}；Onboarding 草稿提交 5s；盘中定时简报并发 ${MARKET_WATCH_CONCURRENCY}；规则巡检默认间隔 ${intervalMin}min；复盘 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}；数据质量 15:30）`);
 }
 
 /** 停止所有定时任务 */
@@ -419,7 +436,9 @@ async function runOnboardingDraftCommitWorker() {
 async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<MarketWatchHit | null> {
   if (!isBeijingTradingDay(now)) return null;
 
-  const schedules = readSchedules(scope.userId);
+  const schedules: SchedulesYaml = ACTIVE_BACKEND === "mastra"
+    ? await new MastraUserPreferenceStore(scope.userId, scope.instanceId, scope.projectId ?? DEFAULT_PROJECT_ID).readSchedules() as SchedulesYaml
+    : readSchedules(scope.userId);
   if (schedules.market_watch?.enabled === false || schedules.market_watch?.auto_run === false) return null;
 
   const watch = await readWatchConfig(scope.userId);
@@ -527,6 +546,9 @@ export async function triggerScheduledReviewNow(
 
 async function readWatchConfig(userId: string) {
   try {
+    if (ACTIVE_BACKEND === "mastra") {
+      return await new MastraUserPreferenceStore(userId, DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID).readWatch();
+    }
     return await new WorkspaceStore(userId).readWatch();
   } catch (error) {
     logger.warn(`market_watch.readWatch failed user=${userId}: ${(error as Error).message}`);

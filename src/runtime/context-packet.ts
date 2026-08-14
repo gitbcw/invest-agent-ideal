@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { alertRules } from "../db/schema.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, type UserContext } from "../lib/user-context.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import { loadRecentConversationMemory, type ConversationMessage } from "../lib/weixin-conversation-memory.js";
@@ -69,7 +70,9 @@ export async function buildContextPacket(
       channel,
     },
     workspace: {
-      path: userContext.workspacePath || safeWorkspacePath(userId),
+      // Mastra tools receive a server-resolved Workspace object directly;
+      // never place its host path into a prompt/context packet.
+      path: ACTIVE_BACKEND === "mastra" ? undefined : userContext.workspacePath || safeWorkspacePath(userId),
     },
     recentConversation,
     pendingConfirmations: mergePendingConfirmations(listPendingConfirmations(userContext), options.pendingConfirmations ?? []),

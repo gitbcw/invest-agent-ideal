@@ -17,6 +17,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { logger } from "../lib/logger.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { ScriptIndicatorEngine } from "./script-indicator-engine.js";
 import type { IndicatorContext, IndicatorResult } from "./sandbox-runtime.js";
 import type { StockKline } from "./market-types.js";
@@ -93,6 +94,12 @@ function parseRegistryYaml(text: string): RegistryEntry[] {
 }
 
 async function loadL3bRegistry(): Promise<{ entries: RegistryEntry[]; workspaceRoot: string }> {
+  if (ACTIVE_BACKEND === "mastra") {
+    // Persistent user scripts must not become executable runtime inputs. A
+    // future implementation needs an explicit published asset + isolated
+    // staging contract; fail closed until then.
+    return { entries: [], workspaceRoot: "" };
+  }
   const workspaceRoot = await resolveWorkspacePath();
   const registryPath = join(workspaceRoot, "scripts", "indicators", ".registry.yaml");
   if (!existsSync(registryPath)) return { entries: [], workspaceRoot };

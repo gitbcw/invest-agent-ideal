@@ -62,6 +62,23 @@ test("Mastra factory resolves a gateway model through injected bindings without 
   assert.equal("memory" in (receivedOptions ?? {}), false);
 });
 
+test("runMastraTurn creates a real server-side RequestContext for dynamic Mastra bindings", async () => {
+  let requestContext: { get?(key: string): unknown } | undefined;
+  const agent: MastraAgentLike = {
+    stream(_messages, options) {
+      requestContext = options?.requestContext as { get?(key: string): unknown };
+      return { text: "ok" };
+    },
+  };
+  const result = await runMastraTurn(
+    { conversationId: "request-context", text: "test", requestContext: { userId: "alpha", instanceId: "instance-alpha" } },
+    { agent },
+  );
+  assert.equal(result.text, "ok");
+  assert.equal(requestContext?.get?.("userId"), "alpha");
+  assert.equal(requestContext?.get?.("instanceId"), "instance-alpha");
+});
+
 test("Mastra model configuration is snapshotted per turn and changes only affect later agents", async () => {
   const previousModel = process.env.MASTRA_DEFAULT_MODEL;
   const captured: string[] = [];
@@ -84,6 +101,34 @@ test("Mastra model configuration is snapshotted per turn and changes only affect
     if (previousModel === undefined) delete process.env.MASTRA_DEFAULT_MODEL;
     else process.env.MASTRA_DEFAULT_MODEL = previousModel;
   }
+});
+
+test("Mastra turns continue after tool steps within the server-owned step budget", async () => {
+  let factoryOptions: Record<string, unknown> | undefined;
+  const agent = {
+    stream(_messages: unknown, options?: Record<string, unknown>) {
+      assert.equal(options?.maxSteps, 20);
+      return { text: Promise.resolve("final after tool") };
+    },
+  } satisfies MastraAgentLike;
+  const result = await runMastraTurn({ conversationId: "max-steps", text: "use a tool", maxSteps: 20 }, {
+    agentFactory: async (options) => {
+      factoryOptions = options as Record<string, unknown>;
+      return agent;
+    },
+  });
+  assert.equal(result.text, "final after tool");
+  assert.equal(factoryOptions?.maxSteps, 20);
+  assert.ok(result.budget.timing);
+  assert.equal(typeof result.budget.timing?.totalMs, "number");
+  assert.equal(result.budget.timing?.toolCallEvents, 0);
+});
+
+test("Mastra maxSteps is bounded and rejects unsafe caller values", async () => {
+  await assert.rejects(
+    () => runMastraTurn({ conversationId: "max-steps-invalid", text: "test", maxSteps: 21 }, { agent: { stream: () => ({ text: "ok" }) } }),
+    /MASTRA_MAX_STEPS_INVALID/,
+  );
 });
 
 test("runMastraTurn maps text, usage, model, tool calls, and caller-owned history", async () => {

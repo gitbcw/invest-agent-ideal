@@ -350,6 +350,18 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
+  {
+    id: "spreadsheet.create",
+    description: "Create a real Excel .xlsx workbook from structured columns and rows in the current scope, save it to the user's My Files, and return its asset descriptor. Use this tool whenever a web user asks for a spreadsheet, table file, Excel file, or download. Do not claim Excel binary writing is unavailable. Pass typed numeric values as numbers; keep source notes in a final column. The service applies a frozen header, filter, readable widths, and validates the workbook before saving.",
+    inputSchema: {
+      fileName: z.string().regex(/^[^/\\]+\.xlsx$/i).max(180),
+      title: z.string().max(200).optional(),
+      columns: z.array(z.string().min(1).max(120)).min(1).max(30),
+      rows: z.array(z.array(z.unknown())).max(100).optional(),
+      notes: z.string().max(2000).optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
 
   // ── read: watch_rules ──
   {

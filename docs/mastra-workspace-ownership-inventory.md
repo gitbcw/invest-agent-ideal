@@ -28,7 +28,7 @@
 | `automations/<task-id>/source|working` | 自动化任务受控文件 | `artifact-storage` | `automation_task_assets` + staging | 可保留受控文件根，但不得回到用户 Workspace 根 |
 | `workspace.file.list/get` | Portal 当前浏览 Workspace 文件 | `compatibility-history` + `artifact-storage` | asset library list/get | Portal UI 仍依赖 Workspace tree，需先完成 B2/B3 |
 | `src/lib/workspace-compatibility.ts` | 模板 preflight/adoption/backup | `compatibility-history` | 仅保留迁移期工具，最终由 asset/config migration 替代 | 真实用户 Workspace 仍可能需要手工迁移 |
-| `scripts/workspace-compatibility-acceptance.mjs` | 旧 ACP + Workspace 验收脚本 | `compatibility-history` | 重写为 Mastra/asset-store acceptance 或归档 | 当前脚本导入已删除 ACP 路径 |
+| `scripts/workspace-compatibility-acceptance.mjs` | 旧 ACP + Workspace 验收脚本 | `compatibility-history` | 已从迁移分支运行入口删除；历史说明保留在 archive/ownership 文档，不作为当前验收命令 | 旧脚本曾导入已删除 ACP 路径 |
 | `reviews/` and `.state/` | 服务/历史发布和运行状态 | `artifact-storage` / service-owned | `reviews` 进入 formal asset mapping；`.state` 保持 runtime private root | 生产红线要求不触碰，需独立迁移方案 |
 
 ## 已确认的 service-owned 数据

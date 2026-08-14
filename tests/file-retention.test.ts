@@ -272,6 +272,10 @@ test("attachment read refuses cross-scope and forged ids", async () => {
     // Wrong instance scope — not found.
     const wrong = fixture.retentionMod.findAttachmentRecord({ attachmentId: "att_test-4", userId: "user-ret", instanceId: "intruder" });
     assert.equal(wrong, undefined);
+    // A shared user/instance is not sufficient: attachments are also bound to
+    // the business project scope used by the Mastra registry.
+    const wrongProject = fixture.retentionMod.findAttachmentRecord({ attachmentId: "att_test-4", userId: "user-ret", projectId: "other-project", instanceId: "user-ret" });
+    assert.equal(wrongProject, undefined);
     // Forged id — not found.
     const forged = fixture.retentionMod.findAttachmentRecord({ attachmentId: "att_forged", userId: "user-ret", instanceId: "user-ret" });
     assert.equal(forged, undefined);

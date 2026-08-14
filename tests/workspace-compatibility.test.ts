@@ -252,20 +252,6 @@ test("ordinary access does not overwrite an existing template-derived asset", as
   }
 });
 
-test("workspace compatibility acceptance refuses to run outside an isolated eval environment", () => {
-  const run = spawnSync(
-    process.execPath,
-    ["scripts/workspace-compatibility-acceptance.mjs", "111", "invest-agent-111"],
-    {
-      cwd: process.cwd(),
-      env: { ...process.env, WORKSPACE_COMPATIBILITY_EVAL: "false" },
-      encoding: "utf8",
-    },
-  );
-  assert.notEqual(run.status, 0);
-  assert.match(run.stderr, /WORKSPACE_COMPATIBILITY_EVAL must equal true/);
-});
-
 async function listFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {

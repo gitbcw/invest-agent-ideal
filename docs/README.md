@@ -4,6 +4,21 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 
 ## Read By Domain
 
+### Mastra Candidate Branch
+
+| Document | Use It For |
+| --- | --- |
+| [mastra-workspace-exit-mapping.md](./mastra-workspace-exit-mapping.md) | Current Mastra candidate work package, technical evidence, H1 boundary, isolated topology, and next actions |
+| [mastra-workspace-exit-mapping_acceptance_review.md](./mastra-workspace-exit-mapping_acceptance_review.md) | Independent acceptance status: WP0-WP7 evidence, unresolved H1, and release exclusions |
+| [mastra-long-work-package.md](./mastra-long-work-package.md) | Scope, work-package stages, ownership and user gates for the candidate branch |
+| [mastra-real-data-migration-plan.md](./mastra-real-data-migration-plan.md) | Backup-copy-only migration validation; never a production migration command |
+| [mastra-main-sync.md](./mastra-main-sync.md) | Rules for selectively porting `main` behavior without restoring ACP runtime code |
+
+The Mastra candidate is deliberately not a production release: runtime `23656`,
+Portal `23657`, Relay `23658`, and `data/mastra-portal-local/` are isolated from
+the production baseline. Do not use these documents to authorize deployment,
+production data writes, real WeChat reconnects, or a branch merge.
+
 ### Product And Investment Method
 
 | Document | Use It For |

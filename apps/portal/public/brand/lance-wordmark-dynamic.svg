@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 260" role="img" aria-labelledby="title desc">
+  <title id="title">澜策灵动字标</title>
+  <desc id="desc">以现代行楷为骨架、以水势下划线作收笔的澜策字标</desc>
+  <defs>
+    <linearGradient id="sky" x1="100" x2="430" y1="188" y2="330" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B9E5F8"/>
+      <stop offset=".5" stop-color="#68BCEB"/>
+      <stop offset="1" stop-color="#9CD8F2"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(16 18) scale(.4)" fill="none" fill-rule="evenodd">
+    <path stroke="url(#sky)" stroke-linecap="round" stroke-width="34" d="M105 336c26-119 145-204 247-164 43 17 71 54 77 109"/>
+    <path stroke="#D7F1FC" stroke-linecap="round" stroke-width="8" opacity=".9" d="M132 311c37-91 133-146 213-116 25 10 45 25 60 45"/>
+    <rect x="235" y="201" width="42" height="37" fill="#0F5F66" rx="11"/>
+    <circle cx="256" cy="219" r="10" fill="#F5B83D"/>
+    <path fill="#0F5F66" d="M234 249q22-12 44 0l23 123q-45 14-90 0l23-123Z"/>
+    <path stroke="#FFFFFF" stroke-linecap="round" stroke-width="13" d="M248 302h16m-25 44h34"/>
+    <path stroke="#168F96" stroke-linecap="round" stroke-width="46" d="M97 365c40-25 80-19 110 11 32 33 67 42 98 4 31-38 70-43 113-16"/>
+    <path stroke="#20B4B0" stroke-linecap="round" stroke-width="32" d="M97 365c40-25 80-19 110 11 32 33 67 42 98 4 31-38 70-43 113-16"/>
+  </g>
+  <text x="250" y="144" fill="#102A33" font-family="STXingkai, KaiTi, serif" font-size="126" font-weight="700" letter-spacing="8">澜策</text>
+  <path stroke="#1AA8A2" stroke-linecap="round" stroke-width="9" d="M273 176c54 20 126 22 203 4 26-6 48-7 66 0"/>
+  <path stroke="#70BEEA" stroke-linecap="round" stroke-width="5" d="M493 179c21-7 37-7 49 1"/>
+</svg>

@@ -213,7 +213,11 @@ packages/contracts/  共享业务 DTO；不放数据库实现
 
 ## 13. 暂停门
 
-完成上述工作后停止，不进入正式发布门槛、真实数据迁移、生产部署、端口替换或客户灰度，等待用户另行确认。
+### 13.1 备份快照测试边界
+
+迁移分支的真实数据兼容性测试只能使用生产灾备快照的复制副本。快照源必须保持只读，不得直接作为 `DB_PATH`、`WORKSPACE_ROOT`、`RUNTIME_DATA_ROOT` 或 `REVIEWS_ROOT`；测试前后必须校验源快照清单未变化。统一使用 `scripts/mastra-backup-snapshot-test.mjs`，详见 `docs/mastra-backup-snapshot-test-policy.md`。
+
+完成上述工作后停止，不进入部署包准备、正式发布门槛、真实数据迁移、生产部署、端口替换或客户灰度；迁移分支重构和备份快照验证仍可继续，等待用户另行确认发布阶段。
 
 ## Executor Prompt
 

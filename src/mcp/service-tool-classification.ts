@@ -51,6 +51,7 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   // ── other-write: 确认与发布 (2) ──
   "confirmations.request": "other-write",
   "artifacts.publish": "other-write",
+  "spreadsheet.create": "other-write",
   "assets.version.commit": "other-write",
   "assets.conversation.save": "other-write",
   "assets.attachment.save": "other-write",

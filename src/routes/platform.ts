@@ -30,7 +30,7 @@ import { createInvestAgentInstance, deleteInvestAgentInstance, getProjectRuntime
 import { WeixinMobileManager } from "../channels/weixin-mobile.js";
 import { config } from "../lib/config.js";
 import { ensureWorkspace, resolveWorkspacePath, workspaceExists } from "../lib/workspace.js";
-import { planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
+import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { reviewViewpointBackend } from "../lib/review-viewpoint-backend.js";
 import { listWatchRules } from "../services/watch-rules.js";
@@ -43,6 +43,7 @@ import {
 import { getMcpRegistry } from "../mcp/mcp-registry.js";
 import { loadAgentUsageSummary, type AgentUsageGroupBy } from "../services/agent-usage.js";
 import { DEFAULT_INSTANCE_ID } from "../lib/user-context.js";
+import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
 import { getAlertInterval } from "../scheduler/index.js";
 import { createPlatformSession, hasPlatformSession, isLoopbackAddress, platformSessionCookie } from "../lib/platform-session.js";
 import { getWeixinDeliveryHealth, recordWeixinDeliveryAttempt } from "../services/weixin-delivery.js";
@@ -614,7 +615,7 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
   const now = new Date().toISOString();
   const userId = project.ownerUserId;
   const instanceId = project.instanceId;
-  const workspacePath = resolveWorkspacePath(userId);
+  const workspacePath = ACTIVE_BACKEND === "mastra" ? undefined : resolveWorkspacePath(userId);
   deletePlatformWeixinManager(instanceId);
 
   const userInstanceTables = [
@@ -666,8 +667,14 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
   });
   resetDb();
 
-  await rm(workspacePath, { recursive: true, force: true });
-  const workspace = await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
+  let workspace: { backend: "mastra"; registered: true } | Awaited<ReturnType<typeof ensureWorkspace>>;
+  if (ACTIVE_BACKEND === "mastra") {
+    await mastraWorkspaceRegistry.bootstrap({ userId, projectId: project.projectId, instanceId });
+    workspace = { backend: "mastra", registered: true };
+  } else {
+    await rm(workspacePath!, { recursive: true, force: true });
+    workspace = await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
+  }
   logger.info(`Platform 默认测试实例已重置 userId=${userId} instanceId=${instanceId}`);
   return {
     userId,
@@ -785,7 +792,10 @@ async function summarizeInstance(project: AiProjectRuntimeContext) {
     displayName: project.ownerUserId,
     status: "unknown",
   };
-  const workspacePath = resolveWorkspacePath(project.ownerUserId);
+  const projectRoot = ACTIVE_BACKEND === "mastra"
+    ? await mastraWorkspaceRegistry.resolve({ userId: project.ownerUserId, projectId: project.projectId, instanceId: project.instanceId })
+    : undefined;
+  const workspacePath = ACTIVE_BACKEND === "mastra" ? undefined : resolveWorkspacePath(project.ownerUserId);
   return {
     projectId: project.legacyProjectId,
     aiProjectId: project.projectId,
@@ -802,8 +812,9 @@ async function summarizeInstance(project: AiProjectRuntimeContext) {
     allowedTools: project.allowedTools,
     config: project.config,
     workspace: {
-      path: workspacePath,
-      exists: existsSync(workspacePath),
+      // Project roots are deliberately not disclosed in Platform payloads.
+      path: undefined,
+      exists: ACTIVE_BACKEND === "mastra" ? Boolean(projectRoot) : existsSync(workspacePath!),
       identity: {
         userId: project.ownerUserId,
         tenantId: project.ownerUserId,
@@ -977,13 +988,40 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
   const todayStart = shanghaiDayStartIso(shanghaiDateKey());
   const sevenDaysAgo = shanghaiDayStartIso(shanghaiDateOffset(-7));
   const thirtyDaysAgo = shanghaiDayStartIso(shanghaiDateOffset(-30));
-  const workspacePath = resolveWorkspacePath(project.ownerUserId);
-  const files = {
-    portfolio: existsSync(path.join(workspacePath, "config", "portfolio.yaml")),
-    strategy: existsSync(path.join(workspacePath, "config", "strategy.yaml")),
-    reviewSchedule: existsSync(path.join(workspacePath, "config", "schedules.yaml")),
-    notification: existsSync(path.join(workspacePath, "config", "notification.yaml")),
-  };
+  const workspacePath = ACTIVE_BACKEND === "mastra" ? undefined : resolveWorkspacePath(project.ownerUserId);
+  let mastraPreferences: Record<string, any> | null = null;
+  let mastraOnboardingStatus: string | undefined;
+  const files = ACTIVE_BACKEND === "mastra"
+    ? (() => {
+        const scope = [project.ownerUserId, project.projectId, project.instanceId];
+        const portfolioProjection = sqlite.prepare("SELECT 1 AS present FROM mastra_portfolio_states WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1").get(...scope) as { present?: number } | undefined;
+        const profileProjection = sqlite.prepare("SELECT 1 AS present FROM mastra_project_profiles WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1").get(...scope) as { present?: number } | undefined;
+        const preferenceProjection = sqlite.prepare("SELECT preferences_json AS preferencesJson FROM mastra_runtime_preferences WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1").get(...scope) as { preferencesJson?: string } | undefined;
+        if (preferenceProjection?.preferencesJson) {
+          try {
+            const parsed = JSON.parse(preferenceProjection.preferencesJson);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              mastraPreferences = parsed as Record<string, any>;
+              const onboarding = parsed.onboardingState;
+              if (onboarding && typeof onboarding === "object") mastraOnboardingStatus = typeof onboarding.status === "string" ? onboarding.status : undefined;
+            }
+          } catch {
+            mastraPreferences = null;
+          }
+        }
+        return {
+          portfolio: Boolean(portfolioProjection),
+          strategy: Boolean(profileProjection),
+          reviewSchedule: Boolean(preferenceProjection),
+          notification: Boolean(preferenceProjection),
+        };
+      })()
+    : {
+        portfolio: existsSync(path.join(workspacePath!, "config", "portfolio.yaml")),
+        strategy: existsSync(path.join(workspacePath!, "config", "strategy.yaml")),
+        reviewSchedule: existsSync(path.join(workspacePath!, "config", "schedules.yaml")),
+        notification: existsSync(path.join(workspacePath!, "config", "notification.yaml")),
+      };
 
   const [draftRows, traceRows, messageRows, pushRows, reviewRows, ruleRows, bindingRows, delivery, weixinState] = await Promise.all([
     db.select({ status: onboardingDrafts.status, updatedAt: onboardingDrafts.updatedAt })
@@ -1022,7 +1060,13 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
   ]);
 
   const draftStatus = draftRows[0]?.status;
-  const onboardingStatus = partnerOnboardingStatus({ draftStatus, files });
+  const onboardingStatus = ACTIVE_BACKEND === "mastra" && mastraOnboardingStatus === "completed"
+    ? "completed"
+    : ACTIVE_BACKEND === "mastra" && (mastraOnboardingStatus === "queued" || mastraOnboardingStatus === "committing")
+      ? "committing"
+      : ACTIVE_BACKEND === "mastra" && (mastraOnboardingStatus === "collecting" || mastraOnboardingStatus === "confirmed")
+        ? "drafting"
+        : partnerOnboardingStatus({ draftStatus, files });
   const traceToday = traceRows.filter((row) => row.createdAt >= todayStart);
   const trace7d = traceRows.filter((row) => row.createdAt >= sevenDaysAgo);
   const message7d = messageRows.filter((row) => row.createdAt >= sevenDaysAgo);
@@ -1071,7 +1115,14 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
     pushAttemptCountToday: pushRows.filter((row) => row.createdAt >= todayStart).length,
     lastPushStatus: latestPush?.status || "none",
     failureCategory,
-    notificationPreference: partnerNotificationPreference(workspacePath),
+    notificationPreference: ACTIVE_BACKEND === "mastra"
+      ? (() => {
+          const mode = mastraPreferences?.notification && typeof mastraPreferences.notification === "object"
+            ? String(mastraPreferences.notification.preference?.mode || mastraPreferences.notification.mode || "")
+            : "";
+          return mode === "active_watch" || mode === "evening_summary" || mode === "low_disturbance" ? mode : "unknown";
+        })()
+      : partnerNotificationPreference(workspacePath!),
     enabledRuleCount: Number(ruleRows[0]?.count || 0),
     health,
     portfolioConfigured: files.portfolio,
@@ -1876,11 +1927,17 @@ export function registerPlatformRoutes(app: FastifyInstance) {
   app.post<{ Params: { instanceId: string } }>("/api/platform/instances/:instanceId/workspace/ensure", safe(async (request, reply) => {
     const project = await getProjectRuntimeContext(request.params.instanceId).catch(() => null);
     if (!project || project.status === "archived") return reply.status(404).send({ ok: false, error: "实例不存在或已归档" });
-    const workspace = await ensureWorkspace({
-      userId: project.ownerUserId,
-      tenantId: project.ownerUserId,
-      projectId: project.instanceId,
-    });
+    const workspace = ACTIVE_BACKEND === "mastra"
+      ? (await mastraWorkspaceRegistry.bootstrap({
+          userId: project.ownerUserId,
+          projectId: project.projectId,
+          instanceId: project.instanceId,
+        }), { backend: "mastra", registered: true })
+      : await ensureWorkspace({
+          userId: project.ownerUserId,
+          tenantId: project.ownerUserId,
+          projectId: project.instanceId,
+        });
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
@@ -1894,7 +1951,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     if (!project || project.status === "archived") return reply.status(404).send({ ok: false, error: "实例不存在或已归档" });
     const userId = project.ownerUserId;
     const instanceId = project.instanceId;
-    if (!workspaceExists(userId)) {
+    if (ACTIVE_BACKEND !== "mastra" && !workspaceExists(userId)) {
       return {
         ok: true,
         updatedAt: new Date().toISOString(),

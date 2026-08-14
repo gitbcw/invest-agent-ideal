@@ -1,5 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
+import { sqlite } from "../db/index.js";
 import { alertRules } from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { getRulePrices, type RulePriceFact } from "./rule-price-facts.js";
@@ -228,6 +229,19 @@ export async function createWatchRule(input: CreateWatchRuleInput): Promise<Watc
   }).returning();
 
   return deserializeWatchRule(inserted[0]);
+}
+
+/** Insert a previously validated rule into the caller's SQLite transaction. */
+export function insertValidatedWatchRule(input: CreateWatchRuleInput, normalized: NonNullable<WatchRuleValidationResult["normalized"]>, now = new Date().toISOString()): void {
+  sqlite.prepare(
+    "INSERT INTO alert_rules (user_id,instance_id,stock_code,stock_name,indicator_key,condition,params,schedule,dedupe_policy,severity,relation_to_plan,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  ).run(
+    normalized.userId, normalized.instanceId, normalized.stockCode, normalized.stockName,
+    RULE_TYPE_TO_INDICATOR_KEY[normalized.ruleType], ruleTypeCondition(normalized.ruleType),
+    JSON.stringify({ ...normalized.params, ruleType: normalized.ruleType, targetScope: normalized.targetScope, notification: normalized.notification, source: input.source ?? { kind: "service_api" } }),
+    scheduleForRule(normalized.ruleType), JSON.stringify(normalized.cooldown), severityFromPriority(normalized.notification.priority),
+    WATCH_RULE_RELATION, normalized.enabled ? 1 : 0, now, now,
+  );
 }
 
 export async function updateWatchRule(id: number, input: UpdateWatchRuleInput, userId = DEFAULT_USER_ID, instanceId = DEFAULT_INSTANCE_ID): Promise<WatchRuleRecord> {

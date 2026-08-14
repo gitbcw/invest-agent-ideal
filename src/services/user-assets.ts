@@ -3,7 +3,9 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs
 import path from "node:path";
 import { sqlite } from "../db/index.js";
 import { config } from "../lib/config.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
+import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
 import { withResourceMutationLock } from "./resource-mutation-lock.js";
 import { validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
 import { convertCsvBytesToXlsx, CsvXlsxConversionError } from "./csv-xlsx-conversion.js";
@@ -845,6 +847,11 @@ async function stageAndCommit(scope: AssetScope, storagePath: string, bytes: Buf
 }
 
 async function workspaceRoot(scope: AssetScope): Promise<string> {
+  if (ACTIVE_BACKEND === "mastra") {
+    const project = await mastraWorkspaceRegistry.resolve(scope);
+    if (!project) throw new UserAssetError("MASTRA_PROJECT_SCOPE_UNAVAILABLE", "Mastra project is not registered");
+    return project.realProjectRoot;
+  }
   await mkdir(config.workspace.root, { recursive: true });
   const workspace = resolveWorkspacePath(scope.userId);
   await mkdir(workspace, { recursive: true });

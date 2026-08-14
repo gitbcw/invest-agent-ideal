@@ -6,7 +6,10 @@ import { createRuntimeAgent, type RuntimeAgent } from "../runtime/agent.js";
 import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser, type UserContext } from "../lib/user-context.js";
 import { ensureDefaultAiInstanceForUser } from "../lib/user-identity.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
+import { resolveProjectStorageRoot } from "./project-storage-root.js";
+import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
 import { logger } from "../lib/logger.js";
 import { getProjectRuntimeContext } from "../platform/project-registry.js";
 import { rememberConversationTurn } from "../lib/weixin-conversation-memory.js";
@@ -183,7 +186,11 @@ export function normalizeConversationScope(input: Partial<ConversationScope> = {
 
 export async function ensureConversationRuntime(scope: ConversationScope) {
   await ensureDefaultAiInstanceForUser(scope.userId, "mastra");
-  await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
+  if (ACTIVE_BACKEND === "mastra") {
+    await mastraWorkspaceRegistry.bootstrap({ userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId });
+  } else {
+    await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
+  }
 }
 
 function resolveConversationPersistenceScope(input: {
@@ -813,8 +820,9 @@ async function prepareAutomationConversation(input: {
   }
   const followUpRun = claimed.run;
 
-  const workspace = await ensureWorkspace({ userId: scoped.userId, tenantId: scoped.userId, projectId: scoped.projectId });
-  const workspaceRoot = workspace.path || resolveWorkspacePath(scoped.userId);
+  const workspaceRoot = ACTIVE_BACKEND === "mastra"
+    ? await resolveProjectStorageRoot({ userId: scoped.userId, projectId: scoped.projectId, instanceId: scoped.instanceId })
+    : (await ensureWorkspace({ userId: scoped.userId, tenantId: scoped.userId, projectId: scoped.projectId })).path || resolveWorkspacePath(scoped.userId);
   const stagingPath = await mkdtemp(path.join(workspaceRoot, ".automation-conversation-"));
   const sourceDirectory = path.join(stagingPath, "source");
   const workingDirectory = path.join(stagingPath, "working");
@@ -935,7 +943,9 @@ async function chatViaConversationLogOnce(input: {
   if (automationBinding && (input.attachments?.length ?? 0) > 0) {
     throw new Error("AUTOMATION_CONVERSATION_ATTACHMENTS_UNSUPPORTED");
   }
-  const workspace = await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
+  const workspaceRoot = ACTIVE_BACKEND === "mastra"
+    ? await resolveProjectStorageRoot({ userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId })
+    : (await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId })).path;
   const requestId = `portal-${randomUUID()}`;
   const automationConversation = automationBinding
     ? await prepareAutomationConversation({
@@ -946,7 +956,7 @@ async function chatViaConversationLogOnce(input: {
     })
     : null;
   const storedAttachments = await storePortalAttachments({
-    workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
+    workspacePath: workspaceRoot,
     attachments: input.attachments,
   });
   const userTextForAgent = automationConversation
@@ -983,6 +993,7 @@ async function chatViaConversationLogOnce(input: {
     try {
       registerAttachment({
         userId: scope.userId,
+        projectId: runtime?.projectId || scope.projectId,
         instanceId: runtime?.instanceId || scope.instanceId,
         conversationId: input.conversationId,
         messageId: userMessage.messageId,
@@ -1006,7 +1017,7 @@ async function chatViaConversationLogOnce(input: {
       projectId: runtime?.projectId || scope.projectId,
       instanceId: runtime?.instanceId || scope.instanceId,
       instanceExpansionPath: runtime?.instanceExpansionPath,
-      workspacePath: automationConversation?.workspacePath || workspace.path || resolveWorkspacePath(scope.userId),
+      workspacePath: automationConversation?.workspacePath || workspaceRoot,
       ...(automationConversation ? { taskType: "scheduled-automation" } : {}),
       ...(automationBinding ? { runId: automationBinding.runId, taskId: automationBinding.taskId } : {}),
       attachments: storedAttachments,
@@ -1063,7 +1074,7 @@ async function chatViaConversationLogOnce(input: {
       projectId: runtime?.projectId || scope.projectId,
       instanceId: runtime?.instanceId || scope.instanceId,
       instanceExpansionPath: runtime?.instanceExpansionPath,
-      workspacePath: workspace.path || resolveWorkspacePath(scope.userId),
+      workspacePath: workspaceRoot,
       channel: "web",
       conversationId: input.conversationId,
     }, userTextForAgent, assistantText);

@@ -33,7 +33,9 @@ import {
   weixinDeliveryAttempts,
 } from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
-import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
+import { resolveWorkspacePath } from "../lib/workspace.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
+import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
 import type { SandboxPermission } from "../lib/sandbox-context.js";
 
 export const INVEST_AGENT_DEFAULT_SKILL_BUNDLE_ID = "invest-agent-default";
@@ -132,7 +134,7 @@ function parseConfig(value?: string | null): Record<string, unknown> {
 function runtimeContextFromInstance(instance: typeof aiInstances.$inferSelect): AiProjectRuntimeContext {
   const config = parseConfig(instance.config);
   return {
-    projectId: instance.id,
+    projectId: instance.projectId,
     instanceId: instance.id,
     legacyProjectId: instance.projectId,
     projectType: "invest-agent",
@@ -196,9 +198,9 @@ export async function ensureDefaultProjectForUser(
     .set({ backend, updatedAt: now })
     .where(eq(aiInstances.id, instanceId));
 
-  await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
-
-  return getProjectRuntimeContext(instanceId);
+  const context = await getProjectRuntimeContext(instanceId);
+  await mastraWorkspaceRegistry.bootstrap({ userId, projectId: context.projectId, instanceId: context.instanceId });
+  return context;
 }
 
 export async function createInvestAgentInstance(input: {
@@ -266,7 +268,14 @@ async function rollbackCreatedInvestAgentInstance(input: {
       tx.delete(users).where(eq(users.id, input.userId)).run();
     }
   });
-  if (input.createdInstance && input.createdUser) {
+  if (input.createdInstance && input.createdUser && ACTIVE_BACKEND === "mastra") {
+    const scope = { userId: input.userId, projectId: DEFAULT_PROJECT_ID, instanceId: input.instanceId };
+    const projectRoot = await mastraWorkspaceRegistry.resolve(scope);
+    if (projectRoot) {
+      await rm(projectRoot.realProjectRoot, { recursive: true, force: true });
+      mastraWorkspaceRegistry.unregister(scope);
+    }
+  } else if (input.createdInstance && input.createdUser) {
     await rm(resolveWorkspacePath(input.userId), { recursive: true, force: true });
   }
 }
@@ -331,7 +340,16 @@ export async function deleteInvestAgentInstance(instanceId: string) {
     tx.delete(users).where(eq(users.id, userId)).run();
   });
 
-  await rm(workspacePath, { recursive: true, force: true });
+  if (ACTIVE_BACKEND === "mastra") {
+    const scope = { userId, projectId: project.projectId, instanceId: instanceIdValue };
+    const projectRoot = await mastraWorkspaceRegistry.resolve(scope);
+    if (projectRoot) {
+      await rm(projectRoot.realProjectRoot, { recursive: true, force: true });
+      mastraWorkspaceRegistry.unregister(scope);
+    }
+  } else {
+    await rm(workspacePath, { recursive: true, force: true });
+  }
 
   return { userId, instanceId: instanceIdValue };
 }

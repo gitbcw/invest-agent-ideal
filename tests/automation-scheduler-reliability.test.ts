@@ -8,6 +8,7 @@ import test from "node:test";
 // Import the runtime only after this test has isolated all persistent paths.
 const root = mkdtempSync(path.join(os.tmpdir(), "invest-agent-automation-reliability-"));
 process.env.NODE_ENV = "test";
+process.env.WORKSPACE_BACKEND = "workspace";
 process.env.DB_PATH = path.join(root, "automation.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");

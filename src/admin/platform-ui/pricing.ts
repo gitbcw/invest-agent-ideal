@@ -1,5 +1,5 @@
 // 成本定价：token → 美元换算。
-// 费率单位 $/M（每百万 token），基于 Codex 原生日志用量。
+// 费率单位 $/M（每百万 token），基于 Agent trace 用量。
 // 调价只改这里，owner/partner 成本视图共用。
 
 // 费率表（$/M，每百万 token）。缓存读取 = 输入价格的 1/10。

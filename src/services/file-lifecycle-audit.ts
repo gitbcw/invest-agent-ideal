@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { sqlite } from "../db/index.js";
 import { logger } from "../lib/logger.js";
 
-export type FileLifecycleEntityType = "artifact" | "attachment" | "asset" | "batch";
+export type FileLifecycleEntityType = "artifact" | "attachment" | "asset" | "batch" | "workspace_project";
 
 export interface FileLifecycleAuditInput {
   entityType: FileLifecycleEntityType;

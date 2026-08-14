@@ -4,8 +4,10 @@ import { db } from "../db/index.js";
 import { conversationMessages, conversationSessions, onboardingDrafts, pendingSandboxConfirmations } from "../db/schema.js";
 import { appendConversationMessage } from "./conversation-log.js";
 import { enqueuePushJob } from "./push-queue.js";
-import { createWatchRule, listWatchRules, validateWatchRule } from "./watch-rules.js";
-import { applyOnboardingDraftCommit, finalizeOnboardingDraftCommit, isOnboardingStep, validateOnboardingPortfolioPayload, validateOnboardingStepPayload } from "./onboarding.js";
+import { createWatchRule, insertValidatedWatchRule, listWatchRules, validateWatchRule } from "./watch-rules.js";
+import { applyMastraOnboardingDraftCommit, applyOnboardingDraftCommit, finalizeOnboardingDraftCommit, isOnboardingStep, prepareMastraOnboardingDraftCommit, validateOnboardingPortfolioPayload, validateOnboardingStepPayload } from "./onboarding.js";
+import { sqlite } from "../db/index.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { WorkspaceStore, type OnboardingStepKey } from "../lib/workspace-store.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
@@ -375,15 +377,23 @@ async function commitDraft(id: string) {
     const snapshot = parseSnapshot(row.commitSnapshotJson);
     if (!snapshot || !isReady(snapshot.steps)) throw new Error("frozen onboarding draft is incomplete");
     const stepPayloads = Object.fromEntries(Object.entries(snapshot.steps).map(([key, value]) => [key, value?.payload ?? {}])) as Partial<Record<OnboardingStepKey, Record<string, unknown>>>;
-    const store = new WorkspaceStore(row.userId);
-    const finalState = await applyOnboardingDraftCommit({ store, steps: stepPayloads });
-    await commitDraftRules(row, snapshot);
-    await finalizeOnboardingDraftCommit({
-      store,
-      state: finalState,
-      commitKey: row.commitKey ?? `${row.id}:${snapshot.revision}`,
-      steps: Object.keys(stepPayloads),
-    });
+    const validatedRules = await validateDraftRules(row, snapshot);
+    const store = ACTIVE_BACKEND === "mastra" ? null : new WorkspaceStore(row.userId);
+    const prepared = ACTIVE_BACKEND === "mastra"
+      ? await prepareMastraOnboardingDraftCommit({ userId: row.userId, instanceId: row.instanceId, projectId: row.projectId, steps: stepPayloads })
+      : null;
+    const finalState = prepared?.state ?? await applyOnboardingDraftCommit({ store: store!, steps: stepPayloads });
+    if (prepared) {
+      sqlite.transaction(() => {
+        prepared.persist();
+        for (const item of validatedRules) {
+          if (!item.alreadyCreated) insertValidatedWatchRule(item.input, item.normalized);
+        }
+      })();
+    } else {
+      await commitDraftRules(row, snapshot);
+    }
+    if (store) await finalizeOnboardingDraftCommit({ store, state: finalState, commitKey: row.commitKey ?? `${row.id}:${snapshot.revision}`, steps: Object.keys(stepPayloads) });
   });
   const completedAt = nowIso();
   await db.update(onboardingDrafts).set({ status: "completed", completedAt, lastError: null, updatedAt: completedAt }).where(eq(onboardingDrafts.id, row.id));
@@ -405,6 +415,24 @@ async function commitDraftRules(row: typeof onboardingDrafts.$inferSelect, snaps
     if (!validated.ok) throw new Error(`草稿规则 ${index + 1} 无法创建: ${validated.errors.join("；")}`);
     await createWatchRule(input);
   }
+}
+
+async function validateDraftRules(row: typeof onboardingDrafts.$inferSelect, snapshot: DraftSnapshot) {
+  const rules = Array.isArray(snapshot.steps.watch_rules?.payload.rules) ? snapshot.steps.watch_rules?.payload.rules as Record<string, unknown>[] : [];
+  const existing = await listWatchRules(row.userId, row.instanceId);
+  const result: Array<{ input: any; normalized: NonNullable<Awaited<ReturnType<typeof validateWatchRule>>["normalized"]>; alreadyCreated: boolean }> = [];
+  for (const [index, raw] of rules.entries()) {
+    const source = { kind: "onboarding_draft", onboarding_draft_commit_key: row.commitKey, onboarding_draft_rule_index: index };
+    const input = { ...raw, userId: row.userId, instanceId: row.instanceId, source } as any;
+    const validated = await validateWatchRule(input);
+    if (!validated.ok) throw new Error(`草稿规则 ${index + 1} 无法创建: ${validated.errors.join("；")}`);
+    const alreadyCreated = existing.some((item) => {
+      const itemSource = item.source as Record<string, unknown>;
+      return itemSource?.onboarding_draft_commit_key === row.commitKey && itemSource?.onboarding_draft_rule_index === index;
+    });
+    result.push({ input, normalized: validated.normalized!, alreadyCreated });
+  }
+  return result;
 }
 
 async function notifyDraftResult(row: typeof onboardingDrafts.$inferSelect, success: boolean, error?: string) {

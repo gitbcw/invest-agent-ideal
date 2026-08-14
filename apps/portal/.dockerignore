@@ -1,0 +1,11 @@
+.git
+.next
+node_modules
+data
+reviews
+.env
+.env.local
+.env.production
+npm-debug.log
+Dockerfile
+docker-compose*.yml

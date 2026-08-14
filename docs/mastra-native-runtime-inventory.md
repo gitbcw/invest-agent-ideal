@@ -54,8 +54,7 @@ identifier requirement.
 | `src/services/external-mcp-observer.ts`, `src/services/mcp-control-plane.ts` | ACP registry/registrations | Repoint to `src/mcp/*`; update ACP wording in comments and audit correlation labels. |
 | `src/mastra/external-mcp.ts` | Imports `src/acp/external-mcp-registrations.ts` | Repoint to the new `src/mcp/external-registrations.ts`. |
 | `scripts/mcp-registry-check.ts` | ACP registry paths | Repoint to `src/mcp/*` and retain as a neutral validation script. |
-| `scripts/stage1-scheduled-tasks-smoke.mjs`, `scripts/scheduled-review-publication-probe.mjs` | `dist/acp/scheduled-tasks`, ACP disposal | Repoint to `dist/runtime/scheduled-tasks`; delete disposal. |
-| `scripts/scheduled-review-publication-smoke.mjs` | Codex executable preflight and ACP imports | Replace with a Mastra gateway/config preflight or remove if it is legacy-only. |
+| `scripts/stage1-scheduled-tasks-smoke.mjs` | `dist/runtime/scheduled-tasks` | Mastra-native scheduled-task smoke; no ACP disposal. The old publication probe was removed as an ACP-only entry point. |
 
 ## Non-`src/acp` Runtime Dependencies to Remove
 
@@ -92,7 +91,7 @@ identifier requirement.
 | `src/routes/platform.ts`, `src/routes/sandbox.ts`, `src/server.ts`, `src/platform/project-registry.ts`, `scripts/recent-logs.mjs` | Query/delete/report the neutral trace table, including project deletion and scheduler-status lookup. |
 | `.env.example` | Remove `ACP_*`, `CODEX_ACP_*`, `HERMES_*`, `CODEX_SOURCE_HOME`, `CODEX_SIMPLE_MODEL`, `CODEX_COMPLEX_MODEL`, `ACP_MODEL_ROUTER_*`, `PORTAL_DIRECT_ACP_TIMEOUT_MS`, and ACP wording in external-MCP comments. Add neutral gateway/timeout names only. |
 | `scripts/run-mastra-local.sh` | It currently parses `/Users/combo/.codex/config.toml` and `auth.json`; replace with explicit `MASTRA_GATEWAY_BASE_URL`/`MASTRA_GATEWAY_API_KEY` environment inputs or a neutral secret source. Remove `INVEST_AGENT_EXECUTION_BACKEND=mastra` once no selector exists. |
-| `package.json`, `package-lock.json` | Remove `@agentclientprotocol/sdk`; delete ACP-only probe scripts (`probe:mcp-acp-e2e`, `probe:mcp-tool-call`, `probe:mcp-qsse-tool-call`, `probe:mcp-fixture-tool-call`) or rename/reimplement for Mastra. Keep `@mastra/core`, `@mastra/mcp`, and `@modelcontextprotocol/sdk` because external MCP and transport-neutral inspection still use them. Update description from ACP Agent. |
+| `package.json`, `package-lock.json` | ACP-only probe scripts and their package entries | ACP-only MCP probes, old Workspace/ACP acceptance smoke, and Codex mobile/publication commands are removed from the migration branch package surface. Keep `@mastra/core`, `@mastra/mcp`, and `@modelcontextprotocol/sdk` for Mastra and transport-neutral MCP validation. |
 
 Codex-named Workspace paths (`templates/workspace/.codex`,
 `src/lib/workspace-compatibility.ts`, workspace backup/deploy scripts, and

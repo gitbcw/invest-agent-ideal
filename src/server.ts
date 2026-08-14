@@ -15,7 +15,9 @@ import { ensureBuiltInIndicatorDefinitions } from "./handlers/indicator-definiti
 import { enqueuePushJob, getPushJob, getPushQueueSummary, processDuePushJobs, type PushBackend } from "./services/push-queue.js";
 import type { WeixinDeliveryResult } from "./services/weixin-delivery.js";
 import { ensureBuiltInAiProjects } from "./platform/project-registry.js";
-import { instanceIdFromRequest, userIdFromRequest } from "./lib/user-context.js";
+import { DEFAULT_PROJECT_ID, instanceIdFromRequest, userIdFromRequest } from "./lib/user-context.js";
+import { ensureDefaultProjectForUser } from "./platform/project-registry.js";
+import { ACTIVE_BACKEND } from "./lib/data-backend.js";
 import { db } from "./db/index.js";
 import { agentTraces, pushJobs, scheduledTaskRuns } from "./db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
@@ -219,8 +221,16 @@ export async function createServer() {
       }
       const normalizedChannel: "weixin-mobile" | "api" = channel === "weixin-mobile" ? "weixin-mobile" : "api";
 
-      let resolvedWorkspacePath = workspacePath;
-      if (!resolvedWorkspacePath && userId) {
+      let resolvedWorkspacePath: string | undefined;
+      let projectId = DEFAULT_PROJECT_ID;
+      let instanceId: string | undefined;
+      if (ACTIVE_BACKEND === "mastra" && userId) {
+        // A request-provided workspacePath must never select a Mastra project
+        // root. Bootstrap resolves the authenticated user's service-owned scope.
+        const project = await ensureDefaultProjectForUser(userId);
+        projectId = project.projectId;
+        instanceId = project.instanceId;
+      } else if (!resolvedWorkspacePath && userId) {
         const { ensureWorkspace } = await import("./lib/workspace.js");
         const resolved = await ensureWorkspace({ userId, projectId: "invest-agent" });
         resolvedWorkspacePath = resolved.path;
@@ -235,6 +245,7 @@ export async function createServer() {
           ? {
               context: {
                 userId: userId || "test",
+                ...(instanceId ? { projectId, instanceId } : {}),
                 ...(resolvedWorkspacePath ? { workspacePath: resolvedWorkspacePath } : {}),
                 ...(normalizedChannel ? { channel: normalizedChannel } : {}),
               },

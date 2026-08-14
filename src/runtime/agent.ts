@@ -11,7 +11,9 @@ import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 import { classifyTaskError } from "../services/task-execution.js";
 import { OUTPUT_VOLUME_POLICY } from "./spreadsheet-output-policy.js";
 import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
+import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
+import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 
 const WEIXIN_DIRECT_AGENT_TIMEOUT_MS =
@@ -129,6 +131,17 @@ export function createRuntimeAgent(): RuntimeAgent {
           includeContextPacket: false,
         });
         const mastraTools = await createMastraToolMap({ ...userContext, instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId) });
+        const workspaceScope = {
+          userId: userContext.userId,
+          projectId: userContext.projectId ?? "invest-agent",
+          instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId),
+        };
+        // This returns undefined unless a service-owned bootstrap explicitly
+        // registered an isolated project root for the authenticated scope.
+        const scopedWorkspace = await createRegisteredMastraWorkspace({
+          scope: workspaceScope,
+          bindings: await getMastraBindings(),
+        });
         const externalMcp = await resolveExternalMastraToolsets("interactive");
         try {
           const mastraResult = await runMastraTurn({
@@ -140,11 +153,12 @@ export function createRuntimeAgent(): RuntimeAgent {
               : userChannel === "web"
                 ? PORTAL_DIRECT_AGENT_TIMEOUT_MS
                 : AGENT_EVALUATION_CASE_TIMEOUT_MS > 0 ? AGENT_EVALUATION_CASE_TIMEOUT_MS : undefined,
-            cwd: resolveRuntimeWorkspaceCwd(userContext),
             userContext,
+            requestContext: workspaceScope,
             toolsets: externalMcp.toolsets,
             signal: cancelSignal,
-          }, { agentOptions: { tools: mastraTools } });
+            maxSteps: 20,
+          }, { agentOptions: { tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } });
           const postProcessed = await postProcessAgentReply({ reply: mastraResult.text, userContext, originalText: text });
           const extractedVisuals = userChannel === "web"
             ? extractInlineSvgVisuals(postProcessed.finalReply)
@@ -166,6 +180,7 @@ export function createRuntimeAgent(): RuntimeAgent {
           return textResponse(cleaned, true, extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined);
         } finally {
           await externalMcp.disconnect();
+          await scopedWorkspace?.destroy?.();
         }
       } catch (error) {
         logger.error("Agent 运行失败:", error);
@@ -278,6 +293,7 @@ export function buildChannelContextInstruction(channel: UserContext["channel"]):
       "网页端可以稍微更结构化，但不要输出执行过程、内部路径或调试信息。",
       `结果数量规则：${OUTPUT_VOLUME_POLICY}`,
       "门户表格交付规则：只有数据行不超过 7 条且列不超过 5 列时，才在回复正文使用 Markdown 表格。任何一个维度超限（超过 7 条数据行或超过 5 列）时，必须把完整表格写成 Excel（.xlsx）文件到 `deliveries/` 下，在同一回合调用 `artifacts.publish` 并以 artifact 交付；正文只保留简短结论和文件说明，绝不能用 CSV 代码块或超限 Markdown 表格代替文件。表头不计入 7 条数据行。",
+      "如果用户要求制作、生成、发送、下载或复制 Excel/表格，必须调用 `spreadsheet.create` 生成真实 .xlsx；不要声称当前会话没有 Excel 二进制写入能力，也不要把本地脚本或伪造扩展名当成交付。将列名和数据行作为结构化参数传入，工具成功后再告知用户文件已生成。",
       "生成 Excel 表格时应使用清晰表头、冻结表头、筛选和适合阅读的列宽。",
       "门户内联图示的选择原则是“看比读更划算时才给”，不是等用户每次都说画图。以下情形默认主动给一张简洁 SVG：教学/讲解/介绍投资概念；两个或以上对象或方案的比较；行业景气、估值、风险或投资方法的阶段/周期；筛选漏斗；多条件决策路径；已有预案的情景分支。默认最多一张；只有用户明确要求多图、两张图或分别画图，或者单张图无法清晰表达两个彼此独立的分析维度时，才可给第二张。复杂话题本身不是生成第二张图的理由。用户明确要求“图、示意图、流程图、可视化、diagram、chart”时同样必须给。纯词义解释、单一事实或简短行情问答、文字已足够清楚的回答，以及用户明确要求文件/报告/下载/HTML 时，不要生成内联图；后者走现有 workspace 文件/artifact 路径。图示必须基于本轮已取证事实；概念图要明确为概念框架，不能伪造行情或数据。",
       "门户图示协议是硬约束：凡是决定生成内联图示的情况，只能使用下方的 `invest-svg` 内联图示，绝不能创建或发布 HTML、SVG、PNG 等 workspace 文件，也不得调用 artifacts.publish。每个图示必须用独立的 ```invest-svg 代码块包裹；代码块内只能有一个以 <svg 开始、带 viewBox=\"0 0 宽 高\" 的静态 SVG。图中必须显式设置填充色，必须包含简短 <title>；禁止 HTML、脚本、外链、图片、动画或交互。最多 2 张。图示只辅助正文，正文仍须给出事实、判断、行动和验证条件。",
@@ -285,8 +301,4 @@ export function buildChannelContextInstruction(channel: UserContext["channel"]):
     ].join("");
   }
   return null;
-}
-
-function resolveRuntimeWorkspaceCwd(context: UserContext): string | undefined {
-  return context.workspacePath || undefined;
 }

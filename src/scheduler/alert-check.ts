@@ -7,6 +7,9 @@ import { planBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { ensureWorkspace } from "../lib/workspace.js";
 import { WorkspaceStore, type RiskLevel } from "../lib/workspace-store.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
+import { MastraUserPreferenceStore } from "../services/user-preferences.js";
+import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { beijingNow, isBeijingTradingDay } from "../lib/schedules-loader.js";
 import { listWatchRules, dryRunWatchRule, type WatchRuleRecord } from "../services/watch-rules.js";
 import { getRulePrices } from "../services/rule-price-facts.js";
@@ -495,6 +498,17 @@ async function loadMarketWatchPolicy(userId: string): Promise<MarketWatchPolicy>
     nonExceptionRules: [],
   };
   try {
+    if (ACTIVE_BACKEND === "mastra") {
+      const watch = await new MastraUserPreferenceStore(userId, defaultInstanceIdForUser(userId), DEFAULT_PROJECT_ID).readWatch();
+      if (!watch) return fallback;
+      return {
+        enabled: watch.mode !== "disabled" && watch.mode !== "off",
+        onlyPushOnException: watch.only_push_on_exception !== false,
+        defaultCheckWindows: normalizeWatchWindows(watch.default_check_windows),
+        exceptionRules: normalizeWatchRules(watch.exception_rules),
+        nonExceptionRules: normalizeWatchRules(watch.non_exception_rules),
+      };
+    }
     const store = new WorkspaceStore(userId);
     const watch = await store.readWatch();
     if (!watch) return fallback;
@@ -639,6 +653,14 @@ async function loadPriorityConfig(): Promise<PriorityConfig> {
   }
 
   try {
+    if (ACTIVE_BACKEND === "mastra") {
+      cachedPriorityConfig = {
+        overrides: HARDWIRED_PRIORITY_MAP,
+        defaultPriority: "P2",
+        escalationThreshold: HARDWIRED_ESCALATION_THRESHOLD,
+      };
+      return cachedPriorityConfig;
+    }
     if (!priorityWorkspaceInitialized) {
       await ensureWorkspace({ userId: DEFAULT_USER_ID });
       priorityWorkspaceInitialized = true;

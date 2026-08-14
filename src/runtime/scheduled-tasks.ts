@@ -5,10 +5,12 @@ import { buildAgentPromptContext } from "../runtime/prompt-context-builder.js";
 import { recordAgentTrace } from "../runtime/trace.js";
 import { extractFinalCustomerReply, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
-import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
+import { resolveWorkspacePath } from "../lib/workspace.js";
 import type { UserContext } from "../lib/user-context.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID } from "../lib/user-context.js";
 import { readSchedules } from "../lib/schedules-loader.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
+import { MastraUserPreferenceStore } from "../services/user-preferences.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
@@ -30,7 +32,9 @@ const SCHEDULED_AGENT_TIMEOUT_MS =
 
 
 export function isLegacyReviewOrch(): boolean {
-  return process.env.SCHEDULED_REVIEW_LEGACY_ORCH === "true";
+  // The legacy prompt/file orchestration is a Workspace-backend rollback path
+  // only. Mastra owns review publication through service tools and projections.
+  return ACTIVE_BACKEND !== "mastra" && process.env.SCHEDULED_REVIEW_LEGACY_ORCH === "true";
 }
 
 export interface ScheduledScope {
@@ -278,8 +282,8 @@ async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekl
 export function buildDailyReviewTaskPrompt() {
   return [
     "【后台任务：日复盘】",
-    "你正在当前用户 Workspace 中执行自动日复盘。",
-    "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 daily-review skill；研究方法、工具选择、报告结构和详略由你决定。",
+    "你正在执行当前用户的自动日复盘。",
+    "遵守本任务说明、服务工具权限和已注入的用户上下文；研究方法、工具选择、报告结构和详略由你决定。",
     "发布是本任务唯一完成路径：完成研究后必须调用 reviews.save，content 放完整 Markdown，pushBrief 放独立的微信简报；重要观点和数据质量事件可分别放入 decisionRecords、sourceEvents。",
     "pushBrief 会直接作为微信消息发送给用户，必须使用适合微信阅读且可由微信渲染的简洁 Markdown；使用 `**重点**` 和清晰分段，并按内容需要使用列表或短标题，不要写成无格式的连续纯文本。",
     "不要把未保存的复盘草稿、摘要或自然语言最终回复当作完成。若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。",
@@ -292,14 +296,12 @@ async function buildScheduledUserContext(scope: ScheduledScope, taskName: string
   const userId = scope.userId;
   const projectId = scope.projectId || DEFAULT_PROJECT_ID;
   const instanceId = scope.instanceId || DEFAULT_INSTANCE_ID;
-  const workspace = await ensureWorkspace({ userId, projectId });
   return {
     userId,
     projectId,
     instanceId,
     channel: "api",
     conversationId: `scheduler:${taskName}:${userId}:${instanceId}`,
-    workspacePath: workspace.path,
   };
 }
 
@@ -307,8 +309,8 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
   const label = kind === "weekly" ? "周复盘" : "月复盘";
   const promptLines = [
     `【后台任务：${label}】`,
-    "你正在当前用户 Workspace 中执行自动复盘生成。",
-    "请优先遵守 AGENTS.md、config/schedules.yaml、config/notification.yaml 和 review/market 相关 skills。",
+    "你正在执行当前用户的自动复盘生成。",
+    "遵守本任务说明、服务工具权限和已注入的用户上下文。",
     "研究方法、工具选择、报告结构和详略由你决定。",
     "数据来源只写可读来源摘要，禁止展示原始 URL、endpoint 或接口路径；完整来源链接只保存在网页/Markdown artifact/Audit。",
     "必须区分事实、推断、行动建议、后续验证点；不要承诺收益；数据不足要明确说明。",
@@ -369,8 +371,12 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
         text: input.promptText,
         messageId: input.messageId,
         timeoutMs: SCHEDULED_AGENT_TIMEOUT_MS,
-        cwd: input.userContext.workspacePath,
         userContext: input.userContext,
+        requestContext: {
+          userId: input.userContext.userId,
+          projectId: input.userContext.projectId ?? DEFAULT_PROJECT_ID,
+          instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID,
+        },
         toolsets: externalMcp.toolsets,
       }, { agentOptions: { tools: mastraTools } });
       const reply = mastraResult.text;
@@ -430,10 +436,13 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
 }
 
 async function resolveMarketWatchPushMode(userId: string): Promise<MarketWatchPushMode> {
-  const schedules = readSchedules(userId);
+  const schedules = ACTIVE_BACKEND === "mastra"
+    ? await new MastraUserPreferenceStore(userId, DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID).readSchedules()
+    : readSchedules(userId);
   const watch = await readWatchConfig(userId);
-  const mode = String(watch?.mode || schedules.market_watch?.push_mode || "");
-  if (mode === "scheduled_intraday_brief" || schedules.market_watch?.only_push_on_exception === false || watch?.only_push_on_exception === false) {
+  const marketWatch = (schedules.market_watch ?? {}) as Record<string, unknown>;
+  const mode = String(watch?.mode || marketWatch.push_mode || "");
+  if (mode === "scheduled_intraday_brief" || marketWatch.only_push_on_exception === false || watch?.only_push_on_exception === false) {
     return "scheduled_intraday_brief";
   }
   return "exception_only";
@@ -441,6 +450,7 @@ async function resolveMarketWatchPushMode(userId: string): Promise<MarketWatchPu
 
 async function readWatchConfig(userId: string) {
   try {
+    if (ACTIVE_BACKEND === "mastra") return await new MastraUserPreferenceStore(userId, DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID).readWatch();
     return await new WorkspaceStore(userId).readWatch();
   } catch (error) {
     logger.warn(`scheduled.marketWatch.readWatch failed user=${userId}: ${(error as Error).message}`);
@@ -453,16 +463,16 @@ export function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: M
   // 和研究步骤交给 Mastra runtime、业务工具和通知策略决定。
   return [
     "【后台任务：盘中定时简报】",
-    "你正在当前用户 Workspace 中生成盘中定时简报。",
-    "请优先遵守 AGENTS.md、config/watch.yaml、config/notification.yaml、config/portfolio.yaml、reports/daily/ 和 market-watch skill。",
+    "你正在生成当前用户的盘中定时简报。",
+    "遵守本任务说明、服务工具权限和已注入的用户上下文。",
     "market-watch 是盘中定时简报/摘要任务，不是明确规则巡检；明确规则巡检只由 rule-alert-check 执行 alert_rules。",
-    "是否推送、推送频率、推送内容和提醒边界均以 Workspace 配置与 market-watch skill 为准。",
-    "研究方法、工具选择、数据来源和报告结构由你根据 Workspace Skills 和可用的 MCP 工具自行决定。",
+    "是否推送、推送频率、推送内容和提醒边界均以服务端读取的用户配置为准。",
+    "研究方法、工具选择、数据来源和报告结构由你根据可用的服务工具和 MCP 工具自行决定。",
     "数据来源只写可读来源摘要；禁止展示原始 URL、endpoint 或接口路径。",
     "输出协议（精确）：",
-    "- 若按 Workspace 规则本轮不应推送，只输出：NO_PUSH",
-    "- 若按 Workspace 规则本轮应推送，只输出微信正文（适合微信阅读的 Markdown）",
-    "这条内容会直接作为微信消息发送给用户。不要提到 Codex、Hermes、ACP、workspace、sandbox、curl、接口、后台任务或本地路径。",
+    "- 若按用户配置本轮不应推送，只输出：NO_PUSH",
+    "- 若按用户配置本轮应推送，只输出微信正文（适合微信阅读的 Markdown）",
+    "这条内容会直接作为微信消息发送给用户。不要披露内部实现、运行环境、接口细节、后台任务或本地路径。",
     `当前用户: ${userContext.userId}`,
     `当前实例: ${userContext.instanceId}`,
   ].join("\n");

@@ -18,7 +18,10 @@ import { settings } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
-import { readSchedules, entryHitsNow, beijingNow, beijingDateKey } from "../lib/schedules-loader.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
+import { MastraUserPreferenceStore } from "../services/user-preferences.js";
+import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
+import { readSchedules, entryHitsNow, beijingNow, beijingDateKey, type SchedulesYaml } from "../lib/schedules-loader.js";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -102,7 +105,15 @@ export async function setReviewPushTime(hour: number, minute: number): Promise<s
 }
 
 function hasWorkspace(userId: string): boolean {
+  if (ACTIVE_BACKEND === "mastra") return true;
   return existsSync(join(resolveWorkspacePath(userId), "AGENTS.md"));
+}
+
+async function readScheduleConfig(scope: ReviewScope) {
+  if (ACTIVE_BACKEND === "mastra") {
+    return await new MastraUserPreferenceStore(scope.userId, scope.instanceId, scope.projectId ?? DEFAULT_PROJECT_ID).readSchedules() as SchedulesYaml;
+  }
+  return readSchedules(scope.userId);
 }
 
 async function hasExistingDailyReview(scope: ReviewScope, dateKey: string): Promise<boolean> {
@@ -116,7 +127,7 @@ async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date, optio
 
   let hit = false;
   if (hasWorkspace(scope.userId)) {
-    const schedules = readSchedules(scope.userId);
+    const schedules = await readScheduleConfig(scope);
     if (kind === "daily") hit = entryHitsNow(schedules.daily_review, now);
     else if (kind === "weekly") hit = entryHitsNow(schedules.weekly_review, now);
     else if (kind === "monthly") hit = entryHitsNow(schedules.monthly_review, now);
@@ -145,14 +156,24 @@ function addMinutes(date: Date, minutes: number) {
   return new Date(date.getTime() + minutes * 60 * 1000);
 }
 
-function preparedReviewPath(scope: ReviewScope, kind: ReviewKind, dateKey: string) {
+function preparedReviewPath(scope: ReviewScope, kind: ReviewKind, dateKey: string): string | Promise<string> {
   const safeInstance = (scope.instanceId || DEFAULT_INSTANCE_ID).replace(/[^a-zA-Z0-9_-]/g, "-");
-  return join(resolveWorkspacePath(scope.userId), ".state", "scheduled-reviews", safeInstance, `${dateKey}-${kind}.json`);
+  if (ACTIVE_BACKEND !== "mastra") {
+    return join(resolveWorkspacePath(scope.userId), ".state", "scheduled-reviews", safeInstance, `${dateKey}-${kind}.json`);
+  }
+  return resolveRegisteredMastraProjectRoot({
+    userId: scope.userId,
+    projectId: scope.projectId ?? DEFAULT_PROJECT_ID,
+    instanceId: scope.instanceId,
+  }).then((root) => {
+    if (!root) throw new Error("MASTRA_PROJECT_SCOPE_UNAVAILABLE");
+    return join(root, ".agent-project", "staging", "scheduled-reviews", safeInstance, `${dateKey}-${kind}.json`);
+  });
 }
 
 async function readPreparedReviewPush(scope: ReviewScope, kind: ReviewKind, dateKey: string): Promise<PreparedReviewPush | null> {
   try {
-    const file = preparedReviewPath(scope, kind, dateKey);
+    const file = await preparedReviewPath(scope, kind, dateKey);
     if (!existsSync(file)) return null;
     const parsed = JSON.parse(await readFile(file, "utf-8")) as Partial<PreparedReviewPush>;
     if (parsed.kind !== kind || parsed.dateKey !== dateKey || typeof parsed.text !== "string" || !parsed.text.trim()) return null;
@@ -172,7 +193,7 @@ async function readPreparedReviewPush(scope: ReviewScope, kind: ReviewKind, date
 }
 
 async function writePreparedReviewPush(scope: ReviewScope, kind: ReviewKind, dateKey: string, text: string) {
-  const file = preparedReviewPath(scope, kind, dateKey);
+  const file = await preparedReviewPath(scope, kind, dateKey);
   await mkdir(dirname(file), { recursive: true });
   const payload: PreparedReviewPush = {
     kind,
@@ -189,7 +210,7 @@ async function writePreparedReviewPush(scope: ReviewScope, kind: ReviewKind, dat
 async function shouldSkipFallbackDailyGeneration(kind: ReviewKind, scope: ReviewScope, dateKey: string, manualReason?: string) {
   if (kind !== "daily" || manualReason) return false;
   if (!hasWorkspace(scope.userId)) return false;
-  const schedules = readSchedules(scope.userId);
+  const schedules = await readScheduleConfig(scope);
   if (schedules.run_policy?.skip_automatic_if_manual_report_exists === false) return false;
   return hasExistingDailyReview(scope, dateKey);
 }
@@ -199,7 +220,10 @@ async function getScheduledPreparedDailyReview(scope: ReviewScope, dateKey: stri
   if (!row?.content) return null;
   const data = row.data && typeof row.data === "object" ? row.data as Record<string, unknown> : {};
   const context = data.context && typeof data.context === "object" ? data.context as Record<string, unknown> : {};
-  return context.source === "scheduled-acp" ? row.content : null;
+  return context.source === "scheduled-review"
+    || (ACTIVE_BACKEND !== "mastra" && context.source === "scheduled-acp")
+    ? row.content
+    : null;
 }
 
 function reviewPrepareTaskKey(kind: ReviewKind, scope: ReviewScope, dateKey: string) {
@@ -448,7 +472,7 @@ export async function startReviewScheduler(
     }
   }, 60 * 1000);
 
-  logger.info(`复盘调度器已启动(workspace schedules.yaml + DEFAULT 用户兜底 ${fallbackHour}:${String(fallbackMinute).padStart(2, "0")}; 提前预生成 ${REVIEW_PREPARE_LEAD_MINUTES}min)`);
+  logger.info(`复盘调度器已启动(${ACTIVE_BACKEND === "mastra" ? "service-owned preferences" : "Workspace schedules.yaml"} + DEFAULT 用户兜底 ${fallbackHour}:${String(fallbackMinute).padStart(2, "0")}; 提前预生成 ${REVIEW_PREPARE_LEAD_MINUTES}min)`);
 }
 
 export function stopReviewScheduler() {

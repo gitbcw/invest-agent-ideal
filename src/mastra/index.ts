@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./bindings.js";
 export * from "./model-gateway.js";
 export * from "./agent-factory.js";
+export * from "./workspace-registry.js";
 export * from "./run-turn.js";
 export * from "./result-adapter.js";
 export * from "./tools/index.js";

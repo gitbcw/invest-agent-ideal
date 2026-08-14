@@ -7,7 +7,7 @@ import { indicatorCapability } from "../services/indicators.js";
 import { callDeepSeek } from "../services/deepseek.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
-import { portfolioBackend, watchlistBackend, planBackend, isWorkspaceBackend } from "../lib/data-backend.js";
+import { portfolioBackend, watchlistBackend, planBackend, isWorkspaceBackend, ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { periodicReviewBackend, type PeriodicReviewKind } from "../lib/periodic-review-backend.js";
 import { reviewViewpointBackend } from "../lib/review-viewpoint-backend.js";
@@ -25,6 +25,7 @@ type ReviewKind = "daily" | "weekly" | "monthly";
 
 /** 把复盘产物同步到对应用户工作空间的 reports/<kind>/<key>.md。workspace 未初始化或写入失败都不抛错。 */
 async function mirrorReviewToWorkspace(userId: string, kind: ReviewKind, key: string, content: string): Promise<void> {
+  if (ACTIVE_BACKEND === "mastra") return;
   try {
     const wsRoot = resolveWorkspacePath(userId);
     if (!existsSync(join(wsRoot, "AGENTS.md"))) return;
@@ -1218,6 +1219,17 @@ export async function saveSkillPeriodicReview(input: {
   const { validateReportKey } = await import("../lib/periodic-review-backend.js");
   const keyError = validateReportKey(input.kind, input.reportKey);
   if (keyError) throw new Error(`saveSkillPeriodicReview rejected: ${keyError}`);
+
+  // Mastra runtime keeps the report service-owned; user-project publication is
+  // an explicit asset workflow rather than an implicit Workspace side effect.
+  if (ACTIVE_BACKEND === "mastra") {
+    const generatedAt = new Date().toISOString();
+    await periodicReviewBackend.upsert(userId, instanceId, {
+      kind: input.kind, reportKey: input.reportKey, generatedAt, summary: input.summary ?? null, content: input.content,
+      data: { source: "skill", savedAt: generatedAt, context: input.context ?? null },
+    });
+    return { kind: input.kind, reportKey: input.reportKey, filePath: `service-owned://reviews/${input.kind}/${input.reportKey}` };
+  }
 
   // R1: mirror 写失败不吞错（原 mirrorReviewToWorkspace 吞错，这里显式重写保证失败传播）
   const wsRoot = resolveWorkspacePath(userId);

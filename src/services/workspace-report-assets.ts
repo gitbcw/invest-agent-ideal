@@ -1,7 +1,7 @@
 import { realpath, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { resolveWorkspacePath } from "../lib/workspace.js";
+import { resolveProjectStorageRoot, ProjectStorageRootError } from "./project-storage-root.js";
 
 const REPORT_ROOT = "reports";
 const MIME_TYPES: Record<string, string> = {
@@ -23,7 +23,7 @@ export type WorkspaceReportAsset = {
 
 export class WorkspaceReportAssetError extends Error {
   constructor(
-    public readonly code: "REPORT_ASSET_INVALID_PATH" | "REPORT_ASSET_NOT_FOUND" | "REPORT_ASSET_UNSUPPORTED" | "REPORT_ASSET_TOO_LARGE",
+    public readonly code: "REPORT_ASSET_INVALID_PATH" | "REPORT_ASSET_NOT_FOUND" | "REPORT_ASSET_UNSUPPORTED" | "REPORT_ASSET_TOO_LARGE" | "REPORT_ASSET_SCOPE_UNAVAILABLE",
     message: string,
   ) {
     super(`${code}:${message}`);
@@ -38,10 +38,18 @@ export class WorkspaceReportAssetError extends Error {
  */
 export async function readWorkspaceReportAsset(input: {
   userId: string;
+  projectId?: string;
+  instanceId?: string;
   relativePath: string;
 }): Promise<WorkspaceReportAsset> {
   const relativePath = normalizeReportPath(input.relativePath);
-  const workspacePath = resolveWorkspacePath(input.userId);
+  let workspacePath: string;
+  try {
+    workspacePath = await resolveProjectStorageRoot(input);
+  } catch (error) {
+    if (error instanceof ProjectStorageRootError) throw new WorkspaceReportAssetError("REPORT_ASSET_SCOPE_UNAVAILABLE", error.message);
+    throw error;
+  }
   const reportsPath = path.join(workspacePath, REPORT_ROOT);
   const targetPath = path.resolve(workspacePath, relativePath);
 

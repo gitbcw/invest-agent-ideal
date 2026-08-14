@@ -55,7 +55,6 @@ export function buildMobilePrompt(params: {
     instanceExpansionPath?: string;
     workspacePath?: string;
   };
-  sandboxTokenFile?: string | null;
   sandboxPermissions?: string[];
 }) {
   const compactReviewContext = params.reviewContext;

@@ -3,8 +3,10 @@ import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises
 import path from "node:path";
 
 import { createRuntimeAgent } from "../runtime/agent.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
+import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
 import {
   appendConversationMessage,
   createConversationSession,
@@ -74,7 +76,10 @@ async function executeAgent(
   conversationId?: string,
   leaseToken?: string | null,
 ) {
-  await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
+  const workspaceRoot = ACTIVE_BACKEND === "mastra"
+    ? await resolveRegisteredMastraProjectRoot(scope)
+    : (await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId }), resolveWorkspacePath(scope.userId));
+  if (!workspaceRoot) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", "Mastra project is not registered");
   if (!task.sourceAsset || !task.workingAsset) throw new Error("AUTOMATION_ASSET_NOT_FOUND");
 
   // Never give the ACP process the canonical task directory. It gets a fresh
@@ -82,7 +87,6 @@ async function executeAgent(
   // can atomically commit the staged working file after ACP returns. This
   // makes source immutability and "working only" a service boundary instead
   // of a prompt-only convention.
-  const workspaceRoot = resolveWorkspacePath(scope.userId);
   const stagingPath = await mkdtemp(path.join(workspaceRoot, ".automation-run-"));
   const sourcePath = path.join(stagingPath, "source");
   const workingPath = path.join(stagingPath, "working");

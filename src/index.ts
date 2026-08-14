@@ -15,11 +15,18 @@ async function main() {
   logger.info("正在启动投资选股智能体...");
 
   const offlineMode = process.env.INVEST_AGENT_OFFLINE_MODE === "true";
+  // The local Mastra candidate can exercise the Portal protocol without
+  // enabling WeChat, scheduler, or push. This flag is intentionally opt-in.
+  const allowPortalConnectorInOfflineMode = process.env.INVEST_AGENT_PORTAL_CONNECTOR_IN_OFFLINE_MODE === "true";
   if (offlineMode) {
     process.env.WEIXIN_AUTO_START = "false";
-    process.env.PORTAL_CONNECTOR_AUTO_START = "false";
+    if (!allowPortalConnectorInOfflineMode) process.env.PORTAL_CONNECTOR_AUTO_START = "false";
     process.env.PLATFORM_WEIXIN_AUTO_START = "false";
-    logger.info("INVEST_AGENT_OFFLINE_MODE=true:已禁用微信恢复、Portal connector、Platform 微信 listener、scheduler 和 push queue worker,仅保留 HTTP 服务与本地路由。");
+    logger.info(
+      allowPortalConnectorInOfflineMode
+        ? "INVEST_AGENT_OFFLINE_MODE=true:已禁用微信恢复、Platform 微信 listener、scheduler 和 push queue worker；仅允许显式配置的本地 Portal connector。"
+        : "INVEST_AGENT_OFFLINE_MODE=true:已禁用微信恢复、Portal connector、Platform 微信 listener、scheduler 和 push queue worker,仅保留 HTTP 服务与本地路由。"
+    );
   }
 
   // 初始化数据库
@@ -48,7 +55,7 @@ async function main() {
     logger.info("OFFLINE 模式:跳过 scheduler 启动。");
   }
 
-  const portalConnector = offlineMode || process.env.PORTAL_CONNECTOR_AUTO_START === "false"
+  const portalConnector = (offlineMode && !allowPortalConnectorInOfflineMode) || process.env.PORTAL_CONNECTOR_AUTO_START === "false"
     ? null
     : startPortalConnector();
 

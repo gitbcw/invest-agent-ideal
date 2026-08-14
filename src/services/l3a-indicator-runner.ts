@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { CompositeIndicatorEngine, parseCompositeYaml, type CompositeIndicatorConfig } from "./composite-indicator-engine.js";
 import { analyzeIndicators, computeMA, computeMACD, computeRSI, computeKDJ } from "./indicators.js";
 import { logger } from "../lib/logger.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import type { StockKline } from "./market-types.js";
 
 export interface L3aTriggeredItem {
@@ -121,6 +122,12 @@ async function resolveWorkspacePath(): Promise<string> {
 }
 
 async function loadL3aConfigs(): Promise<CompositeIndicatorConfig[]> {
+  if (ACTIVE_BACKEND === "mastra") {
+    // User-authored indicator configs are project assets, not a service fact;
+    // until an explicit staging/publish contract exists, do not read legacy
+    // Workspace config or create one as a side effect.
+    return [];
+  }
   try {
     const workspacePath = await resolveWorkspacePath();
     const yamlPath = join(workspacePath, "config", "composite_indicators.yaml");

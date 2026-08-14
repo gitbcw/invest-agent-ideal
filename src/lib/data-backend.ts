@@ -1,9 +1,9 @@
 /**
  * 数据后端抽象层。
  *
- * 提供 SQLite 和 Workspace 两种后端的统一接口,通过环境变量 WORKSPACE_BACKEND 切换:
- *   - "sqlite"(默认):行为不变,读写 SQLite
- *   - "workspace":读写工作空间 yaml/jsonl
+ * 提供 SQLite、Workspace 和 Mastra 三种后端的统一接口,通过环境变量
+ * WORKSPACE_BACKEND 切换。迁移分支运行时默认使用 Mastra；Workspace 只在
+ * 显式设置时作为回滚/兼容 backend 使用。
  *
  * 工作包 4.1:portfolio 一条链路。
  * 工作包 4.2:扩展到 watchlist + plan。
@@ -29,11 +29,19 @@ import { sqliteWatchlistBackend } from "./sqlite-watchlist-backend.js";
 import { workspaceWatchlistBackend } from "./workspace-watchlist-backend.js";
 import { sqlitePlanBackend } from "./sqlite-plan-backend.js";
 import { workspacePlanBackend } from "./workspace-plan-backend.js";
+import { mastraPlanBackend, mastraPortfolioBackend, mastraWatchlistBackend } from "./mastra-portfolio-backend.js";
 
-export type BackendKind = "sqlite" | "workspace";
+export type BackendKind = "sqlite" | "workspace" | "mastra";
 
+const configuredBackend = process.env.WORKSPACE_BACKEND;
 export const ACTIVE_BACKEND: BackendKind =
-  process.env.WORKSPACE_BACKEND === "sqlite" ? "sqlite" : "workspace";
+  configuredBackend === "sqlite"
+    ? "sqlite"
+    : configuredBackend === "workspace"
+      ? "workspace"
+      : configuredBackend === "mastra"
+      ? "mastra"
+      : "mastra";
 
 export function isWorkspaceBackend(): boolean {
   return ACTIVE_BACKEND === "workspace";
@@ -85,6 +93,7 @@ export interface PortfolioBackend {
       name: string;
       buyDate?: string;
       costPrice?: number | null;
+      expectedRevision?: string | null;
     }
   ): Promise<PortfolioRow>;
   /** 标记为 closed(写入 sellPrice/sellDate) */
@@ -92,7 +101,8 @@ export interface PortfolioBackend {
     userId: string,
     instanceId: string,
     code: string,
-    sellPrice?: number
+    sellPrice?: number,
+    expectedRevision?: string | null
   ): Promise<PortfolioRow | null>;
   /** 记录交易动作(portfolio 模块同时落日志,sqlite→trade_actions 表,workspace→behavior_events.jsonl) */
   recordTradeAction(action: TradeActionRow): Promise<void>;
@@ -101,13 +111,13 @@ export interface PortfolioBackend {
 // ============ Backend 选择器 ============
 
 export const portfolioBackend: PortfolioBackend =
-  ACTIVE_BACKEND === "workspace" ? workspacePortfolioBackend : sqlitePortfolioBackend;
+  ACTIVE_BACKEND === "workspace" ? workspacePortfolioBackend : ACTIVE_BACKEND === "mastra" ? mastraPortfolioBackend : sqlitePortfolioBackend;
 
 export const watchlistBackend: WatchlistBackend =
-  ACTIVE_BACKEND === "workspace" ? workspaceWatchlistBackend : sqliteWatchlistBackend;
+  ACTIVE_BACKEND === "workspace" ? workspaceWatchlistBackend : ACTIVE_BACKEND === "mastra" ? mastraWatchlistBackend : sqliteWatchlistBackend;
 
 export const planBackend: PlanBackend =
-  ACTIVE_BACKEND === "workspace" ? workspacePlanBackend : sqlitePlanBackend;
+  ACTIVE_BACKEND === "workspace" ? workspacePlanBackend : ACTIVE_BACKEND === "mastra" ? mastraPlanBackend : sqlitePlanBackend;
 
 // ============ Watchlist ============
 
@@ -136,15 +146,16 @@ export interface WatchlistBackend {
       reason?: string;
       source?: string;
       addedAt?: string;
+      expectedRevision?: string | null;
     }
   ): Promise<WatchlistRow>;
   patch(
     userId: string,
     instanceId: string,
     code: string,
-    patch: { reason?: string; source?: string; name?: string }
+    patch: { reason?: string; source?: string; name?: string; expectedRevision?: string | null }
   ): Promise<WatchlistRow | null>;
-  remove(userId: string, instanceId: string, code: string): Promise<WatchlistRow | null>;
+  remove(userId: string, instanceId: string, code: string, expectedRevision?: string | null): Promise<WatchlistRow | null>;
 }
 
 // ============ StockPlan ============
@@ -187,7 +198,8 @@ export interface PlanBackend {
       linkedAlertRuleIds?: string[];
       planType?: string;
       strategyKey?: string | null;
+      expectedRevision?: string | null;
     }
   ): Promise<PlanRow>;
-  remove(userId: string, instanceId: string, code: string): Promise<PlanRow | null>;
+  remove(userId: string, instanceId: string, code: string, expectedRevision?: string | null): Promise<PlanRow | null>;
 }

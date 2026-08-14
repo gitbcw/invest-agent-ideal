@@ -16,7 +16,7 @@
  */
 
 import { and, desc, eq, gte, lte, type SQL } from "drizzle-orm";
-import { db } from "../db/index.js";
+import { db, sqlite } from "../db/index.js";
 import { reviewViewpoints } from "../db/schema.js";
 import { ensureWorkspace } from "./workspace.js";
 import { WorkspaceStore } from "./workspace-store.js";
@@ -383,10 +383,88 @@ export const workspaceReviewViewpointBackend: ReviewViewpointBackend = {
   },
 };
 
+/** Mastra ledger read adapter. An empty imported viewpoint set stays empty. */
+export const mastraReviewViewpointBackend: ReviewViewpointBackend = {
+  async replaceByDate(input) {
+    const now = new Date().toISOString();
+    const projectId = process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent";
+    return sqlite.transaction(() => {
+      sqlite.prepare("DELETE FROM mastra_review_memory_records WHERE user_id = ? AND project_id = ? AND instance_id = ? AND record_type = 'review_viewpoint_service_state' AND business_key LIKE ?").run(input.userId, projectId, input.instanceId, `${input.sourceDate}:%`);
+      const recordsOut: ReviewViewpointRecord[] = [];
+      for (const draft of input.viewpoints) {
+        const payload = { viewpoint_id: draft.viewpointId, source_date: input.sourceDate, view: draft.view, reason: draft.reason, action: draft.action, validation: draft.validation, expected_review_date: draft.expectedReviewDate, status: "open", resolution: null, resolved_at: null, invalidation_signals: draft.invalidationSignals ?? [], confidence: draft.confidence ?? "unknown", task_type: "daily_review", decision_type: "viewpoint", created_at: now, updated_at: now };
+        const recordId = `viewpoint-${input.userId}-${input.instanceId}-${input.sourceDate}-${draft.viewpointId}`;
+        sqlite.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(recordId, input.userId, projectId, input.instanceId, "review_viewpoint_service_state", `${input.sourceDate}:${draft.viewpointId}`, JSON.stringify(payload), "service-owned://review-viewpoints", `service:${now}`, "service-owned", now);
+        recordsOut.push(mastraViewpointFromPayload(payload, input.userId, input.instanceId, recordId)!);
+      }
+      return recordsOut;
+    })();
+  },
+  async resolve(input) {
+    const current = (await this.list(input.userId, input.instanceId, { sourceDateFrom: input.sourceDate, sourceDateTo: input.sourceDate })).find((row) => row.viewpointId === input.viewpointId);
+    if (!current) return null;
+    const now = new Date().toISOString();
+    const projectId = process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent";
+    const payload = { viewpoint_id: current.viewpointId, source_date: current.sourceDate, view: current.view, reason: current.reason, action: current.action, validation: current.validation, expected_review_date: current.expectedReviewDate, status: input.status, resolution: input.resolution ?? null, resolved_at: input.status === "pending" ? null : now, invalidation_signals: current.invalidationSignals, confidence: current.confidence, task_type: current.taskType, decision_type: current.decisionType, created_at: current.createdAt, updated_at: now };
+    sqlite.prepare("UPDATE mastra_review_memory_records SET payload_json = ?, source_checksum = ?, created_at = ? WHERE record_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND record_type = 'review_viewpoint_service_state'").run(JSON.stringify(payload), `service:${now}`, now, current.id, input.userId, projectId, input.instanceId);
+    return mastraViewpointFromPayload(payload, input.userId, input.instanceId, current.id);
+  },
+  async list(userId, instanceId, options) {
+    const rows = sqlite.prepare(
+      "SELECT record_id AS recordId, payload_json AS payloadJson FROM mastra_review_memory_records " +
+        "WHERE user_id = ? AND project_id = ? AND instance_id = ? AND record_type = 'review_viewpoint_service_state' " +
+        "ORDER BY created_at DESC, record_id DESC",
+    ).all(userId, process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent", instanceId) as Array<{ recordId: string; payloadJson: string }>;
+    const result: ReviewViewpointRecord[] = [];
+    for (const row of rows) {
+      try {
+        const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+        const parsed = mastraViewpointFromPayload(payload, userId, instanceId, row.recordId);
+        if (!parsed) continue;
+        if (options.status && parsed.status !== options.status) continue;
+        if (options.sourceDateFrom && parsed.sourceDate < options.sourceDateFrom) continue;
+        if (options.sourceDateTo && parsed.sourceDate > options.sourceDateTo) continue;
+        if (options.expectedReviewDateTo && parsed.expectedReviewDate > options.expectedReviewDateTo) continue;
+        result.push(parsed);
+      } catch {
+        // Invalid historical rows are not promoted into runtime state.
+      }
+    }
+    result.sort((a, b) => b.sourceDate.localeCompare(a.sourceDate) || b.viewpointId.localeCompare(a.viewpointId));
+    return options.limit ? result.slice(0, options.limit) : result;
+  },
+};
+
+function mastraViewpointFromPayload(payload: Record<string, unknown>, userId: string, instanceId: string, id: string): ReviewViewpointRecord | null {
+  const value = (key: string) => payload[key];
+  if (typeof value("viewpoint_id") !== "string" || typeof value("source_date") !== "string" || typeof value("view") !== "string") return null;
+  return {
+    id,
+    userId,
+    instanceId,
+    sourceDate: value("source_date") as string,
+    viewpointId: value("viewpoint_id") as string,
+    view: value("view") as string,
+    reason: typeof value("reason") === "string" ? value("reason") as string : "",
+    action: typeof value("action") === "string" ? value("action") as string : "",
+    validation: typeof value("validation") === "string" ? value("validation") as string : "",
+    expectedReviewDate: typeof value("expected_review_date") === "string" ? value("expected_review_date") as string : "",
+    status: value("status") === "validated" || value("status") === "invalidated" || value("status") === "pending" ? value("status") as ViewpointStatus : "open",
+    resolution: typeof value("resolution") === "string" ? value("resolution") as string : null,
+    resolvedAt: typeof value("resolved_at") === "string" ? value("resolved_at") as string : null,
+    invalidationSignals: Array.isArray(value("invalidation_signals")) ? value("invalidation_signals") as string[] : [],
+    confidence: value("confidence") === "low" || value("confidence") === "medium" || value("confidence") === "high" ? value("confidence") as "low" | "medium" | "high" : "unknown",
+    taskType: typeof value("task_type") === "string" ? value("task_type") as string : "daily_review",
+    decisionType: typeof value("decision_type") === "string" ? value("decision_type") as string : "viewpoint",
+    createdAt: typeof value("created_at") === "string" ? value("created_at") as string : "",
+    updatedAt: typeof value("updated_at") === "string" ? value("updated_at") as string : "",
+  };
+}
+
 // ============ 出口:由 WORKSPACE_BACKEND 选择 ============
 
 function selectBackend(kind: BackendKind): ReviewViewpointBackend {
-  return kind === "workspace" ? workspaceReviewViewpointBackend : sqliteReviewViewpointBackend;
+  return kind === "workspace" ? workspaceReviewViewpointBackend : kind === "mastra" ? mastraReviewViewpointBackend : sqliteReviewViewpointBackend;
 }
 
 export const reviewViewpointBackend: ReviewViewpointBackend = selectBackend(ACTIVE_BACKEND);

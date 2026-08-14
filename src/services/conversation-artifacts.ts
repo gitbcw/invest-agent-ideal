@@ -3,7 +3,6 @@ import { realpath, stat, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { sqlite } from "../db/index.js";
-import { resolveWorkspacePath } from "../lib/workspace.js";
 import { scanForUnsafeContent } from "./svg-sanitizer.js";
 import { recordArtifactEvent, recordArtifactLibraryListEvent } from "./artifact-events.js";
 import { withArtifactPathLock } from "./artifact-path-lock.js";
@@ -13,6 +12,7 @@ import { registerReportAssetMappingUnderScopeLock } from "./report-asset-mapping
 import { withResourceMutationLock } from "./resource-mutation-lock.js";
 import { scopeStorageLockKey } from "./user-storage-quota.js";
 import { validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
+import { resolveProjectStorageRoot } from "./project-storage-root.js";
 
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -431,7 +431,7 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
   const relativePath = source === "legacy_path"
     ? normalizeReportPath(input.relativePath)
     : normalizeArtifactPath(input.relativePath);
-  const workspacePath = resolveWorkspacePath(input.userId);
+  const workspacePath = await resolveProjectStorageRoot({ userId: input.userId, projectId: input.scope.projectId, instanceId: input.instanceId });
   const targetPath = path.resolve(workspacePath, relativePath);
 
   let realWorkspacePath: string;
@@ -738,7 +738,7 @@ export async function readConversationArtifactPayload(input: {
       throw new ConversationArtifactError("ARTIFACT_EXPIRED", input.artifactId);
     }
 
-    const workspacePath = resolveWorkspacePath(record.userId);
+    const workspacePath = await resolveProjectStorageRoot({ userId: record.userId, projectId: record.projectId, instanceId: record.instanceId });
     const relativePath = normalizeArtifactPath(record.relativePath);
     const targetPath = path.resolve(workspacePath, relativePath);
     let realWorkspacePath: string;
@@ -958,6 +958,7 @@ interface LibraryCursor {
  */
 export async function listCuratedArtifactLibrary(input: {
   userId: string;
+  projectId?: string;
   instanceId: string;
   cursor?: string;
   limit?: number;
@@ -965,7 +966,7 @@ export async function listCuratedArtifactLibrary(input: {
   const cursor = input.cursor && input.cursor.trim() ? decodeLibraryCursor(input.cursor.trim()) : undefined;
   const limit = normalizeLibraryLimit(input.limit);
 
-  const workspacePath = resolveWorkspacePath(input.userId);
+  const workspacePath = await resolveProjectStorageRoot({ userId: input.userId, projectId: input.projectId, instanceId: input.instanceId });
   const reportsPath = path.join(workspacePath, REPORT_ROOT);
   let realReportsPath: string;
   try {

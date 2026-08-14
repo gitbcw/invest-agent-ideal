@@ -5,6 +5,8 @@ import path from "node:path";
 import { sqlite } from "../db/index.js";
 import { isAshareTradingDay } from "../lib/market-calendar.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
+import { ACTIVE_BACKEND } from "../lib/data-backend.js";
+import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
 import { AutomationSpreadsheetValidationError, validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
 import {
   assetFormatForFileName,
@@ -622,7 +624,11 @@ export function assertAutomationScope(input: AutomationScope): AutomationScope {
 
 export async function createAutomationTask(input: CreateAutomationTaskInput): Promise<AutomationTaskRecord> {
   const scope = assertAutomationScope(input);
-  await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
+  if (ACTIVE_BACKEND === "mastra") {
+    await mastraWorkspaceRegistry.bootstrap(scope);
+  } else {
+    await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
+  }
   const name = normalizeTaskName(input.name);
   const description = normalizeDescription(input.description);
   const schedule = normalizeAutomationSchedule(input.schedule);
@@ -2811,7 +2817,14 @@ function defaultRetryable(category: AutomationErrorCategory | null, status: Auto
 }
 
 function workspacePathForScope(scope: AutomationScope): string {
-  try { return resolveWorkspacePath(scope.userId); } catch (error) {
+  try {
+    if (ACTIVE_BACKEND === "mastra") {
+      const registered = mastraWorkspaceRegistry.registeredPath(scope);
+      if (!registered) throw new Error("Mastra project is not registered");
+      return registered;
+    }
+    return resolveWorkspacePath(scope.userId);
+  } catch (error) {
     throw new AutomationTaskError("AUTOMATION_INVALID_SCOPE", (error as Error).message);
   }
 }

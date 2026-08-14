@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { sqlite } from "../db/index.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
+import { resolveProjectStorageRoot } from "./project-storage-root.js";
 import { logger } from "../lib/logger.js";
 import { ATTACHMENT_RETENTION_DAYS, type StoredAttachment } from "../lib/attachment-store.js";
 import { recordFileLifecycleEvent } from "./file-lifecycle-audit.js";
@@ -28,6 +29,7 @@ export type AttachmentDeletionReason = "expired" | "user_deleted" | "missing" | 
 export interface RegisteredAttachmentRecord {
   attachmentId: string;
   userId: string;
+  projectId: string;
   instanceId: string;
   conversationId: string;
   messageId?: string | null;
@@ -53,6 +55,7 @@ export interface RegisteredAttachmentRecord {
  */
 export function registerAttachment(input: {
   userId: string;
+  projectId?: string;
   instanceId: string;
   conversationId: string;
   messageId?: string | null;
@@ -64,10 +67,10 @@ export function registerAttachment(input: {
   sqlite
     .prepare(
       `INSERT INTO conversation_attachments (
-         attachment_id, user_id, instance_id, conversation_id, message_id,
+         attachment_id, user_id, project_id, instance_id, conversation_id, message_id,
          source, kind, mime_type, file_name, relative_path, size_bytes,
          checksum, retention_class, stored_at, expires_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'transient_upload', ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'transient_upload', ?, ?, ?)
        ON CONFLICT(attachment_id) DO UPDATE SET
          conversation_id = excluded.conversation_id,
          message_id = COALESCE(excluded.message_id, conversation_attachments.message_id),
@@ -85,6 +88,7 @@ export function registerAttachment(input: {
     .run(
       input.stored.id,
       input.userId,
+      input.projectId ?? "invest-agent",
       input.instanceId,
       input.conversationId,
       input.messageId ?? null,
@@ -102,6 +106,7 @@ export function registerAttachment(input: {
   return {
     attachmentId: input.stored.id,
     userId: input.userId,
+    projectId: input.projectId ?? "invest-agent",
     instanceId: input.instanceId,
     conversationId: input.conversationId,
     messageId: input.messageId ?? null,
@@ -135,6 +140,7 @@ export function bindAttachmentMessage(input: {
 export interface AttachmentReadResult {
   attachmentId: string;
   userId: string;
+  projectId: string;
   instanceId: string;
   conversationId: string;
   source: "portal" | "weixin";
@@ -152,6 +158,7 @@ export interface AttachmentReadResult {
 export function findAttachmentRecord(input: {
   attachmentId: string;
   userId: string;
+  projectId?: string;
   instanceId: string;
 }): AttachmentReadResult | undefined {
   const row = sqlite
@@ -159,6 +166,7 @@ export function findAttachmentRecord(input: {
       `SELECT
          attachment_id AS attachmentId,
          user_id AS userId,
+         project_id AS projectId,
          instance_id AS instanceId,
          conversation_id AS conversationId,
          source,
@@ -179,7 +187,7 @@ export function findAttachmentRecord(input: {
     | (Omit<AttachmentReadResult, "status"> & { deletedAt: string | null; deleteReason: string | null })
     | undefined;
   if (!row) return undefined;
-  if (row.userId !== input.userId || row.instanceId !== input.instanceId) return undefined;
+  if (row.userId !== input.userId || row.projectId !== (input.projectId ?? "invest-agent") || row.instanceId !== input.instanceId) return undefined;
   let status: AttachmentReadResult["status"] = "active";
   if (row.deletedAt) status = row.deleteReason === "expired" ? "expired" : "deleted";
   else if (new Date(row.expiresAt).getTime() <= Date.now()) status = "expired";
@@ -190,13 +198,14 @@ export function findAttachmentRecord(input: {
 export async function readAttachmentBytes(input: {
   attachmentId: string;
   userId: string;
+  projectId?: string;
   instanceId: string;
 }): Promise<{ bytes: Buffer; record: AttachmentReadResult }> {
   const record = findAttachmentRecord(input);
   if (!record) throw new AttachmentRetentionError("ATTACHMENT_NOT_FOUND", input.attachmentId);
   if (record.status === "deleted") throw new AttachmentRetentionError("ATTACHMENT_DELETED", input.attachmentId);
   if (record.status === "expired") throw new AttachmentRetentionError("ATTACHMENT_EXPIRED", input.attachmentId);
-  const workspacePath = resolveWorkspacePath(record.userId);
+  const workspacePath = await resolveProjectStorageRoot({ userId: record.userId, projectId: record.projectId, instanceId: record.instanceId });
   const attachmentsRoot = path.join(workspacePath, "attachments");
   const targetPath = path.resolve(workspacePath, record.relativePath);
   let realRoot: string;
@@ -257,6 +266,7 @@ export async function cleanupExpiredAttachments(input: {
       `SELECT
          attachment_id AS attachmentId,
          user_id AS userId,
+         project_id AS projectId,
          instance_id AS instanceId,
          relative_path AS relativePath,
          size_bytes AS sizeBytes,
@@ -269,6 +279,7 @@ export async function cleanupExpiredAttachments(input: {
     .all(nowIso, limit) as Array<{
       attachmentId: string;
       userId: string;
+      projectId: string;
       instanceId: string;
       relativePath: string;
       sizeBytes: number;
@@ -287,6 +298,8 @@ export async function cleanupExpiredAttachments(input: {
     bucket.scanned += 1;
     const outcome = await deleteAttachmentBytes({
       userId: row.userId,
+      projectId: row.projectId,
+      instanceId: row.instanceId,
       relativePath: row.relativePath,
       dryRun: input.dryRun,
     });
@@ -333,10 +346,12 @@ export async function cleanupExpiredAttachments(input: {
 
 async function deleteAttachmentBytes(input: {
   userId: string;
+  projectId?: string;
+  instanceId?: string;
   relativePath: string;
   dryRun?: boolean;
 }): Promise<"deleted" | "missing" | "error"> {
-  const workspacePath = resolveWorkspacePath(input.userId);
+  const workspacePath = await resolveProjectStorageRoot({ userId: input.userId, projectId: input.projectId, instanceId: input.instanceId });
   const attachmentsRoot = path.join(workspacePath, "attachments");
   const targetPath = path.resolve(workspacePath, input.relativePath);
   let realRoot: string;
