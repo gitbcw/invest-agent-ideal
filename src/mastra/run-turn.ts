@@ -221,26 +221,33 @@ function resolveTimestamp(value: unknown, fallback: string): string {
 
 function mapOneToolCall(value: unknown, fallbackStartedAt: string): MastraToolCallSummary | undefined {
   if (!isRecord(value)) return undefined;
-  const toolCallId = stringValue(value.toolCallId) ?? stringValue(value.id);
+  // Mastra >= 1.5x aggregates and stream chunks wrap the data in a `payload`
+  // object ({ type: 'tool-call' | 'tool-result', payload: {...} }); read
+  // through it when present so both shapes map to the same summary.
+  const payload = isRecord(value.payload) ? value.payload : undefined;
+  const source = payload ?? value;
+  const toolCallId = stringValue(source.toolCallId) ?? stringValue(source.id);
   if (!toolCallId) return undefined;
-  const startedAt = resolveTimestamp(value.startedAt ?? value.startTime ?? value.timestamp, fallbackStartedAt);
-  const completedAtValue = value.completedAt ?? value.endTime ?? value.finishedAt;
+  const startedAt = resolveTimestamp(source.startedAt ?? value.startedAt ?? source.startTime ?? source.timestamp ?? value.timestamp, fallbackStartedAt);
+  const completedAtValue = source.completedAt ?? value.completedAt ?? source.endTime ?? value.endTime ?? source.finishedAt;
   const completedAt = completedAtValue === undefined ? undefined : resolveTimestamp(completedAtValue, fallbackStartedAt);
-  const elapsedMs = asFiniteInt(value.elapsedMs) ?? (
+  const elapsedMs = asFiniteInt(source.elapsedMs ?? value.elapsedMs) ?? (
     completedAt && Date.parse(completedAt) >= Date.parse(startedAt)
       ? Date.parse(completedAt) - Date.parse(startedAt)
       : undefined
   );
-  const input = value.input ?? value.args ?? value.arguments ?? value.rawInput;
-  const output = value.output ?? value.result ?? value.rawOutput;
+  const input = source.input ?? source.args ?? source.arguments ?? source.rawInput;
+  const output = source.output ?? source.result ?? source.rawOutput;
+  const status = stringValue(value.status)
+    ?? (source.isError === true ? "error" : source.isError === false ? "success" : undefined);
   return {
     source: "mastra-event",
     toolCallId,
-    serverId: stringValue(value.serverId),
-    toolName: stringValue(value.toolName) ?? stringValue(value.name),
-    title: stringValue(value.title),
-    kind: stringValue(value.kind),
-    status: stringValue(value.status),
+    serverId: stringValue(source.serverId ?? value.serverId),
+    toolName: stringValue(source.toolName) ?? stringValue(source.name),
+    title: stringValue(source.title ?? value.title),
+    kind: stringValue(source.kind ?? value.kind),
+    status,
     startedAt,
     ...(completedAt ? { completedAt } : {}),
     ...(elapsedMs !== undefined ? { elapsedMs } : {}),
@@ -257,6 +264,49 @@ export function mapMastraToolCalls(value: unknown, now = new Date()): MastraTool
     .map((call) => mapOneToolCall(call, fallbackStartedAt))
     .filter((call): call is MastraToolCallSummary => call !== undefined);
   return mapped.length > 0 ? mapped : undefined;
+}
+
+/**
+ * Merge the aggregate `toolCalls` and `toolResults` of a Mastra model output
+ * into one terminal-state summary per toolCallId: the call chunk contributes
+ * the tool name and input size, the result chunk contributes the output size,
+ * isError-derived status and completion time. Results without a matching call
+ * (e.g. dynamic tools) are kept as standalone summaries.
+ */
+export function mergeMastraToolCallsAndResults(calls: unknown, results: unknown, now = new Date()): MastraToolCallSummary[] | undefined {
+  const fallbackStartedAt = now.toISOString();
+  const byId = new Map<string, MastraToolCallSummary>();
+  for (const call of Array.isArray(calls) ? calls : []) {
+    const mapped = mapOneToolCall(call, fallbackStartedAt);
+    if (mapped) byId.set(mapped.toolCallId, mapped);
+  }
+  for (const result of Array.isArray(results) ? results : []) {
+    const mapped = mapOneToolCall(result, fallbackStartedAt);
+    if (!mapped) continue;
+    // Mastra aggregate chunks carry no timestamps; a present result IS the
+    // terminal state, so stamp completion at merge time.
+    const stamped = mapped.status !== undefined && mapped.completedAt === undefined
+      ? { ...mapped, completedAt: fallbackStartedAt }
+      : mapped;
+    const existing = byId.get(stamped.toolCallId);
+    if (!existing) {
+      byId.set(stamped.toolCallId, stamped);
+      continue;
+    }
+    byId.set(stamped.toolCallId, {
+      ...existing,
+      toolName: existing.toolName ?? stamped.toolName,
+      title: existing.title ?? stamped.title,
+      kind: existing.kind ?? stamped.kind,
+      status: stamped.status ?? existing.status,
+      completedAt: stamped.completedAt ?? existing.completedAt,
+      elapsedMs: stamped.elapsedMs ?? existing.elapsedMs,
+      inputChars: existing.inputChars ?? stamped.inputChars,
+      outputChars: stamped.outputChars ?? existing.outputChars,
+    });
+  }
+  const merged = [...byId.values()];
+  return merged.length > 0 ? merged : undefined;
 }
 
 /** Compatibility alias for the application-level mapper name. */
@@ -320,7 +370,8 @@ async function collectStream(value: unknown): Promise<{ text: string; usage?: un
           ? errorValue
           : new Error(typeof errorValue === "string" ? errorValue : "Mastra provider stream error");
       }
-      if (type.includes("tool-call") || type.includes("tool_call")) {
+      if (type.includes("tool-call") || type.includes("tool_call")
+        || type === "tool-result" || type.startsWith("tool-input") || type.startsWith("tool-output")) {
         const payload = isRecord(chunk.payload) ? chunk.payload : chunk;
         toolCalls.push(payload);
       }
@@ -336,6 +387,7 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
   text: string;
   usage?: unknown;
   toolCalls?: unknown;
+  toolResults?: unknown;
   model?: string;
 }> {
   const output = await outputValue;
@@ -347,6 +399,7 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
   const text = typeof directText === "string" ? directText : collected.text;
   const usage = directRecord ? await awaitValue(directRecord.usage) : undefined;
   const toolCalls = directRecord ? await awaitValue(directRecord.toolCalls) : undefined;
+  const toolResults = directRecord ? await awaitValue(directRecord.toolResults) : undefined;
   const response = directRecord ? await awaitValue(directRecord.response) : undefined;
   const model = directRecord
     ? stringValue(directRecord.modelId)
@@ -356,6 +409,7 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
     text,
     usage: usage ?? collected.usage,
     toolCalls: toolCalls ?? (collected.toolCalls.length > 0 ? collected.toolCalls : undefined),
+    toolResults,
     model,
   };
 }
@@ -492,7 +546,8 @@ export async function runMastraTurn(
     outputCollectMs = Math.max(0, Date.now() - outputStartedAtMs);
     const text = mapped.text.trim();
     if (!text) throw new MastraEmptyResponseError(conversationId);
-    const toolCalls = mapMastraToolCalls(mapped.toolCalls, new Date(startedAtMs));
+    const toolCalls = mergeMastraToolCallsAndResults(mapped.toolCalls, mapped.toolResults, new Date(startedAtMs))
+      ?? mapMastraToolCalls(mapped.toolCalls, new Date(startedAtMs));
     const model = mapped.model ?? params.model ?? gateway?.defaultModel;
     return {
       text,
