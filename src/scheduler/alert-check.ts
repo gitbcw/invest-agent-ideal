@@ -5,7 +5,6 @@ import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { planBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
-import { ensureWorkspace } from "../lib/workspace.js";
 import { WorkspaceStore, type RiskLevel } from "../lib/workspace-store.js";
 import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { MastraUserPreferenceStore } from "../services/user-preferences.js";
@@ -590,7 +589,6 @@ function shouldPushAlert(alert: AlertItem, policy: MarketWatchPolicy): boolean {
 //   - suffix 可能是单段(stop-loss)、双段(price:up)、或带参数前缀(target-price:12.5)
 //   - 查表顺序:精确 suffix → 前缀(去掉末段冒号后) → 默认值
 //   - 价格异动达到 escalation 阈值时,suffix 自动加 ":extreme"
-//   - yaml 不可用时走 HARDWIRED_PRIORITY_MAP 硬编码默认值,保持现有行为
 
 const HARDWIRED_PRIORITY_MAP: Record<string, RiskLevel> = {
   "stop-loss": "P0",
@@ -637,67 +635,20 @@ interface PriorityConfig {
   escalationThreshold: number;
 }
 
+// 信号优先级是 service-owned 产品常量（D19，2026-08-14）：原 workspace
+// risk_taxonomy.yaml 读取路径在 mastra 模式下恒走硬编码默认值，属死路径，
+// 已删除；调整优先级映射时直接修改本文件常量。
+const SERVICE_PRIORITY_CONFIG: PriorityConfig = {
+  overrides: HARDWIRED_PRIORITY_MAP,
+  defaultPriority: "P2",
+  escalationThreshold: HARDWIRED_ESCALATION_THRESHOLD,
+};
+
 let cachedPriorityConfig: PriorityConfig | null = null;
-let priorityWorkspaceInitialized = false;
 
 async function loadPriorityConfig(): Promise<PriorityConfig> {
-  if (cachedPriorityConfig) return cachedPriorityConfig;
-
-  if (process.env.USE_YAML_CONFIG !== "true") {
-    cachedPriorityConfig = {
-      overrides: HARDWIRED_PRIORITY_MAP,
-      defaultPriority: "P2",
-      escalationThreshold: HARDWIRED_ESCALATION_THRESHOLD,
-    };
-    return cachedPriorityConfig;
-  }
-
-  try {
-    if (ACTIVE_BACKEND === "mastra") {
-      cachedPriorityConfig = {
-        overrides: HARDWIRED_PRIORITY_MAP,
-        defaultPriority: "P2",
-        escalationThreshold: HARDWIRED_ESCALATION_THRESHOLD,
-      };
-      return cachedPriorityConfig;
-    }
-    if (!priorityWorkspaceInitialized) {
-      await ensureWorkspace({ userId: DEFAULT_USER_ID });
-      priorityWorkspaceInitialized = true;
-    }
-    const store = new WorkspaceStore(DEFAULT_USER_ID);
-    const yaml = await store.readRiskTaxonomy();
-    const sp = yaml?.signal_priority;
-    if (!sp) {
-      logger.warn("USE_YAML_CONFIG=true 但 risk_taxonomy.yaml 缺 signal_priority,使用硬编码默认值");
-      cachedPriorityConfig = {
-        overrides: HARDWIRED_PRIORITY_MAP,
-        defaultPriority: "P2",
-        escalationThreshold: HARDWIRED_ESCALATION_THRESHOLD,
-      };
-      return cachedPriorityConfig;
-    }
-    cachedPriorityConfig = {
-      overrides: sp.overrides ?? {},
-      defaultPriority: sp.default ?? "P2",
-      escalationThreshold:
-        typeof sp.price_escalation_threshold_percent === "number"
-          ? sp.price_escalation_threshold_percent
-          : HARDWIRED_ESCALATION_THRESHOLD,
-    };
-    logger.info(
-      `signal_priority 配置从 yaml 加载: overrides<${Object.keys(cachedPriorityConfig.overrides).length}> default<${cachedPriorityConfig.defaultPriority}> escalation<${cachedPriorityConfig.escalationThreshold}%>`
-    );
-    return cachedPriorityConfig;
-  } catch (error) {
-    logger.warn(`signal_priority 配置读取失败,使用默认值: ${(error as Error).message}`);
-    cachedPriorityConfig = {
-      overrides: HARDWIRED_PRIORITY_MAP,
-      defaultPriority: "P2",
-      escalationThreshold: HARDWIRED_ESCALATION_THRESHOLD,
-    };
-    return cachedPriorityConfig;
-  }
+  cachedPriorityConfig ??= SERVICE_PRIORITY_CONFIG;
+  return cachedPriorityConfig;
 }
 
 /**
