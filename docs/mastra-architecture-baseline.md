@@ -207,6 +207,7 @@ db/         schema + drizzle
 | D21 | 数据层收敛定稿（2026-08-14 议程 6 核对，agent 按最优判断落地）：T1 backend 接口化收拢（28 文件实测，portfolio/watchlist/plans 已示范，验收 = ACTIVE_BACKEND 仅存 lib/）；T2 投影维持单行 + 兄弟键显性契约；T3 表命名不改（迁移成本 > 一致性收益）；T4 已随 D16 消解；T5 挂工程项。**workspace 回滚后端拆除时机：保留至真实数据迁移验证 + H1 验收通过后独立清理（convergence scan 防回潮）**；G23 修为 run-turn 事件捕获、G22/G23 均 H1 前工程项。逐层核对议程 1-8 全部走完，转工程项执行期 |
 | D22 | 工程执行轮记录（2026-08-14）：E1/E3/E5/E6 已实施并各有 commit+测试证据（npm test 460/460）。**E2 全量收隆重定界为 H1 后独立提交系列**——两个 mastra 根解析器（resolveRegisteredMastraProjectRoot 返回 undefined vs resolveProjectStorageRoot 抛错）失败语义不同、各站点 workspace 回退细节各异，H1 前硬推属拿回归风险换可读性；本轮仅随 E3 落地 alert-check 增量。D20 清单执行修正：/investment-state 为 admin 持仓总览（非画像消费）保留；投影键剔除保守跳过与 StrategyYaml 同名的 allocation/notes/markets（来源不可区分，防数据丢失）。G22 落地形态为"工具结果+prompt 双重交付指引"，消息内资产卡片受 artifact 路径白名单限制留 E9 |
 | D23 | **交互复用边界**（2026-08-15 用户裁决，G22 四轮收敛的产物）：重构主战场是 runtime；Portal 交互层是已实现资产**直接复用不重设计**。新 runtime 能力必须优先映射到既有交互契约（artifact 卡片/文件面板/自动化工作区/资产库）；本质需要新交互面才新增 UI 且须显式立项（先例 D15 onboarding）。G22 前两轮在门户端自创链接交付属越界（已撤销、门户恢复与正式仓字节对齐，仅剩 onboarding 增量）；校验手段 `diff -rq` 正式仓 src vs apps/portal/src。**补充（同日）**：架构驱动的交互演进是预期例外——为承接新 runtime 能力（按回合模型选择等）会有受控交互改变，首个在途实例为模型选择器（正式仓 WIP `local/ea43db2`/`4dd6d0d`，model 经 conversation.chat 透传；runtime model-gateway 已就绪），此类改变走"立项→合正式仓→导入候选"路径。落稿 [adr-mastra-runtime-portal-monorepo.md](./adr-mastra-runtime-portal-monorepo.md) 交互复用边界节 |
+| D24 | **开销统计重建**（2026-08-15 用户提出，仅记录待规划）：ACP 时代开销统计一直不准；换内核后须重建配套，含按不同模型计费。现状事实：token 用量已准（`usage_source=actual`，thought/缓存读分离），但 `agent_traces.cost_amount/cost_currency` 系统性为 null（网关不回传费用、无计价表），平台 admin 费用视图（`admin/platform-ui/owner/view-cost.ts`）依赖该字段。规划范围（待展开）：按模型计价表 → 从实际 usage 计算费用落 trace → 平台费用视图聚合。挂 E10 |
 
 ## 12. 逐层核对议程（建议顺序）
 
@@ -232,5 +233,6 @@ db/         schema + drizzle
 | E6 | G23 trace tool_calls 事件捕获修复 | §8 | ✅ 已实施（Mastra≥1.5x payload 包装形状解包 + toolCalls/toolResults 聚合合并出终态；4 测试证据） |
 | E7 | runtime 进 apps/ 物理迁移 | T5 | ⏸ 低优先 |
 | E8 | workspace 回滚后端拆除 | D21/§4 | ⏸ 真实数据迁移验证 + H1 后 |
-| E9 | G21 Portal 巡检/调度可见性管理面 | §6 | ⏸ 后续 Portal 设计 |
+| E9 | G21 Portal 巡检/调度可见性管理面 | §6 | ⏸ 后续 Portal 设计（按 D23 须显式立项） |
+| E10 | **开销统计配套（按模型计费）** | D24 | ⏸ 待规划（用户提出，2026-08-15） |
 | — | **Gate H1 本地最终体验验收** | 长工作包 | **E5/E6 前置已满足，可约验收** |
