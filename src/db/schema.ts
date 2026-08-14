@@ -1010,6 +1010,8 @@ export const automationTasks = sqliteTable("automation_tasks", {
   userId: text("user_id").notNull(),
   projectId: text("project_id").notNull(),
   instanceId: text("instance_id").notNull(),
+  /** Registered scheduled task type (e.g. scheduled-daily-review); null for plain generic tasks. */
+  taskType: text("task_type"),
   status: text("status").notNull().default("paused"),
   currentRevision: integer("current_revision").notNull().default(1),
   currentRevisionId: text("current_revision_id"),

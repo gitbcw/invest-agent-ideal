@@ -25,3 +25,4 @@ eval-reports/
 __pycache__/
 *.pyc
 *.pyo
+.sandbox-profiles/

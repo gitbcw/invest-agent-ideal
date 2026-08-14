@@ -67,11 +67,12 @@ test("unknown or missing context fails closed", async () => {
 
 test("registry has schema parity with current service classification", () => {
   const ids = new Set(TOOL_SPECS.map((spec) => spec.id));
-  assert.equal(ids.size, 49);
+  assert.equal(ids.size, 44);
   assert.deepEqual([...ids].sort(), Object.keys(SERVICE_TOOL_CLASSIFICATION).sort());
   assert.ok(ids.has("assets.version.commit"));
   assert.ok(ids.has("automation.create"));
   assert.ok(ids.has("research.web_read"));
+  assert.ok(ids.has("spreadsheet.create"));
   const portfolio = TOOL_SPECS.find((spec) => spec.id === "portfolio.apply_changes")!;
   assert.ok(z.object(portfolio.inputSchema).safeParse({}).success === false);
 });
@@ -99,7 +100,7 @@ test("Mastra map is constructed through the official createTool binding", async 
     Agent: class { stream() { throw new Error("not used"); } },
     createTool: (options) => { created.push(options); return options; },
   });
-  assert.equal(Object.keys(tools).length, 49);
-  assert.equal(created.length, 49);
+  assert.equal(Object.keys(tools).length, 44);
+  assert.equal(created.length, 44);
   assert.equal(created[0].id, "market_watch.snapshot");
 });

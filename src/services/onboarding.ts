@@ -271,10 +271,15 @@ export async function prepareMastraOnboardingDraftCommit(input: {
   };
   const nextState = await applyOnboardingDraftCommit({ store, steps: input.steps, now: input.now });
   const now = input.now || new Date().toISOString();
+  // Product decision (2026-08-14): a user who finishes onboarding is schedulable.
+  // Migrated targets keep their imported activation until explicitly changed.
+  const schedulerActivation = nextState.status === "completed"
+    ? "enabled"
+    : preferences.schedulerActivation || "disabled_until_target_cold_start_and_explicit_enable";
   const nextPreferences = {
     ...preferences, schedules, notification, watch, onboardingState: nextState,
     sourceRevision: now,
-    schedulerActivation: preferences.schedulerActivation || "disabled_until_target_cold_start_and_explicit_enable",
+    schedulerActivation,
   };
   return {
     state: nextState,
@@ -299,6 +304,94 @@ export async function applyMastraOnboardingDraftCommit(input: {
   const prepared = await prepareMastraOnboardingDraftCommit(input);
   sqlite.transaction(() => prepared.persist())();
   return prepared.state;
+}
+
+/**
+ * Open a service-owned in-memory onboarding store for the Mastra backend.
+ *
+ * Unlike prepareMastraOnboardingDraftCommit (which requires imported
+ * projections for migrated users), reads fall back to the same empty defaults
+ * a fresh WorkspaceStore would return, so brand-new users can confirm
+ * onboarding before any projection row exists. persist() upserts every
+ * touched projection; the caller owns the wrapping SQLite transaction.
+ * appendChangeLog is a no-op because durable audit goes through the
+ * service-owned sandbox audit table, not a workspace JSONL file.
+ */
+export function openMastraOnboardingStore(input: {
+  userId: string;
+  instanceId: string;
+  projectId?: string;
+}): { store: any; persist(): void } {
+  const projectId = input.projectId || process.env.MASTRA_PROJECT_ID?.trim() || DEFAULT_PROJECT_ID;
+  const parse = (raw: string | undefined, label: string): Record<string, any> => {
+    try {
+      const value = JSON.parse(raw || "{}");
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
+      return value;
+    } catch (error) {
+      throw new OnboardingContractError(`MASTRA_PROJECTION_INVALID: ${label}: ${(error as Error).message}`, 500);
+    }
+  };
+  const portfolioRow = sqlite.prepare("SELECT portfolio_json AS value FROM mastra_portfolio_states WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
+    .get(input.userId, projectId, input.instanceId) as { value?: string } | undefined;
+  const profileRow = sqlite.prepare("SELECT profile_json AS value FROM mastra_project_profiles WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
+    .get(input.userId, projectId, input.instanceId) as { value?: string } | undefined;
+  const preferenceRow = sqlite.prepare("SELECT preferences_json AS value FROM mastra_runtime_preferences WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
+    .get(input.userId, projectId, input.instanceId) as { value?: string } | undefined;
+  let portfolio = (portfolioRow ? parse(portfolioRow.value, "portfolio") : { holdings: [], watchlist: [], accounts: [] }) as PortfolioYaml;
+  let strategy = (profileRow ? parse(profileRow.value, "strategy") : {}) as StrategyYaml;
+  const preferences = preferenceRow ? parse(preferenceRow.value, "runtime preferences") : {};
+  let schedules = (preferences.schedules && typeof preferences.schedules === "object" ? preferences.schedules : {}) as SchedulesYaml;
+  let notification = (preferences.notification && typeof preferences.notification === "object" ? preferences.notification : {}) as NotificationYaml;
+  let watch = (preferences.watch && typeof preferences.watch === "object" ? preferences.watch : {}) as Record<string, unknown>;
+  let state = normalizeOnboardingState(preferences.onboardingState as OnboardingStateYaml | null);
+  const store: any = {
+    readPortfolio: async () => portfolio, writePortfolio: async (value: PortfolioYaml) => { portfolio = value; },
+    readStrategy: async () => strategy, writeStrategy: async (value: StrategyYaml) => { strategy = value; },
+    readSchedules: async () => schedules, writeSchedules: async (value: SchedulesYaml) => { schedules = value; },
+    readNotification: async () => notification, writeNotification: async (value: NotificationYaml) => { notification = value; },
+    readWatch: async () => watch, writeWatch: async (value: Record<string, unknown>) => { watch = value; },
+    readOnboardingState: async () => state, writeOnboardingState: async (value: OnboardingStateYaml) => { state = value; },
+    appendChangeLog: async () => undefined,
+  };
+  return {
+    store,
+    persist() {
+      const now = new Date().toISOString();
+      const upsertOwnedState = (table: string, valueColumn: string, valueJson: string) => {
+        const exists = sqlite.prepare(`SELECT 1 AS one FROM ${table} WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1`)
+          .get(input.userId, projectId, input.instanceId);
+        if (exists) {
+          sqlite.prepare(`UPDATE ${table} SET ${valueColumn}=?, source_path=COALESCE(source_path,'service-owned://onboarding'), source_checksum=COALESCE(source_checksum,?), source_revision=?, migration_batch_id=?, updated_at=? WHERE user_id=? AND project_id=? AND instance_id=?`)
+            .run(valueJson, `service:${now}`, now, "service-owned", now, input.userId, projectId, input.instanceId);
+        } else {
+          sqlite.prepare(`INSERT INTO ${table} (user_id,project_id,instance_id,${valueColumn},source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+            .run(input.userId, projectId, input.instanceId, valueJson, "service-owned://onboarding", `service:${now}`, now, "service-owned", now, now);
+        }
+      };
+      upsertOwnedState("mastra_portfolio_states", "portfolio_json", JSON.stringify(portfolio));
+      upsertOwnedState("mastra_project_profiles", "profile_json", JSON.stringify(strategy));
+      // Product decision (2026-08-14): a user who finishes onboarding is schedulable.
+      // Migrated targets keep their imported activation until explicitly changed.
+      const schedulerActivation = state.status === "completed"
+        ? "enabled"
+        : preferences.schedulerActivation || "disabled_until_target_cold_start_and_explicit_enable";
+      const nextPreferences = {
+        ...preferences, schedules, notification, watch, onboardingState: state,
+        sourceRevision: now,
+        schedulerActivation,
+      };
+      const preferenceExists = sqlite.prepare("SELECT 1 AS one FROM mastra_runtime_preferences WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
+        .get(input.userId, projectId, input.instanceId);
+      if (preferenceExists) {
+        sqlite.prepare("UPDATE mastra_runtime_preferences SET preferences_json=?, source_revision=?, migration_batch_id=?, updated_at=? WHERE user_id=? AND project_id=? AND instance_id=?")
+          .run(JSON.stringify(nextPreferences), now, "service-owned", now, input.userId, projectId, input.instanceId);
+      } else {
+        sqlite.prepare("INSERT INTO mastra_runtime_preferences (user_id,project_id,instance_id,preferences_json,source_checksums_json,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
+          .run(input.userId, projectId, input.instanceId, JSON.stringify(nextPreferences), "{}", now, "service-owned", now, now);
+      }
+    },
+  };
 }
 
 /**

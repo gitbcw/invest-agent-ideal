@@ -211,6 +211,62 @@ export async function createServer() {
     return { alerts };
   });
 
+  // O1 onboarding wizard completion: silently apply the default usage mode for
+  // scopes that own no typed scheduled tasks, and return the notify copy the
+  // Portal wizard shows in step 4.
+  app.post<{ Body: { userId?: string; projectId?: string; instanceId?: string; strategyPackId?: string; portfolioText?: string } }>(
+    "/api/onboarding/wizard/complete",
+    async (request, reply) => {
+      const { userId, projectId, instanceId, strategyPackId, portfolioText } = request.body ?? {};
+      if (!userId) return reply.status(400).send({ ok: false, error: "userId is required" });
+      if (ACTIVE_BACKEND !== "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_ONLY" });
+      const project = await ensureDefaultProjectForUser(userId);
+      const scope = { userId, projectId: projectId || project.projectId, instanceId: instanceId || project.instanceId };
+      // Deterministic parse of pasted portfolio lines (name + 6-digit code).
+      // Screenshot/image recognition stays with the model in conversation.
+      let portfolioDraft: { parsed: number } | null = null;
+      if (typeof portfolioText === "string" && portfolioText.trim().length > 0) {
+        const holdings = portfolioText
+          .split(/\n+/)
+          .map((line) => {
+            const code = line.match(/\b\d{6}\b/)?.[0];
+            const name = line.replace(/\b\d{6}\b/, "").replace(/成本.*|,|，|\t/g, " ").trim();
+            return code && name ? { name, code } : null;
+          })
+          .filter((item): item is { name: string; code: string } => item !== null);
+        if (holdings.length > 0) {
+          const { upsertOnboardingDraftStep } = await import("./services/onboarding-drafts.js");
+          await upsertOnboardingDraftStep({ ...scope, conversationId: `wizard:${userId}` }, { step: "portfolio", payload: { holdings } });
+          portfolioDraft = { parsed: holdings.length };
+        }
+      }
+      const { ensureDefaultUsageMode, applyStrategyPack } = await import("./services/presets.js");
+      let strategyPack: { presetId: string; applied: string[] } | null = null;
+      if (strategyPackId) {
+        const pack = await applyStrategyPack(scope, strategyPackId);
+        strategyPack = { presetId: pack.presetId, applied: pack.applied };
+      }
+      const applied = await ensureDefaultUsageMode(scope);
+      const parts: string[] = [];
+      if (strategyPack) {
+        parts.push(strategyPack.applied.length > 0
+          ? `已应用策略包（新增 ${strategyPack.applied.length} 条策略）`
+          : "策略包中的策略已存在，未重复写入");
+      }
+      parts.push(applied
+        ? "已为你启用默认配置：交易日收盘复盘 + 盘中只推例外。可随时在任务页调整或关闭。"
+        : "已保留你现有的任务配置，未做更改。");
+      return {
+        ok: true,
+        appliedDefault: Boolean(applied),
+        preset: applied ? { id: applied.presetId, version: applied.presetVersion } : null,
+        strategyPack,
+        portfolioDraft,
+        message: parts.join("。"),
+      };
+    },
+  );
+
   // Simple local chat endpoint.
   app.post<{ Body: { message: string; userId?: string; workspacePath?: string; channel?: "weixin-mobile" | "api" } }>(
     "/api/chat",

@@ -41,7 +41,8 @@ test("Mastra onboarding draft commit updates all imported projections without Wo
     assert.equal(strategy.profile.style, "价值投资");
     assert.equal(preferences.notification.preference.mode, "active_watch");
     assert.equal(preferences.onboardingState.status, "completed");
-    assert.equal(preferences.schedulerActivation, "disabled_until_target_cold_start_and_explicit_enable");
+    // Product decision (2026-08-14): finishing onboarding makes the scope schedulable.
+    assert.equal(preferences.schedulerActivation, "enabled");
     const { insertValidatedWatchRule, validateWatchRule } = await import("../src/services/watch-rules.js");
     const ruleInput = { userId: "alice", instanceId: "instance-a", stockCode: "600036", stockName: "招商银行", ruleType: "price_cross" as const, targetScope: "holding" as const, params: { operator: ">=", value: 50 }, source: { kind: "onboarding_draft", onboarding_draft_commit_key: "draft:1", onboarding_draft_rule_index: 0 } };
     const validated = await validateWatchRule(ruleInput);

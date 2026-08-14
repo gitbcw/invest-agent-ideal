@@ -1,10 +1,9 @@
-import { db } from "../db/index.js";
+import { db, sqlite } from "../db/index.js";
 import { alertEvents } from "../db/schema.js";
 import { settings } from "../db/schema.js";
 import { eq, desc, gte, lte, and } from "drizzle-orm";
 import type { MarketSourceMeta, StockKline, StockQuote } from "../services/market-types.js";
 import { indicatorCapability } from "../services/indicators.js";
-import { callDeepSeek } from "../services/deepseek.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { portfolioBackend, watchlistBackend, planBackend, isWorkspaceBackend, ACTIVE_BACKEND } from "../lib/data-backend.js";
@@ -948,8 +947,109 @@ async function getDailyReviewCoverage(userId: string, instanceId: string, startD
  * 读 memory/behavior_events.jsonl,按时间范围筛,按 event_type 聚合计数 + 最近 30 条 action_confirmed 详情。
  * agent 看 detail 自行识别追高/频繁短线/规则外请求模式(代码不做"模式识别",信任 agent)。
  *
- * sqlite 模式无 behavior_events 返回 available=false,agent 在报告里说明"数据缺失"。
+ * mastra 模式从 service-owned 数据源聚合(见 collectMastraBehaviorStats);sqlite 模式无
+ * behavior_events 返回 available=false,agent 在报告里说明"数据缺失"。
  */
+/**
+ * Mastra 模式的行为纠偏统计,与 workspace 的 behavior_events 聚合语义对齐:
+ * - action_confirmed 来自 mastra_review_memory_records 的 service_event 记录
+ *   (portfolioBackend.recordTradeAction 写入,payload 带 event_type=action_confirmed;
+ *   reviews.save 的 decision/source 记录没有该标记,天然被排除)。
+ * - wechat_conversation_turn 对应 chat_history 的 user 行(rememberConversationTurn
+ *   在 mastra 下每轮写 user+assistant 两行,按 user 行计数即轮次数)。
+ * - out_of_scope_query 目前两个 backend 都没有写入方,计数恒为 0。
+ */
+function collectMastraBehaviorStats(
+  userId: string,
+  instanceId: string,
+  startDate: string,
+  endDate: string,
+): {
+  available: boolean;
+  rangeStart: string;
+  rangeEnd: string;
+  actionConfirmedCount: number;
+  conversationTurnCount: number;
+  outOfScopeCount: number;
+  recentActions: Array<{
+    occurred_at: string;
+    code: string | null;
+    action: string | null;
+    price: number | null;
+    quantity: number | null;
+  }>;
+} {
+  const degraded = () => ({
+    available: false,
+    rangeStart: startDate,
+    rangeEnd: endDate,
+    actionConfirmedCount: 0,
+    conversationTurnCount: 0,
+    outOfScopeCount: 0,
+    recentActions: [] as Array<{
+      occurred_at: string;
+      code: string | null;
+      action: string | null;
+      price: number | null;
+      quantity: number | null;
+    }>,
+  });
+  try {
+    const projectId = process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent";
+    const rows = sqlite.prepare(
+      "SELECT payload_json AS payloadJson, created_at AS rowCreatedAt FROM mastra_review_memory_records WHERE user_id=? AND project_id=? AND instance_id=? AND record_type='service_event' ORDER BY created_at ASC",
+    ).all(userId, projectId, instanceId) as Array<{ payloadJson: string; rowCreatedAt: string }>;
+    type ActionPayload = {
+      event_type?: string;
+      createdAt?: string;
+      code?: string;
+      action?: string;
+      price?: number | null;
+      quantity?: number | null;
+    };
+    const actionConfirmed: Array<ActionPayload & { rowCreatedAt: string }> = [];
+    for (const row of rows) {
+      let payload: ActionPayload;
+      try {
+        payload = JSON.parse(row.payloadJson) as ActionPayload;
+      } catch {
+        continue;
+      }
+      if (!payload || typeof payload !== "object" || payload.event_type !== "action_confirmed") continue;
+      const occurredAt = payload.createdAt ?? row.rowCreatedAt;
+      if (!occurredAt) continue;
+      const date = occurredAt.slice(0, 10);
+      if (date < startDate || date > endDate) continue;
+      actionConfirmed.push({ ...payload, rowCreatedAt: occurredAt });
+    }
+    // Order by business time (payload createdAt), not ledger insert time: the
+    // ledger rows can share one insert timestamp when several actions land in
+    // the same millisecond, and workspace parity is append≈business order.
+    actionConfirmed.sort((a, b) => (a.rowCreatedAt < b.rowCreatedAt ? -1 : a.rowCreatedAt > b.rowCreatedAt ? 1 : 0));
+    const turnRow = sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM chat_history WHERE user_id=? AND instance_id=? AND role='user' AND substr(created_at,1,10) >= ? AND substr(created_at,1,10) <= ?",
+    ).get(userId, instanceId, startDate, endDate) as { count: number };
+    return {
+      available: true,
+      rangeStart: startDate,
+      rangeEnd: endDate,
+      actionConfirmedCount: actionConfirmed.length,
+      conversationTurnCount: turnRow.count,
+      outOfScopeCount: 0,
+      recentActions: actionConfirmed.slice(-30).map((payload) => ({
+        occurred_at: payload.rowCreatedAt,
+        code: payload.code ?? null,
+        action: payload.action ?? null,
+        price: payload.price ?? null,
+        quantity: payload.quantity ?? null,
+      })),
+    };
+  } catch (err) {
+    logger.warn(`collectBehaviorStats(mastra) 失败,降级为 available=false: ${err}`);
+    return degraded();
+  }
+}
+
 async function collectBehaviorStats(
   userId: string,
   instanceId: string,
@@ -971,6 +1071,9 @@ async function collectBehaviorStats(
     quantity: number | null;
   }>;
 }> {
+  if (ACTIVE_BACKEND === "mastra") {
+    return collectMastraBehaviorStats(userId, instanceId, startDate, endDate);
+  }
   if (!isWorkspaceBackend()) {
     return {
       available: false,
@@ -1381,32 +1484,6 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
     ? `\n用户自定义要求：${template.customInstructions}`
     : "";
 
-  const aiPrompt = `请根据以下数据生成投资复盘总结，必须使用适合微信阅读的 Markdown；可以使用分段、列表和重点加粗，但不要机械套用复杂表格。
-
-大盘指数：${marketIndexLines.join("、")}
-持仓/自选股：${stockDescriptions.join("\n")}
-信息面（新闻/研报/公告）：${infoFilterText}
-今日提醒：${todayAlerts.length > 0 ? todayAlerts.map(a => `[${severityToPriorityLabel(a.severity)}] ${a.stockName} ${a.message}`).join("；") : "无"}
-明日预案草案：${planItems.map(p => `${p.name} 支撑${p.support ?? "-"} 压力${p.resistance ?? "-"}`).join("；")}
-
-要求：
-1. 先总结今日市场整体表现（基于大盘指数数据）
-2. 逐个简要分析持仓和自选股表现，结合信息面（如有重大公告、新闻或研报调整）
-3. 信息面数据来自公开渠道，注意区分事实（公告）和观点（新闻/研报）
-4. 列出明日关注要点,并按以下 6 大风险类别自检(无则跳过,不要编造):
-   - portfolio:单一标的/行业集中度、现金安全垫、核心/非核心/观察仓角色漂移
-   - market_structure:流动性、风格切换、相关性、估值分位
-   - asset_specific:基本面、财报质量、治理监管、停牌退市信用
-   - product_specific:ETF 跟踪误差、基金清盘、可转债强赎溢价、港股通汇率、商品联动
-   - behavior:追高、频繁查询、临时改规则、忽略安全垫、单日涨跌改变长期判断
-   - data_quality:行情延迟、财报缺失、新闻未核验、来源冲突
-5. 提醒按 P0(需确认)→P1(关注)→P2(沉淀)顺序回应;P0 必须明确建议操作或不操作的依据
-6. 事实、推断、建议分开表达，不要编造数据
-7. 数据来源、时效、置信度和缺失项必须显式保留；新闻/研报未核验时只能作为 secondary 线索
-8. 主力控盘如无确定性数据源，只在最后的数据限制中说明，不作为核心判断
-9. 不构成投资建议${focusBlock}${customBlock}`;
-
-  const aiAnalysis = await safeAi(aiPrompt, "deep");
   const planData: DailyPlanData = { date: today, generatedAt, items: planItems };
   const previousOpenViewpoints = await getOpenReviewViewpoints(userId, instanceId, today);
 
@@ -1466,7 +1543,7 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
     if (todayAlerts.length > 0) {
       parts.push(...formatDailyAlertsByPriority(todayAlerts));
     }
-    parts.push("【AI 分析】", aiAnalysis, "");
+    parts.push("【AI 分析】本复盘由确定性回退路径生成，仅包含事实整理；完整分析请使用对话复盘（Agent 路径）。", "");
   }
 
   const viewpointBacktestTable = buildViewpointBacktestTable(previousOpenViewpoints);
@@ -1547,35 +1624,6 @@ export async function generateWeeklyReview(options: { userId?: string; instanceI
     }
   }
 
-  // AI 周度分析
-  const aiPrompt = `请根据以下自选股本周表现，生成周度复盘。
-
-本周数据 (${weekStartStr} ~ ${weekEndStr})：
-${weeklyData.join("\n")}
-
-本周提醒事件：
-${formatAlertSummary(weekAlerts)}
-
-本周观点追踪回测：
-${viewpointSummaryText}
-
-要求：
-1. 总结本周市场整体走势
-2. 逐个分析自选股本周表现
-3. 根据提醒事件评估信号质量，区分命中、误报、待验证;P0(需确认)事件必须在分析中明确回应
-4. 根据结构化观点追踪统计，指出本周判断质量、误判来源和仍需验证的观点
-5. 提出下周关注方向,按以下 6 大风险类别自检(无则跳过,不要编造):
-   - portfolio:单一标的/行业集中度、现金安全垫、核心/非核心/观察仓角色漂移
-   - market_structure:流动性、风格切换、相关性、估值分位
-   - asset_specific:基本面、财报质量、治理监管、停牌退市信用
-   - product_specific:ETF 跟踪误差、基金清盘、可转债强赎溢价、港股通汇率、商品联动
-   - behavior:追高、频繁查询、临时改规则、忽略安全垫、单日涨跌改变长期判断
-   - data_quality:行情延迟、财报缺失、新闻未核验、来源冲突
-6. 明确主力控盘等直接数据当前缺失
-7. 不构成投资建议`;
-
-  const aiAnalysis = await safeAi(aiPrompt, "deep");
-
   const md = [
     `# ${weekStartStr} ~ ${weekEndStr} 周复盘`,
     "",
@@ -1595,12 +1643,8 @@ ${viewpointSummaryText}
     "",
     viewpointSummaryText,
     "",
-    "## AI 周度分析",
-    "",
-    aiAnalysis,
-    "",
     "---",
-    "*本复盘由 AI 生成，仅供参考，不构成投资建议*",
+    "*本复盘由确定性回退路径生成，仅供参考，不构成投资建议*",
   ].join("\n");
 
   writeFileSync(filePath, md, "utf-8");
@@ -1873,26 +1917,6 @@ export async function buildPlanSuggestions(
   }
 
   return sections.length > 0 ? sections.join("\n") : "";
-}
-
-async function safeAi(prompt: string, profile: "light" | "deep" = "light"): Promise<string> {
-  try {
-    return await callDeepSeek(prompt, undefined, [], {
-      profile,
-      thinking: profile === "deep",
-      reasoningEffort: "high",
-      maxTokens: profile === "deep" ? 4000 : 2000,
-    });
-  } catch (error) {
-    logger.warn(`AI 复盘不可用: ${(error as Error).message}`);
-    return [
-      "AI 分析暂时不可用。",
-      "",
-      "事实：系统已完成行情、自选股、持仓和预案草案整理。",
-      "推断：由于模型调用失败，无法生成更深入的行业或基本面分析。",
-      "建议：请先人工检查明日预案中的支撑位、压力位和风险点。",
-    ].join("\n");
-  }
 }
 
 export interface ReviewTemplateToolInput {

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import ExcelJS from "exceljs";
-import { db } from "../db/index.js";
+import { db, sqlite } from "../db/index.js";
 import { alertRules, conversationArtifacts, conversationMessages, mastraProjectProfiles, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
 import {
   publishConversationArtifact,
@@ -61,6 +61,7 @@ import {
   applyConfirmedOnboardingStep,
   isOnboardingStep as isSharedOnboardingStep,
   normalizeOnboardingState as normalizeSharedOnboardingState,
+  openMastraOnboardingStore,
   validateOnboardingStepPayload,
 } from "../services/onboarding.js";
 import {
@@ -150,7 +151,7 @@ export async function callServiceTool(
       ? await withResourceMutationLock(context, resourceKeys, () => dispatchServiceTool(name, input, context))
       : await dispatchServiceTool(name, input, context);
   } catch (error) {
-    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || DIRECT_AUTOMATION_OPERATIONS.has(name) || name === "confirmations.request" || name === "onboarding.complete_watch_setup" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read" || name.startsWith("assets.")) {
+    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || DIRECT_AUTOMATION_OPERATIONS.has(name) || name === "confirmations.request" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read" || name.startsWith("assets.")) {
       await audit(context, {
         operation: name,
         resourceType: "service_tool",
@@ -409,24 +410,12 @@ async function dispatchServiceTool(
       return applyPortfolioChanges(input, context);
     case "onboarding.confirm_portfolio":
       return confirmOnboardingPortfolio(input, context);
-    case "onboarding.confirm_step":
-      return confirmOnboardingStep(input, context);
-    case "onboarding.complete_watch_setup":
-      return completeOnboardingWatchSetup(input, context);
     case "onboarding.draft.get":
       return readOnboardingDraft(context);
     case "onboarding.draft.upsert_step":
       return upsertOnboardingDraft(input, context);
     case "onboarding.draft.request_confirmation":
       return requestOnboardingDraftStepConfirmation(input, context);
-    case "onboarding.draft.accept_step":
-      return acceptOnboardingDraft(input, context);
-    case "onboarding.draft.skip_watch_rules":
-      return skipOnboardingDraftRules(input, context);
-    case "onboarding.draft.enqueue_commit":
-      return enqueueOnboardingDraft(input, context);
-    case "onboarding.draft.commit_status":
-      return readOnboardingDraft(context);
     case "watchlist.add":
       return addWatchlist(input, context);
     case "plans.set":
@@ -1046,7 +1035,6 @@ async function readPendingConfirmations(input: Record<string, unknown> | undefin
 }
 
 async function confirmOnboardingPortfolio(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  if (ACTIVE_BACKEND === "mastra") throw new Error("MASTRA_ONBOARDING_WRITE_NOT_READY: onboarding portfolio transaction still requires service-owned multi-domain commit");
   const confirmation = await prepareBoundConfirmation(input, context, "onboarding.confirm_portfolio");
   const holdingInputs = normalizeOnboardingAssetList(input?.holdings);
   const watchInputs = normalizeOnboardingAssetList(input?.watchlist);
@@ -1060,7 +1048,10 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
   }
 
   const now = new Date().toISOString();
-  const store = new WorkspaceStore(context.userId);
+  const mastra = ACTIVE_BACKEND === "mastra"
+    ? openMastraOnboardingStore({ userId: context.userId, instanceId: context.instanceId, projectId: context.projectId })
+    : null;
+  const store: any = mastra?.store ?? new WorkspaceStore(context.userId);
   const portfolio = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
   const holdings = Array.isArray(portfolio.holdings) ? [...portfolio.holdings] : [];
   const watchItems = Array.isArray(portfolio.watchlist) ? [...portfolio.watchlist] : [];
@@ -1124,6 +1115,7 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
     notes: stringInput(input?.notes) ?? state.notes ?? "",
   };
   await store.writeOnboardingState(nextState);
+  if (mastra) sqlite.transaction(() => mastra.persist())();
   await store.appendChangeLog({
     ts: now,
     source: "mcp",
@@ -1143,14 +1135,16 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
     requestBody: input,
     resultSummary: `confirmed portfolio holdings=${holdingInputs.length}; watchlist=${watchInputs.length}; current=style`,
   });
-  const publication = await publishWorkspaceArtifacts(
-    context,
-    [
-      { relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" },
-      { relativePath: "config/onboarding_state.yaml", kind: "data", title: "初始配置状态" },
-    ],
-    "onboarding.confirm_portfolio",
-  );
+  const publication: WorkspaceArtifactPublication = isWorkspaceBackend()
+    ? await publishWorkspaceArtifacts(
+      context,
+      [
+        { relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" },
+        { relativePath: "config/onboarding_state.yaml", kind: "data", title: "初始配置状态" },
+      ],
+      "onboarding.confirm_portfolio",
+    )
+    : { artifacts: [], failures: [] };
   return {
     ok: true,
     userId: context.userId,
@@ -1166,10 +1160,6 @@ const DRAFT_OPERATIONS = new Set([
   "onboarding.draft.get",
   "onboarding.draft.upsert_step",
   "onboarding.draft.request_confirmation",
-  "onboarding.draft.accept_step",
-  "onboarding.draft.skip_watch_rules",
-  "onboarding.draft.enqueue_commit",
-  "onboarding.draft.commit_status",
 ]);
 
 const DIRECT_AUTOMATION_OPERATIONS = new Set([
@@ -1243,211 +1233,10 @@ async function requestOnboardingDraftStepConfirmation(input: Record<string, unkn
   return { ok: true, userId: context.userId, instanceId: context.instanceId, ...requested };
 }
 
-async function acceptOnboardingDraft(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  requireConfirmed(input);
-  const scope = requireDraftConversation(context);
-  const confirmationId = stringInput(input?.confirmationId);
-  const draftId = stringInput(input?.draftId);
-  if (!confirmationId) throw new Error("confirmationId is required after requesting confirmation");
-  if (!draftId) throw new Error("draftId is required");
-  const draft = await acceptOnboardingDraftStep(scope, {
-    draftId,
-    step: draftStep(input),
-    revision: Number(input?.revision),
-    confirmationId,
-    sandbox: mcpSandboxContext(context, `mcp-onboarding-draft-accept:${Date.now()}`),
-  });
-  await audit(context, {
-    operation: "onboarding.draft.accept_step",
-    resourceType: "onboarding_draft_step",
-    resourceId: `${draft.id}:${String(input?.step)}:${Number(input?.revision)}`,
-    requestBody: input,
-    resultSummary: `draft step accepted; status=${draft.status}; next=${draft.nextStep}`,
-  });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, draft, readyToCommit: draft.status === "ready_to_commit" };
-}
 
-async function skipOnboardingDraftRules(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  const scope = requireDraftConversation(context);
-  const draftId = stringInput(input?.draftId);
-  if (!draftId) throw new Error("draftId is required");
-  const draft = await skipOnboardingDraftWatchRules(scope, { draftId });
-  await audit(context, {
-    operation: "onboarding.draft.skip_watch_rules",
-    resourceType: "onboarding_draft_step",
-    resourceId: `${draft.id}:watch_rules:${draft.revision}`,
-    requestBody: input,
-    resultSummary: `draft watch rules skipped; status=${draft.status}`,
-  });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, draft, readyToCommit: true };
-}
 
-async function enqueueOnboardingDraft(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  const scope = requireDraftConversation(context);
-  const draftId = stringInput(input?.draftId);
-  if (!draftId) throw new Error("draftId is required");
-  const draft = await enqueueOnboardingDraftCommit(scope, draftId);
-  await audit(context, {
-    operation: "onboarding.draft.enqueue_commit",
-    resourceType: "onboarding_draft",
-    resourceId: draft.id,
-    requestBody: input,
-    resultSummary: `draft commit queued key=${draft.commitKey ?? "-"}`,
-  });
-  return { ok: true, userId: context.userId, instanceId: context.instanceId, draft, message: "信息已全部确认，正在统一完成初始配置。" };
-}
 
-async function confirmOnboardingStep(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  if (ACTIVE_BACKEND === "mastra") throw new Error("MASTRA_ONBOARDING_WRITE_NOT_READY: onboarding step transaction still requires service-owned multi-domain commit");
-  const step = stringInput(input?.step);
-  if (!isSharedOnboardingStep(step)) throw new Error(`非法 onboarding step: ${String(step ?? "")}`);
-  const confirmation = await prepareBoundConfirmation(input, context, "onboarding.confirm_step");
-  const now = new Date().toISOString();
-  const store = new WorkspaceStore(context.userId);
-  const nextState = await applyConfirmedOnboardingStep({ store, step, body: input ?? {}, now });
-  await store.appendChangeLog({
-    ts: now,
-    source: "mcp",
-    type: `onboarding_${step}_confirmed`,
-    summary: stringInput(input?.summary) || `用户确认 onboarding 步骤: ${step}`,
-    details: { step, status: nextState.status, current_step: nextState.current_step },
-  });
-  await confirmation.consume();
-  await audit(context, {
-    operation: "onboarding.confirm_step",
-    resourceType: "onboarding_state",
-    resourceId: step,
-    requestBody: input,
-    resultSummary: `confirmed ${step}; status=${nextState.status}`,
-  });
-  const publication = await publishWorkspaceArtifacts(context, onboardingArtifactSpecs(step), "onboarding.confirm_step");
-  return {
-    ok: true,
-    userId: context.userId,
-    instanceId: context.instanceId,
-    state: nextState,
-    message: nextState.status === "completed" ? "新手引导已完成" : `已确认 ${step}`,
-    ...artifactPublicationFields(publication),
-  };
-}
 
-async function completeOnboardingWatchSetup(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  if (ACTIVE_BACKEND === "mastra") throw new Error("MASTRA_ONBOARDING_WRITE_NOT_READY: onboarding watch setup transaction still requires service-owned multi-domain commit");
-  const branch = stringInput(input?.branch);
-  if (branch !== "skip" && branch !== "configured") throw new Error("branch must be skip or configured");
-  if (!context.conversationId) throw new Error("conversationId is required to complete onboarding watch setup");
-
-  const store = new WorkspaceStore(context.userId);
-  const current = normalizeSharedOnboardingState(await store.readOnboardingState());
-  if (current.status === "completed") {
-    return { ok: true, userId: context.userId, instanceId: context.instanceId, state: current, branch, ruleIds: [] };
-  }
-  if (current.current_step !== "watch_rules") {
-    throw new Error(`watch setup can only complete from current_step=watch_rules; current=${current.current_step}`);
-  }
-
-  const pendingRuleDrafts = await db.select().from(pendingSandboxConfirmations).where(and(
-    eq(pendingSandboxConfirmations.userId, context.userId),
-    eq(pendingSandboxConfirmations.instanceId, context.instanceId),
-    eq(pendingSandboxConfirmations.conversationId, context.conversationId),
-    eq(pendingSandboxConfirmations.operation, "watch_rules.create"),
-    eq(pendingSandboxConfirmations.status, "pending")
-  ));
-  const activePending = pendingRuleDrafts.filter((row) => new Date(row.expiresAt).getTime() > Date.now());
-  if (activePending.length > 0) throw new Error("仍有待确认的明确规则草案，不能结束初始配置");
-  const expiredDraftIds = pendingRuleDrafts.filter((row) => new Date(row.expiresAt).getTime() <= Date.now()).map((row) => row.id);
-  if (expiredDraftIds.length > 0) {
-    await db.update(pendingSandboxConfirmations).set({
-      status: "expired",
-      updatedAt: new Date().toISOString(),
-    }).where(inArray(pendingSandboxConfirmations.id, expiredDraftIds));
-  }
-
-  let ruleIds: number[] = [];
-  if (branch === "skip") {
-    const [latestUserMessage] = await db.select({ content: conversationMessages.content })
-      .from(conversationMessages)
-      .where(and(
-        eq(conversationMessages.userId, context.userId),
-        eq(conversationMessages.instanceId, context.instanceId),
-        eq(conversationMessages.conversationId, context.conversationId),
-        eq(conversationMessages.role, "user")
-      ))
-      .orderBy(desc(conversationMessages.createdAt))
-      .limit(1);
-    if (!isExplicitWatchSetupSkipText(latestUserMessage?.content ?? "")) {
-      throw new Error("skip branch requires the latest user message to explicitly skip watch-rule setup");
-    }
-  } else {
-    ruleIds = normalizePositiveIds(input?.ruleIds);
-    if (ruleIds.length === 0) throw new Error("configured branch requires at least one ruleId");
-    const scopedRules = await db.select({ id: alertRules.id }).from(alertRules).where(and(
-      eq(alertRules.userId, context.userId),
-      eq(alertRules.instanceId, context.instanceId),
-      inArray(alertRules.id, ruleIds)
-    ));
-    const scopedIds = new Set(scopedRules.map((row) => row.id));
-    const missingRules = ruleIds.filter((id) => !scopedIds.has(id));
-    if (missingRules.length > 0) throw new Error(`configured watch rules are missing or out of scope: ${missingRules.join(",")}`);
-
-    const creationAudits = await db.select({ resourceId: sandboxAuditLogs.resourceId }).from(sandboxAuditLogs).where(and(
-      eq(sandboxAuditLogs.userId, context.userId),
-      eq(sandboxAuditLogs.instanceId, context.instanceId),
-      eq(sandboxAuditLogs.conversationId, context.conversationId),
-      eq(sandboxAuditLogs.operation, "watch_rules.create"),
-      eq(sandboxAuditLogs.status, "success"),
-      inArray(sandboxAuditLogs.resourceId, ruleIds.map(String))
-    ));
-    const auditedIds = new Set(creationAudits.map((row) => Number(row.resourceId)));
-    const unauditedRules = ruleIds.filter((id) => !auditedIds.has(id));
-    if (unauditedRules.length > 0) throw new Error(`configured watch rules lack confirmed creation audit: ${unauditedRules.join(",")}`);
-  }
-
-  const now = new Date().toISOString();
-  const nextState = await applyConfirmedOnboardingStep({
-    store,
-    step: "watch_rules",
-    body: {
-      summary: stringInput(input?.summary) || (branch === "skip" ? "用户暂不设置明确规则" : `已确认并创建 ${ruleIds.length} 条明确规则`),
-    },
-    now,
-  });
-  await db.update(pendingSandboxConfirmations).set({
-    status: "superseded",
-    updatedAt: now,
-  }).where(and(
-    eq(pendingSandboxConfirmations.userId, context.userId),
-    eq(pendingSandboxConfirmations.instanceId, context.instanceId),
-    eq(pendingSandboxConfirmations.conversationId, context.conversationId),
-    eq(pendingSandboxConfirmations.operation, "onboarding.confirm_step"),
-    eq(pendingSandboxConfirmations.resourceId, "watch_rules"),
-    eq(pendingSandboxConfirmations.status, "pending")
-  ));
-  await store.appendChangeLog({
-    ts: now,
-    source: "mcp",
-    type: "onboarding_watch_setup_completed",
-    summary: stringInput(input?.summary) || (branch === "skip" ? "用户暂不设置明确规则" : `已创建并核对 ${ruleIds.length} 条明确规则`),
-    details: { branch, rule_ids: ruleIds, status: nextState.status },
-  });
-  await audit(context, {
-    operation: "onboarding.complete_watch_setup",
-    resourceType: "onboarding_state",
-    resourceId: "watch_rules",
-    requestBody: { branch, ruleIds, summary: input?.summary },
-    resultSummary: `completed watch setup branch=${branch}; rules=${ruleIds.length}`,
-  });
-  const publication = await publishWorkspaceArtifacts(context, onboardingArtifactSpecs("watch_rules"), "onboarding.complete_watch_setup");
-  return {
-    ok: true,
-    userId: context.userId,
-    instanceId: context.instanceId,
-    state: nextState,
-    branch,
-    ruleIds,
-    ...artifactPublicationFields(publication),
-  };
-}
 
 async function addWatchlist(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "watchlist.add");
@@ -1761,10 +1550,21 @@ async function readMastraStrategyProjection(context: ServiceToolContext): Promis
 async function writeMastraStrategyProjection(context: ServiceToolContext, strategy: StrategyYaml): Promise<void> {
   const now = new Date().toISOString();
   const projectId = context.projectId || DEFAULT_PROJECT_ID;
-  const payload = JSON.stringify(strategy);
   const existing = await db.select().from(mastraProjectProfiles).where(and(
     eq(mastraProjectProfiles.userId, context.userId), eq(mastraProjectProfiles.projectId, projectId), eq(mastraProjectProfiles.instanceId, context.instanceId),
   )).limit(1);
+  // Merge with the raw existing payload so sibling projection domains stored
+  // in the same row (for example tradingStrategies) survive strategy writes.
+  let base: Record<string, unknown> = {};
+  if (existing[0]) {
+    try {
+      const parsed = JSON.parse(existing[0].profileJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) base = parsed;
+    } catch {
+      // Invalid existing payload: replace wholesale instead of failing the write.
+    }
+  }
+  const payload = JSON.stringify({ ...base, ...strategy });
   const values = {
     userId: context.userId, projectId, instanceId: context.instanceId, profileJson: payload,
     sourcePath: "service-owned://strategy", sourceChecksum: `service:${now}`, sourceRevision: strategy.last_confirmed_at ?? now,

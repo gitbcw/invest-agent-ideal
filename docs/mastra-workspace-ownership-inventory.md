@@ -43,6 +43,30 @@
 4. 分域迁移 portfolio/watchlist/plans/preferences/methods/schedules，再迁 daily/review/memory 数据。
 5. 完成双读校验、幂等导入、备份和回滚证据后，才删除旧读取路径。
 
+## 代码路径分类盘点（2026-08-14）
+
+对 src/ 全部 Workspace 引用（`WORKSPACE_BACKEND` / `ensureWorkspace` / `WorkspaceStore` / `resolveWorkspacePath` / `ACTIVE_BACKEND`）按 mastra 模式行为逐路径分类。
+
+### 运行环境结论：代码级验证通过
+
+- src/ 内全部 35 处 `new WorkspaceStore` 调用点均有 `ACTIVE_BACKEND` / `isWorkspaceBackend` 守卫，mastra 模式零实例化（漏守卫会因 `ensureReady()` 抛 `WORKSPACE_NOT_INITIALIZED` 硬失败，不会静默写盘）。
+- 全部 `ensureWorkspace`（模板复制建目录）位于非 mastra 分支；mastra 模式启动与请求路径只经 `mastraWorkspaceRegistry.bootstrap` 建 `MASTRA_PROJECTS_ROOT`（默认 `data/mastra-projects`）下受控项目根，无模板复制、无用户文件导入。
+- mastra 路径不读 `AGENTS.md` / `.codex` / 用户 cwd；`scheduler/review.ts:hasWorkspace()` 在 mastra 下恒 true。
+
+### 分类结果
+
+| 分类 | 文件 | 说明 |
+| --- | --- | --- |
+| 基础设施/切换层 | `lib/data-backend.ts`、`lib/workspace.ts`、`lib/workspace-store.ts`、`mastra/workspace-registry.ts`、`services/project-storage-root.ts`、`mcp/mcp-registry.ts`（env 引用清单）、`lib/user-identity.ts` | workspace.ts 的 mastra 对应物是 workspace-registry.ts（受控项目根，非用户目录）；user-identity 的 `backend` 参数类型为字面量 `"mastra"`，else 分支类型层面不可达 |
+| 仅 workspace 模式实现（保留 backend） | `lib/workspace-{portfolio,watchlist,plan}-backend.ts`、`lib/schedules-loader.ts`、daily-plan / periodic-review / method-change / review-viewpoint / weixin-conversation-memory 各自的 workspace 实现段 | 只经 `data-backend.ts` 选择器在 `WORKSPACE_BACKEND=workspace` 时可达；sqlite 回退模式下部分 else 分支也会构造 WorkspaceStore（既有债务，不影响 mastra） |
+| 有 service-owned 分支（已收敛） | scheduler/index、scheduler/review、scheduler/alert-check、handlers/review、runtime/context-packet（不活跃）、runtime/scheduled-tasks、services/onboarding、onboarding-drafts、conversation-log、file-retention、workspace-files、workspace-report-assets、automation-runner、generic-automation-runner、automation-tasks、user-assets、server、routes/platform、platform/project-registry、mcp/service-tools-core、routes/sandbox（多数） | mastra 分支读 `mastra_*` 投影表 / `MastraUserPreferenceStore` / 注册项目根；对话记录、任务/资产索引、审计全 SQLite |
+| 显式 fail-closed（有意） | `services/l3a-indicator-runner.ts`、`services/l3b-indicator-runner.ts` | L3a 复合指标与 L3b 脚本指标在 mastra 下禁用，等待“配置/脚本发布契约”；属产品待决，非数据缺口 |
+| 历史兼容/治理 | `services/file-retention-backfill.ts`、`services/automation-task-migration.ts`（备份根已改为 scope-aware）、`lib/workspace-compatibility.ts`（旧清单已分类） | 一次性治理/迁移工具，只读或已修复 |
+
+### mastra 模式能力缺口（详见幂等文档 G11+）
+
+已全部修复或关闭：策略库 CRUD（`mastra-strategy-library.ts`）、复盘行为纠偏统计（`collectMastraBehaviorStats`）、automation-task-migration 备份根、调度激活（2026-08-14 用户裁决：**走完 onboarding 即可调度**）；按核对关闭：微信对话记忆与 methodology profile（`chat_history` / `methodology_profiles` 均为 service-owned SQLite，满足目标 ownership，并入 mastra 台账属 WP2 命名收敛）；按产品裁决关闭：确认后文件快照交付（YAML 非面向用户的交付物）。Portal 实测新增两项待改进（G22 对话内文件直链、G23 trace 工具终态观测）。巡检可见性记录为后续 Portal 设计点（G21）。
+
 ## 当前结论
 
-Mastra runtime 已经不依赖 ACP session、Codex CLI 或 Hermes 执行器，但仍有大量 Workspace 业务数据和文件兼容路径。可以立即推进“无 Workspace Agent 运行环境”；不能立即删除整个 Workspace。删除 Workspace 前至少需要解决 `workspace.file.*` Portal 契约、Workspace backend 默认读写、scheduler config 和用户资产迁移。
+Mastra runtime 已经不依赖 ACP session、Codex CLI 或 Hermes 执行器，**且“无 Workspace Agent 运行环境”经代码级验证成立**（35 处实例化点全守卫、ensureWorkspace 全隔离、无 AGENTS.md/cwd 读取）。剩余工作是业务数据与能力收敛：`workspace.file.*` 已重定向到注册项目根（Portal 文件页依赖它，非纯兼容层）；portfolio/watchlist/plan 后端默认读写已具备 mastra 投影路径（含新用户空默认语义）；删除 Workspace 前仍需解决策略库投影、行为事件数据源、methodology 投影和调度激活语义（见幂等文档缺口清单）。

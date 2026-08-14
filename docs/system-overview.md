@@ -1,5 +1,7 @@
 # System Overview
 
+> **分支提示（2026-08-14）**：本文描述 **main 基线**的 ACP/Workspace 运行时架构。在 `feat/mastra-migration` 候选分支上，ACP/Codex 内核与 Workspace 运行时已被 Mastra + service-owned 投影替代，本文的 Runtime Flow / Workspace Boundary 章节不适用；候选分支的架构事实与已确认方向见 [mastra-architecture-baseline.md](./mastra-architecture-baseline.md)。
+
 This page is the 10-minute map for Invest Agent. It explains the current runtime shape, ownership boundaries, and where to read next.
 
 ## What This System Is

@@ -141,7 +141,7 @@ export async function runScheduledReviewPublicationProbe(
 }
 
 export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
-  const pushMode = await resolveMarketWatchPushMode(scope.userId);
+  const pushMode = await resolveMarketWatchPushMode(scope);
 
   // WP4 新路径: 开放研究交还 Mastra runtime。不约束工具 (Mastra 自由选任意已启用只读 MCP)、
   // 不预抓取 snapshot、不审计纠偏、不矛盾检测、不兜底。只处理精确 NO_PUSH 或可投递正文。
@@ -435,11 +435,11 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
   }
 }
 
-async function resolveMarketWatchPushMode(userId: string): Promise<MarketWatchPushMode> {
+async function resolveMarketWatchPushMode(scope: ScheduledScope): Promise<MarketWatchPushMode> {
   const schedules = ACTIVE_BACKEND === "mastra"
-    ? await new MastraUserPreferenceStore(userId, DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID).readSchedules()
-    : readSchedules(userId);
-  const watch = await readWatchConfig(userId);
+    ? await new MastraUserPreferenceStore(scope.userId, scope.instanceId ?? DEFAULT_INSTANCE_ID, scope.projectId ?? DEFAULT_PROJECT_ID).readSchedules()
+    : readSchedules(scope.userId);
+  const watch = await readWatchConfig(scope);
   const marketWatch = (schedules.market_watch ?? {}) as Record<string, unknown>;
   const mode = String(watch?.mode || marketWatch.push_mode || "");
   if (mode === "scheduled_intraday_brief" || marketWatch.only_push_on_exception === false || watch?.only_push_on_exception === false) {
@@ -448,12 +448,12 @@ async function resolveMarketWatchPushMode(userId: string): Promise<MarketWatchPu
   return "exception_only";
 }
 
-async function readWatchConfig(userId: string) {
+async function readWatchConfig(scope: ScheduledScope) {
   try {
-    if (ACTIVE_BACKEND === "mastra") return await new MastraUserPreferenceStore(userId, DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID).readWatch();
-    return await new WorkspaceStore(userId).readWatch();
+    if (ACTIVE_BACKEND === "mastra") return await new MastraUserPreferenceStore(scope.userId, scope.instanceId ?? DEFAULT_INSTANCE_ID, scope.projectId ?? DEFAULT_PROJECT_ID).readWatch();
+    return await new WorkspaceStore(scope.userId).readWatch();
   } catch (error) {
-    logger.warn(`scheduled.marketWatch.readWatch failed user=${userId}: ${(error as Error).message}`);
+    logger.warn(`scheduled.marketWatch.readWatch failed user=${scope.userId}: ${(error as Error).message}`);
     return null;
   }
 }

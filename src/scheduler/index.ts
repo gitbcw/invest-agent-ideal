@@ -435,13 +435,23 @@ async function runOnboardingDraftCommitWorker() {
 
 async function shouldRunMarketWatchTask(scope: SchedulableScope, fallbackIntervalMinutes: number, now: Date): Promise<MarketWatchHit | null> {
   if (!isBeijingTradingDay(now)) return null;
+  // Migration rule: an active typed market-watch automation task is
+  // authoritative; the preference-driven path must not double-fire.
+  try {
+    const typed = sqlite.prepare(
+      "SELECT 1 AS one FROM automation_tasks WHERE user_id=? AND project_id=? AND instance_id=? AND task_type='scheduled-market-watch' AND status='active' LIMIT 1",
+    ).get(scope.userId, scope.projectId ?? "invest-agent", scope.instanceId);
+    if (typed) return null;
+  } catch {
+    // automation tables unavailable: keep the preference-driven behavior
+  }
 
   const schedules: SchedulesYaml = ACTIVE_BACKEND === "mastra"
     ? await new MastraUserPreferenceStore(scope.userId, scope.instanceId, scope.projectId ?? DEFAULT_PROJECT_ID).readSchedules() as SchedulesYaml
     : readSchedules(scope.userId);
   if (schedules.market_watch?.enabled === false || schedules.market_watch?.auto_run === false) return null;
 
-  const watch = await readWatchConfig(scope.userId);
+  const watch = await readWatchConfig(scope);
   if (watch?.mode === "disabled" || watch?.mode === "off") return null;
 
   const windows = resolveMarketWatchWindows(schedules);
@@ -544,14 +554,14 @@ export async function triggerScheduledReviewNow(
   return triggerReviewNow(kind, scope, getPushFn(), now, options);
 }
 
-async function readWatchConfig(userId: string) {
+async function readWatchConfig(scope: SchedulableScope) {
   try {
     if (ACTIVE_BACKEND === "mastra") {
-      return await new MastraUserPreferenceStore(userId, DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID).readWatch();
+      return await new MastraUserPreferenceStore(scope.userId, scope.instanceId, scope.projectId ?? DEFAULT_PROJECT_ID).readWatch();
     }
-    return await new WorkspaceStore(userId).readWatch();
+    return await new WorkspaceStore(scope.userId).readWatch();
   } catch (error) {
-    logger.warn(`market_watch.readWatch failed user=${userId}: ${(error as Error).message}`);
+    logger.warn(`market_watch.readWatch failed user=${scope.userId}: ${(error as Error).message}`);
     return null;
   }
 }

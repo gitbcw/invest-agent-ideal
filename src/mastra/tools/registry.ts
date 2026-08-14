@@ -55,10 +55,12 @@ const onboardingStyleProfileSchema = z.object({
 }).catchall(z.unknown()).describe("Style profile. Provide at least a style/name or notes/summary/strategySummary so the confirmed strategy can be persisted.");
 
 const automationScheduleSchema = z.object({
-  frequency: z.enum(["daily", "trading_days", "weekdays", "weekly"]),
+  frequency: z.enum(["daily", "trading_days", "weekdays", "weekly", "monthly"]),
   time: z.string().regex(/^\d{2}:\d{2}$/),
   timezone: z.string().min(1).max(100),
   weekdays: z.array(z.number().int().min(0).max(6)).max(7).optional(),
+  monthlyDay: z.number().int().min(1).max(28).optional(),
+  windows: z.array(z.string().regex(/^\d{2}:\d{2}$/)).max(12).optional(),
 });
 const automationAssetBindingSchema = z.object({
   assetId: z.string().min(1),
@@ -191,7 +193,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     id: "confirmations.request",
     description: "Safe pre-write step: call this in the same turn when the user asks to change durable state. It only registers an exact draft and returns a confirmationId; it does not perform the durable write. After this call, show the draft and wait for a later explicit user confirmation before calling the matching write tool.",
     inputSchema: {
-      operation: z.enum(["portfolio.apply_changes", "onboarding.confirm_portfolio", "onboarding.confirm_step", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create"]),
+      operation: z.enum(["portfolio.apply_changes", "onboarding.confirm_portfolio", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create"]),
       payload: z.record(z.string(), z.unknown()),
       summary: z.string().optional(),
     },
@@ -426,32 +428,6 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
   {
-    id: "onboarding.confirm_step",
-    description: "After an explicit user confirmation in the latest user message, write the confirmed onboarding configuration and advance exactly one step. A plain Chinese confirmation such as 确认、可以、好 is valid after a displayed draft. Never call this for welcome; the first confirmed portfolio completes that transition.",
-    inputSchema: {
-      confirmedByUser: z.literal(true),
-      confirmationId: z.string(),
-      step: z.enum(["welcome", "portfolio", "style", "review_schedule", "market_watch_schedule", "notification", "watch_rules"]),
-      summary: z.string().optional(),
-      notes: z.string().optional(),
-      reviewSchedule: z.record(z.string(), z.unknown()).optional(),
-      marketWatchSchedule: z.record(z.string(), z.unknown()).optional(),
-      notificationPreference: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
-      styleProfile: onboardingStyleProfileSchema.optional(),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  {
-    id: "onboarding.complete_watch_setup",
-    description: "Finish the final onboarding watch-setup step without asking for another confirmation. Use branch=skip only when the latest user message explicitly skips rules. Use branch=configured with ruleIds returned by confirmed watch_rules.create calls in this conversation after all requested rules were verified.",
-    inputSchema: {
-      branch: z.enum(["skip", "configured"]),
-      ruleIds: z.array(z.number().int().positive()).optional(),
-      summary: z.string().optional(),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  {
     id: "onboarding.draft.get",
     description: "Read the current onboarding draft and its next unconfirmed step. First read config/onboarding_state.yaml: if status is completed, handle ordinary investment requests without starting or resuming onboarding; only inspect this draft when onboarding state is not completed or the user explicitly requests reconfiguration.",
     inputSchema: {},
@@ -475,35 +451,6 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
       revision: z.number().int().positive(),
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  {
-    id: "onboarding.draft.accept_step",
-    description: "After explicit user confirmation, mark that exact onboarding draft revision as accepted. This only updates the service-owned draft and never writes workspace files.",
-    inputSchema: {
-      confirmedByUser: z.literal(true),
-      confirmationId: z.string(),
-      draftId: z.string(),
-      step: z.enum(["portfolio", "style", "review_schedule", "market_watch_schedule", "notification", "watch_rules"]),
-      revision: z.number().int().positive(),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  {
-    id: "onboarding.draft.skip_watch_rules",
-    description: "When the current final onboarding step is optional explicit rules and the latest user message clearly declines rules, mark that skip as accepted. Then enqueue the frozen commit immediately; never ask for a completion-only confirmation.",
-    inputSchema: { draftId: z.string() },
-    annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  {
-    id: "onboarding.draft.enqueue_commit",
-    description: "After every onboarding draft section is accepted, freeze the draft and queue one background commit. Reply that configuration is being completed; do not request a content-free final confirmation.",
-    inputSchema: { draftId: z.string() },
-    annotations: { readOnlyHint: false, destructiveHint: false },
-  },
-  {
-    id: "onboarding.draft.commit_status",
-    description: "Read whether a frozen onboarding draft is queued, applying, completed, or retrying after a failed commit.",
-    inputSchema: {},
   },
 ] as const;
 

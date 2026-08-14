@@ -912,6 +912,7 @@ export function initDb() {
       user_id TEXT NOT NULL,
       project_id TEXT NOT NULL,
       instance_id TEXT NOT NULL,
+      task_type TEXT,
       status TEXT NOT NULL DEFAULT 'paused',
       current_revision INTEGER NOT NULL DEFAULT 1,
       current_revision_id TEXT,
@@ -1064,6 +1065,7 @@ export function initDb() {
   ensureColumn("conversation_artifacts", "version_id", "TEXT");
   ensureColumn("automation_tasks", "next_run_at", "TEXT");
   ensureColumn("automation_tasks", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("automation_tasks", "task_type", "TEXT");
   // Persistent execution lease fields are additive so old production DBs can
   // initialize in place without replacing user data.
   ensureColumn("automation_tasks", "active_run_id", "TEXT");

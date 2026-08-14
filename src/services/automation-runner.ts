@@ -115,7 +115,7 @@ async function executeAgent(
         projectId: scope.projectId,
         instanceId: scope.instanceId,
         workspacePath: stagingPath,
-        taskType: "scheduled-automation",
+        taskType: task.taskType ?? "scheduled-automation",
       },
     };
     const response = await createRuntimeAgent().handleMessage(message);

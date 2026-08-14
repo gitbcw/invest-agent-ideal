@@ -8,7 +8,6 @@ function defaultWorkspaceRoot() {
   return path.join(defaultRuntimeDataRoot, "workspaces");
 }
 
-export type LlmProvider = "deepseek" | "stepfun" | "doubao";
 export type RuntimeBackend = "mastra";
 
 // Development machines can retain historic cloud Portal values in .env. Keep
@@ -20,32 +19,6 @@ export const config = {
   port: Number(process.env.PORT) || 22655,
   host: process.env.HOST || process.env.BIND_HOST || "127.0.0.1",
   nodeEnv: process.env.NODE_ENV || "development",
-
-  llm: {
-    provider: (process.env.LLM_PROVIDER || "deepseek") as LlmProvider,
-  },
-
-  deepseek: {
-    apiKey: process.env.DEEPSEEK_API_KEY || "",
-    baseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
-    model: process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-    flashModel: process.env.DEEPSEEK_FLASH_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-    proModel: process.env.DEEPSEEK_PRO_MODEL || "deepseek-v4-pro",
-  },
-
-  stepfun: {
-    apiKey: process.env.STEPFUN_API_KEY || "",
-    baseUrl: process.env.STEPFUN_BASE_URL || "https://api.stepfun.com",
-    flashModel: process.env.STEPFUN_FLASH_MODEL || "step-3.7-flash",
-    proModel: process.env.STEPFUN_PRO_MODEL || "step-3.7-flash",
-  },
-
-  doubao: {
-    apiKey: process.env.DOUBAO_API_KEY || "",
-    baseUrl: process.env.DOUBAO_BASE_URL || "https://ark.cn-beijing.volces.com/api/v3",
-    flashModel: process.env.DOUBAO_FLASH_MODEL || "doubao-seed-2-0-lite-260428",
-    proModel: process.env.DOUBAO_PRO_MODEL || "doubao-seed-2-0-lite-260428",
-  },
 
   stock: {
     api: process.env.STOCK_API || "tencent",

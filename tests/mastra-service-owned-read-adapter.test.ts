@@ -54,7 +54,12 @@ test("Mastra backend reads scoped portfolio projections and daily records withou
       assert.equal((await planBackend.upsert("alice", "invest-agent-alice", { code: "000003", name: "招商银行", targetPrice: 13 })).targetPrice, 13);
       await dailyPlanBackend.upsert("alice", "invest-agent-alice", { planDate: "2026-08-03", generatedAt: "now", content: "x", data: null });
       assert.equal((await dailyPlanBackend.get("alice", "invest-agent-alice", "2026-08-03"))?.content, "x");
-      await assert.rejects(() => portfolioBackend.upsertActive("bob", "invest-agent-bob", { code: "1", name: "x" }), /MASTRA_PROJECTION_NOT_FOUND/);
+      // A user without a projection row behaves like a fresh workspace: writes
+      // lazily create the row instead of failing closed.
+      const bobHolding = await portfolioBackend.upsertActive("bob", "invest-agent-bob", { code: "000005", name: "兴业银行" });
+      assert.equal(bobHolding.code, "000005");
+      assert.equal((await portfolioBackend.listActive("bob", "invest-agent-bob")).length, 1);
+      assert.ok(sqlite.prepare("SELECT 1 AS one FROM mastra_portfolio_states WHERE user_id='bob' AND instance_id='invest-agent-bob' AND source_path='service-owned://portfolio'").get());
       const methodChange = (await import("./src/lib/method-change-backend.ts")).default.methodChangeBackend;
       const viewpoints = (await import("./src/lib/review-viewpoint-backend.ts")).default.reviewViewpointBackend;
       assert.equal((await methodChange.list("alice", "invest-agent-alice", {})).length, 0);
@@ -65,7 +70,8 @@ test("Mastra backend reads scoped portfolio projections and daily records withou
       const replaced = await viewpoints.replaceByDate({ userId: "alice", instanceId: "invest-agent-alice", sourceDate: "2026-08-03", viewpoints: [{ viewpointId: "v1", view: "view", reason: "reason", action: "hold", validation: "check", expectedReviewDate: "2026-08-04" }] });
       assert.equal(replaced[0]?.viewpointId, "v1");
       assert.equal((await viewpoints.resolve({ userId: "alice", instanceId: "invest-agent-alice", viewpointId: "v1", sourceDate: "2026-08-03", status: "validated", resolution: "ok" }))?.status, "validated");
-      await assert.rejects(() => portfolioBackend.listActive("bob", "invest-agent-bob"), /MASTRA_PROJECTION_NOT_FOUND/);
+      assert.deepEqual(await portfolioBackend.listActive("carol", "invest-agent-carol"), []);
+      assert.deepEqual(await watchlistBackend.list("carol", "invest-agent-carol"), []);
       sqlite.close();
     `;
     await execFileAsync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {

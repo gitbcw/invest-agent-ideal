@@ -64,15 +64,9 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   "automation.pause": "other-write",
   // ── other-write: onboarding 族 (10) ──
   "onboarding.confirm_portfolio": "other-write",
-  "onboarding.confirm_step": "other-write",
-  "onboarding.complete_watch_setup": "other-write",
   "onboarding.draft.get": "other-write",
   "onboarding.draft.upsert_step": "other-write",
   "onboarding.draft.request_confirmation": "other-write",
-  "onboarding.draft.accept_step": "other-write",
-  "onboarding.draft.skip_watch_rules": "other-write",
-  "onboarding.draft.enqueue_commit": "other-write",
-  "onboarding.draft.commit_status": "other-write",
 };
 
 /** 查表分类；未知工具默认归 other-write（保守）。 */

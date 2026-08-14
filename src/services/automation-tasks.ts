@@ -8,6 +8,7 @@ import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
 import { AutomationSpreadsheetValidationError, validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
+import { isRegisteredScheduledTaskType } from "./scheduled-task-types.js";
 import {
   assetFormatForFileName,
   getUserAsset,
@@ -73,10 +74,14 @@ export interface AutomationScope {
 }
 
 export interface AutomationSchedule {
-  frequency: "daily" | "trading_days" | "weekdays" | "weekly";
+  frequency: "daily" | "trading_days" | "weekdays" | "weekly" | "monthly";
   time: string;
   timezone: string;
   weekdays?: number[];
+  /** For monthly frequency: day of month 1..28 (avoids short-month overflow). */
+  monthlyDay?: number;
+  /** Additional same-day trigger points (HH:mm), e.g. market-watch intraday windows. */
+  windows?: string[];
   [key: string]: unknown;
 }
 
@@ -119,6 +124,8 @@ export interface AutomationTaskRevisionRecord extends AutomationScope {
 
 export interface AutomationTaskRecord extends AutomationScope {
   taskId: string;
+  /** Registered scheduled task type; null for plain generic tasks. */
+  taskType?: string | null;
   status: AutomationTaskStatus;
   currentRevision: number;
   currentRevisionId?: string | null;
@@ -199,6 +206,8 @@ export interface CreateAutomationTaskInput extends AutomationScope {
   taskId?: string;
   name: string;
   description?: string | null;
+  /** Optional registered task type (see services/scheduled-task-types.ts). */
+  taskType?: string;
   schedule: AutomationSchedule | Record<string, unknown>;
   instruction?: string;
   inputs?: AutomationTaskAssetBinding[];
@@ -352,6 +361,7 @@ export class AutomationTaskError extends Error {
       | "AUTOMATION_INVALID_NAME"
       | "AUTOMATION_INVALID_DESCRIPTION"
       | "AUTOMATION_INVALID_SCHEDULE"
+      | "AUTOMATION_INVALID_TASK_TYPE"
       | "AUTOMATION_INVALID_DEADLINE"
       | "AUTOMATION_INVALID_OUTPUT_POLICY"
       | "AUTOMATION_ASSET_BINDING_INVALID"
@@ -403,6 +413,7 @@ type DbTaskRow = {
   userId: string;
   projectId: string;
   instanceId: string;
+  taskType: string | null;
   status: string;
   currentRevision: number;
   currentRevisionId: string | null;
@@ -513,6 +524,7 @@ const TASK_SELECT = `
   user_id AS userId,
   project_id AS projectId,
   instance_id AS instanceId,
+  task_type AS taskType,
   status,
   current_revision AS currentRevision,
   current_revision_id AS currentRevisionId,
@@ -632,6 +644,9 @@ export async function createAutomationTask(input: CreateAutomationTaskInput): Pr
   const name = normalizeTaskName(input.name);
   const description = normalizeDescription(input.description);
   const schedule = normalizeAutomationSchedule(input.schedule);
+  if (input.taskType !== undefined && !isRegisteredScheduledTaskType(input.taskType)) {
+    throw new AutomationTaskError("AUTOMATION_INVALID_TASK_TYPE", input.taskType);
+  }
   const sourceInput = input.sourceAsset ?? input.asset;
   if (isGenericTaskInput(input, sourceInput)) {
     if (sourceInput) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "generic task cannot mix legacy sourceAsset");
@@ -656,10 +671,10 @@ export async function createAutomationTask(input: CreateAutomationTaskInput): Pr
     const transaction = sqlite.transaction(() => {
       sqlite.prepare(`
         INSERT INTO automation_tasks (
-          task_id, user_id, project_id, instance_id, status,
+          task_id, user_id, project_id, instance_id, task_type, status,
           current_revision, current_revision_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'paused', 1, ?, ?, ?)
-      `).run(taskId, scope.userId, scope.projectId, scope.instanceId, revisionId, now, now);
+        ) VALUES (?, ?, ?, ?, ?, 'paused', 1, ?, ?, ?)
+      `).run(taskId, scope.userId, scope.projectId, scope.instanceId, input.taskType ?? null, revisionId, now, now);
       insertAssetRow({
         assetId: sourceAssetId,
         taskId,
@@ -888,10 +903,10 @@ async function createGenericAutomationTask(input: {
   const transaction = sqlite.transaction(() => {
     sqlite.prepare(`
       INSERT INTO automation_tasks (
-        task_id, user_id, project_id, instance_id, status,
+        task_id, user_id, project_id, instance_id, task_type, status,
         current_revision, current_revision_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'paused', 1, ?, ?, ?)
-    `).run(taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId, revisionId, now, now);
+      ) VALUES (?, ?, ?, ?, ?, 'paused', 1, ?, ?, ?)
+    `).run(taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.input.taskType ?? null, revisionId, now, now);
     insertGenericRevision({
       revisionId, taskId, scope: input.scope, revision: 1, name: input.name,
       description: input.description, schedule: input.schedule, definition, createdAt: now,
@@ -2094,24 +2109,28 @@ export function recordAutomationTaskAudit(input: {
 export function nextAutomationRunAt(schedule: AutomationSchedule | Record<string, unknown>, from = new Date()): string {
   const normalized = normalizeAutomationSchedule(schedule);
   const start = Math.floor(from.getTime() / 60_000) * 60_000 + 60_000;
-  for (let index = 0; index <= 8 * 24 * 60; index += 1) {
+  // Monthly needs a horizon beyond one month; everything else fits in 8 days.
+  const horizonMinutes = normalized.frequency === "monthly" ? 40 * 24 * 60 : 8 * 24 * 60;
+  const triggerTimes = new Set([normalized.time, ...(normalized.windows ?? [])]);
+  for (let index = 0; index <= horizonMinutes; index += 1) {
     const candidate = new Date(start + index * 60_000);
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: normalized.timezone,
       weekday: "short",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
       hourCycle: "h23",
     }).formatToParts(candidate);
     const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
     const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(String(values.weekday));
-    const [hour, minute] = normalized.time.split(":").map(Number);
-    if (Number(values.hour) !== hour || Number(values.minute) !== minute) continue;
+    if (!triggerTimes.has(`${values.hour}:${values.minute}`)) continue;
     if ((normalized.frequency === "trading_days" || normalized.frequency === "weekdays") && !isAshareTradingDay(candidate)) continue;
     if (normalized.frequency === "weekly" && !normalized.weekdays?.includes(weekday)) continue;
+    if (normalized.frequency === "monthly" && Number(values.day) !== normalized.monthlyDay) continue;
     return candidate.toISOString();
   }
-  throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "no occurrence in the next 8 days");
+  throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "no occurrence in the schedule horizon");
 }
 
 export async function listDueAutomationTasks(at = new Date(), limit = 100): Promise<AutomationTaskRecord[]> {
@@ -2191,6 +2210,7 @@ function taskRecordFromRow(row: DbTaskRow, scope: AutomationScope): AutomationTa
   return {
     ...scope,
     taskId: row.taskId,
+    taskType: row.taskType ?? null,
     status: parseTaskStatus(row.status),
     currentRevision: row.currentRevision,
     currentRevisionId: row.currentRevisionId,
@@ -2720,7 +2740,7 @@ function normalizeAutomationSchedule(input: AutomationSchedule | Record<string, 
   const time = String(raw.time ?? raw.timeOfDay ?? raw.at ?? "").trim();
   const timezoneValue = raw.timezone ?? raw.tz;
   const timezone = String(timezoneValue === undefined ? DEFAULT_AUTOMATION_TIMEZONE : timezoneValue).trim();
-  if (!["daily", "trading_days", "weekdays", "weekly"].includes(frequency)) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "unsupported frequency");
+  if (!["daily", "trading_days", "weekdays", "weekly", "monthly"].includes(frequency)) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "unsupported frequency");
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "time must be HH:mm");
   if (!timezone) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "timezone required");
   try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(); } catch { throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", `invalid timezone ${timezone}`); }
@@ -2733,7 +2753,24 @@ function normalizeAutomationSchedule(input: AutomationSchedule | Record<string, 
     weekdays = [...new Set(weekdaysValue as number[])].sort((a, b) => a - b);
   }
   if (frequency === "weekly" && (!weekdays || weekdays.length === 0)) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "weekly weekdays required");
-  return { ...raw, frequency, time, timezone, ...(weekdays ? { weekdays } : {}) };
+  const monthlyDayValue = raw.monthlyDay ?? raw.dayOfMonth;
+  let monthlyDay: number | undefined;
+  if (monthlyDayValue !== undefined) {
+    if (!Number.isInteger(Number(monthlyDayValue)) || Number(monthlyDayValue) < 1 || Number(monthlyDayValue) > 28) {
+      throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "monthlyDay must be an integer 1..28");
+    }
+    monthlyDay = Number(monthlyDayValue);
+  }
+  if (frequency === "monthly" && monthlyDay === undefined) throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "monthly monthlyDay required");
+  const windowsValue = raw.windows ?? raw.intradayWindows;
+  let windows: string[] | undefined;
+  if (windowsValue !== undefined) {
+    if (!Array.isArray(windowsValue) || windowsValue.length === 0 || windowsValue.some((window) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(window)))) {
+      throw new AutomationTaskError("AUTOMATION_INVALID_SCHEDULE", "windows must be non-empty HH:mm strings");
+    }
+    windows = [...new Set(windowsValue.map(String))].sort();
+  }
+  return { ...raw, frequency, time, timezone, ...(weekdays ? { weekdays } : {}), ...(monthlyDay !== undefined ? { monthlyDay } : {}), ...(windows ? { windows } : {}) };
 }
 
 function parseScheduleJson(value: string): AutomationSchedule {
@@ -2816,7 +2853,7 @@ function defaultRetryable(category: AutomationErrorCategory | null, status: Auto
   return null;
 }
 
-function workspacePathForScope(scope: AutomationScope): string {
+export function workspacePathForScope(scope: AutomationScope): string {
   try {
     if (ACTIVE_BACKEND === "mastra") {
       const registered = mastraWorkspaceRegistry.registeredPath(scope);

@@ -27,7 +27,8 @@
 - 生产灾备快照复制、冷启动、target 写入和源 checksum 不变已验证。
 - Portal 页面人工验收已通过，并修复了审计模板 JavaScript 语法错误。
 - Mastra prompt 不再向 Workspace 写 `.sandbox-token`，定时 prompt 不再读取 `AGENTS.md` 或 Workspace Skills。
-- 最近完整自动化基线为 runtime `445` tests passed、正式 Portal `43` tests passed；之后新增的 Mastra 回合预算、阶段计时和结构化 Excel 交付改动已分别完成 typecheck/build 与专项验证，最终 H1 前仍需再跑全量回归。
+- 最近完整自动化基线为 runtime `451` tests passed（2026-08-14，含 Mastra 幂等补齐系列改动）、正式 Portal `43` tests passed。
+- 2026-08-14 H1 前置实测：`spreadsheet.create` 已由 Portal 真实对话调用成功（文件落资产库、可见可下载，回合 27.4s）；对话内下载直链与 trace 工具终态记录两项待改进（幂等文档 G22/G23）。
 
 因此，剩余工作不是“再换一次内核”，而是完成 H1 体验复核：复杂多工具回合的性能、Portal 中由 Agent 实际调用 `spreadsheet.create` 生成 XLSX、文件展示/下载，以及最后的全量回归。生产部署、真实微信、push、真实数据切换和分支合并均不属于当前工作包。
 

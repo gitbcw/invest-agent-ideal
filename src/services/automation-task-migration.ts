@@ -6,12 +6,12 @@ import {
   readAutomationTaskAsset,
   recordAutomationTaskAudit,
   updateAutomationTask,
+  workspacePathForScope,
   AutomationTaskError,
   type AutomationScope,
   type AutomationTaskRecord,
 } from "./automation-tasks.js";
 import { archiveUserAsset, createUserAsset, type UserAssetDescriptor } from "./user-assets.js";
-import { resolveWorkspacePath } from "../lib/workspace.js";
 
 export interface LegacyAutomationMigrationResult {
   status: "migrated";
@@ -86,7 +86,10 @@ export async function migrateLegacyAutomationTaskToAssets(input: AutomationScope
 
 async function backupLegacyAssets(scope: AutomationScope & { taskId: string }, task: AutomationTaskRecord, source: Buffer, working: Buffer): Promise<string> {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(scope.taskId)) throw new AutomationTaskError("AUTOMATION_INVALID_TASK_ID", scope.taskId);
-  const workspace = resolveWorkspacePath(scope.userId);
+  // Route through the scope-aware root so backups land next to where the task
+  // files actually live: the registered Mastra project root in mastra mode,
+  // the legacy per-user Workspace otherwise.
+  const workspace = workspacePathForScope(scope);
   const root = await realpath(workspace).catch(() => null);
   if (!root) throw new AutomationTaskError("AUTOMATION_WORKSPACE_NOT_FOUND", scope.userId);
   const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");

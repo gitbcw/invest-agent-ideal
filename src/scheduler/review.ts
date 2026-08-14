@@ -13,7 +13,7 @@
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { logger } from "../lib/logger.js";
 import type { PushCallback } from "./index.js";
-import { db } from "../db/index.js";
+import { db, sqlite } from "../db/index.js";
 import { settings } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
@@ -121,8 +121,28 @@ async function hasExistingDailyReview(scope: ReviewScope, dateKey: string): Prom
   return Boolean(row);
 }
 
+const TYPED_REVIEW_TASK: Record<ReviewKind, string> = {
+  daily: "scheduled-daily-review",
+  weekly: "scheduled-weekly-review",
+  monthly: "scheduled-monthly-review",
+};
+
+function hasActiveTypedTask(scope: ReviewScope, taskType: string): boolean {
+  try {
+    return Boolean(sqlite.prepare(
+      "SELECT 1 AS one FROM automation_tasks WHERE user_id=? AND project_id=? AND instance_id=? AND task_type=? AND status='active' LIMIT 1",
+    ).get(scope.userId, scope.projectId ?? "invest-agent", scope.instanceId, taskType));
+  } catch {
+    return false;
+  }
+}
+
 async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date, options: { skipExistingDailyReview?: boolean } = {}): Promise<boolean> {
   if (kind === "daily" && !isAfterDailyReviewScanStart(now)) return false;
+  // Migration rule (scheduled-flows-to-automation design): when an active
+  // typed automation task owns this review kind for the scope, the task is
+  // authoritative and the preference-driven path must not double-fire.
+  if (hasActiveTypedTask(scope, TYPED_REVIEW_TASK[kind])) return false;
   const dateKey = beijingDateKey(now);
 
   let hit = false;

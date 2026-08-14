@@ -1,10 +1,12 @@
 /**
- * Read-only service-owned backend for the Mastra portfolio projection.
+ * Service-owned backend for the Mastra portfolio projection.
  *
  * The projection intentionally preserves the complete imported YAML payload;
  * this adapter exposes the legacy row-shaped interfaces to callers while the
- * migration branch converges. Writes fail closed until a transactional
- * service-owned mutation contract is implemented.
+ * migration branch converges. Missing projections behave like a fresh
+ * WorkspaceStore: reads return empty defaults and writes lazily create the
+ * row, so brand-new users get the same tool and scheduler behavior as the
+ * workspace backend instead of a hard projection failure.
  */
 import { randomUUID } from "node:crypto";
 import { sqlite } from "../db/index.js";
@@ -20,8 +22,7 @@ type Projection = {
 
 export function getMastraPortfolioRevision(userId: string, instanceId: string): string | null {
   const row = sqlite.prepare("SELECT source_revision AS sourceRevision FROM mastra_portfolio_states WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1").get(userId, projectId(), instanceId) as { sourceRevision?: string | null } | undefined;
-  if (!row) throw new MastraProjectionError("MASTRA_PROJECTION_NOT_FOUND", `MASTRA_PROJECTION_NOT_FOUND: Mastra portfolio projection is missing for ${userId}/${instanceId}`);
-  return row.sourceRevision ?? null;
+  return row?.sourceRevision ?? null;
 }
 
 export function readMastraPortfolioProjection(userId: string, instanceId: string): Projection {
@@ -32,9 +33,14 @@ export function replaceMastraPortfolioProjection(userId: string, instanceId: str
   const now = new Date().toISOString();
   sqlite.transaction(() => {
     const row = sqlite.prepare("SELECT source_revision AS sourceRevision FROM mastra_portfolio_states WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1").get(userId, projectId(), instanceId) as { sourceRevision?: string | null } | undefined;
-    if (!row) throw new MastraProjectionError("MASTRA_PROJECTION_NOT_FOUND", `MASTRA_PROJECTION_NOT_FOUND: Mastra portfolio projection is missing for ${userId}/${instanceId}`);
-    if (row.sourceRevision !== expectedRevision) throw new MastraProjectionError("MASTRA_REVISION_CONFLICT", `MASTRA_REVISION_CONFLICT: expected ${expectedRevision ?? "null"}, current ${row.sourceRevision ?? "null"}`);
-    sqlite.prepare("UPDATE mastra_portfolio_states SET portfolio_json = ?, source_path = ?, source_checksum = ?, source_revision = ?, updated_at = ? WHERE user_id = ? AND project_id = ? AND instance_id = ?").run(JSON.stringify(next), "service-owned://portfolio", `service:${now}`, now, now, userId, projectId(), instanceId);
+    const currentRevision = row?.sourceRevision ?? null;
+    if (currentRevision !== expectedRevision) throw new MastraProjectionError("MASTRA_REVISION_CONFLICT", `MASTRA_REVISION_CONFLICT: expected ${expectedRevision ?? "null"}, current ${currentRevision ?? "null"}`);
+    if (row) {
+      sqlite.prepare("UPDATE mastra_portfolio_states SET portfolio_json = ?, source_path = ?, source_checksum = ?, source_revision = ?, updated_at = ? WHERE user_id = ? AND project_id = ? AND instance_id = ?").run(JSON.stringify(next), "service-owned://portfolio", `service:${now}`, now, now, userId, projectId(), instanceId);
+    } else {
+      sqlite.prepare("INSERT INTO mastra_portfolio_states (user_id,project_id,instance_id,portfolio_json,source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+        .run(userId, projectId(), instanceId, JSON.stringify(next), "service-owned://portfolio", `service:${now}`, now, "service-owned", now, now);
+    }
   })();
   return now;
 }
@@ -54,7 +60,7 @@ function readProjection(scope: Scope): Projection {
   const row = sqlite.prepare(
     "SELECT portfolio_json AS portfolioJson FROM mastra_portfolio_states WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
   ).get(scope.userId, projectId(), scope.instanceId) as { portfolioJson?: string } | undefined;
-  if (!row) throw new MastraProjectionError("MASTRA_PROJECTION_NOT_FOUND", `MASTRA_PROJECTION_NOT_FOUND: Mastra portfolio projection is missing for ${scope.userId}/${scope.instanceId}`);
+  if (!row) return {};
   try {
     const parsed = JSON.parse(String(row.portfolioJson));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("projection is not an object");
@@ -90,21 +96,31 @@ function mutateProjection(scope: Scope, mutate: (projection: Projection) => void
     const row = sqlite.prepare(
       "SELECT portfolio_json AS portfolioJson, source_revision AS sourceRevision FROM mastra_portfolio_states WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
     ).get(scope.userId, projectId(), scope.instanceId) as { portfolioJson?: string; sourceRevision?: string | null } | undefined;
-    if (!row) throw new MastraProjectionError("MASTRA_PROJECTION_NOT_FOUND", `MASTRA_PROJECTION_NOT_FOUND: Mastra portfolio projection is missing for ${scope.userId}/${scope.instanceId}`);
-    if (expectedRevision !== undefined && expectedRevision !== row.sourceRevision) {
-      throw new MastraProjectionError("MASTRA_REVISION_CONFLICT", `MASTRA_REVISION_CONFLICT: expected ${expectedRevision ?? "null"}, current ${row.sourceRevision ?? "null"}`);
+    const currentRevision = row?.sourceRevision ?? null;
+    if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+      throw new MastraProjectionError("MASTRA_REVISION_CONFLICT", `MASTRA_REVISION_CONFLICT: expected ${expectedRevision ?? "null"}, current ${currentRevision ?? "null"}`);
     }
     let projection: Projection;
-    try {
-      projection = JSON.parse(String(row.portfolioJson)) as Projection;
-      if (!projection || typeof projection !== "object" || Array.isArray(projection)) throw new Error("projection is not an object");
-    } catch (error) {
-      throw new MastraProjectionError("MASTRA_PROJECTION_INVALID", `MASTRA_PROJECTION_INVALID: ${(error as Error).message}`);
+    if (!row) {
+      projection = {};
+    } else {
+      try {
+        projection = JSON.parse(String(row.portfolioJson)) as Projection;
+        if (!projection || typeof projection !== "object" || Array.isArray(projection)) throw new Error("projection is not an object");
+      } catch (error) {
+        throw new MastraProjectionError("MASTRA_PROJECTION_INVALID", `MASTRA_PROJECTION_INVALID: ${(error as Error).message}`);
+      }
     }
     mutate(projection);
-    sqlite.prepare(
-      "UPDATE mastra_portfolio_states SET portfolio_json = ?, source_path = ?, source_checksum = ?, source_revision = ?, updated_at = ? WHERE user_id = ? AND project_id = ? AND instance_id = ?",
-    ).run(JSON.stringify(projection), "service-owned://portfolio", `service:${now}`, now, now, scope.userId, projectId(), scope.instanceId);
+    if (row) {
+      sqlite.prepare(
+        "UPDATE mastra_portfolio_states SET portfolio_json = ?, source_path = ?, source_checksum = ?, source_revision = ?, updated_at = ? WHERE user_id = ? AND project_id = ? AND instance_id = ?",
+      ).run(JSON.stringify(projection), "service-owned://portfolio", `service:${now}`, now, now, scope.userId, projectId(), scope.instanceId);
+    } else {
+      sqlite.prepare(
+        "INSERT INTO mastra_portfolio_states (user_id,project_id,instance_id,portfolio_json,source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+      ).run(scope.userId, projectId(), scope.instanceId, JSON.stringify(projection), "service-owned://portfolio", `service:${now}`, now, "service-owned", now, now);
+    }
     return projection;
   })();
 }

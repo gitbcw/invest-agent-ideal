@@ -253,7 +253,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       projectId: input.scope.projectId,
       instanceId: input.scope.instanceId,
       workspacePath: input.stagingPath,
-      taskType: "scheduled-automation",
+      taskType: input.task.taskType ?? "scheduled-automation",
     },
   };
   const response = await createRuntimeAgent().handleMessage(message);

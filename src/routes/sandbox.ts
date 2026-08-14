@@ -1,11 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { db } from "../db/index.js";
+import { db, sqlite } from "../db/index.js";
 import { agentTraces, alertEvents, alertRules, indicatorResults, investmentProfiles, mastraProjectProfiles, methodologyProfiles } from "../db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
+import { readMastraTradingStrategies, removeMastraTradingStrategy, writeMastraTradingStrategy } from "../lib/mastra-strategy-library.js";
 import { WorkspaceStore, type OnboardingStepKey, type OnboardingStateYaml, type StrategyYaml } from "../lib/workspace-store.js";
 import { sandboxContextFromRequest, type SandboxPermission } from "../lib/sandbox-context.js";
 import { assertSandboxToolAllowed, type ToolId } from "../platform/tool-registry.js";
@@ -20,6 +21,7 @@ import {
   isOnboardingStep as isSharedOnboardingStep,
   normalizeOnboardingState as normalizeSharedOnboardingState,
   OnboardingContractError,
+  openMastraOnboardingStore,
 } from "../services/onboarding.js";
 import { mutationResourceKeysForOperation } from "../services/mutation-resource-keys.js";
 import { withResourceMutationLock } from "../services/resource-mutation-lock.js";
@@ -1166,7 +1168,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       notes?: string;
     };
   }>("/api/sandbox/onboarding/confirm-portfolio", sandboxMutationSafe(["invest.onboarding.write", "invest.portfolio.write"], "onboarding.confirm_portfolio", async (ctx, request, reply) => {
-    if (ACTIVE_BACKEND === "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_ONBOARDING_WRITE_NOT_READY" });
     const holdingInputs = normalizeOnboardingAssetList(request.body?.holdings);
     const watchInputs = normalizeOnboardingAssetList(request.body?.watchlist);
     if (!holdingInputs.length && !watchInputs.length) {
@@ -1185,7 +1186,10 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     }
 
     const now = new Date().toISOString();
-    const store = new WorkspaceStore(ctx.userId);
+    const mastra = ACTIVE_BACKEND === "mastra"
+      ? openMastraOnboardingStore({ userId: ctx.userId, instanceId: ctx.instanceId, projectId: ctx.projectId })
+      : null;
+    const store: any = mastra?.store ?? new WorkspaceStore(ctx.userId);
     const portfolio = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
     const holdings = Array.isArray(portfolio.holdings) ? [...portfolio.holdings] : [];
     const watchItems = Array.isArray(portfolio.watchlist) ? [...portfolio.watchlist] : [];
@@ -1254,6 +1258,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       notes: request.body?.notes ?? current.notes ?? "",
     };
     await store.writeOnboardingState(nextState);
+    if (mastra) sqlite.transaction(() => mastra.persist())();
     await store.appendChangeLog({
       ts: now,
       source: "sandbox",
@@ -1283,88 +1288,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     };
   }));
 
-  app.post<{
-    Body: {
-      step?: string;
-      summary?: string;
-      notes?: string;
-      reviewSchedule?: Record<string, unknown>;
-      review_schedule?: Record<string, unknown>;
-      daily_review_time?: string;
-      dailyReviewTime?: string;
-      weekly_review_time?: string;
-      weeklyReviewTime?: string;
-      monthly_review_time?: string;
-      monthlyReviewTime?: string;
-      marketWatchSchedule?: Record<string, unknown>;
-      market_watch_schedule?: Record<string, unknown>;
-      marketWatchWindows?: string[];
-      market_watch_windows?: string[];
-      pushMode?: string;
-      push_mode?: string;
-      notificationPreference?: Record<string, unknown> | string;
-      notification_preference?: Record<string, unknown> | string;
-      notification?: Record<string, unknown> | string;
-      preference?: Record<string, unknown> | string;
-      notification_mode?: string;
-      notificationMode?: string;
-      mode?: string;
-      watchPolicy?: Record<string, unknown>;
-      complete?: boolean;
-    };
-  }>("/api/sandbox/onboarding/confirm-step", sandboxMutationSafe("invest.onboarding.write", "onboarding.confirm_step", async (ctx, request, reply) => {
-    if (ACTIVE_BACKEND === "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_ONBOARDING_WRITE_NOT_READY" });
-    const step = request.body?.step;
-    if (!isSharedOnboardingStep(step)) {
-      return reply.status(400).send({ ok: false, error: `非法 onboarding step: ${String(step ?? "")}` });
-    }
-
-    const now = new Date().toISOString();
-    const store = new WorkspaceStore(ctx.userId);
-    let nextState: OnboardingStateYaml;
-    try {
-      nextState = await applyConfirmedOnboardingStep({ store, step, body: request.body ?? {}, now });
-    } catch (error) {
-      const contractError = error instanceof OnboardingContractError ? error : null;
-      const message = error instanceof Error ? error.message : String(error);
-      await audit(ctx, {
-        operation: "onboarding.confirm_step",
-        resourceType: "onboarding_state",
-        resourceId: step,
-        requestBody: request.body,
-        resultSummary: message,
-        status: "error",
-      });
-      return reply.status(contractError?.status ?? 500).send({ ok: false, error: message });
-    }
-    await store.appendChangeLog({
-      ts: now,
-      source: "sandbox",
-      type: `onboarding_${step}_confirmed`,
-      summary: request.body?.summary || `用户确认 onboarding 步骤: ${step}`,
-      details: {
-        step,
-        status: nextState.status,
-        current_step: nextState.current_step,
-        did_create_watch_rules: false,
-      },
-    });
-    await audit(ctx, {
-      operation: "onboarding.confirm_step",
-      resourceType: "onboarding_state",
-      resourceId: step,
-      requestBody: request.body,
-      resultSummary: `confirmed ${step}; status=${nextState.status}; no watch-rule batch create`,
-    });
-    return {
-      ok: true,
-      userId: ctx.userId,
-      instanceId: ctx.instanceId,
-      state: nextState,
-      didCreateWatchRules: false,
-      message: nextState.status === "completed" ? "新手引导已完成" : `已确认 ${step}`,
-    };
-  }));
 
   app.post<{
     Body: {
@@ -1745,21 +1668,27 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   // ─── 交易策略 CRUD(workspace/config/trading_strategies.yaml) ───
 
   app.get("/api/sandbox/strategies", sandboxSafe("invest.strategy.read", async (ctx) => {
-    if (ACTIVE_BACKEND === "mastra") return { ok: false, error: "MASTRA_STRATEGY_LIBRARY_NOT_READY", userId: ctx.userId, projectId: ctx.projectId, instanceId: ctx.instanceId };
+    if (ACTIVE_BACKEND === "mastra") {
+      return { ok: true, userId: ctx.userId, projectId: ctx.projectId, instanceId: ctx.instanceId, strategies: readMastraTradingStrategies(ctx) };
+    }
     const store = new WorkspaceStore(ctx.userId);
     const list = await store.readTradingStrategies();
     return { ok: true, userId: ctx.userId, strategies: list };
   }));
 
   app.post<{ Body: { key?: string; name?: string; applicability?: string; body?: string; enabled?: boolean; userId?: string } }>("/api/sandbox/strategies/set", sandboxMutationSafe("invest.strategy.write", "strategies.set", async (ctx, request, reply) => {
-    if (ACTIVE_BACKEND === "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_STRATEGY_LIBRARY_NOT_READY" });
     const { key, name, applicability, body, enabled } = request.body ?? {};
     if (!key) return reply.status(400).send({ ok: false, error: "缺少策略 key" });
     if (!name) return reply.status(400).send({ ok: false, error: "缺少策略 name" });
     if (!body) return reply.status(400).send({ ok: false, error: "缺少策略 body" });
-    const store = new WorkspaceStore(ctx.userId);
-    const existing = (await store.readTradingStrategies()).find((s) => s.key === key);
-    await store.writeTradingStrategy({ key, name, applicability, body, enabled });
+    const existing = ACTIVE_BACKEND === "mastra"
+      ? readMastraTradingStrategies(ctx).find((s) => s.key === key)
+      : (await new WorkspaceStore(ctx.userId).readTradingStrategies()).find((s) => s.key === key);
+    if (ACTIVE_BACKEND === "mastra") {
+      writeMastraTradingStrategy(ctx, { key, name, applicability, body, enabled });
+    } else {
+      await new WorkspaceStore(ctx.userId).writeTradingStrategy({ key, name, applicability, body, enabled });
+    }
     await audit(ctx, {
       operation: "strategies.set",
       resourceType: "trading_strategy",
@@ -1771,14 +1700,18 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   }));
 
   app.post<{ Body: { key?: string; userId?: string; confirmationId?: string } }>("/api/sandbox/strategies/remove", sandboxMutationSafe("invest.strategy.write", "strategies.remove", async (ctx, request, reply) => {
-    if (ACTIVE_BACKEND === "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_STRATEGY_LIBRARY_NOT_READY" });
     const { key } = request.body ?? {};
     if (!key) return reply.status(400).send({ ok: false, error: "缺少策略 key" });
-    const store = new WorkspaceStore(ctx.userId);
-    const existing = (await store.readTradingStrategies()).find((s) => s.key === key);
+    const existing = ACTIVE_BACKEND === "mastra"
+      ? readMastraTradingStrategies(ctx).find((s) => s.key === key)
+      : (await new WorkspaceStore(ctx.userId).readTradingStrategies()).find((s) => s.key === key);
     if (!existing) return { ok: false, error: `未找到 key 为 ${key} 的策略`, userId: ctx.userId };
     if (await requireConfirmation(ctx, request, reply, "strategies.remove", "trading_strategy", key)) return;
-    await store.removeTradingStrategy(key);
+    if (ACTIVE_BACKEND === "mastra") {
+      removeMastraTradingStrategy(ctx, key);
+    } else {
+      await new WorkspaceStore(ctx.userId).removeTradingStrategy(key);
+    }
     await audit(ctx, {
       operation: "strategies.remove",
       resourceType: "trading_strategy",

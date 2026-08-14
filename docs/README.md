@@ -8,6 +8,10 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 
 | Document | Use It For |
 | --- | --- |
+| [mastra-architecture-baseline.md](./mastra-architecture-baseline.md) | Candidate architecture baseline: verified topology, layering, data architecture, capability surface inventory, UX contracts, confirmed directions, and the layer-by-layer review agenda |
+| [preset-system-design.md](./preset-system-design.md) | Preset object system design (draft): system provides generic capabilities; packs like the low-disturbance review mode are preset configuration data |
+| [scheduled-flows-to-automation-design.md](./scheduled-flows-to-automation-design.md) | Review/market-watch to automation-task unification design (draft): task model extensions, preference field mapping, migration phases |
+| [mastra-main-parity-verification.md](./mastra-main-parity-verification.md) | Capability parity verification against `main`: four-layer framework, G1-G23 gap ledger, and per-gap evidence |
 | [mastra-workspace-exit-mapping.md](./mastra-workspace-exit-mapping.md) | Current Mastra candidate work package, technical evidence, H1 boundary, isolated topology, and next actions |
 | [mastra-workspace-exit-mapping_acceptance_review.md](./mastra-workspace-exit-mapping_acceptance_review.md) | Independent acceptance status: WP0-WP7 evidence, unresolved H1, and release exclusions |
 | [mastra-long-work-package.md](./mastra-long-work-package.md) | Scope, work-package stages, ownership and user gates for the candidate branch |

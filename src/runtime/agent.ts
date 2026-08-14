@@ -15,6 +15,18 @@ import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
+import { MastraUserPreferenceStore } from "../services/user-preferences.js";
+import { sqlite } from "../db/index.js";
+
+async function hasAnyTypedScheduledTask(userContext: UserContext): Promise<boolean> {
+  try {
+    return Boolean(sqlite.prepare(
+      "SELECT 1 AS one FROM automation_tasks WHERE user_id=? AND project_id=? AND instance_id=? AND task_type IS NOT NULL LIMIT 1",
+    ).get(userContext.userId, userContext.projectId ?? "invest-agent", userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId)));
+  } catch {
+    return false;
+  }
+}
 
 const WEIXIN_DIRECT_AGENT_TIMEOUT_MS =
   resolvePositiveTimeoutMs("WEIXIN_DIRECT_AGENT_TIMEOUT_MS", 600_000);
@@ -125,6 +137,20 @@ export function createRuntimeAgent(): RuntimeAgent {
           conversationId,
         };
 
+        // O1: WeChat is not an onboarding channel. Users who have not finished
+        // Portal initialization get light guidance instead of a full turn.
+        if (userChannel === "weixin-mobile") {
+          try {
+            const store = new MastraUserPreferenceStore(userContext.userId, userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId), userContext.projectId ?? "invest-agent");
+            const state = await store.readOnboardingState();
+            const hasTypedTasks = await hasAnyTypedScheduledTask(userContext);
+            if (!state?.completed_at && !hasTypedTasks) {
+              return textResponse("欢迎！我已就绪。为了给你配置持仓、策略和复盘节奏，请先在电脑端登录 Portal 完成初始化（约 2 分钟），完成后我们就可以直接在这里对话了。");
+            }
+          } catch {
+            // Preference read failures must not block the WeChat message path.
+          }
+        }
         const promptContext = await buildAgentPromptContext({
           userText: buildChannelForwardPrompt(text, userContext, message.context?.attachments),
           userContext,

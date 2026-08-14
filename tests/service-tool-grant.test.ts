@@ -25,11 +25,9 @@ const REGISTERED_TOOLS = [
   "reviews.save",
   "portfolio.apply_changes", "watchlist.add", "plans.set", "plans.watch_conditions",
   "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create",
-  "confirmations.request", "artifacts.publish",
-  "onboarding.confirm_portfolio", "onboarding.confirm_step", "onboarding.complete_watch_setup",
+  "confirmations.request", "artifacts.publish", "spreadsheet.create",
+  "onboarding.confirm_portfolio",
   "onboarding.draft.get", "onboarding.draft.upsert_step", "onboarding.draft.request_confirmation",
-  "onboarding.draft.accept_step", "onboarding.draft.skip_watch_rules",
-  "onboarding.draft.enqueue_commit", "onboarding.draft.commit_status",
 ];
 
 // ─── 分类表完整性 ──────────────────────────────────────────────
