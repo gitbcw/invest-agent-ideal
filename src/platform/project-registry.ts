@@ -16,7 +16,6 @@ import {
   conversationTasks,
   dailyPlans,
   indicatorResults,
-  investmentProfiles,
   methodChangeCandidates,
   methodologyProfiles,
   onboardingDrafts,
@@ -74,7 +73,6 @@ export const DEFAULT_RESOURCE_TYPES = [
   "portfolio",
   "watchlist",
   "stock_plan",
-  "investment_profile",
   "methodology_profile",
   "method_change_candidate",
   "onboarding_state",
@@ -307,7 +305,6 @@ export async function deleteInvestAgentInstance(instanceId: string) {
     tx.delete(stockPlans).where(and(eq(stockPlans.userId, userId), eq(stockPlans.instanceId, instanceIdValue))).run();
     tx.delete(chatHistory).where(and(eq(chatHistory.userId, userId), eq(chatHistory.instanceId, instanceIdValue))).run();
     tx.delete(dailyPlans).where(and(eq(dailyPlans.userId, userId), eq(dailyPlans.instanceId, instanceIdValue))).run();
-    tx.delete(investmentProfiles).where(and(eq(investmentProfiles.userId, userId), eq(investmentProfiles.instanceId, instanceIdValue))).run();
     tx.delete(methodologyProfiles).where(and(eq(methodologyProfiles.userId, userId), eq(methodologyProfiles.instanceId, instanceIdValue))).run();
     tx.delete(methodChangeCandidates).where(and(eq(methodChangeCandidates.userId, userId), eq(methodChangeCandidates.instanceId, instanceIdValue))).run();
     tx.delete(reviewViewpoints).where(and(eq(reviewViewpoints.userId, userId), eq(reviewViewpoints.instanceId, instanceIdValue))).run();

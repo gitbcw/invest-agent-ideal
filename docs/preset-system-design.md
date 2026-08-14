@@ -1,7 +1,7 @@
 # 预设对象体系设计（Preset System Design）
 
-状态：v1 已采纳并部分实施（2026-08-14）——用户授权按最优判断落地，核心锁定"通用能力 + 个性化配置"
-已落地：预设注册表与 `applyPreset`（`src/services/presets.ts`，含低打扰复盘型）、任务类型注册表（`src/services/scheduled-task-types.ts`）、schedule 扩展 monthly/windows、任务表 `task_type` 列；开放问题裁决：windows 多时段（一任务多触发点）、v1 不组合、copyPack 仅追加段
+状态：v1 已采纳并部分实施（2026-08-14）——用户授权按最优判断落地，核心锁定"通用能力 + 个性化配置"；开放问题已全部收口（2026-08-14 议程收尾，见 §6）
+已落地：预设注册表与 `applyPreset`（`src/services/presets.ts`，含低打扰复盘型）、任务类型注册表（`src/services/scheduled-task-types.ts`）、schedule 扩展 monthly/windows、任务表 `task_type` 列；策略包首批两个（趋势跟踪/价值回归，随新 onboarding 落地）
 未落地：applyPreset 创建的任务为 paused（等执行器激活）；compat 偏好双写在执行器转正后移除
 关联：[mastra-architecture-baseline.md](./mastra-architecture-baseline.md) §7.5、[scheduled-flows-to-automation-design.md](./scheduled-flows-to-automation-design.md)
 
@@ -69,7 +69,7 @@ interface PresetTaskTemplate {
 | apply | 原子操作：批量创建任务（source 标记 `preset:<id>:<version>`）+ 写投递策略 | 同 taskType 已存在用户任务：**跳过并报告**（默认，不覆盖用户自建） |
 | switch（usage-mode 间） | pause 旧预设任务 → apply 新预设 | 产物保留 |
 | remove | pause/删除预设来源任务；投递策略恢复系统默认 | 产物（复盘/资产）保留 |
-| upgrade | 按版本 diff 增量更新预设来源任务；用户改过参数的任务**不自动覆盖**，标记待确认 | 待审 |
+| upgrade | 按版本 diff 增量更新预设来源任务；用户改过参数的任务**不自动覆盖**，标记待确认 | ✅ 已裁决（§6-2）：默认不动 + 标记差异 |
 
 存储：预设定义 = 服务层静态注册表（代码内，随版本管理）；用户应用状态 = 任务的 `source` 字段（`{kind:"preset", presetId, version}`），**不新增用户级预设表**——任务是唯一事实源。
 
@@ -85,12 +85,12 @@ interface PresetTaskTemplate {
 - 现有 7 个 draft 工具 + 3 个 confirm 工具服务的"对话式灌输节奏"流程，在预设模型下收缩为：`applyPreset` 单操作 + 持仓导入；draft 状态机去留在新 onboarding 设计中定（Portal 化候选）
 - "走完 onboarding 即可调度"语义平移为"应用预设即有对应任务"
 
-## 6. 开放问题（请审）
+## 6. 开放问题（已收口，2026-08-14）
 
-1. **可组合性**：usage-mode 互斥没问题；但"节奏包 × 策略包"能否叠加（如低打扰模式 + 某趋势策略包）？v1 建议不组合，先立单预设语义
-2. **升级策略**：预设出新版本时，用户已修改过参数的任务如何处理（默认不动+标记差异，是否足够）
-3. **文案包边界**：copyPack 允许覆盖到什么深度（仅任务级补充段落，还是可覆盖系统默认任务 prompt 的任意部分）——建议 v1 仅允许"追加段"
-4. **预设的发现面**：Portal 呈现（选择页/任务模板库）属 G21 后续 Portal 设计，一并考虑
+1. **可组合性** ✅ 已裁决：v1 不组合，先立单预设语义（叠加能力等有真实需求再议）
+2. **升级策略** ✅ 已裁决（agent 按最优判断，随议程收尾）：默认不动 + 标记差异——预设出新版本时，用户改过参数的任务不自动覆盖、标记待确认；v1 尚无升级流，真正引入预设版本升级时按此执行
+3. **文案包边界** ✅ 已裁决：copyPack v1 仅允许"追加段"，不可覆盖系统默认任务 prompt 的任意部分
+4. **预设的发现面** ⏸ 维持挂起：属 G21 后续 Portal 设计（基线 §12 工程项 E9），届时一并考虑
 
 ## 7. 实施依赖顺序
 

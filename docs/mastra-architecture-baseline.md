@@ -1,6 +1,6 @@
 # Mastra 候选架构基线
 
-状态：工作底稿（v1，2026-08-14）——记录本分支**已验证的架构事实**与**已确认的方向**，作为逐层核对的议程基线
+状态：工作底稿（v2，2026-08-14）——记录本分支**已验证的架构事实**与**已确认的方向**；**逐层核对议程 1-8 已全部走完（2026-08-14，D18-D21）**，转入工程项执行期（见 §12 工程项清单）+ H1 验收门
 分支：`feat/mastra-migration`（并行探索分支，非合并候选）
 
 > 本文描述**本分支（候选）的现实架构**。`docs/system-overview.md` 描述的是 main 基线的 ACP/Workspace 架构，在本分支不成立；两文在分支收敛前并存。
@@ -15,7 +15,7 @@
 | P2 | 推理内核可替换：应用层只见中性 runtime 接口 | `src/runtime/` 零 acp/codex/hermes 标识；Portal/微信/调度统一走 `createRuntimeAgent()` | ✅ 已验证 |
 | P3 | 数据 service-owned：SQLite 投影为权威，受控文件根存字节 | 三投影表 + ledger + `mastra-projects/<digest>` | ✅ 已验证 |
 | P4 | 通道无关：微信与 Portal 是同一 runtime 的两个入口 | 两通道共用 handleMessage 与工具面 | ✅ 已验证 |
-| P5 | Agent 负责判断，服务负责确定性与事务；能力尽量经 MCP 外包、服务层保持窄边界 | 现状 50 工具全部进程内（research.* 已走外部 MCP） | 📌 已确认方向 / ⬜ 边界待盘点（见 §6） |
+| P5 | Agent 负责判断，服务负责确定性与事务；能力尽量经外部服务/MCP 外包、服务层保持窄边界 | 边界判据三分类定稿 + 44 工具终表（2026-08-14 议程 2，见 §5） | ✅ 已核对（外包 = 外部服务 + 服务薄壳；MCP 协议化非目标本身） |
 | P6 | 用户体验契约显性化：藏在 prompt 里的呈现规则应成为可核对的契约 | web 通道 SVG/表格/xlsx 规则全部在 `buildChannelContextInstruction` 字符串里 | 📌 已确认方向（见 §10.3） |
 
 ## 2. 进程拓扑 ✅ 已验证
@@ -41,19 +41,19 @@
 channels/   微信桥、Portal connector
 runtime/    中性应用层：agent 入口、prompt 构建、scheduled-tasks、trace、protocol
 mastra/     内核层：agent-factory、model-gateway、run-turn、tools registry、workspace-registry
-mcp/        工具注册层：service-tools-core(50) + scope 分类 + 外部 MCP 装配
+mcp/        工具注册层：service-tools-core(44) + scope 分类 + 外部 MCP 装配
 services/   业务逻辑（58 文件）
 lib/        数据后端：ACTIVE_BACKEND 三态切换 + mastra 投影 + workspace 兼容
 db/         schema + drizzle
 ```
 
-分层张力（阅读复杂度来源，按影响排序）：
-- T1 `ACTIVE_BACKEND` 三元分支散布约 20 文件；`sqlite` 态实际死路径、`workspace` 态仅回滚保险 → 收敛方向：backend 接口化收拢到 `lib/`，上层只见接口 ⬜ 待核对
-- T2 投影行内多域共存（`profile_json` 兄弟键 + merge 写入约定）——隐式契约 ⬜
-- T3 表命名双轨（`mastra_*` vs `chat_history`/`methodology_profiles` 活表）⬜
-- T4 onboarding 双实现（routes/sandbox 内联 vs service-tools-core）⬜
-- T5 runtime 未进 `apps/`，src 平铺 ⬜
-- T6 观测层：trace `tool_calls` 系统性为空（G23）⬜
+分层张力（阅读复杂度来源，按影响排序；2026-08-14 议程 6 核对定稿，D21）：
+- T1 `ACTIVE_BACKEND` 三元分支实测散布 **28 个非测试文件**；`sqlite` 态实际死路径、`workspace` 态仅回滚保险 → **方向定稿**：backend 接口化收拢到 `lib/`（portfolio/watchlist/plans 三域已在 `data-backend.ts` 示范目标形态：接口 + 三元选择收在 lib），剩余域分批收拢；验收 = `ACTIVE_BACKEND` 直接引用只出现在 `lib/`。执行为工程项
+- T2 投影行内多域共存（`profile_json` 兄弟键 + merge 写入约定）→ **定稿维持单行 + 兄弟键契约**（D20 移除画像键后仅剩 tradingStrategies 等少数兄弟域；merge-safe 语义 G12 已保障 + revision 乐观锁）；契约显性化记入本文即消除"隐式"
+- T3 表命名双轨（`mastra_*` vs `chat_history`/`methodology_profiles` 活表）→ **定稿不改名**：候选→真实数据迁移阶段改表名的迁移成本大于一致性收益；命名差异文档化（§4）即可
+- T4 onboarding 双实现 → **已消解**（D16 后 HTTP 路由与 MCP 工具共享 `services/onboarding.ts` 同一核心；Portal HTTP + Agent MCP 是通道复用，非重复实现）
+- T5 runtime 未进 `apps/`，src 平铺 → 挂工程项（WP4 形态收尾），不阻断
+- T6 观测层：trace `tool_calls` 系统性为空（G23）→ H1 前工程项（见 §8）
 
 ## 4. 数据架构 ✅ 已验证
 
@@ -63,46 +63,60 @@ db/         schema + drizzle
 | mastra 投影 3 表 | `mastra_portfolio_states`、`mastra_project_profiles`（含 `tradingStrategies` 兄弟键）、`mastra_runtime_preferences` | 空默认+惰性建行语义（与 workspace 等价）；revision 乐观锁 |
 | ledger | `mastra_review_memory_records`：日计划/周期复盘/方法变更/观点/service 事件 | append-only；行为统计已接入 |
 | 受控文件根 | `data/mastra-projects/<sha256>`：资产版本字节/附件/staging | registry 主导，禁止回退 legacy 根 |
-| legacy 双轨 | `WORKSPACE_BACKEND=workspace` 全套（回滚后端）；`chat_history`、`methodology_profiles` 为 mastra 模式活表 | 功能等价、命名未收敛 |
+| legacy 双轨 | `WORKSPACE_BACKEND=workspace` 全套（回滚后端）；`chat_history`、`methodology_profiles` 为 mastra 模式活表 | 功能等价、命名未收敛（T3 定稿不改名）；**回滚后端拆除时机定稿（D21）：保留至真实数据迁移验证 + H1 验收通过，随后独立清理提交并以 convergence scan 防回潮**（与长工作包 WP5→WP6 顺序一致） |
 
-## 5. 能力面：service tools 盘点（50 个）📌 方向已确认，逐工具归属待核对
+## 5. 能力面：service tools 终表（44 个）✅ 已核对（2026-08-14 议程 2，D18）
 
-**已确认方向**：大部分能力应通过 MCP 外包；服务层能力需要明确边界。逐工具归属是后续核对议题。
+**边界判据（定稿，P5 落地）——三分类**：
 
-按域分组现状（全部进程内、共享 case 骨架）：
+1. **事务/确认/调度/审计绑定** → 服务层（安全边界，不可外包）
+2. **service-owned 数据读取**（投影表、快照、资产索引、对话历史）→ 服务层（ownership 边界；外部 MCP 无法访问服务 SQLite/字节根）
+3. **纯外部能力代理**（搜索/解析/行情/文档生成）→ 外部服务 + 服务薄壳（校验/scope/审计留在 case 层）；是否走 MCP 协议按工程需要定，不作为目标本身
 
-| 域 | 工具 | 初步归属倾向（待核对） |
+> 修正：原二分草案（"纯读取、纯内容生成优先外包"）会把 `assets.list` 这类 service-owned 读取误导向外包；原 B 批判断把"行情能力"与"快照读取"、"资产能力"与"资产索引读取"混在一起，三分类判据修正之。
+
+**44 工具归属终表**：
+
+| 归属 | 工具 | 判据 |
 | --- | --- | --- |
-| 读取类 | portfolio.read、watchlist.read、plans.read、conversation.history、confirmations.pending、watch_rules.list/catalog、market_watch.snapshot、file.parse | 状态读取属服务核心；market_watch.snapshot/file.parse 疑可外包 |
-| 研究类 | research.news_search / web_search / web_read | 已是外部 MCP 装配 ✅ 外包样板 |
-| 写入+确认类 | portfolio.apply_changes、watchlist.add、plans.set/watch_conditions、method_changes.propose/apply、preferences.apply、watch_rules.create、confirmations.request | 服务核心（确认门/事务/审计不可外包） |
-| Onboarding | confirm_portfolio/step/complete_watch_setup + draft.* 9 个 | 服务核心（多域事务）；draft.* 9 个工具粒度可再盘 |
-| 资产/文件 | assets.* 8 个、artifacts.publish、spreadsheet.create | 资产索引属服务核心；spreadsheet.create 疑可外包 |
-| 自动化 | automation.create/get/list/update/activate/pause | 服务核心（调度绑定） |
-| 复盘 | reviews.save | 随"复盘并入自动化"重审（见 §7） |
+| 服务核心·事务/确认（15） | portfolio.apply_changes、watchlist.add、plans.set、plans.watch_conditions、method_changes.propose/apply、preferences.apply、watch_rules.create、confirmations.request、onboarding.confirm_portfolio、onboarding.draft.get/upsert_step/request_confirmation、artifacts.publish、reviews.save | 类①；D14 A 批 + C5（reviews.save 为任务完成契约本体） |
+| 服务核心·调度绑定（6） | automation.create/get/list/update/activate/pause | 类①；任务系统是调度权威 |
+| 服务核心·数据读取（8） | portfolio.read、watchlist.read、plans.read、conversation.history、confirmations.pending、market_watch.snapshot、assets.list、assets.version.read | 类②；快照/资产索引为 service-owned 数据，行情事实本身已由外部 market-data-tool MCP 承接 |
+| 服务核心·资产写侧（6） | assets.version.commit、assets.conversation.save、assets.attachment.save、assets.rename、assets.archive、assets.delete | 类①；资产生命周期 + 审计 |
+| 外部代理薄壳（3） | research.news_search/web_search/web_read | 类③样板：case 层校验/scope/审计 + 委托外部 |
+| 外部代理薄壳·实质达成（1） | file.parse | 类③；实现已是"服务读附件字节 + MinerU 外部解析"，维持现状，不做 MCP 协议化改造（无行为收益） |
+| 进程内·文档生成（1） | spreadsheet.create | 类③能力，定稿维持进程内：生成+落库+审计一体、实测可用；两段式外包（外部生成字节→服务落库）收益不抵字节回传与外部依赖成本（D18） |
+| 服务核心·规则读取/求值（4） | watch_rules.catalog、list、validate、dry_run | 类②/确定性求值；议程 4 定稿（D19）——规则定义是 service-owned 数据，validate/dry_run 为确定性求值 |
 
-**边界判据（草案，待核对）**：凡需要 确认门/审计/锁/scope/事务提交/调度绑定的留在服务层；纯读取、纯内容生成（表格/解析/快照）优先外包为 MCP。
+**B 批 MCP 外包专项取消**（D18）：market_watch.snapshot（读 service-owned 快照）、assets.list/version.read（读服务索引）定稿留服务层；file.parse 已实质外包；唯一真候选 spreadsheet.create 定稿维持进程内。工具面 44 为定稿基线（后续增减随具体能力变更重开议题）。
 
-**预设模型落地后的收敛裁决案（2026-08-14，待用户确认）**：
-- C5：`reviews.save` 定**服务核心**（任务完成契约本体，并入 A 批）；`market_watch.snapshot` 维持**外包候选**（B 批）
-- C1：confirm 三件套已在 A 批（多域事务核心）；draft 七件套建议**收缩**——保留 `draft.get / upsert_step / request_confirmation`（对话式持仓导入仍需），`accept_step / skip_watch_rules / enqueue_commit / commit_status` 随新 onboarding 设计 Portal 化（节奏语义已由 applyPreset 承接，无需对话式灌输）
-- 净效果：Agent 工具面从 50 收敛到约 46（若 B 批外包再实施则更少）
+## 6. 调度与自动化 ✅ 复盘/盯盘已任务化（D10-D13）；规则巡检边界已核对（议程 4，D19）
 
-## 6. 调度与自动化 📌 方向已确认，重设计待核对
+**现状（2026-08-14 议程 4 盘点）**：
 
-**现状**：两条并行线——
-1. `src/scheduler/` 硬编码循环：market-watch（盘中简报）、review（日/周/月复盘预生成+触发）、alert-check（规则巡检）、retention 清理
-2. 通用自动化任务系统：`automation.*`（schedule: daily/trading_days/weekdays/weekly + time + inputs 资产绑定 + output/delivery）
+1. **已任务化**：日/周/月复盘（D11）与盘中盯盘（D12）走任务类型注册表（`scheduled-task-types.ts` 四类 typed task）；typed 任务权威、偏好路径防双发让位；P4a 幂等迁移脚本就绪。P4b（废除偏好散读点与 schedulerActivation）待全量迁移验证后执行。
+2. **规则巡检（维持 v1 设计划界，议程 4 复核确认）**：`price_cross` 单类型（WP6 用户裁决：8 类非价格规则退役，非价格条件未来走外部量化筛选工具，qsse-qlib MCP 已注册默认关）；`shouldRunRuleAlertCheckTask`（scheduler/index.ts:472）按 `alert_check_interval_minutes` 间隔槽触发 + `claimScheduledTaskRun` 幂等领取；每次命中落 scheduled_task_runs 但**不在任务类型注册表——这是正确的**（"事件驱动条件评估"≠"节奏性工作"，v1 设计 §5 已划界不并入自动化任务）；与盘中简报同 tick 时抑制单独推送。
+3. **优先级来源（D19 裁决）**：`HARDWIRED_PRIORITY_MAP`（alert-check.ts:595）原设计读 workspace `risk_taxonomy.yaml`、mastra 下恒走硬编码默认——定稿：硬编码映射升格为 service-owned 产品常量（稳定集合），删除 workspace yaml 死路径（随 T1 收敛执行）；不做 preferences 化（v1 设计已定"优先级/推送策略自成一体、从 preferences 解耦"）。
+4. retention 清理、data-quality 等平台循环保持 scheduler 内部（非用户语义，不任务化）。
+
+**watch_rules 工具归属（按 D18 判据定稿）**：catalog/list = service-owned 规则数据读取；validate/dry_run = 确定性求值——四件全定稿服务核心（§5 表已同步）。
+
+**遗留工程项（不阻断核对）**：① risk_taxonomy.yaml workspace 死路径清理（随 T1 一并做）；② G21 巡检可见性——Portal 管理面设计时与任务列表同页呈现；③ 非价格条件外部化（qsse-qlib 对接）维持划界、按需开专项。
 
 **已确认方向**：
-- 复盘、盯盘（market-watch）并入自动化任务系统，scheduler 只保留触发器角色 ⬜ 待设计（注意：automation schedule 枚举缺 `monthly`；复盘的 kind 语义、预生成暂存、push 策略需映射为任务参数）
-- 规则巡检（rule inspection）重新设计 ⬜ 之前已标记过重审；现状 = `price_cross` 单规则类型 + 调度器内确定性巡检 + mastra 下优先级硬编码
-- 调度激活语义：onboarding 完成 = 可调度（已实现）；巡检可见性（Portal 管理面）为后续 Portal 设计点（G21）
+- 复盘、盯盘并入自动化任务系统，scheduler 只保留触发器角色 ✅ 已实施（D10-D13）
+- 调度激活语义：onboarding 完成 = 可调度 ✅ 已实现；巡检可见性（G21）为后续 Portal 设计点
 
-## 7. 投资画像（investment profile）📌 已确认移除
+## 7. 投资画像（investment profile）✅ 已确认移除（D5）；移除范围清单已盘点（议程 5，D20）
 
-- **证据**：运行时消费面仅 `routes/sandbox.ts` 的 GET/PUT profile 端点与 platform 快照；**Agent 工具面（50 工具）与 prompt 均不使用**；投资画像与方法变更（method_changes → `profile_json`）是两套东西
-- 待核对：移除范围清单（HTTP 端点、`investmentProfiles` 表读写、`mastra_project_profiles` 中画像键的存废、platform 展示）
+- **证据**：运行时消费面仅 `routes/sandbox.ts` 的 GET/PUT profile 端点与 platform 快照；**Agent 工具面（44 工具）与 prompt 均不使用**；投资画像与方法变更（method_changes → methodology）是两套东西；Portal 代码零引用
+- **移除范围清单（2026-08-14 议程 5 全量扫描）**：
+  1. **HTTP**：`POST /api/sandbox/profiles/investment`（sandbox.ts:1311）整端点删除；`GET /api/sandbox/profiles`（1134）去掉 investmentProfile 字段（methodologyProfile/changeRows 保留）；`GET /api/sandbox/snapshot`（1066）去掉 investmentProfile/hasInvestmentProfile
+  2. **mastra 投影**：`mastra_project_profiles.profile_json` 画像键（style/selectedStylePack/riskPreference/investmentHorizon/markets/allocation/positionRoles/buyRules/sellRules/rebalanceRules/notes）读写移除 + 一次性迁移剔除既有键；兄弟键 tradingStrategies/methodology 保留（merge 语义已由 G12 保障）
+  3. **表**：`investment_profiles` 的 drizzle 定义（schema.ts:193）与 CREATE TABLE/ensureColumn/唯一索引（db/index.ts:228/1111/1230）候选分支移除；**生产表 drop 挂真实数据迁移阶段按 db-migration 规范执行**（红线：不得未经授权动生产 SQLite）；project-registry.ts:310 的行清理随之移除
+  4. **Platform**：`GET /api/platform/instances/:id/investment-state`（platform.ts:1949）+ scope 分类条目（1155）+ admin owner UI view-instances 展示区块移除；userInstanceTables 清单（platform.ts:627）去掉该表
+  5. **scope 处置**：`invest.profile.read/write` 保留（methodology 端点仍用），tool-registry 中 resourceType 由 `investment_profile` 改标 `methodology_profile`（tool-registry.ts:96/104）
+- **实施为独立工程项**（不阻断核对）：按清单一次提交完成 + 回归
 
 ## 7.5 产品语义重构讨论（2026-08-14，未决，讨论中）
 
@@ -119,10 +133,10 @@ db/         schema + drizzle
 
 **讨论收口（2026-08-14 同日）**：用户确认按 D9 语义归属原则推进，讨论收敛为两份待审设计稿——预设对象体系（[preset-system-design.md](./preset-system-design.md)）与复盘/盯盘任务化+偏好映射（[scheduled-flows-to-automation-design.md](./scheduled-flows-to-automation-design.md)）。偏好读取 scope 缺陷（三处硬编码 DEFAULT_INSTANCE_ID）已当场修复。
 
-## 8. 可观测性 ⬜ 待核对
+## 8. 可观测性 ✅ 核对完成（议程 6/7 并入；G23 转工程项）
 
 - trace 链路：`agent_traces`（backend/model/status/usage/耗时）写入正常；**`tool_calls` 系统性为空（G23）**——run-turn 未捕获当前 Mastra 版本的 tool-call 事件形状
-- 这是追踪契约（next-phase-plan 工作流 A）的地基缺口，优先级最高
+- 核对结论（2026-08-14）：无架构争议，纯实现缺口——修复 = 在 `mastra/run-turn.ts` 按当前 Mastra 版本的事件形状捕获 tool-call 终态并写入 trace。列为 **H1 前工程项**（影响审计/调试，不影响用户功能；与 G22 并列）
 
 ## 9. 模型与网关 ✅ 已验证
 
@@ -187,15 +201,34 @@ db/         schema + drizzle
 | D16 | O3 工具面收缩（2026-08-14 已实施）：按 D14 移除 6 个 onboarding 步骤类工具及 confirm-step 路由；确认契约测试改用存活写工具承载；applyPreset 补 activation 语义（P4b 前）。工具面 44；npm test 454/454 |
 | D15 | O1+O2 新 onboarding 落地（2026-08-14 已实施并隔离候选端到端验证）：默认节奏幂等契约 + runtime/Portal 完成端点 + /onboarding 三步向导（③策略包真实生效）+ 微信轻指引门；首批策略包 2 个（趋势跟踪/价值回归）。mastra 套件 80/80 |
 | D14 | 工具面裁决（2026-08-14，用户授权按最优判断）：A 批 14 个确认/事务类 + `reviews.save` 定服务核心；B 批（spreadsheet.create/file.parse 外包）挂 MCP 外包专项；assets 读写拆分（读侧外包候选、写侧生命周期留服务）；watch_rules 其余四件挂规则巡检重设计；纯读取四件套保留进程内；draft 七件套收缩为三（get/upsert/request_confirmation，其余四个随新 onboarding Portal 化——待实施）。工具面目标 50→46+ |
+| D18 | 能力面定稿（2026-08-14 议程 2 核对，agent 按最优判断裁决落地、用户未逐项表态）：边界判据三分类（①事务/确认/调度/审计绑定→服务层 ②service-owned 数据读取→服务层 ③纯外部能力代理→外部服务+服务薄壳）；44 工具归属终表见 §5；spreadsheet.create 维持进程内；market_watch.snapshot 与 assets 读侧定稿留服务层；file.parse 已实质外包维持现状；**B 批 MCP 外包专项取消**。如需翻案，下次核对提出即可 |
+| D19 | 规则巡检边界定稿（2026-08-14 议程 4 核对，agent 按最优判断落地）：维持 v1 设计划界——规则巡检不并入自动化任务（事件驱动条件评估 ≠ 节奏性工作），保持调度器内确定性 patrol + scheduled_task_runs 留痕；优先级定稿为 service-owned 产品常量（HARDWIRED_PRIORITY_MAP 升格，risk_taxonomy.yaml workspace 死路径随 T1 清理）；watch_rules 四件（catalog/list/validate/dry_run）定稿服务核心；非价格条件外部化（qsse-qlib）维持划界按需开专项；G21 可见性留待 Portal 管理面设计 |
+| D20 | 投资画像移除范围定稿（2026-08-14 议程 5 核对，agent 按最优判断落地）：范围清单见 §7——三端点清理、投影画像键迁移剔除（兄弟键保留）、investment_profiles 表候选分支移除（生产 drop 挂真实数据迁移按 db-migration 规范）、platform investment-state 端点+UI 区块移除、invest.profile.read/write scope 保留但 resourceType 改标 methodology_profile；实施为独立工程项 |
+| D21 | 数据层收敛定稿（2026-08-14 议程 6 核对，agent 按最优判断落地）：T1 backend 接口化收拢（28 文件实测，portfolio/watchlist/plans 已示范，验收 = ACTIVE_BACKEND 仅存 lib/）；T2 投影维持单行 + 兄弟键显性契约；T3 表命名不改（迁移成本 > 一致性收益）；T4 已随 D16 消解；T5 挂工程项。**workspace 回滚后端拆除时机：保留至真实数据迁移验证 + H1 验收通过后独立清理（convergence scan 防回潮）**；G23 修为 run-turn 事件捕获、G22/G23 均 H1 前工程项。逐层核对议程 1-8 全部走完，转工程项执行期 |
 
 ## 12. 逐层核对议程（建议顺序）
 
-1. **预设与任务化设计稿审阅**（D9 关联两稿，含各自开放问题）——当前焦点
-2. **能力面盘点与 MCP 外包边界**（§5，P5）——50 工具逐个定归属；C1/C5 在预设模型定稿后一并收敛
-3. **架构原则定稿**（§1）——P1-P4 补充证据，P6 随 D7 落地
-4. **规则巡检重设计**（§6 独立线）
-5. **投资画像移除范围**（§7）
-6. **数据层收敛**（§3 T1-T3、§4 双轨）
-7. **观测层**（§8，G23）
-8. **UX 断点**（G22 对话直链、G21 调度可见性——G21 由任务化设计 §3 一并解决大半）
+1. ~~预设与任务化设计稿审阅~~ ✅ 收口（D9-D17，2026-08-14）
+2. ~~能力面盘点与 MCP 外包边界~~ ✅ 核对完成（2026-08-14 议程 2：三分类判据定稿、44 工具终表、B 批外包专项取消，D18）
+3. ~~架构原则定稿~~ ✅ P1-P4 已验证、P5 判据随议程 2 定稿（§5）、P6 由 §10.3 补丁地图承载（契约化随维护纪律长期执行）
+4. ~~规则巡检重设计~~ ✅ 核对完成（2026-08-14 议程 4：维持划界不任务化、优先级定 service-owned 常量、watch_rules 四件定稿服务核心，D19；遗留工程项记 §6）
+5. ~~投资画像移除范围~~ ✅ 盘点完成（2026-08-14 议程 5：范围清单五项定稿，D20；实施为独立工程项）
+6. ~~数据层收敛~~ ✅ 核对完成（2026-08-14 议程 6：T1-T6 逐项定稿、workspace 回滚后端拆除时机定稿，D21）
+7. ~~观测层~~ ✅ G23 无架构争议，转 H1 前工程项（§8）
+8. ~~UX 断点~~ ✅ G22 定 H1 前工程项；G21 留待 Portal 管理面设计（§6 遗留项）
 9. 每轮核对后更新本文对应小节、§10.3 补丁地图与决策日志
+
+**逐层核对议程已全部走完（2026-08-14）。后续为工程项执行期 + H1 验收门：**
+
+| # | 工程项 | 来源 | 建议时点 |
+| --- | --- | --- | --- |
+| E1 | 投资画像移除实施（五项清单） | D20/§7 | 随下一批改动 |
+| E2 | T1 backend 接口化收拢（ACTIVE_BACKEND 仅存 lib/） | D21/§3 | 随下一批改动 |
+| E3 | risk_taxonomy.yaml workspace 死路径清理 | D19/§6 | 随 E2 一并 |
+| E4 | P4b 偏好散读点与 schedulerActivation 废除 | D13 | 全量迁移验证后 |
+| E5 | G22 对话内文件直链修复 | §10.1 | H1 前 |
+| E6 | G23 trace tool_calls 事件捕获修复 | §8 | H1 前 |
+| E7 | runtime 进 apps/ 物理迁移 | T5 | 低优先 |
+| E8 | workspace 回滚后端拆除 | D21/§4 | 真实数据迁移验证 + H1 后 |
+| E9 | G21 Portal 巡检/调度可见性管理面 | §6 | 后续 Portal 设计 |
+| — | **Gate H1 本地最终体验验收** | 长工作包 | E5/E6 完成后（用户 gate） |

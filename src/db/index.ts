@@ -225,29 +225,6 @@ export function initDb() {
       content TEXT NOT NULL,
       data TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS investment_profiles (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL DEFAULT 'primary',
-      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
-      style TEXT,
-      selected_style_pack TEXT,
-      custom_style TEXT NOT NULL DEFAULT '{}',
-      risk_preference TEXT,
-      investment_horizon TEXT,
-      markets TEXT NOT NULL DEFAULT '[]',
-      allocation TEXT NOT NULL DEFAULT '{}',
-      position_roles TEXT NOT NULL DEFAULT '{}',
-      buy_rules TEXT NOT NULL DEFAULT '[]',
-      sell_rules TEXT NOT NULL DEFAULT '[]',
-      rebalance_rules TEXT NOT NULL DEFAULT '[]',
-      risk_rules TEXT NOT NULL DEFAULT '[]',
-      notification_policy TEXT NOT NULL DEFAULT '{}',
-      decision_policy TEXT NOT NULL DEFAULT '{}',
-      notes TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE(user_id, instance_id)
-    );
     CREATE TABLE IF NOT EXISTS methodology_profiles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL DEFAULT 'primary',
@@ -1108,8 +1085,6 @@ export function initDb() {
   ensureColumn("daily_plans", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   prepareAgentTracesTable();
   ensureColumn("daily_plans", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
-  ensureColumn("investment_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
-  ensureColumn("investment_profiles", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("methodology_profiles", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("methodology_profiles", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("method_change_candidates", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
@@ -1210,6 +1185,7 @@ export function initDb() {
   dropColumnIfExists("portfolio", "quantity");
   backfillHistoricalInstanceAssignments();
   migrateConversationIdempotencyScope();
+  stripRetiredInvestmentProfileProjectionKeys();
   backfillOnboardingDraftHandoffs();
   ensureGenericAutomationTaskMigration();
   migrateLegacyAcpTracesToAgentTraces();
@@ -1227,7 +1203,6 @@ export function initDb() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identities_unique ON channel_identities(channel, external_user_id);
     CREATE INDEX IF NOT EXISTS idx_ai_instances_project_owner ON ai_instances(project_id, owner_user_id, status);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_identity_instances_default ON channel_identity_instances(channel_identity_id, project_id, is_default);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_profiles_scope ON investment_profiles(user_id, instance_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_methodology_profiles_scope ON methodology_profiles(user_id, instance_id);
     CREATE INDEX IF NOT EXISTS idx_mastra_project_profiles_source
       ON mastra_project_profiles(user_id, project_id, instance_id, source_checksum);
@@ -1850,6 +1825,46 @@ function ensureGenericAutomationTaskMigration() {
   // Generic revision columns are additive. Existing CSV/XLSX revisions keep
   // their legacy source/working fields and remain readable by old callers.
   markMigration(migrationKey);
+}
+
+/**
+ * One-time cleanup (investment profile retirement, 2026-08-14): the retired
+ * HTTP surface wrote camelCase investment-profile keys directly into
+ * mastra_project_profiles.profile_json. Strip exactly those keys; keep
+ * StrategyYaml-equivalent fields (snake_case / nested profile object) and the
+ * tradingStrategies sibling key untouched. Key names that collide with
+ * StrategyYaml fields (allocation/notes/markets) are deliberately kept —
+ * their provenance cannot be distinguished, so removal would risk data loss.
+ * Idempotent: json_remove on absent keys is a no-op.
+ */
+function stripRetiredInvestmentProfileProjectionKeys() {
+  if (!hasTable("mastra_project_profiles")) return;
+  sqlite.exec(`
+    UPDATE mastra_project_profiles
+    SET profile_json = json_remove(
+      profile_json,
+      '$.style',
+      '$.selectedStylePack',
+      '$.riskPreference',
+      '$.investmentHorizon',
+      '$.positionRoles',
+      '$.buyRules',
+      '$.sellRules',
+      '$.rebalanceRules',
+      '$.riskRules',
+      '$.sourceRevision'
+    )
+    WHERE json_type(profile_json, '$.style') IS NOT NULL
+       OR json_type(profile_json, '$.selectedStylePack') IS NOT NULL
+       OR json_type(profile_json, '$.riskPreference') IS NOT NULL
+       OR json_type(profile_json, '$.investmentHorizon') IS NOT NULL
+       OR json_type(profile_json, '$.positionRoles') IS NOT NULL
+       OR json_type(profile_json, '$.buyRules') IS NOT NULL
+       OR json_type(profile_json, '$.sellRules') IS NOT NULL
+       OR json_type(profile_json, '$.rebalanceRules') IS NOT NULL
+       OR json_type(profile_json, '$.riskRules') IS NOT NULL
+       OR json_type(profile_json, '$.sourceRevision') IS NOT NULL
+  `);
 }
 
 function prepareAgentTracesTable() {

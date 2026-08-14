@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { db, sqlite } from "../db/index.js";
-import { agentTraces, alertEvents, alertRules, indicatorResults, investmentProfiles, mastraProjectProfiles, methodologyProfiles } from "../db/schema.js";
+import { agentTraces, alertEvents, alertRules, indicatorResults, mastraProjectProfiles, methodologyProfiles } from "../db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
 import { readMastraTradingStrategies, removeMastraTradingStrategy, writeMastraTradingStrategy } from "../lib/mastra-strategy-library.js";
-import { WorkspaceStore, type OnboardingStepKey, type OnboardingStateYaml, type StrategyYaml } from "../lib/workspace-store.js";
+import { WorkspaceStore, type OnboardingStepKey, type OnboardingStateYaml } from "../lib/workspace-store.js";
 import { sandboxContextFromRequest, type SandboxPermission } from "../lib/sandbox-context.js";
 import { assertSandboxToolAllowed, type ToolId } from "../platform/tool-registry.js";
 import { buildDailyReviewContext, buildMonthlyReviewContext, buildWeeklyReviewContext, generateDailyReview, saveSkillDailyReview } from "../handlers/review.js";
@@ -101,78 +101,11 @@ function serializePlan(row: Awaited<ReturnType<typeof planBackend.list>>[number]
   };
 }
 
-function serializeInvestmentProfile(row: typeof investmentProfiles.$inferSelect | undefined) {
-  if (!row) return null;
-  return {
-    ...row,
-    customStyle: parseJsonText(row.customStyle, {}),
-    markets: parseJsonText(row.markets, []),
-    allocation: parseJsonText(row.allocation, {}),
-    positionRoles: parseJsonText(row.positionRoles, {}),
-    buyRules: parseJsonText(row.buyRules, []),
-    sellRules: parseJsonText(row.sellRules, []),
-    rebalanceRules: parseJsonText(row.rebalanceRules, []),
-    riskRules: parseJsonText(row.riskRules, []),
-    notificationPolicy: parseJsonText(row.notificationPolicy, {}),
-    decisionPolicy: parseJsonText(row.decisionPolicy, {}),
-  };
-}
-
 function serializeMethodologyProfile(row: typeof methodologyProfiles.$inferSelect | undefined) {
   if (!row) return null;
   return {
     ...row,
     sourcePolicy: parseJsonText(row.sourcePolicy, {}),
-  };
-}
-
-/**
- * workspace 模式下的 profile 序列化器,与 serializeInvestmentProfile 输出 shape 保持一致。
- *
- * 字段舍弃说明:customStyle/notificationPolicy/decisionPolicy 在 yaml 中无对应,统一返回空对象。
- */
-function serializeInvestmentProfileFromYaml(strategy: StrategyYaml | null) {
-  if (!strategy) return null;
-  const profile = strategy.profile ?? {};
-  return {
-    style: profile.style ?? null,
-    selectedStylePack: profile.selected_style_pack ?? null,
-    customStyle: {},
-    riskPreference: profile.risk_preference ?? null,
-    investmentHorizon: profile.investment_horizon ?? null,
-    markets: profile.markets ?? [],
-    allocation: strategy.allocation ?? {},
-    positionRoles: strategy.position_roles ?? {},
-    buyRules: strategy.buy_rules ?? [],
-    sellRules: strategy.sell_rules ?? [],
-    rebalanceRules: strategy.rebalance_rules ?? [],
-    riskRules: strategy.risk_rules ?? [],
-    notificationPolicy: {},
-    decisionPolicy: {},
-    notes: strategy.notes ?? null,
-    updatedAt: strategy.last_confirmed_at ?? null,
-  };
-}
-
-function serializeInvestmentProfileFromMastra(value: Record<string, unknown> | null) {
-  if (!value) return null;
-  return {
-    style: value.style ?? null,
-    selectedStylePack: value.selectedStylePack ?? null,
-    customStyle: {},
-    riskPreference: value.riskPreference ?? null,
-    investmentHorizon: value.investmentHorizon ?? null,
-    markets: Array.isArray(value.markets) ? value.markets : [],
-    allocation: value.allocation && typeof value.allocation === "object" ? value.allocation : {},
-    positionRoles: value.positionRoles && typeof value.positionRoles === "object" ? value.positionRoles : {},
-    buyRules: Array.isArray(value.buyRules) ? value.buyRules : [],
-    sellRules: Array.isArray(value.sellRules) ? value.sellRules : [],
-    rebalanceRules: Array.isArray(value.rebalanceRules) ? value.rebalanceRules : [],
-    riskRules: Array.isArray(value.riskRules) ? value.riskRules : [],
-    notificationPolicy: {},
-    decisionPolicy: {},
-    notes: value.notes ?? null,
-    updatedAt: value.sourceRevision ?? null,
   };
 }
 
@@ -187,28 +120,6 @@ function serializeMethodologyProfileFromMd(methods: { fundamental: string; techn
     notes: null,
     updatedAt: null,
   };
-}
-
-async function loadInvestmentProfile(ctx: { userId: string; instanceId: string }) {
-  if (ACTIVE_BACKEND === "mastra") {
-    const rows = await db.select().from(mastraProjectProfiles).where(and(
-      eq(mastraProjectProfiles.userId, ctx.userId),
-      eq(mastraProjectProfiles.projectId, process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent"),
-      eq(mastraProjectProfiles.instanceId, ctx.instanceId),
-    )).limit(1);
-    if (!rows[0]) return null;
-    let payload: Record<string, unknown>;
-    try { payload = JSON.parse(rows[0].profileJson) as Record<string, unknown>; }
-    catch (error) { throw new Error(`MASTRA_PROJECTION_INVALID: investment profile payload is invalid: ${(error as Error).message}`); }
-    return serializeInvestmentProfileFromMastra(payload);
-  }
-  if (ACTIVE_BACKEND !== "workspace") {
-    const rows = await db.select().from(investmentProfiles).where(and(eq(investmentProfiles.userId, ctx.userId), eq(investmentProfiles.instanceId, ctx.instanceId))).limit(1);
-    return serializeInvestmentProfile(rows[0]);
-  }
-  const store = new WorkspaceStore(ctx.userId);
-  const strategy = await store.readStrategy();
-  return serializeInvestmentProfileFromYaml(strategy);
 }
 
 async function loadMethodologyProfile(ctx: { userId: string; instanceId: string }) {
@@ -1065,7 +976,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
 
   app.get("/api/sandbox/snapshot", sandboxSafe("invest.snapshot.read", async (ctx) => {
     const today = new Date().toISOString().slice(0, 10);
-    const [portfolioRows, watchlistRows, planRows, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, methodChangeRows, investmentProfile, methodologyProfile] =
+    const [portfolioRows, watchlistRows, planRows, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, methodChangeRows, methodologyProfile] =
       await Promise.all([
         portfolioBackend.listActive(ctx.userId, ctx.instanceId),
         watchlistBackend.list(ctx.userId, ctx.instanceId),
@@ -1085,7 +996,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
         // WP4.9:method_change_candidates 走 backend。
         // 只回最近 7 天的 proposed 候选,避免老候选当作"待确认操作"污染 agent 上下文。
         methodChangeBackend.list(ctx.userId, ctx.instanceId, { status: "proposed", limit: 20, maxAgeDays: 7 }),
-        loadInvestmentProfile(ctx),
         loadMethodologyProfile(ctx),
       ]);
     const holdings = portfolioRows.map((row) => serializeHolding(row, ctx.userId, ctx.instanceId));
@@ -1107,12 +1017,10 @@ export function registerSandboxRoutes(app: FastifyInstance) {
         alertRuleCount: upgradedAlertRules.filter((rule) => rule.enabled).length,
         todayEventCount: todayEvents.length,
         conversationCount: recentConversations.length,
-        hasInvestmentProfile: investmentProfile !== null,
         hasMethodologyProfile: methodologyProfile !== null,
         // 仅统计最近 7 天的 proposed 候选;超过 7 天的老候选已自动从上下文里隐藏,可经 monthly-context 完整查看。
         proposedMethodChangeCount: methodChangeRows.length,
       },
-      investmentProfile,
       methodologyProfile,
       proposedMethodChanges: methodChangeRows,
       holdings,
@@ -1132,8 +1040,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   }));
 
   app.get("/api/sandbox/profiles", sandboxSafe("invest.profile.read", async (ctx) => {
-    const [investmentProfile, methodologyProfile, changeRows] = await Promise.all([
-      loadInvestmentProfile(ctx),
+    const [methodologyProfile, changeRows] = await Promise.all([
       loadMethodologyProfile(ctx),
       methodChangeBackend.list(ctx.userId, ctx.instanceId, { limit: 20 }),
     ]);
@@ -1142,7 +1049,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       userId: ctx.userId,
       projectId: ctx.projectId,
       instanceId: ctx.instanceId,
-      investmentProfile,
       methodologyProfile,
       methodChangeCandidates: changeRows,
     };
@@ -1287,156 +1193,6 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       message: "已确认持仓和观察仓，下一步进入风格包选择",
     };
   }));
-
-
-  app.post<{
-    Body: {
-      style?: string;
-      selectedStylePack?: string | null;
-      customStyle?: unknown;
-      riskPreference?: string;
-      investmentHorizon?: string;
-      markets?: unknown;
-      allocation?: unknown;
-      positionRoles?: unknown;
-      buyRules?: unknown;
-      sellRules?: unknown;
-      rebalanceRules?: unknown;
-      riskRules?: unknown;
-      notificationPolicy?: unknown;
-      decisionPolicy?: unknown;
-      notes?: string;
-      confirmationId?: string;
-    };
-  }>("/api/sandbox/profiles/investment", sandboxMutationSafe("invest.profile.write", "profiles.investment.set", async (ctx, request, reply) => {
-    if (await requireConfirmation(ctx, request, reply, "profiles.investment.set", "investment_profile", ctx.instanceId)) return;
-    const now = new Date().toISOString();
-    const ignoredFields: string[] = [];
-    if (request.body?.customStyle !== undefined) ignoredFields.push("customStyle");
-    if (request.body?.notificationPolicy !== undefined) ignoredFields.push("notificationPolicy");
-    if (request.body?.decisionPolicy !== undefined) ignoredFields.push("decisionPolicy");
-
-    let investmentProfile;
-    if (ACTIVE_BACKEND === "mastra") {
-      const projectId = process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent";
-      const existing = await db.select().from(mastraProjectProfiles).where(and(
-        eq(mastraProjectProfiles.userId, ctx.userId), eq(mastraProjectProfiles.projectId, projectId), eq(mastraProjectProfiles.instanceId, ctx.instanceId),
-      )).limit(1);
-      let current: Record<string, unknown> = {};
-      if (existing[0]) {
-        try { current = JSON.parse(existing[0].profileJson) as Record<string, unknown>; }
-        catch (error) { throw new Error(`MASTRA_PROJECTION_INVALID: investment profile payload is invalid: ${(error as Error).message}`); }
-      }
-      const next = {
-        ...current,
-        ...(request.body?.style !== undefined ? { style: request.body.style } : {}),
-        ...(request.body?.selectedStylePack !== undefined ? { selectedStylePack: request.body.selectedStylePack } : {}),
-        ...(request.body?.riskPreference !== undefined ? { riskPreference: request.body.riskPreference } : {}),
-        ...(request.body?.investmentHorizon !== undefined ? { investmentHorizon: request.body.investmentHorizon } : {}),
-        ...(request.body?.markets !== undefined ? { markets: request.body.markets } : {}),
-        ...(request.body?.allocation !== undefined ? { allocation: request.body.allocation } : {}),
-        ...(request.body?.positionRoles !== undefined ? { positionRoles: request.body.positionRoles } : {}),
-        ...(request.body?.buyRules !== undefined ? { buyRules: request.body.buyRules } : {}),
-        ...(request.body?.sellRules !== undefined ? { sellRules: request.body.sellRules } : {}),
-        ...(request.body?.rebalanceRules !== undefined ? { rebalanceRules: request.body.rebalanceRules } : {}),
-        ...(request.body?.riskRules !== undefined ? { riskRules: request.body.riskRules } : {}),
-        ...(request.body?.notes !== undefined ? { notes: request.body.notes } : {}),
-        sourceRevision: now,
-      };
-      const values = {
-        userId: ctx.userId, projectId, instanceId: ctx.instanceId, profileJson: JSON.stringify(next),
-        sourcePath: "service-owned://strategy", sourceChecksum: `service:${now}`, sourceRevision: now,
-        migrationBatchId: "service-owned", createdAt: existing[0]?.createdAt ?? now, updatedAt: now,
-      };
-      if (existing[0]) await db.update(mastraProjectProfiles).set(values).where(and(
-        eq(mastraProjectProfiles.userId, ctx.userId), eq(mastraProjectProfiles.projectId, projectId), eq(mastraProjectProfiles.instanceId, ctx.instanceId),
-      ));
-      else await db.insert(mastraProjectProfiles).values(values);
-      investmentProfile = serializeInvestmentProfileFromMastra(next);
-    } else if (ACTIVE_BACKEND === "workspace") {
-      investmentProfile = await writeInvestmentProfileToWorkspace(ctx.userId, request.body ?? {}, now);
-    } else {
-      const existing = await db.select().from(investmentProfiles).where(and(eq(investmentProfiles.userId, ctx.userId), eq(investmentProfiles.instanceId, ctx.instanceId))).limit(1);
-      const values = {
-        userId: ctx.userId,
-        instanceId: ctx.instanceId,
-        style: request.body?.style ?? existing[0]?.style ?? null,
-        selectedStylePack: request.body?.selectedStylePack === undefined ? (existing[0]?.selectedStylePack ?? null) : request.body.selectedStylePack,
-        customStyle: jsonText(request.body?.customStyle, parseJsonText(existing[0]?.customStyle, {})),
-        riskPreference: request.body?.riskPreference ?? existing[0]?.riskPreference ?? null,
-        investmentHorizon: request.body?.investmentHorizon ?? existing[0]?.investmentHorizon ?? null,
-        markets: jsonText(request.body?.markets, parseJsonText(existing[0]?.markets, [])),
-        allocation: jsonText(request.body?.allocation, parseJsonText(existing[0]?.allocation, {})),
-        positionRoles: jsonText(request.body?.positionRoles, parseJsonText(existing[0]?.positionRoles, {})),
-        buyRules: jsonText(request.body?.buyRules, parseJsonText(existing[0]?.buyRules, [])),
-        sellRules: jsonText(request.body?.sellRules, parseJsonText(existing[0]?.sellRules, [])),
-        rebalanceRules: jsonText(request.body?.rebalanceRules, parseJsonText(existing[0]?.rebalanceRules, [])),
-        riskRules: jsonText(request.body?.riskRules, parseJsonText(existing[0]?.riskRules, [])),
-        notificationPolicy: jsonText(request.body?.notificationPolicy, parseJsonText(existing[0]?.notificationPolicy, {})),
-        decisionPolicy: jsonText(request.body?.decisionPolicy, parseJsonText(existing[0]?.decisionPolicy, {})),
-        notes: request.body?.notes ?? existing[0]?.notes ?? null,
-        createdAt: existing[0]?.createdAt ?? now,
-        updatedAt: now,
-      };
-      if (existing.length > 0) {
-        await db.update(investmentProfiles).set(values).where(eq(investmentProfiles.id, existing[0].id));
-      } else {
-        await db.insert(investmentProfiles).values(values);
-      }
-      investmentProfile = serializeInvestmentProfile(values as typeof investmentProfiles.$inferSelect);
-    }
-    await audit(ctx, {
-      operation: "profiles.investment.set",
-      resourceType: "investment_profile",
-      resourceId: ctx.instanceId,
-      requestBody: request.body,
-      resultSummary: `investment profile saved (workspace=${ACTIVE_BACKEND === "workspace"})`,
-    });
-    return { ok: true, userId: ctx.userId, message: "投资风格 Profile 已保存", investmentProfile, ignoredFields: ignoredFields.length ? ignoredFields : undefined };
-  }));
-
-  /**
-   * 合并写入 strategy.yaml。仅更新 body 中提供的非空字段,保留其他字段不变。
-   * 舍弃字段:customStyle、notificationPolicy、decisionPolicy。
-   */
-  async function writeInvestmentProfileToWorkspace(userId: string, body: {
-    style?: string;
-    selectedStylePack?: string | null;
-    riskPreference?: string;
-    investmentHorizon?: string;
-    markets?: unknown;
-    allocation?: unknown;
-    positionRoles?: unknown;
-    buyRules?: unknown;
-    sellRules?: unknown;
-    rebalanceRules?: unknown;
-    riskRules?: unknown;
-    notes?: string;
-  }, now: string) {
-    const store = new WorkspaceStore(userId);
-    const existing = (await store.readStrategy()) ?? ({} as StrategyYaml);
-    const profile = { ...(existing.profile ?? {}) };
-    if (body.style !== undefined) profile.style = body.style;
-    if (body.selectedStylePack !== undefined) profile.selected_style_pack = body.selectedStylePack;
-    if (body.riskPreference !== undefined) profile.risk_preference = body.riskPreference;
-    if (body.investmentHorizon !== undefined) profile.investment_horizon = body.investmentHorizon;
-    if (body.markets !== undefined) profile.markets = body.markets as string[];
-    const next: StrategyYaml = {
-      ...existing,
-      profile,
-      allocation: body.allocation !== undefined ? (body.allocation as Record<string, unknown>) : existing.allocation,
-      position_roles: body.positionRoles !== undefined ? (body.positionRoles as Record<string, unknown>) : existing.position_roles,
-      buy_rules: body.buyRules !== undefined ? (body.buyRules as unknown[]) : existing.buy_rules,
-      sell_rules: body.sellRules !== undefined ? (body.sellRules as unknown[]) : existing.sell_rules,
-      rebalance_rules: body.rebalanceRules !== undefined ? (body.rebalanceRules as unknown[]) : existing.rebalance_rules,
-      risk_rules: body.riskRules !== undefined ? (body.riskRules as unknown[]) : existing.risk_rules,
-      notes: body.notes !== undefined ? body.notes : existing.notes,
-      last_confirmed_at: now,
-    };
-    await store.writeStrategy(next);
-    return serializeInvestmentProfileFromYaml(next);
-  }
-
   app.post<{
     Body: {
       fundamentalMethod?: string;

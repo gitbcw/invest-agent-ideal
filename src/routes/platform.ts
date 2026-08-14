@@ -624,7 +624,6 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
     "stock_plans",
     "chat_history",
     "daily_plans",
-    "investment_profiles",
     "methodology_profiles",
     "method_change_candidates",
     "review_viewpoints",

@@ -91,17 +91,17 @@ const toolDefinitions: ToolDefinition[] = [
   {
     id: "invest.profile.read",
     displayName: "读取投资 Profile",
-    description: "读取项目范围内的用户投资风格、方法论、通知策略和方法变更候选。",
+    description: "读取项目范围内的用户方法论、通知策略和方法变更候选。",
     requiredPermissions: ["read:self"],
-    resourceType: "investment_profile",
+    resourceType: "methodology_profile",
     risk: "read",
   },
   {
     id: "invest.profile.write",
     displayName: "写入投资 Profile",
-    description: "新增或更新项目范围内的用户投资风格、方法论和方法变更候选。",
+    description: "新增或更新项目范围内的用户方法论和方法变更候选。",
     requiredPermissions: ["write:self"],
-    resourceType: "investment_profile",
+    resourceType: "methodology_profile",
     risk: "write",
   },
   {

@@ -190,29 +190,6 @@ export const dailyPlans = sqliteTable("daily_plans", {
   data: text("data").notNull(), // JSON
 });
 
-export const investmentProfiles = sqliteTable("investment_profiles", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userId: text("user_id").notNull().default("primary"),
-  instanceId: text("instance_id").notNull().default("invest-agent-primary"),
-  style: text("style"),
-  selectedStylePack: text("selected_style_pack"),
-  customStyle: text("custom_style").notNull().default("{}"),
-  riskPreference: text("risk_preference"),
-  investmentHorizon: text("investment_horizon"),
-  markets: text("markets").notNull().default("[]"),
-  allocation: text("allocation").notNull().default("{}"),
-  positionRoles: text("position_roles").notNull().default("{}"),
-  buyRules: text("buy_rules").notNull().default("[]"),
-  sellRules: text("sell_rules").notNull().default("[]"),
-  rebalanceRules: text("rebalance_rules").notNull().default("[]"),
-  riskRules: text("risk_rules").notNull().default("[]"),
-  notificationPolicy: text("notification_policy").notNull().default("{}"),
-  decisionPolicy: text("decision_policy").notNull().default("{}"),
-  notes: text("notes"),
-  createdAt: text("created_at").notNull(),
-  updatedAt: text("updated_at").notNull(),
-});
-
 export const methodologyProfiles = sqliteTable("methodology_profiles", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id").notNull().default("primary"),
