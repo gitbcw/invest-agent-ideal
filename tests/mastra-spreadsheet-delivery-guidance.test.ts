@@ -42,14 +42,17 @@ test("spreadsheet.create result carries My Files delivery guidance instead of an
     assert.equal(result.ok, true);
     assert.equal(result.asset.status, "active");
     assert.equal(result.delivery.location, "portal_my_files");
-    assert.ok(result.delivery.instruction.includes("我的文件"), "guidance must point to My Files");
-    assert.ok(result.delivery.instruction.includes("sandbox:/mnt/data"), "guidance must explicitly forbid the fabricated sandbox link");
-    assert.equal(typeof result.delivery.instruction, "string");
+    assert.ok(result.delivery.url, "delivery must provide a real clickable URL");
+    assert.match(result.delivery.url, /^\/api\/assets\/[^/]+\/versions\/[^/]+\/download$/);
+    assert.ok(result.delivery.instruction.includes(result.delivery.url), "instruction must embed the exact URL for the agent to reuse");
+    assert.ok(result.delivery.instruction.includes("Markdown 链接"), "guidance must mandate a markdown link in the reply");
+    assert.ok(result.delivery.instruction.includes("sandbox:/mnt/data"), "guidance must explicitly forbid fabricated sandbox links");
+    assert.ok(result.delivery.instruction.includes("我的文件"), "guidance must still mention My Files as the durable entry");
 
     // The web channel instruction reinforces the same contract.
     const webInstruction = buildChannelContextInstruction("web", {});
-    assert.ok(webInstruction!.includes("严禁编造任何下载链接"));
-    assert.ok(webInstruction!.includes("我的文件"));
+    assert.ok(webInstruction!.includes("delivery.url"), "web instruction must anchor on the tool-provided URL");
+    assert.ok(webInstruction!.includes("严禁编造"), "web instruction must still forbid fabricated links");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
