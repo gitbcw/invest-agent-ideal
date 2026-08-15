@@ -83,7 +83,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   // Attachment opened from a message card via attachment.get → image Lightbox.
   const [attachmentLightbox, setAttachmentLightbox] = useState<{ attachmentId: string; title: string } | null>(null);
   // 按回合模型选择（D25）：空字符串 = 服务端默认模型。
-  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [selectedModel, setSelectedModel] = useState<string>("gpt-5.6-terra");
   // Historical artifact cards still accept a deleted-id set, but the current
   // read-only Portal never mutates it.
   const deletedArtifactIds = useMemo(() => new Set<string>(), []);
@@ -902,6 +902,18 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       <main className="flex min-w-0 flex-1 flex-col bg-white">
         <div className="flex h-14 items-center justify-between border-b border-black/10 bg-white px-3 sm:px-5">
         <div className="flex items-center">
+          <select
+            className="mr-2 h-8 shrink-0 cursor-pointer rounded-md border border-black/10 bg-[#f7f7f8] px-2 text-xs text-[#5f6368] outline-none transition hover:bg-black/5 focus:border-[#7a8d83] disabled:opacity-50"
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            disabled={offline}
+            aria-label="选择模型"
+            title="选择模型（当前会话发送时生效）"
+          >
+            {MODEL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
           {status ? (
             <span
                 className={`flex items-center gap-1.5 px-1 text-[11px] font-medium ${
@@ -914,18 +926,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
               {status.online ? "在线" : "离线"}
             </span>
           ) : null}
-          <select
-            className="ml-2 h-8 shrink-0 cursor-pointer rounded-md border border-black/10 bg-[#f7f7f8] px-2 text-xs text-[#5f6368] outline-none transition hover:bg-black/5 focus:border-[#7a8d83] disabled:opacity-50"
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            disabled={offline}
-            aria-label="选择模型"
-            title="选择模型（当前会话发送时生效）"
-          >
-            {MODEL_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
         </div>
           <div className="flex items-center gap-2">
             {capabilities.workspaceFileList ? (
