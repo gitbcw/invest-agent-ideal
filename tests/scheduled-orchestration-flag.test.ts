@@ -16,9 +16,11 @@ test("legacy review orchestration flag defaults to false", () => {
   assert.equal(isLegacyReviewOrch(), false);
 });
 
-test("legacy review orchestration flag enabled by explicit true", () => {
+test("legacy review orchestration flag stays false even when the env var is set (E8)", () => {
+  // E8 removed the workspace rollback backend; legacy orchestration is
+  // permanently off regardless of the historical env flag.
   process.env.SCHEDULED_REVIEW_LEGACY_ORCH = "true";
-  assert.equal(isLegacyReviewOrch(), true);
+  assert.equal(isLegacyReviewOrch(), false);
   delete process.env.SCHEDULED_REVIEW_LEGACY_ORCH;
 });
 

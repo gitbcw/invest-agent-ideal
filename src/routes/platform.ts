@@ -615,7 +615,7 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
   const now = new Date().toISOString();
   const userId = project.ownerUserId;
   const instanceId = project.instanceId;
-  const workspacePath = ACTIVE_BACKEND === "mastra" ? undefined : resolveWorkspacePath(userId);
+  const workspacePath = undefined;
   deletePlatformWeixinManager(instanceId);
 
   const userInstanceTables = [
@@ -666,14 +666,8 @@ async function resetDefaultTestInstance(project: AiProjectRuntimeContext) {
   });
   resetDb();
 
-  let workspace: { backend: "mastra"; registered: true } | Awaited<ReturnType<typeof ensureWorkspace>>;
-  if (ACTIVE_BACKEND === "mastra") {
-    await mastraWorkspaceRegistry.bootstrap({ userId, projectId: project.projectId, instanceId });
-    workspace = { backend: "mastra", registered: true };
-  } else {
-    await rm(workspacePath!, { recursive: true, force: true });
-    workspace = await ensureWorkspace({ userId, tenantId: userId, projectId: instanceId });
-  }
+  await mastraWorkspaceRegistry.bootstrap({ userId, projectId: project.projectId, instanceId });
+  const workspace: { backend: "mastra"; registered: true } = { backend: "mastra", registered: true };
   logger.info(`Platform 默认测试实例已重置 userId=${userId} instanceId=${instanceId}`);
   return {
     userId,
@@ -1926,17 +1920,12 @@ export function registerPlatformRoutes(app: FastifyInstance) {
   app.post<{ Params: { instanceId: string } }>("/api/platform/instances/:instanceId/workspace/ensure", safe(async (request, reply) => {
     const project = await getProjectRuntimeContext(request.params.instanceId).catch(() => null);
     if (!project || project.status === "archived") return reply.status(404).send({ ok: false, error: "实例不存在或已归档" });
-    const workspace = ACTIVE_BACKEND === "mastra"
-      ? (await mastraWorkspaceRegistry.bootstrap({
-          userId: project.ownerUserId,
-          projectId: project.projectId,
-          instanceId: project.instanceId,
-        }), { backend: "mastra", registered: true })
-      : await ensureWorkspace({
-          userId: project.ownerUserId,
-          tenantId: project.ownerUserId,
-          projectId: project.instanceId,
-        });
+    await mastraWorkspaceRegistry.bootstrap({
+      userId: project.ownerUserId,
+      projectId: project.projectId,
+      instanceId: project.instanceId,
+    });
+    const workspace = { backend: "mastra" as const, registered: true };
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
@@ -1950,32 +1939,6 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     if (!project || project.status === "archived") return reply.status(404).send({ ok: false, error: "实例不存在或已归档" });
     const userId = project.ownerUserId;
     const instanceId = project.instanceId;
-    if (ACTIVE_BACKEND !== "mastra" && !workspaceExists(userId)) {
-      return {
-        ok: true,
-        updatedAt: new Date().toISOString(),
-        workspaceReady: false,
-        instance: {
-          instanceId,
-          name: project.name,
-          ownerUserId: userId,
-        },
-        summary: {
-          holdingCount: 0,
-          watchlistCount: 0,
-          planCount: 0,
-          activeWatchRuleCount: 0,
-          totalWatchRuleCount: 0,
-          latestReviewDate: null,
-          openViewpointCount: 0,
-        },
-        holdings: [],
-        watchlist: [],
-        plans: [],
-        recentReviews: [],
-        viewpoints: [],
-      };
-    }
     const today = new Date().toISOString().slice(0, 10);
     const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const [holdings, watchlist, plans, watchRules, recentDailyPlans, recentViewpoints] = await Promise.all([

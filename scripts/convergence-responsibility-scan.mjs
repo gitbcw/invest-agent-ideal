@@ -30,13 +30,29 @@ const checks = [
     name: "Hermes must not be required main backend",
     pattern: String.raw`Hermes[^。；\n]*(是|作为|成为|承担|固定为)[^。；\n]*(唯一|主智能后端|主要智能后端|中心后端|主路径)|主智能后端[^。；\n]*(是|使用|采用)[^。；\n]*Hermes`,
   },
-];
+  {
+    name: "E8 workspace rollback backend must not re-enter runtime",
+    // Runtime code must not branch on workspace mode or instantiate
+    // WorkspaceStore/ensureWorkspace outside the whitelisted migration and
+    // read-only compatibility modules.
+    pattern: String.raw`WORKSPACE_BACKEND\s*=\s*["']workspace|ACTIVE_BACKEND\s*===\s*["']workspace["']|ACTIVE_BACKEND\s*!==\s*["']mastra["']`,
+    globs: [
+      "!src/lib/workspace-store.ts",
+      "!src/lib/workspace.ts",
+      "!src/lib/workspace-portfolio-backend.ts",
+      "!src/lib/workspace-watchlist-backend.ts",
+      "!src/lib/workspace-plan-backend.ts",
+      "!src/lib/workspace-compatibility.ts",
+      "!src/lib/schedules-loader.ts",
+    ],
+  },];
 
 let failed = false;
 
 for (const check of checks) {
   const existingTargets = targets.filter((target) => existsSync(`${repoRoot}/${target}`));
-  const result = spawnSync("rg", ["-n", "--pcre2", check.pattern, ...existingTargets], {
+  const extraArgs = check.globs ? check.globs.flatMap((glob) => ["-g", glob]) : [];
+  const result = spawnSync("rg", ["-n", "--pcre2", check.pattern, ...extraArgs, ...existingTargets], {
     cwd: repoRoot,
     encoding: "utf8",
   });

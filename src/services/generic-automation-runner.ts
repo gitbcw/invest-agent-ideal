@@ -215,9 +215,7 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
 }
 
 async function createStagingPath(scope: AutomationScope): Promise<string> {
-  const root = ACTIVE_BACKEND === "mastra"
-    ? await resolveRegisteredMastraProjectRoot(scope)
-    : (await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId }), resolveWorkspacePath(scope.userId));
+  const root = await resolveRegisteredMastraProjectRoot(scope);
   if (!root) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", "Mastra project is not registered");
   const stagingPath = await mkdtemp(path.join(root, ".generic-automation-run-"));
   await mkdir(path.join(stagingPath, "inputs"), { mode: 0o700 });

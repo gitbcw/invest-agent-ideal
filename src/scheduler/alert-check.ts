@@ -508,18 +508,11 @@ async function loadMarketWatchPolicy(userId: string): Promise<MarketWatchPolicy>
         nonExceptionRules: normalizeWatchRules(watch.non_exception_rules),
       };
     }
-    const store = new WorkspaceStore(userId);
-    const watch = await store.readWatch();
-    if (!watch) return fallback;
-    return {
-      enabled: watch.mode !== "disabled" && watch.mode !== "off",
-      onlyPushOnException: watch.only_push_on_exception !== false,
-      defaultCheckWindows: normalizeWatchWindows(watch.default_check_windows),
-      exceptionRules: normalizeWatchRules(watch.exception_rules),
-      nonExceptionRules: normalizeWatchRules(watch.non_exception_rules),
-    };
+    // E8: workspace watch config retired; mastra scopes read their preference
+    // projection above. Non-mastra scopes keep the fallback defaults.
+    return fallback;
   } catch (error) {
-    logger.warn(`读取 watch.yaml 失败 user=${userId}: ${(error as Error).message}`);
+    logger.warn(`读取盯盘配置失败 user=${userId}: ${(error as Error).message}`);
     return fallback;
   }
 }

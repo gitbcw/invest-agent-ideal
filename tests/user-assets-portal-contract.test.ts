@@ -10,14 +10,28 @@ process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(root, "assets.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+// E8: the mastra registry is the only storage root; isolate it per run.
+process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
 mkdir(path.join(root, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 
 const fixture = (async () => {
   const db = await import("../src/db/index.js");
   db.initDb();
+  // E8: asset storage roots resolve to registered mastra project roots.
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const projectA = await registerTestProject({
+    userId: "portal-asset-a",
+    projectId: "invest-agent",
+    instanceId: "portal-asset-instance-a",
+  });
+  await registerTestProject({
+    userId: "portal-asset-b",
+    projectId: "invest-agent",
+    instanceId: "portal-asset-instance-b",
+  });
   const connector = await import("../src/portal/connector.js");
-  return { db, connector };
+  return { db, connector, projectA };
 })();
 
 const scopeA = {
@@ -101,9 +115,10 @@ test("Portal asset commands expose upload/version/restore/archive/delete without
 });
 
 test("Portal saves a conversation artifact to My Files", async () => {
-  const { connector } = await fixture;
+  const { connector, projectA } = await fixture;
   const artifacts = await import("../src/services/conversation-artifacts.js");
-  const workspace = path.join(root, "workspaces", scopeA.userId);
+  // E8: the conversation artifact file lives in the registered project root.
+  const workspace = projectA;
   await mkdir(path.join(workspace, "deliveries"), { recursive: true });
   await writeFile(path.join(workspace, "deliveries", "saved-from-chat.csv"), "日期,运价\n");
   const artifact = await artifacts.publishConversationArtifact({

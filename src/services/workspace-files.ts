@@ -178,7 +178,6 @@ export async function readWorkspaceFile(input: WorkspaceFileScope & { relativePa
  * legacy per-user Workspace directory.
  */
 async function resolveWorkspaceFileRoot(input: WorkspaceFileScope): Promise<string> {
-  if (ACTIVE_BACKEND !== "mastra") return resolveWorkspacePath(input.userId);
   const projectId = input.projectId?.trim();
   const instanceId = input.instanceId?.trim();
   if (!projectId || !instanceId) {

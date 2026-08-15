@@ -126,14 +126,6 @@ export const sqliteDailyPlanBackend: DailyPlanBackend = {
 
 let workspaceInitialized = false;
 
-async function ensureInitialized(userId: string): Promise<WorkspaceStore> {
-  if (!workspaceInitialized) {
-    await ensureWorkspace({ userId });
-    workspaceInitialized = true;
-  }
-  return new WorkspaceStore(userId);
-}
-
 function fromYaml(yaml: DailyPlanYaml): DailyPlanRecord {
   return {
     planDate: yaml.plan_date,
@@ -144,49 +136,6 @@ function fromYaml(yaml: DailyPlanYaml): DailyPlanRecord {
   };
 }
 
-export const workspaceDailyPlanBackend: DailyPlanBackend = {
-  async upsert(userId, _instanceId, plan) {
-    const store = await ensureInitialized(userId);
-    await store.writeDailyPlan({
-      plan_date: plan.planDate,
-      generated_at: plan.generatedAt,
-      summary: plan.summary ?? undefined,
-      content: plan.content,
-      data: plan.data ?? undefined,
-    });
-  },
-
-  async get(userId, _instanceId, planDate) {
-    const store = await ensureInitialized(userId);
-    const yaml = await store.readDailyPlan(planDate);
-    return yaml ? fromYaml(yaml) : null;
-  },
-
-  async getPrevious(userId, _instanceId, beforeDate) {
-    const store = await ensureInitialized(userId);
-    const list = await store.listDailyPlans({ endDate: beforeDate, limit: 100 });
-    // 取严格小于 beforeDate 的第一条(listDailyPlans 已按倒序)
-    const hit = list.find((p) => p.plan_date < beforeDate);
-    return hit ? fromYaml(hit) : null;
-  },
-
-  async listInRange(userId, _instanceId, startDate, endDate) {
-    const store = await ensureInitialized(userId);
-    const list = await store.listDailyPlans({ startDate, endDate });
-    return list.map(fromYaml);
-  },
-
-  async getLatest(userId, _instanceId) {
-    const store = await ensureInitialized(userId);
-    const list = await store.listDailyPlans({ limit: 1 });
-    return list.length > 0 ? fromYaml(list[0]) : null;
-  },
-};
-
-/**
- * Mastra service-owned read projection. Imported daily plans live in the
- * review/memory ledger; this adapter never reads or creates a Workspace file.
- */
 export const mastraDailyPlanBackend: DailyPlanBackend = {
   async upsert(userId, instanceId, plan) {
     const now = new Date().toISOString();
@@ -278,14 +227,9 @@ function parseMastraDailyPayload(raw: string): DailyPlanRecord {
 // ============ 出口:由 WORKSPACE_BACKEND 选择 ============
 
 function selectBackend(kind: BackendKind): DailyPlanBackend {
-  return kind === "workspace" ? workspaceDailyPlanBackend : kind === "mastra" ? mastraDailyPlanBackend : sqliteDailyPlanBackend;
+  return mastraDailyPlanBackend; /* E8: mastra only */
 }
 
 export const dailyPlanBackend: DailyPlanBackend = selectBackend(ACTIVE_BACKEND);
-
-// 便于测试时按需重置缓存(workspace 初始化只一次)。
-export function __resetDailyPlanBackendWorkspaceInitCache(): void {
-  workspaceInitialized = false;
-}
 
 export { DEFAULT_USER_ID, DEFAULT_INSTANCE_ID };

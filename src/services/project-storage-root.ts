@@ -14,7 +14,6 @@ export async function resolveProjectStorageRoot(input: {
   projectId?: string;
   instanceId?: string;
 }): Promise<string> {
-  if (ACTIVE_BACKEND !== "mastra") return resolveWorkspacePath(input.userId);
   const projectId = input.projectId?.trim();
   const instanceId = input.instanceId?.trim();
   if (!projectId || !instanceId) throw new ProjectStorageRootError("PROJECT_STORAGE_SCOPE_REQUIRED", "complete project scope is required");

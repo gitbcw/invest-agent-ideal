@@ -378,11 +378,8 @@ async function commitDraft(id: string) {
     if (!snapshot || !isReady(snapshot.steps)) throw new Error("frozen onboarding draft is incomplete");
     const stepPayloads = Object.fromEntries(Object.entries(snapshot.steps).map(([key, value]) => [key, value?.payload ?? {}])) as Partial<Record<OnboardingStepKey, Record<string, unknown>>>;
     const validatedRules = await validateDraftRules(row, snapshot);
-    const store = ACTIVE_BACKEND === "mastra" ? null : new WorkspaceStore(row.userId);
-    const prepared = ACTIVE_BACKEND === "mastra"
-      ? await prepareMastraOnboardingDraftCommit({ userId: row.userId, instanceId: row.instanceId, projectId: row.projectId, steps: stepPayloads })
-      : null;
-    const finalState = prepared?.state ?? await applyOnboardingDraftCommit({ store: store!, steps: stepPayloads });
+    const prepared = await prepareMastraOnboardingDraftCommit({ userId: row.userId, instanceId: row.instanceId, projectId: row.projectId, steps: stepPayloads });
+    const finalState = prepared.state;
     if (prepared) {
       sqlite.transaction(() => {
         prepared.persist();
@@ -393,7 +390,9 @@ async function commitDraft(id: string) {
     } else {
       await commitDraftRules(row, snapshot);
     }
-    if (store) await finalizeOnboardingDraftCommit({ store, state: finalState, commitKey: row.commitKey ?? `${row.id}:${snapshot.revision}`, steps: Object.keys(stepPayloads) });
+    // (E8) mastra path persists projections atomically; the workspace-store
+    // finalize marker is superseded by the draft-commit status update below.
+    void prepared; void finalState;
   });
   const completedAt = nowIso();
   await db.update(onboardingDrafts).set({ status: "completed", completedAt, lastError: null, updatedAt: completedAt }).where(eq(onboardingDrafts.id, row.id));

@@ -188,8 +188,6 @@ export async function ensureConversationRuntime(scope: ConversationScope) {
   await ensureDefaultAiInstanceForUser(scope.userId, "mastra");
   if (ACTIVE_BACKEND === "mastra") {
     await mastraWorkspaceRegistry.bootstrap({ userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId });
-  } else {
-    await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
   }
 }
 
@@ -822,9 +820,7 @@ async function prepareAutomationConversation(input: {
   }
   const followUpRun = claimed.run;
 
-  const workspaceRoot = ACTIVE_BACKEND === "mastra"
-    ? await resolveProjectStorageRoot({ userId: scoped.userId, projectId: scoped.projectId, instanceId: scoped.instanceId })
-    : (await ensureWorkspace({ userId: scoped.userId, tenantId: scoped.userId, projectId: scoped.projectId })).path || resolveWorkspacePath(scoped.userId);
+  const workspaceRoot = await resolveProjectStorageRoot({ userId: scoped.userId, projectId: scoped.projectId, instanceId: scoped.instanceId });
   const stagingPath = await mkdtemp(path.join(workspaceRoot, ".automation-conversation-"));
   const sourceDirectory = path.join(stagingPath, "source");
   const workingDirectory = path.join(stagingPath, "working");
@@ -946,9 +942,7 @@ async function chatViaConversationLogOnce(input: {
   if (automationBinding && (input.attachments?.length ?? 0) > 0) {
     throw new Error("AUTOMATION_CONVERSATION_ATTACHMENTS_UNSUPPORTED");
   }
-  const workspaceRoot = ACTIVE_BACKEND === "mastra"
-    ? await resolveProjectStorageRoot({ userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId })
-    : (await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId })).path;
+  const workspaceRoot = await resolveProjectStorageRoot({ userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId });
   const requestId = `portal-${randomUUID()}`;
   const automationConversation = automationBinding
     ? await prepareAutomationConversation({

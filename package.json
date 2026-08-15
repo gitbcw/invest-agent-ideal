@@ -31,7 +31,7 @@
     "mastra:dual-read-verify": "node scripts/mastra-dual-read-verify.mjs",
     "mastra:backup-snapshot-test": "node scripts/mastra-backup-snapshot-test.mjs",
     "mastra:backup-migration-smoke": "node scripts/mastra-backup-migration-smoke.mjs",
-    "test": "NODE_ENV=test WORKSPACE_BACKEND=workspace DB_PATH=./data/test.db WORKSPACE_ROOT=./data/test-workspaces RUNTIME_DATA_ROOT=./data/test-runtime tsx scripts/test-db-bootstrap.ts && NODE_ENV=test WORKSPACE_BACKEND=workspace DB_PATH=./data/test.db WORKSPACE_ROOT=./data/test-workspaces RUNTIME_DATA_ROOT=./data/test-runtime node --import tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test": "NODE_ENV=test WORKSPACE_BACKEND=mastra DB_PATH=./data/test.db WORKSPACE_ROOT=./data/test-workspaces RUNTIME_DATA_ROOT=./data/test-runtime tsx scripts/test-db-bootstrap.ts && NODE_ENV=test WORKSPACE_BACKEND=mastra DB_PATH=./data/test.db WORKSPACE_ROOT=./data/test-workspaces RUNTIME_DATA_ROOT=./data/test-runtime node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "test:boundary": "node scripts/run-boundary-tests.mjs",
     "typecheck": "tsc --noEmit",
     "check:agent-context": "node scripts/check-agent-context.mjs",

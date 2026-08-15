@@ -13,6 +13,8 @@ mkdirSync(path.join(TEST_ROOT, "workspaces"), { recursive: true });
 process.env.WORKSPACE_ROOT = path.join(TEST_ROOT, "workspaces");
 process.env.DB_PATH = path.join(TEST_ROOT, "test.db");
 process.env.NODE_ENV = "test";
+// E8: the mastra registry is the only storage root; isolate it per run.
+process.env.MASTRA_PROJECTS_ROOT = path.join(TEST_ROOT, "projects");
 delete process.env.FILE_RETENTION_CLEANUP_ENABLED;
 
 import assert from "node:assert/strict";
@@ -52,8 +54,9 @@ let fixturePromise: Promise<Fixture> | null = null;
 async function setupFixture(): Promise<Fixture> {
   const { initDb, sqlite } = await import("../src/db/index.js");
   initDb();
-  const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
-  const workspaceUser = resolveWorkspacePath("user-ret");
+  // E8: storage roots resolve to registered mastra project roots.
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const workspaceUser = await registerTestProject({ userId: "user-ret", projectId: "invest-agent", instanceId: "user-ret" });
   for (const sub of ["reports/daily", "reports/weekly", "reports/monthly", "reports/company", "reports/html", "reports/metrics", "reports/memory", "reports/alerts", "attachments"]) {
     await mkdir(path.join(workspaceUser, sub), { recursive: true });
   }
@@ -75,8 +78,9 @@ async function publishMarkdown(fixture: Fixture, relativePath: string, content: 
 }
 
 async function publishMarkdownAs(fixture: Fixture, userId: string, relativePath: string, content: string, source: "artifacts.publish" | "reviews.save" | "workspace_backfill" = "artifacts.publish") {
-  const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
-  const workspaceUser = resolveWorkspacePath(userId);
+  // E8: artifact files live inside the registered mastra project root.
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const workspaceUser = await registerTestProject({ userId, projectId: "invest-agent", instanceId: userId });
   for (const sub of ["reports/daily", "reports/weekly", "reports/monthly", "reports/company", "reports/html", "reports/metrics", "reports/memory"]) {
     await mkdir(path.join(workspaceUser, sub), { recursive: true });
   }
@@ -417,9 +421,9 @@ test("oversized formal artifact is classified transient and read returns ARTIFAC
 
 test("delete prepare/confirm moves the file to a hidden trash area and tombstones same-path versions", async () => {
   const fixture = await getFixture();
-  const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
   const user = "user-del8";
-  const ws = resolveWorkspacePath(user);
+  const ws = await registerTestProject({ userId: user, projectId: "invest-agent", instanceId: user });
   try {
     const record = await publishMarkdownAs(fixture, user, "reports/daily/del.md", "# delete me");
     // A second publish of the same path creates a second version row.
@@ -457,7 +461,7 @@ test("delete prepare/confirm moves the file to a hidden trash area and tombstone
     assert.ok(existsSync(path.join(ws, confirmed.trashRelativePath)));
 
     // Library list no longer returns either version.
-    const lib = await fixture.artifactMod.listCuratedArtifactLibrary({ userId: user, instanceId: user });
+    const lib = await fixture.artifactMod.listCuratedArtifactLibrary({ userId: user, projectId: "invest-agent", instanceId: user });
     assert.equal(lib.items.find((item) => item.displayPath === "daily/del.md"), undefined);
   } finally {
     fixture.deletionMod.clearPendingDeleteTokensForTest();
@@ -466,9 +470,9 @@ test("delete prepare/confirm moves the file to a hidden trash area and tombstone
 
 test("delete survives a move failure and the same confirmation resumes safely", async () => {
   const fixture = await getFixture();
-  const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
   const user = "user-del-recovery";
-  const ws = resolveWorkspacePath(user);
+  const ws = await registerTestProject({ userId: user, projectId: "invest-agent", instanceId: user });
   try {
     const record = await publishMarkdownAs(fixture, user, "reports/daily/recover.md", "# recover");
     const prepared = await fixture.deletionMod.prepareArtifactDeletion({ artifactId: record.artifactId, userId: user, instanceId: user });
@@ -555,9 +559,9 @@ test("delete is refused for transient artifacts, raw uploads and pre-backfill ro
 
 test("trash purge physically removes files only after the 30-day window and is idempotent", async () => {
   const fixture = await getFixture();
-  const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
   const user = "user-del11";
-  const ws = resolveWorkspacePath(user);
+  const ws = await registerTestProject({ userId: user, projectId: "invest-agent", instanceId: user });
   try {
     const record = await publishMarkdownAs(fixture, user, "reports/daily/purge.md", "# purge");
     const prepared = await fixture.deletionMod.prepareArtifactDeletion({
@@ -602,21 +606,31 @@ test("trash purge physically removes files only after the 30-day window and is i
 test("workspace backfill registers curated reports once and is idempotent on re-run", async () => {
   const fixture = await getFixture();
   const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
   const user = "user-backfill";
+  // E8: the workspace backfill scanner still walks the legacy workspace root,
+  // while the curated library validates files against the registered mastra
+  // project root — seed the curated files in both places.
   const ws = resolveWorkspacePath(user);
+  const projectRoot = await registerTestProject({ userId: user, projectId: "invest-agent", instanceId: user });
   try {
     // Seed a few curated files plus excluded ones.
-    await mkdir(path.join(ws, "reports/daily"), { recursive: true });
-    await mkdir(path.join(ws, "reports/weekly"), { recursive: true });
-    await mkdir(path.join(ws, "reports/company"), { recursive: true });
-    await mkdir(path.join(ws, "reports/html"), { recursive: true });
-    await mkdir(path.join(ws, "reports/metrics"), { recursive: true });
-    await mkdir(path.join(ws, "reports/alerts"), { recursive: true });
-    await writeFile(path.join(ws, "reports/daily/2026-07-20.md"), "# daily");
-    await writeFile(path.join(ws, "reports/weekly/2026-W29.md"), "# weekly");
-    await writeFile(path.join(ws, "reports/company/600519.md"), "# company");
-    await writeFile(path.join(ws, "reports/html/2026-07-25-portfolio-risk.html"), "<!doctype html><html><body>risk</body></html>");
-    await writeFile(path.join(ws, "reports/metrics/zZlkp.md"), "# metrics");
+    const curated = [
+      ["reports/daily/2026-07-20.md", "# daily"],
+      ["reports/weekly/2026-W29.md", "# weekly"],
+      ["reports/company/600519.md", "# company"],
+      ["reports/html/2026-07-25-portfolio-risk.html", "<!doctype html><html><body>risk</body></html>"],
+      ["reports/metrics/zZlkp.md", "# metrics"],
+    ] as const;
+    for (const root of [ws, projectRoot]) {
+      for (const sub of ["reports/daily", "reports/weekly", "reports/company", "reports/html", "reports/metrics", "reports/alerts"]) {
+        await mkdir(path.join(root, sub), { recursive: true });
+      }
+      for (const [relativePath, content] of curated) {
+        await writeFile(path.join(root, relativePath), content);
+      }
+    }
+    // Excluded fixtures only need to exist for the backfill scan.
     // Excluded: alerts dir is not curated.
     await writeFile(path.join(ws, "reports/alerts/noise.md"), "# alert");
     // Excluded: oversized.
@@ -641,7 +655,7 @@ test("workspace backfill registers curated reports once and is idempotent on re-
     // alerts/ is outside the curated dir list so it is never even scanned.
 
     // Library list now shows the backfilled reports.
-    const lib = await fixture.artifactMod.listCuratedArtifactLibrary({ userId: user, instanceId: user });
+    const lib = await fixture.artifactMod.listCuratedArtifactLibrary({ userId: user, projectId: "invest-agent", instanceId: user });
     const paths = new Set(lib.items.map((item) => item.displayPath));
     assert.ok(paths.has("daily/2026-07-20.md"));
     assert.ok(paths.has("weekly/2026-W29.md"));

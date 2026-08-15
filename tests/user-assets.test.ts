@@ -11,6 +11,8 @@ process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(root, "assets.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+// E8: the mastra registry is the only storage root; isolate it per run.
+process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
 mkdir(path.join(root, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 
@@ -18,9 +20,17 @@ const fixture = (async () => {
   const db = await import("../src/db/index.js");
   db.initDb();
   const assets = await import("../src/services/user-assets.js");
-  const workspace = await import("../src/lib/workspace.js");
-  return { db, assets, workspace };
+  // E8: asset storage roots resolve to registered mastra project roots.
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const projectA = await registerTestProject({ userId: "asset-user-a", projectId: "invest-agent", instanceId: "asset-instance-a" });
+  await registerTestProject({ userId: "asset-user-b", projectId: "invest-agent", instanceId: "asset-instance-b" });
+  return { db, assets, projectA };
 })();
+
+async function ensureProjectRegistered(scope: { userId: string; projectId: string; instanceId: string }): Promise<string> {
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  return registerTestProject(scope);
+}
 
 const scopeA = { userId: "asset-user-a", projectId: "invest-agent", instanceId: "asset-instance-a" };
 const scopeB = { userId: "asset-user-b", projectId: "invest-agent", instanceId: "asset-instance-b" };
@@ -87,7 +97,7 @@ test("asset folders are scoped, unique within a parent, and at most two levels d
 });
 
 test("creates, reads, versions, restores, renames and archives an asset", async () => {
-  const { assets, workspace } = await fixture;
+  const { assets, projectA } = await fixture;
   const first = await assets.createUserAsset({
     ...scopeA,
     name: "复盘表",
@@ -98,7 +108,7 @@ test("creates, reads, versions, restores, renames and archives an asset", async 
   assert.equal(first.status, "active");
   assert.equal(first.currentVersion?.format, "xlsx");
   assert.match(first.currentVersion?.storagePath || "", /^assets\/asset_.+\/versions\/version_.+\/review\.xlsx$/);
-  const rootPath = workspace.resolveWorkspacePath(scopeA.userId);
+  const rootPath = projectA;
   assert.ok(readFileSync(path.join(rootPath, first.currentVersion!.storagePath)).length > 100);
 
   const oldVersionId = first.currentVersionId!;
@@ -202,7 +212,7 @@ test("enforces all three scope fields and hides cross-scope assets", async () =>
 });
 
 test("deleting an asset removes its versions and releases storage", async () => {
-  const { assets, workspace } = await fixture;
+  const { assets, projectA } = await fixture;
   const quota = await import("../src/services/user-storage-quota.js");
   const created = await assets.createUserAsset({
     ...scopeA,
@@ -225,13 +235,13 @@ test("deleting an asset removes its versions and releases storage", async () => 
   assert.equal(deleted.deletedVersions, 2);
   assert.equal(await assets.getUserAsset({ ...scopeA, assetId: created.assetId }), null);
   assert.ok(quota.getStorageUsage(scopeA).usedBytes < before);
-  const rootPath = workspace.resolveWorkspacePath(scopeA.userId);
+  const rootPath = projectA;
   assert.equal(existsSync(path.join(rootPath, firstPath)), false);
   assert.equal(existsSync(path.join(rootPath, secondPath)), false);
 });
 
 test("rejects unsafe names, MIME/content mismatch, symlinks and checksum tampering", async () => {
-  const { assets, workspace } = await fixture;
+  const { assets, projectA } = await fixture;
   await assert.rejects(
     () => assets.createUserAsset({ ...scopeA, fileName: "../escape.csv", bytes: Buffer.from("a,b\n1,2\n") }),
     (error: unknown) => (error as { code?: string }).code === "ASSET_INVALID_NAME",
@@ -246,7 +256,7 @@ test("rejects unsafe names, MIME/content mismatch, symlinks and checksum tamperi
   );
 
   const created = await assets.createUserAsset({ ...scopeA, fileName: "tamper.md", bytes: Buffer.from("# ok\n") });
-  const filePath = path.join(workspace.resolveWorkspacePath(scopeA.userId), created.currentVersion!.storagePath);
+  const filePath = path.join(projectA, created.currentVersion!.storagePath);
   writeFileSync(filePath, "# changed\n");
   await assert.rejects(
     () => assets.readCurrentUserAsset({ ...scopeA, assetId: created.assetId }),
@@ -255,7 +265,7 @@ test("rejects unsafe names, MIME/content mismatch, symlinks and checksum tamperi
 
   const outside = path.join(root, "outside.txt");
   writeFileSync(outside, "outside");
-  const linkPath = path.join(workspace.resolveWorkspacePath(scopeA.userId), "assets", "symlink.md");
+  const linkPath = path.join(projectA, "assets", "symlink.md");
   await mkdir(path.dirname(linkPath), { recursive: true });
   symlinkSync(outside, linkPath);
   assert.equal(existsSync(linkPath), true);
@@ -265,7 +275,7 @@ test("rejects unsafe names, MIME/content mismatch, symlinks and checksum tamperi
   assert.ok(row.assetId && row.versionId);
 
   const symlinked = await assets.createUserAsset({ ...scopeA, fileName: "symlinked.md", bytes: Buffer.from("# safe\n") });
-  const symlinkTarget = path.join(workspace.resolveWorkspacePath(scopeA.userId), symlinked.currentVersion!.storagePath);
+  const symlinkTarget = path.join(projectA, symlinked.currentVersion!.storagePath);
   const outsideVersion = path.join(root, "outside-version.md");
   writeFileSync(outsideVersion, "# outside\n");
   unlinkSync(symlinkTarget);
@@ -302,6 +312,7 @@ test("idempotency replays the same asset and rejects stale version heads", async
 test("enforces the 10MB file boundary and exposes scope usage", async () => {
   const { assets } = await fixture;
   const scope = { userId: "quota-user", projectId: "quota-project", instanceId: "quota-instance" };
+  await ensureProjectRegistered(scope);
   await assert.rejects(
     () => assets.createUserAsset({ ...scope, fileName: "too-large.md", bytes: Buffer.alloc(10 * 1024 * 1024 + 1) }),
     (error: unknown) => (error as { code?: string }).code === "ASSET_TOO_LARGE",
@@ -350,6 +361,7 @@ test("report mapping charges only unbacked bytes and settles update deltas", asy
   const mappings = await import("../src/services/report-asset-mappings.js");
   const quota = await import("../src/services/user-storage-quota.js");
   const scope = { userId: "report-charge-user", projectId: "report-charge-project", instanceId: "report-charge-instance" };
+  await ensureProjectRegistered(scope);
 
   // Unbacked mapping charges its full size.
   await mappings.registerReportAssetMapping({ ...scope, reportId: "r-1", title: "R1", fileName: "r1.md", mimeType: "text/markdown", sizeBytes: 1000, backingAssetId: null, backingVersionId: null });
@@ -396,6 +408,7 @@ test("report mapping rejects negative size, over-limit writes and cross-scope ba
 
   // Cross-scope backing: a mapping may only back onto an asset in the same scope.
   const other = { userId: "other-user", projectId: "other-project", instanceId: "other-instance" };
+  await ensureProjectRegistered(other);
   const foreignAsset = await assets.createUserAsset({ ...other, name: "foreign", fileName: "foreign.md", mimeType: "text/markdown", bytes: Buffer.from("# foreign\n") });
   await assert.rejects(
     () => mappings.registerReportAssetMapping({ ...scope, reportId: "xscope", title: "X", fileName: "x.md", mimeType: "text/markdown", sizeBytes: 5, backingAssetId: foreignAsset.assetId, backingVersionId: foreignAsset.currentVersion!.versionId }),
@@ -500,6 +513,7 @@ test("two concurrent writes to a near-full scope cannot overshoot the quota", as
   const { db, assets } = await fixture;
   const quota = await import("../src/services/user-storage-quota.js");
   const scope = { userId: "concur-user", projectId: "concur-project", instanceId: "concur-instance" };
+  await ensureProjectRegistered(scope);
   const small = Buffer.from("# concurrent\n");
   db.sqlite.prepare(INSERT_VERSION).run("v_concur_base", "a_concur_base", scope.userId, scope.projectId, scope.instanceId, 1, "base.md", "markdown", "text/markdown", 200 * 1024 * 1024 - small.length, "checksum", "assets/base.md", "system", new Date().toISOString());
   const results = await Promise.allSettled([
@@ -519,6 +533,7 @@ test("a failed commit releases the reservation and leaves no version or staged f
   const { db, assets } = await fixture;
   const quota = await import("../src/services/user-storage-quota.js");
   const scope = { userId: "rollback-user", projectId: "rollback-project", instanceId: "rollback-instance" };
+  await ensureProjectRegistered(scope);
   await assert.rejects(
     () => assets.createUserAsset({ ...scope, fileName: "auto.md", bytes: Buffer.from("# auto\n"), source: "automation" }),
     (error: unknown) => (error as { code?: string }).code === "ASSET_INVALID_CONTENT",
@@ -534,6 +549,7 @@ test("idempotent replay does not reserve or consume quota twice", async () => {
   const { assets } = await fixture;
   const quota = await import("../src/services/user-storage-quota.js");
   const scope = { userId: "replay-user", projectId: "replay-project", instanceId: "replay-instance" };
+  await ensureProjectRegistered(scope);
   const input = { ...scope, fileName: "replay.md", bytes: Buffer.from("# replay\n"), idempotencyKey: "replay-once" };
   const first = await assets.createUserAsset(input);
   const replay = await assets.createUserAsset(input);
@@ -547,6 +563,7 @@ test("two concurrent createUserAsset calls with the same idempotency key both re
   const { assets, db } = await fixture;
   const quota = await import("../src/services/user-storage-quota.js");
   const scope = { userId: "concur-key-user", projectId: "concur-key-project", instanceId: "concur-key-instance" };
+  await ensureProjectRegistered(scope);
   const input = {
     ...scope, name: "shared", fileName: "shared.md", mimeType: "text/markdown",
     bytes: Buffer.from("# shared\n"), idempotencyKey: "concur-same-key",
@@ -584,9 +601,10 @@ test("public quota and mapping entrypoints reject empty scope fields", async () 
 });
 
 test("an automation finalize callback failure rolls back DB rows, staged file and reservation", async () => {
-  const { db, assets, workspace } = await fixture;
+  const { db, assets } = await fixture;
   const quota = await import("../src/services/user-storage-quota.js");
   const scope = { userId: "finalize-user", projectId: "finalize-project", instanceId: "finalize-instance" };
+  const projectRoot = await ensureProjectRegistered(scope);
   const taskId = "fin-task";
   const runId = "fin-run";
   const leaseToken = "lease-fin";
@@ -616,7 +634,7 @@ test("an automation finalize callback failure rolls back DB rows, staged file an
   assert.equal(after.reservedBytes, 0, "reservation must be released on finalize failure");
   assert.equal(after.usedBytes, before.usedBytes, "no committed bytes after rollback");
   // The staged file was removed: no orphan under the user's assets directory.
-  const assetsDir = path.join(workspace.resolveWorkspacePath(scope.userId), "assets");
+  const assetsDir = path.join(projectRoot, "assets");
   const files = existsSync(assetsDir) ? readdirSync(assetsDir, { recursive: true }) as string[] : [];
   assert.ok(!files.some((file) => String(file).endsWith("finalize-boom.md")), "staged file must be removed on finalize failure");
   const run = db.sqlite.prepare(`SELECT status FROM automation_task_runs WHERE run_id = ?`).get(runId) as { status: string };

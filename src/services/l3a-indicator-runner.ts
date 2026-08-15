@@ -110,36 +110,12 @@ function buildIndicatorsCache(klines: StockKline[]): Map<string, number> {
   return cache;
 }
 
-let cachedWorkspacePath: string | null = null;
-
-async function resolveWorkspacePath(): Promise<string> {
-  if (cachedWorkspacePath) return cachedWorkspacePath;
-  const { ensureWorkspace } = await import("../lib/workspace.js");
-  const { DEFAULT_USER_ID } = await import("../lib/user-context.js");
-  const workspace = await ensureWorkspace({ userId: DEFAULT_USER_ID });
-  cachedWorkspacePath = workspace.path;
-  return cachedWorkspacePath;
-}
 
 async function loadL3aConfigs(): Promise<CompositeIndicatorConfig[]> {
-  if (ACTIVE_BACKEND === "mastra") {
-    // User-authored indicator configs are project assets, not a service fact;
-    // until an explicit staging/publish contract exists, do not read legacy
-    // Workspace config or create one as a side effect.
-    return [];
-  }
-  try {
-    const workspacePath = await resolveWorkspacePath();
-    const yamlPath = join(workspacePath, "config", "composite_indicators.yaml");
-    if (!existsSync(yamlPath)) return [];
-    const text = await readFile(yamlPath, "utf8");
-    const parsed = parseCompositeYaml(text);
-    // 跳过未签告知协议的 experimental
-    return parsed.filter((c) => c.reliability !== "experimental" || c.user_acknowledged);
-  } catch (err) {
-    logger.warn(`L3a YAML 加载失败: ${(err as Error).message}`);
-    return [];
-  }
+  // (E8) user-authored indicator configs are project assets, not a service
+  // fact; until an explicit staging/publish contract exists, none load.
+  return [];
+
 }
 
 /**

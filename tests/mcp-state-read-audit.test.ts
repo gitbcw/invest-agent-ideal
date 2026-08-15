@@ -17,7 +17,6 @@ test("state read MCP tools leave lightweight audit evidence", async () => {
     const { db, initDb, sqlite } = await import("../src/db/index.js");
     const { sandboxAuditLogs } = await import("../src/db/schema.js");
     const { ensureWorkspace } = await import("../src/lib/workspace.js");
-    const { WorkspaceStore } = await import("../src/lib/workspace-store.js");
     const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
 
     initDb();
@@ -25,12 +24,28 @@ test("state read MCP tools leave lightweight audit evidence", async () => {
     const instanceId = "invest-agent-state-read-audit-user";
     const conversationId = "state-read-audit-conversation";
     await ensureWorkspace({ userId, tenantId: userId, projectId: "invest-agent" });
-    await new WorkspaceStore(userId).writePortfolio({
-      last_confirmed_at: "2026-07-31T00:00:00.000Z",
-      holdings: [{ code: "600519", name: "贵州茅台", status: "open" }],
-      watchlist: [{ code: "601058", name: "赛轮轮胎", source: "test" }],
-      stock_plans: [{ code: "002460", name: "赣锋锂业", support: 40, resistance: 50 }],
-    });
+    // E8: state read tools read the mastra projection; seed it with the
+    // revision-bound portfolio state (equivalent of the legacy YAML seed).
+    const revision = "2026-07-31T00:00:00.000Z";
+    sqlite.prepare(
+      `INSERT INTO mastra_portfolio_states (user_id,project_id,instance_id,portfolio_json,source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      userId,
+      "invest-agent",
+      instanceId,
+      JSON.stringify({
+        last_confirmed_at: revision,
+        holdings: [{ code: "600519", name: "贵州茅台", status: "open" }],
+        watchlist: [{ code: "601058", name: "赛轮轮胎", source: "test" }],
+        stockPlans: [{ code: "002460", name: "赣锋锂业", support: 40, resistance: 50 }],
+      }),
+      "service-owned://portfolio",
+      "service:test-seed",
+      revision,
+      "test-seed",
+      revision,
+      revision,
+    );
 
     const context = { userId, instanceId, conversationId };
     assert.equal((await callServiceTool("portfolio.read", {}, context) as { count: number }).count, 1);
@@ -48,7 +63,7 @@ test("state read MCP tools leave lightweight audit evidence", async () => {
       ));
     const summaries = Object.fromEntries(audits.map((row) => [row.operation, row.resultSummary]));
 
-    assert.equal(summaries["portfolio.read"], "holdings=1; revision=2026-07-31T00:00:00.000Z");
+    assert.equal(summaries["portfolio.read"], `holdings=1; revision=${revision}`);
     assert.equal(summaries["watchlist.read"], "watchlist=1");
     assert.equal(summaries["plans.read"], "plans=1");
     sqlite.close();

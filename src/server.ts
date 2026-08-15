@@ -219,7 +219,6 @@ export async function createServer() {
     async (request, reply) => {
       const { userId, projectId, instanceId, strategyPackId, portfolioText } = request.body ?? {};
       if (!userId) return reply.status(400).send({ ok: false, error: "userId is required" });
-      if (ACTIVE_BACKEND !== "mastra") return reply.status(409).send({ ok: false, error: "MASTRA_ONLY" });
       const project = await ensureDefaultProjectForUser(userId);
       const scope = { userId, projectId: projectId || project.projectId, instanceId: instanceId || project.instanceId };
       // Deterministic parse of pasted portfolio lines (name + 6-digit code).
@@ -286,10 +285,6 @@ export async function createServer() {
         const project = await ensureDefaultProjectForUser(userId);
         projectId = project.projectId;
         instanceId = project.instanceId;
-      } else if (!resolvedWorkspacePath && userId) {
-        const { ensureWorkspace } = await import("./lib/workspace.js");
-        const resolved = await ensureWorkspace({ userId, projectId: "invest-agent" });
-        resolvedWorkspacePath = resolved.path;
       }
 
       const agentMessage: AgentMessage = {

@@ -12,6 +12,9 @@ process.env.WORKSPACE_BACKEND = "workspace";
 process.env.DB_PATH = path.join(root, "automation.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+// E8: the mastra registry is the only storage root; isolate it per run so
+// asset files never leak across test runs (AUTOMATION_ASSET_SOURCE_IMMUTABLE).
+process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
 mkdirSync(process.env.WORKSPACE_ROOT, { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 

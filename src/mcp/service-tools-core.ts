@@ -287,12 +287,8 @@ async function dispatchServiceTool(
     }
     case "portfolio.read": {
       const rows = await portfolioBackend.listActive(context.userId, context.instanceId);
-      const portfolio = ACTIVE_BACKEND === "mastra"
-        ? readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml
-        : await new WorkspaceStore(context.userId).readPortfolio();
-      const revision = ACTIVE_BACKEND === "mastra"
-        ? getMastraPortfolioRevision(context.userId, context.instanceId)
-        : portfolio?.last_confirmed_at ?? null;
+      const portfolio = readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml;
+      const revision = getMastraPortfolioRevision(context.userId, context.instanceId);
       await audit(context, {
         operation: "portfolio.read",
         resourceType: "portfolio",
@@ -1051,10 +1047,8 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
   }
 
   const now = new Date().toISOString();
-  const mastra = ACTIVE_BACKEND === "mastra"
-    ? openMastraOnboardingStore({ userId: context.userId, instanceId: context.instanceId, projectId: context.projectId })
-    : null;
-  const store: any = mastra?.store ?? new WorkspaceStore(context.userId);
+  const mastraStore = openMastraOnboardingStore({ userId: context.userId, instanceId: context.instanceId, projectId: context.projectId });
+  const store: any = mastraStore.store;
   const portfolio = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
   const holdings = Array.isArray(portfolio.holdings) ? [...portfolio.holdings] : [];
   const watchItems = Array.isArray(portfolio.watchlist) ? [...portfolio.watchlist] : [];
@@ -1118,18 +1112,7 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
     notes: stringInput(input?.notes) ?? state.notes ?? "",
   };
   await store.writeOnboardingState(nextState);
-  if (mastra) sqlite.transaction(() => mastra.persist())();
-  await store.appendChangeLog({
-    ts: now,
-    source: "mcp",
-    type: "onboarding_portfolio_confirmed",
-    summary: stringInput(input?.summary) || "用户确认 onboarding 持仓和观察仓",
-    details: {
-      holding_names: holdingInputs.map((item) => item.name),
-      watch_names: watchInputs.map((item) => item.name),
-      current_step: nextState.current_step,
-    },
-  });
+  sqlite.transaction(() => mastraStore.persist())();
   await confirmation.consume();
   await audit(context, {
     operation: "onboarding.confirm_portfolio",
@@ -1138,16 +1121,7 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
     requestBody: input,
     resultSummary: `confirmed portfolio holdings=${holdingInputs.length}; watchlist=${watchInputs.length}; current=style`,
   });
-  const publication: WorkspaceArtifactPublication = isWorkspaceBackend()
-    ? await publishWorkspaceArtifacts(
-      context,
-      [
-        { relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" },
-        { relativePath: "config/onboarding_state.yaml", kind: "data", title: "初始配置状态" },
-      ],
-      "onboarding.confirm_portfolio",
-    )
-    : { artifacts: [], failures: [] };
+  const publication: WorkspaceArtifactPublication = { artifacts: [], failures: [] };
   return {
     ok: true,
     userId: context.userId,
@@ -1254,7 +1228,7 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
     return { ok: false, error: `${existing.name}(${stockCode}) 已在自选池中`, userId: context.userId };
   }
   const stockName = name || stockCode;
-  const expectedRevision = ACTIVE_BACKEND === "mastra" ? getMastraPortfolioRevision(context.userId, context.instanceId) : undefined;
+  const expectedRevision = getMastraPortfolioRevision(context.userId, context.instanceId);
   await watchlistBackend.add(context.userId, context.instanceId, {
     code: stockCode,
     name: stockName,
@@ -1270,13 +1244,7 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
     requestBody: input,
     resultSummary: `added ${stockName}(${stockCode})`,
   });
-  const publication: WorkspaceArtifactPublication = isWorkspaceBackend()
-    ? await publishWorkspaceArtifacts(
-      context,
-      [{ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" }],
-      "watchlist.add",
-    )
-    : { artifacts: [], failures: [] };
+  const publication: WorkspaceArtifactPublication = { artifacts: [], failures: [] };
   return {
     ok: true,
     userId: context.userId,
@@ -1295,7 +1263,7 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
   if (!/^\d{6}$/.test(stockCode)) throw new Error("stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀");
   const stockName = stringInput(input?.stockName ?? input?.name) || stockCode;
   const existing = await planBackend.find(context.userId, context.instanceId, stockCode);
-  const expectedRevision = ACTIVE_BACKEND === "mastra" ? getMastraPortfolioRevision(context.userId, context.instanceId) : undefined;
+  const expectedRevision = getMastraPortfolioRevision(context.userId, context.instanceId);
   await planBackend.upsert(context.userId, context.instanceId, {
     code: stockCode,
     name: stockName,
@@ -1318,13 +1286,7 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
     requestBody: input,
     resultSummary: `${existing ? "updated" : "created"} ${stockName}(${stockCode})`,
   });
-  const publication: WorkspaceArtifactPublication = isWorkspaceBackend()
-    ? await publishWorkspaceArtifacts(
-      context,
-      [{ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" }],
-      "plans.set",
-    )
-    : { artifacts: [], failures: [] };
+  const publication: WorkspaceArtifactPublication = { artifacts: [], failures: [] };
   return {
     ok: true,
     userId: context.userId,
@@ -1354,13 +1316,7 @@ async function setPlanConditions(input: Record<string, unknown> | undefined, con
     requestBody: input,
     resultSummary: `updated ${result.conditionCount} conditions for ${result.stockName}(${result.stockCode})`,
   });
-  const publication: WorkspaceArtifactPublication = isWorkspaceBackend()
-    ? await publishWorkspaceArtifacts(
-      context,
-      [{ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" }],
-      "plans.watch_conditions",
-    )
-    : { artifacts: [], failures: [] };
+  const publication: WorkspaceArtifactPublication = { artifacts: [], failures: [] };
   return { ok: true, userId: context.userId, instanceId: context.instanceId, ...result, ...artifactPublicationFields(publication) };
 }
 
@@ -1386,9 +1342,7 @@ async function proposeMethodChange(input: Record<string, unknown> | undefined, c
     requestBody: input,
     resultSummary: "proposed method change",
   });
-  const strategy = ACTIVE_BACKEND === "mastra"
-    ? await readMastraStrategyProjection(context)
-    : isWorkspaceBackend() ? await new WorkspaceStore(context.userId).readStrategy() : null;
+  const strategy = await readMastraStrategyProjection(context);
   return {
     ok: true,
     userId: context.userId,
@@ -1580,15 +1534,12 @@ async function writeMastraStrategyProjection(context: ServiceToolContext, strate
 }
 
 async function planMethodChangeApplication(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  if (ACTIVE_BACKEND !== "workspace" && ACTIVE_BACKEND !== "mastra") throw new Error("method_changes.apply 当前 backend 不支持策略写入");
   const candidateId = stringInput(input?.candidateId);
   if (!candidateId) throw new Error("candidateId 是必填项");
   const candidate = await methodChangeBackend.get(context.userId, context.instanceId, candidateId);
   if (!candidate) throw new Error("方法变更候选不存在");
 
-  const current = ACTIVE_BACKEND === "mastra"
-    ? await readMastraStrategyProjection(context)
-    : await new WorkspaceStore(context.userId).readStrategy();
+  const current = await readMastraStrategyProjection(context);
   if (!current) throw new Error("当前策略配置不存在，无法采用方法变更");
   const patch = normalizeStrategyPatch(input?.strategyPatch);
   const confirmationId = stringInput(input?.confirmationId);
@@ -1614,21 +1565,18 @@ async function applyMethodChange(input: Record<string, unknown> | undefined, con
   const plan = await planMethodChangeApplication(input, context);
   const candidateId = plan.candidate.id;
   const now = new Date().toISOString();
-  const store = ACTIVE_BACKEND === "workspace" ? new WorkspaceStore(context.userId) : null;
   let saved = plan.current;
   let confirmedCandidate = plan.candidate;
   if (!plan.alreadyApplied) {
     const next = mergeStrategyPatch(plan.current, plan.patch, now, confirmation.confirmationId, candidateId);
-    if (ACTIVE_BACKEND === "mastra") await writeMastraStrategyProjection(context, next);
-    else await store!.writeStrategy(next);
-    const savedStrategy = ACTIVE_BACKEND === "mastra" ? await readMastraStrategyProjection(context) : await store!.readStrategy();
+    await writeMastraStrategyProjection(context, next);
+    const savedStrategy = await readMastraStrategyProjection(context);
     if (
       savedStrategy?.last_confirmed_at !== now
       || savedStrategy.last_confirmation_id !== confirmation.confirmationId
       || savedStrategy.last_method_change_candidate_id !== candidateId
     ) {
-      if (ACTIVE_BACKEND === "mastra") await writeMastraStrategyProjection(context, plan.current);
-      else await store!.writeStrategy(plan.current);
+      await writeMastraStrategyProjection(context, plan.current);
       throw new Error("策略写入后回读校验失败，已恢复原策略");
     }
     saved = savedStrategy;
@@ -1644,27 +1592,13 @@ async function applyMethodChange(input: Record<string, unknown> | undefined, con
       if (!decidedCandidate) throw new Error("方法变更候选不存在");
       confirmedCandidate = decidedCandidate;
     } catch (error) {
-      if (ACTIVE_BACKEND === "mastra") await writeMastraStrategyProjection(context, plan.current);
-      else await store!.writeStrategy(plan.current);
+      await writeMastraStrategyProjection(context, plan.current);
       throw error;
     }
   }
 
   const appliedRevision = saved.last_confirmed_at ?? now;
-  if (store?.appendChangeLogOnce) await store.appendChangeLogOnce({
-    ts: appliedRevision,
-    source: "mcp",
-    type: "method_change_applied",
-    summary: stringInput(input?.summary) || "用户确认采用方法变更",
-    details: {
-      candidate_id: candidateId,
-      operation_key: `method_changes.apply:${confirmation.confirmationId}`,
-      changed_fields: plan.changedFields,
-      confirmation_id: confirmation.confirmationId,
-      previous_strategy_revision: plan.current.last_confirmed_at ?? null,
-      strategy_revision: appliedRevision,
-    },
-  }, `method_changes.apply:${confirmation.confirmationId}`);
+  // (E8) workspace change-log append retired; the audit entry below is the durable record.
   await audit(context, {
     operation: "method_changes.apply",
     resourceType: "method_change_candidate",
@@ -1672,12 +1606,8 @@ async function applyMethodChange(input: Record<string, unknown> | undefined, con
     requestBody: input,
     resultSummary: `applied method change candidate fields=${plan.changedFields.join(",")}`,
   });
-  const publication = isWorkspaceBackend() ? await publishWorkspaceArtifacts(
-    context,
-    [{ relativePath: "config/strategy.yaml", kind: "data", title: "当前投资策略" }],
-    "method_changes.apply",
-    { required: true, idempotencyKey: `method_changes.apply:${confirmation.confirmationId}` },
-  ) : { artifacts: [], failures: [] };
+  // G17: config file snapshots are not user deliverables; mastra writes via projections.
+  const publication = { artifacts: [], failures: [] };
   await confirmation.consume();
   return {
     ok: true,
@@ -1721,9 +1651,7 @@ function userPreferenceChangeInput(input: Record<string, unknown> | undefined): 
 
 async function applyUserPreferences(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "preferences.apply");
-  const store: UserPreferenceStore = ACTIVE_BACKEND === "mastra"
-    ? new MastraUserPreferenceStore(context.userId, context.instanceId, context.projectId || DEFAULT_PROJECT_ID)
-    : new WorkspaceStore(context.userId);
+  const store: UserPreferenceStore = new MastraUserPreferenceStore(context.userId, context.instanceId, context.projectId || DEFAULT_PROJECT_ID);
   const result = await applyUserPreferenceChange(store, userPreferenceChangeInput(input));
   if (store.appendChangeLogOnce) await store.appendChangeLogOnce({
     ts: result.revision,
@@ -1745,16 +1673,8 @@ async function applyUserPreferences(input: Record<string, unknown> | undefined, 
     requestBody: input,
     resultSummary: `updated ${result.changedPaths.join(",")}`,
   });
-  const publication = isWorkspaceBackend() ? await publishWorkspaceArtifacts(
-    context,
-    result.changedPaths.map((relativePath) => ({
-      relativePath,
-      kind: "data" as const,
-      title: relativePath.endsWith("notification.yaml") ? "通知偏好配置" : "任务与盯盘计划",
-    })),
-    "preferences.apply",
-    { required: true, idempotencyKey: `preferences.apply:${confirmation.confirmationId}` },
-  ) : { artifacts: [], failures: [] };
+  // G17: config file snapshots are not user deliverables; mastra writes via projections.
+  const publication = { artifacts: [], failures: [] };
   await confirmation.consume();
   return {
     ok: true,
@@ -1827,7 +1747,7 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
   const resourceId = saved.date ?? saved.reportKey ?? "unknown";
   const resourceType = kind === "daily" ? "daily_review" : `${kind}_review`;
   const publishedAt = new Date().toISOString();
-  if (ACTIVE_BACKEND === "mastra") {
+  {
     const projectId = context.projectId || DEFAULT_PROJECT_ID;
     for (const [index, record] of decisionRecords.entries()) {
       const payload = { ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index };
@@ -1839,10 +1759,6 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
       db.$client.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_line,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(`source-event-${context.userId}-${context.instanceId}-${resourceId}-${index}-${publishedAt}`, context.userId, projectId, context.instanceId, "service_event", `source-event:${resourceId}:${index}:${publishedAt}`, JSON.stringify(payload), "service-owned://reviews", null, `service:${publishedAt}`, "service-owned", publishedAt);
     }
-  } else {
-    const store = new WorkspaceStore(context.userId);
-    for (const [index, record] of decisionRecords.entries()) await store.appendDecision({ ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index });
-    for (const [index, record] of sourceEvents.entries()) await store.appendSourceEvent({ ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index });
   }
   await audit(context, {
     operation: "reviews.save",
@@ -2174,12 +2090,8 @@ async function planPortfolioChanges(
     throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
   }
 
-  const current = ACTIVE_BACKEND === "mastra"
-    ? readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml
-    : (await new WorkspaceStore(context.userId).readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
-  const currentRevision = ACTIVE_BACKEND === "mastra"
-    ? getMastraPortfolioRevision(context.userId, context.instanceId)
-    : current.last_confirmed_at ?? null;
+  const current = readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml;
+  const currentRevision = getMastraPortfolioRevision(context.userId, context.instanceId);
   if (currentRevision !== expectedLastConfirmedAt) {
     throw new Error(`portfolio state changed; expected revision ${expectedLastConfirmedAt ?? "null"}, current revision ${currentRevision ?? "null"}`);
   }
@@ -2294,9 +2206,7 @@ async function planPortfolioChanges(
 
 async function applyPortfolioChanges(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "portfolio.apply_changes");
-  const existing = ACTIVE_BACKEND === "mastra"
-    ? readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml
-    : await new WorkspaceStore(context.userId).readPortfolio();
+  const existing = readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml;
   const confirmationId = stringInput(input?.confirmationId)!;
   if (existing?.last_confirmation_id === confirmationId) {
     await confirmation.consume();
@@ -2311,26 +2221,9 @@ async function applyPortfolioChanges(input: Record<string, unknown> | undefined,
     last_confirmed_by: "user",
     last_confirmation_id: confirmationId,
   };
-  if (ACTIVE_BACKEND === "mastra") {
-    replaceMastraPortfolioProjection(context.userId, context.instanceId, saved as Record<string, unknown>, plan.expectedLastConfirmedAt);
-  } else {
-    const store = new WorkspaceStore(context.userId);
-    await store.writePortfolio(saved);
-    await store.appendChangeLog({
-      ts: now,
-      source: "mcp",
-      type: "portfolio_changed",
-      summary: stringInput(input?.summary) || "用户确认更新持仓组合",
-      details: {
-        confirmation_id: confirmationId,
-        removed_holding_codes: plan.removedHoldings.map((item) => item.code),
-        upserted_holding_codes: plan.upsertedHoldings.map((item) => item.code),
-        removed_watchlist_codes: plan.removedWatchlist.map((item) => item.code),
-        kept_watchlist_codes: plan.keptWatchlistCodes,
-        cash_ratio_percent: plan.allocation.cashRatioPercent,
-      },
-    });
-  }
+  // E8: mastra projection is the only portfolio write path; the workspace
+  // change-log append retired with the backend (audit entry below is the record).
+  replaceMastraPortfolioProjection(context.userId, context.instanceId, saved as Record<string, unknown>, plan.expectedLastConfirmedAt);
   await confirmation.consume();
   await audit(context, {
     operation: "portfolio.apply_changes",
@@ -2339,7 +2232,8 @@ async function applyPortfolioChanges(input: Record<string, unknown> | undefined,
     requestBody: input,
     resultSummary: `removedHoldings=${plan.removedHoldings.length}; upsertedHoldings=${plan.upsertedHoldings.length}; removedWatchlist=${plan.removedWatchlist.length}; totalPercent=${plan.allocation.totalPercent ?? "unknown"}`,
   });
-  const artifact = isWorkspaceBackend() ? await publishPortfolioFileArtifact(context) : undefined;
+  // G17: portfolio.yaml snapshot delivery retired with the workspace backend (E8).
+  const artifact: ConversationArtifact | undefined = undefined;
   return portfolioChangeResult(
     context,
     saved,
@@ -2642,9 +2536,7 @@ async function validateConfirmationDraft(
     };
   }
   if (operation === "preferences.apply") {
-    const store: UserPreferenceStore = ACTIVE_BACKEND === "mastra"
-      ? new MastraUserPreferenceStore(context.userId, context.instanceId, context.projectId || DEFAULT_PROJECT_ID)
-      : new WorkspaceStore(context.userId);
+    const store: UserPreferenceStore = new MastraUserPreferenceStore(context.userId, context.instanceId, context.projectId || DEFAULT_PROJECT_ID);
     const plan = await planUserPreferenceChange(store, userPreferenceChangeInput(payload));
     return {
       changedPaths: plan.changedPaths,

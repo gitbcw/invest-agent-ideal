@@ -48,16 +48,6 @@ interface RegistryEntry {
   description?: string;
 }
 
-let cachedWorkspacePath: string | null = null;
-
-async function resolveWorkspacePath(): Promise<string> {
-  if (cachedWorkspacePath) return cachedWorkspacePath;
-  const { ensureWorkspace } = await import("../lib/workspace.js");
-  const { DEFAULT_USER_ID } = await import("../lib/user-context.js");
-  const workspace = await ensureWorkspace({ userId: DEFAULT_USER_ID });
-  cachedWorkspacePath = workspace.path;
-  return cachedWorkspacePath;
-}
 
 /** 极简 YAML 解析:只处理 registry 这种 entry 列表 */
 function parseRegistryYaml(text: string): RegistryEntry[] {
@@ -94,31 +84,11 @@ function parseRegistryYaml(text: string): RegistryEntry[] {
 }
 
 async function loadL3bRegistry(): Promise<{ entries: RegistryEntry[]; workspaceRoot: string }> {
-  if (ACTIVE_BACKEND === "mastra") {
-    // Persistent user scripts must not become executable runtime inputs. A
-    // future implementation needs an explicit published asset + isolated
-    // staging contract; fail closed until then.
-    return { entries: [], workspaceRoot: "" };
-  }
-  const workspaceRoot = await resolveWorkspacePath();
-  const registryPath = join(workspaceRoot, "scripts", "indicators", ".registry.yaml");
-  if (!existsSync(registryPath)) return { entries: [], workspaceRoot };
-  try {
-    const text = await readFile(registryPath, "utf8");
-    const all = parseRegistryYaml(text);
-    // 只保留 enabled && (stable || user_acknowledged) && schedule === intraday
-    const intraday = all.filter(
-      (e) =>
-        e.enabled !== false &&
-        e.schedule === "intraday" &&
-        (e.reliability !== "experimental" || e.user_acknowledged === true) &&
-        !!e.script,
-    );
-    return { entries: intraday, workspaceRoot };
-  } catch (err) {
-    logger.warn(`L3b registry 加载失败: ${(err as Error).message}`);
-    return { entries: [], workspaceRoot };
-  }
+  // (E8) persistent user scripts must not become executable runtime inputs.
+  // A future implementation needs an explicit published asset + isolated
+  // staging contract; fail closed until then.
+  return { entries: [], workspaceRoot: "" };
+
 }
 
 /**

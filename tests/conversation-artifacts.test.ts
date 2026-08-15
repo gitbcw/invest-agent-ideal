@@ -43,18 +43,21 @@ interface TestContext {
 async function setupSharedFixture(): Promise<TestContext> {
   const root = await mkdtemp(path.join(os.tmpdir(), "invest-agent-artifacts-"));
   const workspaceRoot = path.join(root, "workspaces");
-  const workspaceUserA = path.join(workspaceRoot, "user-a");
-  const workspaceUserB = path.join(workspaceRoot, "user-b");
+  process.env.WORKSPACE_ROOT = workspaceRoot;
+  process.env.DB_PATH = path.join(root, "test.db");
+  process.env.NODE_ENV = "test";
+  process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
+  const { initDb, sqlite } = await import("../src/db/index.js");
+  initDb();
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  // E8: the mastra project root is the only storage root; fixture files live there.
+  const workspaceUserA = await registerTestProject({ userId: "user-a", projectId: "invest-agent", instanceId: "user-a" });
+  const workspaceUserB = await registerTestProject({ userId: "user-b", projectId: "invest-agent", instanceId: "user-b" });
   await mkdir(path.join(workspaceUserA, "reports", "daily"), { recursive: true });
   await mkdir(path.join(workspaceUserA, "reports", "html"), { recursive: true });
   await mkdir(path.join(workspaceUserA, "reports", "metrics"), { recursive: true });
   await mkdir(path.join(workspaceUserA, "config"), { recursive: true });
   await mkdir(path.join(workspaceUserB, "reports", "daily"), { recursive: true });
-  process.env.WORKSPACE_ROOT = workspaceRoot;
-  process.env.DB_PATH = path.join(root, "test.db");
-  process.env.NODE_ENV = "test";
-  const { initDb, sqlite } = await import("../src/db/index.js");
-  initDb();
   const mod = await import("../src/services/conversation-artifacts.js");
   return { root, workspaceRoot, workspaceUserA, workspaceUserB, mod, sqlite };
 }
@@ -63,6 +66,12 @@ let ctxPromise: Promise<TestContext> | null = null;
 async function getCtx(): Promise<TestContext> {
   if (!ctxPromise) ctxPromise = setupSharedFixture();
   return ctxPromise;
+}
+
+
+async function ensureProjectFor(scope: { userId: string; projectId: string; instanceId: string }): Promise<string> {
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  return registerTestProject(scope);
 }
 
 function expectErrorCode(error: unknown, code: string): boolean {
@@ -159,11 +168,12 @@ test("daily, weekly and monthly reports atomically create quota-counted mappings
   const userId = "mapped-report-user";
   const instanceId = "mapped-report-instance";
   const projectId = "mapped-report-project";
+  const projectRoot = await ensureProjectFor({ userId, projectId, instanceId });
   const contents = ["# daily\n", "# weekly\n", "# monthly\n"];
   const paths = ["reports/daily/2026-08-06.md", "reports/weekly/2026-W32.md", "reports/monthly/2026-08.md"];
   const sources = ["reviews.save", "artifacts.publish", "artifacts.publish"] as const;
   for (let index = 0; index < paths.length; index += 1) {
-    const target = path.join(workspaceRoot, userId, paths[index]);
+    const target = path.join(projectRoot, paths[index]);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, contents[index]);
     await mod.publishConversationArtifact({
@@ -186,8 +196,9 @@ test("report quota failure rolls back the artifact row, mapping and reservation"
   const userId = "mapped-report-full-user";
   const instanceId = "mapped-report-full-instance";
   const projectId = "mapped-report-full-project";
+  const projectRoot = await ensureProjectFor({ userId, projectId, instanceId });
   const relativePath = "reports/daily/over-quota.md";
-  const target = path.join(workspaceRoot, userId, relativePath);
+  const target = path.join(projectRoot, relativePath);
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, "# over quota\n");
   sqlite.prepare(
@@ -384,8 +395,12 @@ test("rejects cross-user artifact access", async () => {
 });
 
 test("rejects cross-instance artifact access for the same user", async () => {
-  const { workspaceUserA, mod } = await getCtx();
-  const target = path.join(workspaceUserA, "reports", "daily", "scope-instance.md");
+  const { mod } = await getCtx();
+  // Each instance resolves to its own mastra project root; publish from
+  // instance-a's own project, then attempt the read as instance-b.
+  const projectRoot = await ensureProjectFor({ userId: "user-a", projectId: "invest-agent", instanceId: "instance-a" });
+  const target = path.join(projectRoot, "reports", "daily", "scope-instance.md");
+  await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, "scoped to instance-a");
   const record = await mod.publishConversationArtifact({
     userId: "user-a",
@@ -839,7 +854,7 @@ test("publishes and reads a safe HTML document with html preview mode and stable
   assert.equal(read.payload.checksum, record.checksum);
   const { createHash } = await import("node:crypto");
   assert.equal(record.checksum, createHash("sha256").update(Buffer.from(VALID_HTML, "utf8")).digest("hex"));
-  const library = await mod.listCuratedArtifactLibrary({ userId: "user-a", instanceId: "user-a" });
+  const library = await mod.listCuratedArtifactLibrary({ userId: "user-a", projectId: "invest-agent", instanceId: "user-a" });
   assert.equal(library.items.find((item) => item.artifactId === record.artifactId)?.category, "html");
 });
 
@@ -970,7 +985,7 @@ test("malicious HTML is only ever served as artifact bytes, never via the legacy
   const assets = await import("../src/services/workspace-report-assets.js");
   for (const relativePath of ["reports/daily/evil.html", "reports/daily/brief.htm"]) {
     await assert.rejects(
-      () => assets.readWorkspaceReportAsset({ userId: "user-a", relativePath }),
+      () => assets.readWorkspaceReportAsset({ userId: "user-a", projectId: "invest-agent", instanceId: "user-a", relativePath }),
       (error: unknown) =>
         error instanceof Error &&
         error.name === "WorkspaceReportAssetError" &&
@@ -1024,9 +1039,10 @@ test("SVG artifact published inside a turn binds to the assistant message artifa
 // --- artifact.library.list curated listing ---------------------------------
 
 async function createLibraryUser(ctx: TestContext, userId: string): Promise<string> {
-  const workspace = path.join(ctx.workspaceRoot, userId);
-  await mkdir(path.join(workspace, "reports", "daily"), { recursive: true });
-  return workspace;
+  void ctx;
+  const projectRoot = await ensureProjectFor({ userId, projectId: "invest-agent", instanceId: userId });
+  await mkdir(path.join(projectRoot, "reports", "daily"), { recursive: true });
+  return projectRoot;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1043,8 +1059,9 @@ async function publishLibraryMarkdown(
     source?: "artifacts.publish" | "reviews.save" | "legacy_path";
   },
 ): Promise<ArtifactModuleType.ConversationArtifactRecord> {
-  const workspace = path.join(ctx.workspaceRoot, input.userId);
-  const target = path.join(workspace, input.relativePath);
+  // E8: fixture files live inside the registered mastra project root.
+  const projectRoot = await ensureProjectFor({ userId: input.userId, projectId: "invest-agent", instanceId: input.instanceId });
+  const target = path.join(projectRoot, input.relativePath);
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, input.content ?? `# ${input.relativePath}\n`);
   return ctx.mod.publishConversationArtifact({
@@ -1124,7 +1141,7 @@ test("library list isolates artifacts by user and instance", async () => {
     relativePath: "reports/daily/other-user.md",
   });
 
-  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-iso-a", instanceId: "inst-1" });
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-iso-a", projectId: "invest-agent", instanceId: "inst-1" });
   assert.deepEqual(result.items.map((item) => item.artifactId), [mine.artifactId]);
 });
 
@@ -1144,7 +1161,7 @@ test("library list admits images, pdf, text and table as downloadable/lightbox i
   });
   const legacy = await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: "reports/daily/legacy.md", source: "legacy_path" });
 
-  const workspace = path.join(ctx.workspaceRoot, userId);
+  const workspace = await ensureProjectFor({ userId, projectId: "invest-agent", instanceId });
   const svgTarget = path.join(workspace, "reports", "daily", "chart.svg");
   await writeFile(svgTarget, VALID_SVG);
   const svg = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/chart.svg", saveToMyFiles: true, scope });
@@ -1167,7 +1184,7 @@ test("library list admits images, pdf, text and table as downloadable/lightbox i
   await workbook.xlsx.writeFile(xlsxTarget);
   const xlsx = await ctx.mod.publishConversationArtifact({ userId, instanceId, relativePath: "reports/daily/table.xlsx", saveToMyFiles: true, scope });
 
-  const result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId, projectId: "invest-agent", instanceId });
   const ids = result.items.map((item) => item.artifactId).sort();
   // Legacy path is the only excluded type now.
   assert.ok(!ids.includes(legacy.artifactId), "legacy_path artifact must not appear in the library");
@@ -1222,7 +1239,7 @@ test("library list excludes non-reports, absolute, traversal, hidden and temp/ba
     }),
   );
 
-  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-paths", instanceId: "lib-paths" });
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-paths", projectId: "invest-agent", instanceId: "lib-paths" });
   assert.deepEqual(result.items.map((item) => item.artifactId), [valid.artifactId]);
 });
 
@@ -1244,7 +1261,7 @@ test("library list excludes artifacts whose file escapes the reports root via sy
     relativePath: "reports/daily/ok.md",
   });
 
-  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-sym", instanceId: "lib-sym" });
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-sym", projectId: "invest-agent", instanceId: "lib-sym" });
   assert.deepEqual(result.items.map((item) => item.artifactId), [valid.artifactId]);
 });
 
@@ -1258,7 +1275,7 @@ test("library list keeps the newest valid formal version per path and never fall
   await sleep(5);
   const v2 = await publishLibraryMarkdown(ctx, { userId, instanceId, relativePath: "reports/daily/report.md", content: "v2" });
 
-  let result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  let result = await ctx.mod.listCuratedArtifactLibrary({ userId, projectId: "invest-agent", instanceId });
   assert.deepEqual(result.items.map((item) => item.artifactId), [v2.artifactId]);
 
   // A legacy re-publish of the same path is the newest record, but legacy
@@ -1272,7 +1289,7 @@ test("library list keeps the newest valid formal version per path and never fall
     content: "v2",
     source: "legacy_path",
   });
-  result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  result = await ctx.mod.listCuratedArtifactLibrary({ userId, projectId: "invest-agent", instanceId });
   assert.deepEqual(result.items.map((item) => item.artifactId), [v2.artifactId]);
   assert.notEqual(result.items[0].artifactId, legacy.artifactId);
 
@@ -1283,13 +1300,13 @@ test("library list keeps the newest valid formal version per path and never fall
     relativePath: "reports/daily/only-legacy.md",
     source: "legacy_path",
   });
-  result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  result = await ctx.mod.listCuratedArtifactLibrary({ userId, projectId: "invest-agent", instanceId });
   assert.deepEqual(result.items.map((item) => item.artifactId), [v2.artifactId]);
 
   // Once the file disappears, every version of the path is invalid and the
   // path drops out of the listing entirely.
   await unlink(path.join(workspace, "reports", "daily", "report.md"));
-  result = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId });
+  result = await ctx.mod.listCuratedArtifactLibrary({ userId, projectId: "invest-agent", instanceId });
   assert.deepEqual(result.items, []);
 });
 
@@ -1310,7 +1327,7 @@ test("library list paginates with an opaque cursor without duplicates or gaps", 
   const pageSizes: number[] = [];
   let cursor: string | undefined;
   do {
-    const page = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId, cursor, limit: 2 });
+    const page = await ctx.mod.listCuratedArtifactLibrary({ userId, projectId: "invest-agent", instanceId, cursor, limit: 2 });
     pageSizes.push(page.items.length);
     seen.push(...page.items.map((item) => item.artifactId));
     cursor = page.nextCursor;
@@ -1333,7 +1350,7 @@ test("library list paginates with an opaque cursor without duplicates or gaps", 
   assert.deepEqual(seen, expectedOrder);
 
   // Oversized limits are clamped, not rejected.
-  const all = await ctx.mod.listCuratedArtifactLibrary({ userId, instanceId, limit: 100000 });
+  const all = await ctx.mod.listCuratedArtifactLibrary({ userId, projectId: "invest-agent", instanceId, limit: 100000 });
   assert.equal(all.items.length, 5);
   assert.equal(all.nextCursor, undefined);
 });
@@ -1355,7 +1372,7 @@ test("library list rejects malformed cursors with a deterministic error", async 
   ];
   for (const cursor of badCursors) {
     await assert.rejects(
-      () => ctx.mod.listCuratedArtifactLibrary({ userId: "lib-cursor", instanceId: "lib-cursor", cursor }),
+      () => ctx.mod.listCuratedArtifactLibrary({ userId: "lib-cursor", projectId: "invest-agent", instanceId: "lib-cursor", cursor }),
       (error: unknown) => expectErrorCode(error, "ARTIFACT_INVALID_CURSOR"),
     );
   }
@@ -1370,7 +1387,7 @@ test("library list returns only whitelisted descriptor fields and records one ag
     relativePath: "reports/daily/fields.md",
   });
 
-  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-fields", instanceId: "lib-fields" });
+  const result = await ctx.mod.listCuratedArtifactLibrary({ userId: "lib-fields", projectId: "invest-agent", instanceId: "lib-fields" });
   assert.equal(result.items.length, 1);
   const item = result.items[0];
   assert.deepEqual(

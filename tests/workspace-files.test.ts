@@ -6,8 +6,13 @@ import test from "node:test";
 
 test("workspace file browser lists user project files but excludes secrets and runtime directories", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "invest-agent-workspace-files-"));
-  const workspaceRoot = path.join(root, "workspaces");
-  const workspace = path.join(workspaceRoot, "files-user");
+  process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
+  process.env.DB_PATH = path.join(root, "runtime.db");
+  process.env.NODE_ENV = "test";
+  const { initDb } = await import("../src/db/index.js");
+  initDb();
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const workspace = await registerTestProject({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user" });
   await mkdir(path.join(workspace, ".codex/skills/demo"), { recursive: true });
   await mkdir(path.join(workspace, "reports/daily"), { recursive: true });
   await mkdir(path.join(workspace, "node_modules/pkg"), { recursive: true });
@@ -28,48 +33,45 @@ test("workspace file browser lists user project files but excludes secrets and r
   await writeFile(path.join(root, "outside.txt"), "outside\n");
   await symlink(path.join(root, "outside.txt"), path.join(workspace, "reports/daily/outside.txt"));
 
-  const originalWorkspaceRoot = process.env.WORKSPACE_ROOT;
-  process.env.WORKSPACE_ROOT = workspaceRoot;
   try {
     const { listWorkspaceFiles, readWorkspaceFile, WorkspaceFileError } = await import("../src/services/workspace-files.js");
-    const result = await listWorkspaceFiles({ userId: "files-user" });
+    const result = await listWorkspaceFiles({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user" });
     const paths = result.items.map((item) => item.relativePath);
     assert.deepEqual(paths, ["AGENTS.md", "chart.png", "config.yaml", "config.yml", "preview.html", "reports/daily/today.md"]);
     assert.equal(result.items.find((item) => item.relativePath === "preview.html")?.previewMode, "html");
     assert.equal(result.items.find((item) => item.relativePath === "chart.png")?.previewMode, "image");
     assert.equal(result.items.find((item) => item.relativePath === "config.yaml")?.mimeType, "application/yaml");
     assert.equal(result.items.find((item) => item.relativePath === "config.yaml")?.previewMode, "text");
-    const file = await readWorkspaceFile({ userId: "files-user", relativePath: "reports/daily/today.md" });
+    const file = await readWorkspaceFile({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user", relativePath: "reports/daily/today.md" });
     assert.equal(Buffer.from(file.base64, "base64").toString(), "report\n");
     assert.equal(file.checksum.length, 64);
-    const yamlFile = await readWorkspaceFile({ userId: "files-user", relativePath: "config.yml" });
+    const yamlFile = await readWorkspaceFile({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user", relativePath: "config.yml" });
     assert.equal(Buffer.from(yamlFile.base64, "base64").toString(), "enabled: true\n");
     await assert.rejects(
-      () => readWorkspaceFile({ userId: "files-user", relativePath: "../outside.txt" }),
+      () => readWorkspaceFile({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user", relativePath: "../outside.txt" }),
       (error: unknown) => error instanceof WorkspaceFileError && error.code === "WORKSPACE_FILE_INVALID_PATH",
     );
     await assert.rejects(
-      () => readWorkspaceFile({ userId: "files-user", relativePath: ".env" }),
+      () => readWorkspaceFile({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user", relativePath: ".env" }),
       (error: unknown) => error instanceof WorkspaceFileError && error.code === "WORKSPACE_FILE_FORBIDDEN",
     );
     await assert.rejects(
-      () => readWorkspaceFile({ userId: "files-user", relativePath: ".codex/skills/demo/SKILL.md" }),
+      () => readWorkspaceFile({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user", relativePath: ".codex/skills/demo/SKILL.md" }),
       (error: unknown) => error instanceof WorkspaceFileError && error.code === "WORKSPACE_FILE_FORBIDDEN",
     );
     await assert.rejects(
-      () => readWorkspaceFile({ userId: "files-user", relativePath: "analysis.py" }),
+      () => readWorkspaceFile({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user", relativePath: "analysis.py" }),
       (error: unknown) => error instanceof WorkspaceFileError && error.code === "WORKSPACE_FILE_FORBIDDEN",
     );
     await assert.rejects(
-      () => readWorkspaceFile({ userId: "files-user", relativePath: "reports/daily/outside.txt" }),
+      () => readWorkspaceFile({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user", relativePath: "reports/daily/outside.txt" }),
       (error: unknown) => error instanceof WorkspaceFileError && error.code === "WORKSPACE_FILE_FORBIDDEN",
     );
     await assert.rejects(
-      () => readWorkspaceFile({ userId: "files-user", relativePath: "reports/daily/internal-link.md" }),
+      () => readWorkspaceFile({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user", relativePath: "reports/daily/internal-link.md" }),
       (error: unknown) => error instanceof WorkspaceFileError && error.code === "WORKSPACE_FILE_FORBIDDEN",
     );
   } finally {
-    if (originalWorkspaceRoot === undefined) delete process.env.WORKSPACE_ROOT;
-    else process.env.WORKSPACE_ROOT = originalWorkspaceRoot;
+
   }
 });

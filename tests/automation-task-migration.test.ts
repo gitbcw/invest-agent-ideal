@@ -10,6 +10,9 @@ process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(root, "migration.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+// E8: the mastra registry is the only storage root; isolate it per run so
+// asset files never leak across test runs (AUTOMATION_ASSET_SOURCE_IMMUTABLE).
+process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
 mkdirSync(path.join(root, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 
@@ -18,14 +21,16 @@ const fixture = (async () => {
   db.initDb();
   const automation = await import("../src/services/automation-tasks.js");
   const migration = await import("../src/services/automation-task-migration.js");
-  const workspace = await import("../src/lib/workspace.js");
-  return { db, automation, migration, workspace };
+  // E8: storage roots resolve to registered mastra project roots.
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const projectRoot = await registerTestProject(scope);
+  return { db, automation, migration, projectRoot };
 })();
 
 const scope = { userId: "migration-user", projectId: "invest-agent", instanceId: "migration-instance" };
 
 test("migrates one legacy CSV task with backup, asset bindings, paused revision, and audit", async () => {
-  const { automation, migration, workspace, db } = await fixture;
+  const { automation, migration, projectRoot, db } = await fixture;
   const task = await automation.createAutomationTask({
     ...scope,
     taskId: "legacy-migrate-task",
@@ -45,7 +50,7 @@ test("migrates one legacy CSV task with backup, asset bindings, paused revision,
   assert.equal(result.task.revision.output.assetId, result.workingAsset.assetId);
   assert.equal(result.task.revision.output.expectedVersionId, undefined);
   assert.match(result.backupRelativePath, /^\.automation-migration-backups\/legacy-migrate-task\//);
-  const backupRoot = path.join(workspace.resolveWorkspacePath(scope.userId), result.backupRelativePath);
+  const backupRoot = path.join(projectRoot, result.backupRelativePath);
   assert.equal(existsSync(backupRoot), true);
   assert.equal(readFileSync(path.join(backupRoot, "source-source.csv"), "utf8"), "code,price\n600519,1500\n");
   assert.equal((await automation.listAutomationTaskAssets({ ...scope, taskId: task.taskId })).length, 2);

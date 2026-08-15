@@ -137,9 +137,6 @@ function addMinutes(date: Date, minutes: number) {
 
 function preparedReviewPath(scope: ReviewScope, kind: ReviewKind, dateKey: string): string | Promise<string> {
   const safeInstance = (scope.instanceId || DEFAULT_INSTANCE_ID).replace(/[^a-zA-Z0-9_-]/g, "-");
-  if (ACTIVE_BACKEND !== "mastra") {
-    return join(resolveWorkspacePath(scope.userId), ".state", "scheduled-reviews", safeInstance, `${dateKey}-${kind}.json`);
-  }
   return resolveRegisteredMastraProjectRoot({
     userId: scope.userId,
     projectId: scope.projectId ?? DEFAULT_PROJECT_ID,
@@ -161,10 +158,7 @@ async function getScheduledPreparedDailyReview(scope: ReviewScope, dateKey: stri
   if (!row?.content) return null;
   const data = row.data && typeof row.data === "object" ? row.data as Record<string, unknown> : {};
   const context = data.context && typeof data.context === "object" ? data.context as Record<string, unknown> : {};
-  return context.source === "scheduled-review"
-    || (ACTIVE_BACKEND !== "mastra" && context.source === "scheduled-acp")
-    ? row.content
-    : null;
+  return context.source === "scheduled-review" ? row.content : null;
 }
 
 async function readReusableReviewText(scope: ReviewScope, kind: ReviewKind, dateKey: string): Promise<string | null> {

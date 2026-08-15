@@ -3,8 +3,6 @@ import { db } from "../db/index.js";
 import { chatHistory } from "../db/schema.js";
 import { logger } from "./logger.js";
 import { DEFAULT_INSTANCE_ID, type UserContext } from "./user-context.js";
-import { ACTIVE_BACKEND } from "./data-backend.js";
-import { WorkspaceStore } from "./workspace-store.js";
 
 const MEMORY_LIMIT = 12;
 
@@ -16,56 +14,28 @@ export type ConversationMessage = {
   content: string;
 };
 
-interface BehaviorEventRecord {
-  event_type: string;
-  occurred_at: string;
-  payload: {
-    instance_id?: string;
-    conversation_id?: string | null;
-    channel?: UserContext["channel"] | null;
-    user_text: string;
-    assistant_text: string;
-  };
-}
-
 export async function rememberConversationTurn(userContext: UserContext, userText: string, assistantText: string) {
   const now = new Date().toISOString();
   const instanceId = userContext.instanceId ?? DEFAULT_INSTANCE_ID;
   try {
-    if (ACTIVE_BACKEND === "workspace") {
-      const store = new WorkspaceStore(userContext.userId);
-      const record: BehaviorEventRecord = {
-        event_type: EVENT_TYPE,
-        occurred_at: now,
-        payload: {
-          instance_id: instanceId,
-          conversation_id: userContext.conversationId ?? null,
-          channel: userContext.channel ?? null,
-          user_text: compactContent(userText),
-          assistant_text: compactContent(assistantText),
-        },
-      };
-      await store.appendBehaviorEvent(record);
-    } else {
-      await db.insert(chatHistory).values([
-        {
-          userId: userContext.userId,
-          instanceId,
-          conversationId: userContext.conversationId ?? null,
-          role: "user",
-          content: compactContent(userText),
-          createdAt: now,
-        },
-        {
-          userId: userContext.userId,
-          instanceId,
-          conversationId: userContext.conversationId ?? null,
-          role: "assistant",
-          content: compactContent(assistantText),
-          createdAt: now,
-        },
-      ]);
-    }
+    await db.insert(chatHistory).values([
+      {
+        userId: userContext.userId,
+        instanceId,
+        conversationId: userContext.conversationId ?? null,
+        role: "user",
+        content: compactContent(userText),
+        createdAt: now,
+      },
+      {
+        userId: userContext.userId,
+        instanceId,
+        conversationId: userContext.conversationId ?? null,
+        role: "assistant",
+        content: compactContent(assistantText),
+        createdAt: now,
+      },
+    ]);
   } catch (error) {
     logger.warn("短期对话记忆写入失败:", error);
   }
@@ -86,9 +56,6 @@ export async function loadRecentConversationMemory(
 ): Promise<ConversationMessage[]> {
   const instanceId = userContext.instanceId ?? DEFAULT_INSTANCE_ID;
   const conversationId = options.scope === "conversation" ? userContext.conversationId : undefined;
-  if (ACTIVE_BACKEND === "workspace") {
-    return loadRecentFromWorkspace(userContext.userId, instanceId, conversationId, limit);
-  }
   return loadRecentFromSQLite(userContext, instanceId, conversationId, limit);
 }
 
@@ -133,22 +100,6 @@ async function loadRecentFromSQLite(userContext: UserContext, instanceId: string
  *
  * conversationId 作为可选过滤项:为 null/空时不过滤(读取所有 conversation 的最近对话)。
  */
-async function loadRecentFromWorkspace(userId: string, instanceId: string, conversationId: string | undefined, limit: number): Promise<ConversationMessage[]> {
-  const store = new WorkspaceStore(userId);
-  const events = await store.listBehaviorEvents<BehaviorEventRecord>();
-  const filtered = events
-    .filter((event) => event?.event_type === EVENT_TYPE || event?.event_type === LEGACY_WEIXIN_EVENT_TYPE)
-    .filter((event) => event?.payload?.instance_id === instanceId)
-    .filter((event) => !conversationId || event?.payload?.conversation_id === conversationId);
-  const messages: ConversationMessage[] = [];
-  for (const event of filtered) {
-    if (!event.payload) continue;
-    messages.push({ role: "user", content: event.payload.user_text });
-    messages.push({ role: "assistant", content: event.payload.assistant_text });
-  }
-  return messages.slice(-limit);
-}
-
 export function formatRecentMemoryForPrompt(messages: ConversationMessage[]) {
   if (messages.length === 0) return "";
   return messages

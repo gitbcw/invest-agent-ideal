@@ -123,15 +123,9 @@ function serializeMethodologyProfileFromMd(methods: { fundamental: string; techn
 }
 
 async function loadMethodologyProfile(ctx: { userId: string; instanceId: string }) {
-  if (ACTIVE_BACKEND !== "workspace") {
-    const rows = await db.select().from(methodologyProfiles).where(and(eq(methodologyProfiles.userId, ctx.userId), eq(methodologyProfiles.instanceId, ctx.instanceId))).limit(1);
-    return serializeMethodologyProfile(rows[0]);
-  }
-  const store = new WorkspaceStore(ctx.userId);
-  const methods = await store.readMethodology();
-  return serializeMethodologyProfileFromMd(methods);
+  const rows = await db.select().from(methodologyProfiles).where(and(eq(methodologyProfiles.userId, ctx.userId), eq(methodologyProfiles.instanceId, ctx.instanceId))).limit(1);
+  return serializeMethodologyProfile(rows[0]);
 }
-
 
 function sandboxError(reply: any, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -1055,9 +1049,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   }));
 
   app.get("/api/sandbox/onboarding/state", sandboxSafe("invest.onboarding.read", async (ctx) => {
-    const state = ACTIVE_BACKEND === "mastra"
-      ? normalizeSharedOnboardingState(await new MastraUserPreferenceStore(ctx.userId, ctx.instanceId, ctx.projectId).readOnboardingState())
-      : normalizeSharedOnboardingState(await new WorkspaceStore(ctx.userId).readOnboardingState());
+    const state = normalizeSharedOnboardingState(await new MastraUserPreferenceStore(ctx.userId, ctx.instanceId, ctx.projectId).readOnboardingState());
     await audit(ctx, {
       operation: "onboarding.state.read",
       resourceType: "onboarding_state",
@@ -1092,10 +1084,8 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     }
 
     const now = new Date().toISOString();
-    const mastra = ACTIVE_BACKEND === "mastra"
-      ? openMastraOnboardingStore({ userId: ctx.userId, instanceId: ctx.instanceId, projectId: ctx.projectId })
-      : null;
-    const store: any = mastra?.store ?? new WorkspaceStore(ctx.userId);
+    const mastraStoreResult = openMastraOnboardingStore({ userId: ctx.userId, instanceId: ctx.instanceId, projectId: ctx.projectId });
+    const store: any = mastraStoreResult.store;
     const portfolio = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
     const holdings = Array.isArray(portfolio.holdings) ? [...portfolio.holdings] : [];
     const watchItems = Array.isArray(portfolio.watchlist) ? [...portfolio.watchlist] : [];
@@ -1164,18 +1154,8 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       notes: request.body?.notes ?? current.notes ?? "",
     };
     await store.writeOnboardingState(nextState);
-    if (mastra) sqlite.transaction(() => mastra.persist())();
-    await store.appendChangeLog({
-      ts: now,
-      source: "sandbox",
-      type: "onboarding_portfolio_confirmed",
-      summary: request.body?.summary || "用户确认 onboarding 持仓和观察仓",
-      details: {
-        holding_names: holdingInputs.map((item) => item.name),
-        watch_names: watchInputs.map((item) => item.name),
-        current_step: nextState.current_step,
-      },
-    });
+    sqlite.transaction(() => mastraStoreResult.persist())();
+    // (E8) workspace change-log append retired; the audit entry is the record.
     await audit(ctx, {
       operation: "onboarding.confirm_portfolio",
       resourceType: "onboarding_state",
@@ -1209,60 +1189,34 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     const ignoredFields: string[] = [];
     if (request.body?.sourcePolicy !== undefined) ignoredFields.push("sourcePolicy");
 
-    let methodologyProfile;
-    if (ACTIVE_BACKEND === "workspace") {
-      methodologyProfile = await writeMethodologyProfileToWorkspace(ctx.userId, request.body ?? {});
+    const existing = await db.select().from(methodologyProfiles).where(and(eq(methodologyProfiles.userId, ctx.userId), eq(methodologyProfiles.instanceId, ctx.instanceId))).limit(1);
+    const values = {
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      fundamentalMethod: request.body?.fundamentalMethod ?? existing[0]?.fundamentalMethod ?? "",
+      technicalMethod: request.body?.technicalMethod ?? existing[0]?.technicalMethod ?? "",
+      macroMethod: request.body?.macroMethod ?? existing[0]?.macroMethod ?? "",
+      riskMethod: request.body?.riskMethod ?? existing[0]?.riskMethod ?? "",
+      sourcePolicy: jsonText(request.body?.sourcePolicy, parseJsonText(existing[0]?.sourcePolicy, {})),
+      notes: request.body?.notes ?? existing[0]?.notes ?? null,
+      createdAt: existing[0]?.createdAt ?? now,
+      updatedAt: now,
+    };
+    if (existing.length > 0) {
+      await db.update(methodologyProfiles).set(values).where(eq(methodologyProfiles.id, existing[0].id));
     } else {
-      const existing = await db.select().from(methodologyProfiles).where(and(eq(methodologyProfiles.userId, ctx.userId), eq(methodologyProfiles.instanceId, ctx.instanceId))).limit(1);
-      const values = {
-        userId: ctx.userId,
-        instanceId: ctx.instanceId,
-        fundamentalMethod: request.body?.fundamentalMethod ?? existing[0]?.fundamentalMethod ?? "",
-        technicalMethod: request.body?.technicalMethod ?? existing[0]?.technicalMethod ?? "",
-        macroMethod: request.body?.macroMethod ?? existing[0]?.macroMethod ?? "",
-        riskMethod: request.body?.riskMethod ?? existing[0]?.riskMethod ?? "",
-        sourcePolicy: jsonText(request.body?.sourcePolicy, parseJsonText(existing[0]?.sourcePolicy, {})),
-        notes: request.body?.notes ?? existing[0]?.notes ?? null,
-        createdAt: existing[0]?.createdAt ?? now,
-        updatedAt: now,
-      };
-      if (existing.length > 0) {
-        await db.update(methodologyProfiles).set(values).where(eq(methodologyProfiles.id, existing[0].id));
-      } else {
-        await db.insert(methodologyProfiles).values(values);
-      }
-      methodologyProfile = serializeMethodologyProfile(values as typeof methodologyProfiles.$inferSelect);
+      await db.insert(methodologyProfiles).values(values);
     }
+    const methodologyProfile = serializeMethodologyProfile(values as typeof methodologyProfiles.$inferSelect);
     await audit(ctx, {
       operation: "profiles.methodology.set",
       resourceType: "methodology_profile",
       resourceId: ctx.instanceId,
       requestBody: request.body,
-      resultSummary: `methodology profile saved (workspace=${ACTIVE_BACKEND === "workspace"})`,
+      resultSummary: "methodology profile saved",
     });
     return { ok: true, userId: ctx.userId, message: "方法论 Profile 已保存", methodologyProfile, ignoredFields: ignoredFields.length ? ignoredFields : undefined };
   }));
-
-  /**
-   * 覆盖写入 knowledge/methods/*.md。空字符串字段跳过,保留原 md 内容。
-   */
-  async function writeMethodologyProfileToWorkspace(userId: string, body: {
-    fundamentalMethod?: string;
-    technicalMethod?: string;
-    macroMethod?: string;
-    riskMethod?: string;
-  }) {
-    const store = new WorkspaceStore(userId);
-    const methods = await store.readMethodology();
-    const next = {
-      fundamental: body.fundamentalMethod ?? methods.fundamental,
-      technical: body.technicalMethod ?? methods.technical,
-      macro: body.macroMethod ?? methods.macro,
-      risk: body.riskMethod ?? methods.risk,
-    };
-    await store.writeMethodology(next);
-    return serializeMethodologyProfileFromMd(next);
-  }
 
   app.post<{
     Body: {
@@ -1424,12 +1378,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   // ─── 交易策略 CRUD(workspace/config/trading_strategies.yaml) ───
 
   app.get("/api/sandbox/strategies", sandboxSafe("invest.strategy.read", async (ctx) => {
-    if (ACTIVE_BACKEND === "mastra") {
-      return { ok: true, userId: ctx.userId, projectId: ctx.projectId, instanceId: ctx.instanceId, strategies: readMastraTradingStrategies(ctx) };
-    }
-    const store = new WorkspaceStore(ctx.userId);
-    const list = await store.readTradingStrategies();
-    return { ok: true, userId: ctx.userId, strategies: list };
+    return { ok: true, userId: ctx.userId, projectId: ctx.projectId, instanceId: ctx.instanceId, strategies: readMastraTradingStrategies(ctx) };
   }));
 
   app.post<{ Body: { key?: string; name?: string; applicability?: string; body?: string; enabled?: boolean; userId?: string } }>("/api/sandbox/strategies/set", sandboxMutationSafe("invest.strategy.write", "strategies.set", async (ctx, request, reply) => {
@@ -1437,14 +1386,8 @@ export function registerSandboxRoutes(app: FastifyInstance) {
     if (!key) return reply.status(400).send({ ok: false, error: "缺少策略 key" });
     if (!name) return reply.status(400).send({ ok: false, error: "缺少策略 name" });
     if (!body) return reply.status(400).send({ ok: false, error: "缺少策略 body" });
-    const existing = ACTIVE_BACKEND === "mastra"
-      ? readMastraTradingStrategies(ctx).find((s) => s.key === key)
-      : (await new WorkspaceStore(ctx.userId).readTradingStrategies()).find((s) => s.key === key);
-    if (ACTIVE_BACKEND === "mastra") {
-      writeMastraTradingStrategy(ctx, { key, name, applicability, body, enabled });
-    } else {
-      await new WorkspaceStore(ctx.userId).writeTradingStrategy({ key, name, applicability, body, enabled });
-    }
+    const existing = readMastraTradingStrategies(ctx).find((s) => s.key === key);
+    writeMastraTradingStrategy(ctx, { key, name, applicability, body, enabled });
     await audit(ctx, {
       operation: "strategies.set",
       resourceType: "trading_strategy",
@@ -1458,16 +1401,10 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.post<{ Body: { key?: string; userId?: string; confirmationId?: string } }>("/api/sandbox/strategies/remove", sandboxMutationSafe("invest.strategy.write", "strategies.remove", async (ctx, request, reply) => {
     const { key } = request.body ?? {};
     if (!key) return reply.status(400).send({ ok: false, error: "缺少策略 key" });
-    const existing = ACTIVE_BACKEND === "mastra"
-      ? readMastraTradingStrategies(ctx).find((s) => s.key === key)
-      : (await new WorkspaceStore(ctx.userId).readTradingStrategies()).find((s) => s.key === key);
+    const existing = readMastraTradingStrategies(ctx).find((s) => s.key === key);
     if (!existing) return { ok: false, error: `未找到 key 为 ${key} 的策略`, userId: ctx.userId };
     if (await requireConfirmation(ctx, request, reply, "strategies.remove", "trading_strategy", key)) return;
-    if (ACTIVE_BACKEND === "mastra") {
-      removeMastraTradingStrategy(ctx, key);
-    } else {
-      await new WorkspaceStore(ctx.userId).removeTradingStrategy(key);
-    }
+    removeMastraTradingStrategy(ctx, key);
     await audit(ctx, {
       operation: "strategies.remove",
       resourceType: "trading_strategy",

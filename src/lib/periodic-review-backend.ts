@@ -79,64 +79,6 @@ function yamlFilePath(userId: string, kind: PeriodicReviewKind, reportKey: strin
   return join(wsRoot, "reports", kind, `${reportKey}.yaml`);
 }
 
-const workspacePeriodicReviewBackend: PeriodicReviewBackend = {
-  async upsert(userId, _instanceId, record) {
-    // R1: 校验 reportKey
-    const keyError = validateReportKey(record.kind, record.reportKey);
-    if (keyError) throw new Error(`periodicReviewBackend.upsert rejected: ${keyError}`);
-
-    if (!existsSync(resolveWorkspacePath(userId))) {
-      await ensureWorkspace({ userId });
-    }
-    const wsRoot = resolveWorkspacePath(userId);
-    // R1: 路径 containment 验证
-    if (!isPathContained(wsRoot, record.kind, record.reportKey, ".yaml")) {
-      throw new Error(`periodicReviewBackend.upsert rejected: path escapes reports/${record.kind}/`);
-    }
-    if (!isPathContained(wsRoot, record.kind, record.reportKey, ".md")) {
-      throw new Error(`periodicReviewBackend.upsert rejected: md path escapes reports/${record.kind}/`);
-    }
-
-    const filePath = yamlFilePath(userId, record.kind, record.reportKey);
-    await mkdir(join(filePath, ".."), { recursive: true });
-    // R1: 使用 yaml 库序列化（非手写 parser）
-    const yamlContent = stringify({
-      kind: record.kind,
-      report_key: record.reportKey,
-      generated_at: record.generatedAt,
-      summary: record.summary ?? "",
-      content: record.content,
-      data: record.data ?? null,
-    });
-    await writeFile(filePath, yamlContent, "utf-8");
-  },
-
-  async get(userId, _instanceId, kind, reportKey) {
-    // R1: 校验 reportKey（读取也要防逃逸）
-    const keyError = validateReportKey(kind, reportKey);
-    if (keyError) return null;
-
-    const filePath = yamlFilePath(userId, kind, reportKey);
-    if (!existsSync(filePath)) return null;
-    try {
-      const raw = await readFile(filePath, "utf-8");
-      const parsed = parse(raw) as Record<string, unknown>;
-      if (!parsed || typeof parsed !== "object") return null;
-      return {
-        kind,
-        reportKey,
-        generatedAt: String(parsed.generated_at ?? ""),
-        summary: parsed.summary ? String(parsed.summary) : null,
-        content: String(parsed.content ?? ""),
-        data: parsed.data ?? null,
-      };
-    } catch (error) {
-      logger.warn(`periodicReviewBackend.get failed kind=${kind} key=${reportKey}: ${(error as Error).message}`);
-      return null;
-    }
-  },
-};
-
 const mastraPeriodicReviewBackend: PeriodicReviewBackend = {
   async upsert(userId, instanceId, record) {
     const keyError = validateReportKey(record.kind, record.reportKey);
@@ -166,6 +108,6 @@ const mastraPeriodicReviewBackend: PeriodicReviewBackend = {
   },
 };
 
-export const periodicReviewBackend: PeriodicReviewBackend = ACTIVE_BACKEND === "mastra" ? mastraPeriodicReviewBackend : workspacePeriodicReviewBackend;
+export const periodicReviewBackend: PeriodicReviewBackend = mastraPeriodicReviewBackend;
 
 export { DEFAULT_USER_ID as _defaultUser, DEFAULT_INSTANCE_ID as _defaultInstance };

@@ -1,50 +1,21 @@
 /**
  * 数据后端抽象层。
  *
- * 提供 SQLite、Workspace 和 Mastra 三种后端的统一接口,通过环境变量
- * WORKSPACE_BACKEND 切换。迁移分支运行时默认使用 Mastra；Workspace 只在
- * 显式设置时作为回滚/兼容 backend 使用。
- *
- * 工作包 4.1:portfolio 一条链路。
- * 工作包 4.2:扩展到 watchlist + plan。
- * 工作包 4.3:scheduler(alert-check/pre-market)、monitor/alert/review handler 全部切到 backend 读。
- * 工作包 4.4:profile / methodology 切到 workspace(strategy.yaml + knowledge/methods/*.md)。
- *   ACTIVE_BACKEND 在 sandbox.ts 内部分支使用,
- *   不通过 PortfolioBackend 接口抽象,因为 profile 读写是一次性整文件操作,不需要行级 CRUD。
- *   (2026-06-22 方向 B 重构:profile-context.ts 已删,相关读取不再经此层;此处注释保留历史)
- * 工作包 4.5:plan-conditions.setPlanWatchConditions 切到 planBackend.upsert,
- *   消除 stock_plans 表在主路径上的最后直写残留。
- * 工作包 4.6:weixin-conversation-memory 切到 memory/behavior_events.jsonl,
- *   消除 chat_history 表在主路径上的写入。
- *
- * 双轨期残留(系统层 / 工作包 5 范畴):
- *   - alert_rules / alert_events:仍在 SQLite;这是系统层规则与事件状态,不属于 portfolio 数据
- *   - review_viewpoints / method_change_candidates:属工作包 5 自演进闭环范畴
- *   - daily_plans:✅ WP4.7 已切到 `daily-plan-backend.ts`,workspace 模式走 `plans/daily/<date>.yaml`
+ * E8（2026-08-15）：workspace/sqlite 回滚后端已拆除，Mastra 投影是唯一
+ * 运行时后端。WORKSPACE_BACKEND 环境变量不再影响运行时行为；历史实现
+ * 文件仅保留给迁移脚本与只读源工具（workspace-*-backend 不再被运行时
+ * 引用）。ACTIVE_BACKEND 保留为常量导出，供调用点的日志与防御分支在
+ * 收敛期引用。
  */
 
-import { sqlitePortfolioBackend } from "./sqlite-portfolio-backend.js";
-import { workspacePortfolioBackend } from "./workspace-portfolio-backend.js";
-import { sqliteWatchlistBackend } from "./sqlite-watchlist-backend.js";
-import { workspaceWatchlistBackend } from "./workspace-watchlist-backend.js";
-import { sqlitePlanBackend } from "./sqlite-plan-backend.js";
-import { workspacePlanBackend } from "./workspace-plan-backend.js";
 import { mastraPlanBackend, mastraPortfolioBackend, mastraWatchlistBackend } from "./mastra-portfolio-backend.js";
 
-export type BackendKind = "sqlite" | "workspace" | "mastra";
+export type BackendKind = "mastra";
 
-const configuredBackend = process.env.WORKSPACE_BACKEND;
-export const ACTIVE_BACKEND: BackendKind =
-  configuredBackend === "sqlite"
-    ? "sqlite"
-    : configuredBackend === "workspace"
-      ? "workspace"
-      : configuredBackend === "mastra"
-      ? "mastra"
-      : "mastra";
+export const ACTIVE_BACKEND: BackendKind = "mastra";
 
 export function isWorkspaceBackend(): boolean {
-  return ACTIVE_BACKEND === "workspace";
+  return false;
 }
 
 // ============ Portfolio ============
@@ -110,14 +81,11 @@ export interface PortfolioBackend {
 
 // ============ Backend 选择器 ============
 
-export const portfolioBackend: PortfolioBackend =
-  ACTIVE_BACKEND === "workspace" ? workspacePortfolioBackend : ACTIVE_BACKEND === "mastra" ? mastraPortfolioBackend : sqlitePortfolioBackend;
+export const portfolioBackend: PortfolioBackend = mastraPortfolioBackend;
 
-export const watchlistBackend: WatchlistBackend =
-  ACTIVE_BACKEND === "workspace" ? workspaceWatchlistBackend : ACTIVE_BACKEND === "mastra" ? mastraWatchlistBackend : sqliteWatchlistBackend;
+export const watchlistBackend: WatchlistBackend = mastraWatchlistBackend;
 
-export const planBackend: PlanBackend =
-  ACTIVE_BACKEND === "workspace" ? workspacePlanBackend : ACTIVE_BACKEND === "mastra" ? mastraPlanBackend : sqlitePlanBackend;
+export const planBackend: PlanBackend = mastraPlanBackend;
 
 // ============ Watchlist ============
 

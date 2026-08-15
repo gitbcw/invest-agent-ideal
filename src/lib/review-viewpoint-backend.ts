@@ -236,14 +236,6 @@ export const sqliteReviewViewpointBackend: ReviewViewpointBackend = {
 
 let workspaceInitialized = false;
 
-async function ensureInitialized(userId: string): Promise<WorkspaceStore> {
-  if (!workspaceInitialized) {
-    await ensureWorkspace({ userId });
-    workspaceInitialized = true;
-  }
-  return new WorkspaceStore(userId);
-}
-
 interface ReviewViewpointYamlRecord {
   viewpoint_key: string;  // composite key `${sourceDate}#${viewpointId}`
   user_id: string;
@@ -299,91 +291,6 @@ function fromYaml(rec: ReviewViewpointYamlRecord): ReviewViewpointRecord {
   };
 }
 
-export const workspaceReviewViewpointBackend: ReviewViewpointBackend = {
-  async replaceByDate(input) {
-    const store = await ensureInitialized(input.userId);
-    const all = await store.readReviewViewpoints<ReviewViewpointYamlRecord>();
-    // 过滤掉该 sourceDate 的旧记录,保留其他日期的
-    const kept = all.filter((r) => r.source_date !== input.sourceDate);
-    // 追加新记录
-    const now = new Date().toISOString();
-    const added: ReviewViewpointYamlRecord[] = input.viewpoints.map((v) => ({
-      viewpoint_key: compositeKey(input.sourceDate, v.viewpointId),
-      user_id: input.userId,
-      instance_id: input.instanceId,
-      source_date: input.sourceDate,
-      viewpoint_id: v.viewpointId,
-      view: v.view,
-      reason: v.reason,
-      action: v.action,
-      validation: v.validation,
-      expected_review_date: v.expectedReviewDate,
-      status: "open" as const,
-      resolution: null,
-      resolved_at: null,
-      // WP5.1 扩展字段
-      invalidation_signals: v.invalidationSignals ?? [],
-      confidence: v.confidence ?? "unknown",
-      task_type: "daily_review",
-      decision_type: "viewpoint",
-      created_at: now,
-      updated_at: now,
-    }));
-    await store.writeReviewViewpoints([...kept, ...added]);
-    return added.map(fromYaml);
-  },
-
-  async resolve(input) {
-    const store = await ensureInitialized(input.userId);
-    const all = await store.readReviewViewpoints<ReviewViewpointYamlRecord>();
-    // 找出匹配 viewpointId 的候选,按 sourceDate desc 排序取最新
-    const candidates = all
-      .filter((r) =>
-        r.user_id === input.userId
-        && r.instance_id === input.instanceId
-        && r.viewpoint_id === input.viewpointId
-        && (!input.sourceDate || r.source_date === input.sourceDate)
-      )
-      .sort((a, b) => b.source_date.localeCompare(a.source_date));
-    if (candidates.length === 0) return null;
-    const target = candidates[0];
-    const now = new Date().toISOString();
-    const updated: ReviewViewpointYamlRecord = {
-      ...target,
-      status: input.status,
-      resolution: input.resolution ?? null,
-      resolved_at: input.status === "pending" ? null : now,
-      updated_at: now,
-    };
-    // 全量重写:用 updated 替换 target(viewpoint_key 一致)
-    const next = all.map((r) => r.viewpoint_key === target.viewpoint_key ? updated : r);
-    await store.writeReviewViewpoints(next);
-    return fromYaml(updated);
-  },
-
-  async list(userId, _instanceId, options) {
-    const store = await ensureInitialized(userId);
-    const all = await store.readReviewViewpoints<ReviewViewpointYamlRecord>();
-    let filtered = all.filter((r) => {
-      if (options.status && r.status !== options.status) return false;
-      if (options.sourceDateFrom && r.source_date < options.sourceDateFrom) return false;
-      if (options.sourceDateTo && r.source_date > options.sourceDateTo) return false;
-      if (options.expectedReviewDateTo && r.expected_review_date > options.expectedReviewDateTo) return false;
-      return true;
-    });
-    filtered.sort((a, b) => {
-      const cmp = b.source_date.localeCompare(a.source_date);
-      if (cmp !== 0) return cmp;
-      return b.viewpoint_id.localeCompare(a.viewpoint_id);
-    });
-    if (options.limit) {
-      filtered = filtered.slice(0, options.limit);
-    }
-    return filtered.map(fromYaml);
-  },
-};
-
-/** Mastra ledger read adapter. An empty imported viewpoint set stays empty. */
 export const mastraReviewViewpointBackend: ReviewViewpointBackend = {
   async replaceByDate(input) {
     const now = new Date().toISOString();
@@ -464,7 +371,7 @@ function mastraViewpointFromPayload(payload: Record<string, unknown>, userId: st
 // ============ 出口:由 WORKSPACE_BACKEND 选择 ============
 
 function selectBackend(kind: BackendKind): ReviewViewpointBackend {
-  return kind === "workspace" ? workspaceReviewViewpointBackend : kind === "mastra" ? mastraReviewViewpointBackend : sqliteReviewViewpointBackend;
+  return mastraReviewViewpointBackend; /* E8: mastra only */
 }
 
 export const reviewViewpointBackend: ReviewViewpointBackend = selectBackend(ACTIVE_BACKEND);

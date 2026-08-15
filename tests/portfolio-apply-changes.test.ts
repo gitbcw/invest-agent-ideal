@@ -23,8 +23,8 @@ test("portfolio.apply_changes applies one confirmed, revision-bound portfolio tr
     } = await import("../src/db/schema.js");
     const { ensureWorkspace, resolveWorkspacePath } = await import("../src/lib/workspace.js");
     const { WorkspaceStore } = await import("../src/lib/workspace-store.js");
+    const { readMastraPortfolioProjection, replaceMastraPortfolioProjection } = await import("../src/lib/mastra-portfolio-backend.js");
     const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
-    const { findArtifactsForTurn, readConversationArtifactPayload } = await import("../src/services/conversation-artifacts.js");
     const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
 
     const userId = "portfolio-change-user";
@@ -42,7 +42,9 @@ test("portfolio.apply_changes applies one confirmed, revision-bound portfolio tr
     initDb();
     await ensureWorkspace({ userId, tenantId: userId, projectId: "invest-agent" });
     const store = new WorkspaceStore(userId);
-    await store.writePortfolio({
+    // E8: the mastra projection is the only portfolio state; seed it with the
+    // revision the change-set expects (equivalent of the legacy YAML seed).
+    const seedPortfolio = {
       cash: { ratio_percent: 35, notes: "现金仓位约 35%" },
       holdings: [
         { code: "601058", name: "赛轮轮胎", weight: 30, notes: "仓位30%" },
@@ -56,7 +58,10 @@ test("portfolio.apply_changes applies one confirmed, revision-bound portfolio tr
       accounts: [],
       last_confirmed_at: revision,
       last_confirmed_by: "user",
-    });
+    };
+    (await import("../src/db/index.js")).sqlite.prepare(
+      `INSERT INTO mastra_portfolio_states (user_id,project_id,instance_id,portfolio_json,source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    ).run(userId, "invest-agent", instanceId, JSON.stringify(seedPortfolio), "service-owned://portfolio", "service:test-seed", revision, "test-seed", revision, revision);
     await store.writeOnboardingState({
       version: 1,
       status: "completed",
@@ -166,21 +171,13 @@ test("portfolio.apply_changes applies one confirmed, revision-bound portfolio tr
     assert.equal(result.cash.ratio_percent, 55);
     assert.equal((result.cash as { notes?: string }).notes, "现金仓位约 55%", "cash display note must not retain the old ratio");
     assert.notEqual(result.revision, revision);
-    assert.equal(result.artifact?.fileName, "portfolio.yaml");
-    assert.equal(result.artifact?.mimeType, "application/yaml");
-    const turnArtifacts = findArtifactsForTurn({ userId, instanceId, conversationId, turnId });
-    assert.equal(turnArtifacts.length, 1);
-    assert.equal(turnArtifacts[0].relativePath, "config/portfolio.yaml");
-    const artifactPayload = await readConversationArtifactPayload({
-      artifactId: turnArtifacts[0].artifactId,
-      userId,
-      instanceId,
-    });
-    assert.equal(artifactPayload.payload.mimeType, "application/yaml");
-    assert.match(Buffer.from(artifactPayload.payload.base64, "base64").toString("utf8"), /300750/);
+    // G17 (E8): the portfolio.yaml snapshot artifact delivery retired with the
+    // workspace backend — result.artifact is intentionally undefined now.
 
-    const saved = await store.readPortfolio();
-    assert.equal(saved?.last_confirmation_id, requested.confirmationId);
+    const saved = readMastraPortfolioProjection(userId, instanceId) as {
+      last_confirmation_id?: string;
+    };
+    assert.equal(saved.last_confirmation_id, requested.confirmationId);
     assert.equal((await store.readOnboardingState())?.status, "completed", "portfolio maintenance must not reopen onboarding");
     const successAudits = await db.select().from(sandboxAuditLogs).where(and(
       eq(sandboxAuditLogs.userId, userId),
@@ -207,7 +204,10 @@ test("portfolio.apply_changes applies one confirmed, revision-bound portfolio tr
       operation: "portfolio.apply_changes",
       payload: stalePayload,
     }, context) as { confirmationId: string };
-    await store.writePortfolio({ ...(await store.readPortfolio())!, last_confirmed_at: "2026-07-26T12:00:00.000Z" });
+    replaceMastraPortfolioProjection(userId, instanceId, {
+      ...readMastraPortfolioProjection(userId, instanceId),
+      last_confirmed_at: "2026-07-26T12:00:00.000Z",
+    }, result.revision);
     await db.insert(conversationMessages).values({
       messageId: "portfolio-change-stale-confirmation-message",
       conversationId,
@@ -257,6 +257,7 @@ test("concurrent confirmed applies serialize on the resource lock; the stale rev
     } = await import("../src/db/schema.js");
     const { ensureWorkspace, resolveWorkspacePath } = await import("../src/lib/workspace.js");
     const { WorkspaceStore } = await import("../src/lib/workspace-store.js");
+    const { readMastraPortfolioProjection } = await import("../src/lib/mastra-portfolio-backend.js");
     const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
     const { withResourceMutationLock } = await import("../src/services/resource-mutation-lock.js");
 
@@ -275,7 +276,8 @@ test("concurrent confirmed applies serialize on the resource lock; the stale rev
     initDb();
     await ensureWorkspace({ userId, tenantId: userId, projectId: "invest-agent" });
     const store = new WorkspaceStore(userId);
-    await store.writePortfolio({
+    // E8: seed the mastra projection as the current portfolio state.
+    const seedPortfolio = {
       cash: { ratio_percent: 35, notes: "现金仓位约 35%" },
       holdings: [
         { code: "601058", name: "赛轮轮胎", weight: 30, notes: "仓位30%" },
@@ -289,7 +291,10 @@ test("concurrent confirmed applies serialize on the resource lock; the stale rev
       accounts: [],
       last_confirmed_at: revision,
       last_confirmed_by: "user",
-    });
+    };
+    (await import("../src/db/index.js")).sqlite.prepare(
+      `INSERT INTO mastra_portfolio_states (user_id,project_id,instance_id,portfolio_json,source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    ).run(userId, "invest-agent", instanceId, JSON.stringify(seedPortfolio), "service-owned://portfolio", "service:test-seed", revision, "test-seed", revision, revision);
     await store.writeOnboardingState({
       version: 1,
       status: "completed",
@@ -387,11 +392,16 @@ test("concurrent confirmed applies serialize on the resource lock; the stale rev
       "stale concurrent write must be rejected instead of silently overwriting",
     );
 
-    const saved = await store.readPortfolio();
-    assert.notEqual(saved?.last_confirmed_at, revision);
-    assert.equal(saved?.last_confirmation_id, winners[0].confirmationId);
-    assert.equal(saved?.holdings?.find((item) => item.code === "300750")?.weight, 10);
-    assert.equal(saved?.cash?.ratio_percent, 25);
+    const saved = readMastraPortfolioProjection(userId, instanceId) as {
+      last_confirmed_at?: string;
+      last_confirmation_id?: string;
+      holdings?: Array<{ code: string; weight?: number }>;
+      cash?: { ratio_percent?: number };
+    };
+    assert.notEqual(saved.last_confirmed_at, revision);
+    assert.equal(saved.last_confirmation_id, winners[0].confirmationId);
+    assert.equal(saved.holdings?.find((item) => item.code === "300750")?.weight, 10);
+    assert.equal(saved.cash?.ratio_percent, 25);
 
     const confirmations = await db.select().from(pendingSandboxConfirmations).where(and(
       eq(pendingSandboxConfirmations.userId, userId),

@@ -26,8 +26,6 @@ export async function ensureDefaultAiInstanceForUser(userId: string, backend: "m
   const context = await ensureDefaultProjectForUser(userId, backend, displayName);
   if (backend === "mastra") {
     await mastraWorkspaceRegistry.bootstrap({ userId, projectId: context.projectId, instanceId: context.instanceId });
-  } else {
-    await ensureWorkspace({ userId, tenantId: userId, projectId: context.projectId });
   }
   return { projectId: context.projectId, instanceId: context.instanceId };
 }
@@ -71,8 +69,6 @@ export async function resolveOrCreateChannelUser(params: {
     const instance = await ensureDefaultInstanceForChannelIdentity(existing[0].id, bindingUserId, params.backend, projectBinding);
     if (params.backend === "mastra") {
       await mastraWorkspaceRegistry.bootstrap({ userId: bindingUserId, projectId: instance.projectId, instanceId: instance.instanceId });
-    } else {
-      await ensureWorkspace({ userId: bindingUserId, tenantId: bindingUserId, projectId: instance.projectId });
     }
     return {
       userId: bindingUserId,

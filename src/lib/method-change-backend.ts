@@ -160,14 +160,6 @@ export const sqliteMethodChangeBackend: MethodChangeBackend = {
 
 let workspaceInitialized = false;
 
-async function ensureInitialized(userId: string): Promise<WorkspaceStore> {
-  if (!workspaceInitialized) {
-    await ensureWorkspace({ userId });
-    workspaceInitialized = true;
-  }
-  return new WorkspaceStore(userId);
-}
-
 interface MethodChangeYamlRecord {
   candidate_id: string;
   user_id: string;
@@ -220,69 +212,6 @@ function fromYaml(rec: MethodChangeYamlRecord): MethodChangeRecord {
   };
 }
 
-export const workspaceMethodChangeBackend: MethodChangeBackend = {
-  async propose(input) {
-    const store = await ensureInitialized(input.userId);
-    const now = new Date().toISOString();
-    const rec: MethodChangeRecord = {
-      id: randomUUID(),
-      userId: input.userId,
-      instanceId: input.instanceId,
-      sourceReviewId: input.sourceReviewId ?? null,
-      sourceType: input.sourceType || "review",
-      proposedChange: input.proposedChange,
-      reason: input.reason,
-      affectedResource: input.affectedResource || "methodology_profile",
-      status: "proposed",
-      decisionNote: input.decisionNote ?? null,
-      confirmedAt: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await store.appendMethodChange(toYaml(rec));
-    return rec;
-  },
-
-  async get(userId, instanceId, id) {
-    const store = await ensureInitialized(userId);
-    const all = await store.listMethodChanges<MethodChangeYamlRecord>({});
-    const hit = all.find((r) => r.candidate_id === id && r.user_id === userId && r.instance_id === instanceId);
-    return hit ? fromYaml(hit) : null;
-  },
-
-  async decide(input) {
-    const store = await ensureInitialized(input.userId);
-    const existing = await workspaceMethodChangeBackend.get(input.userId, input.instanceId, input.id);
-    if (!existing) return null;
-    const now = new Date().toISOString();
-    const updated: MethodChangeRecord = {
-      ...existing,
-      status: input.status,
-      decisionNote: input.decisionNote ?? null,
-      confirmedAt: input.status === "confirmed" ? now : null,
-      updatedAt: now,
-    };
-    // append 一条新版本,listMethodChanges 会按 candidate_id 取最新
-    await store.appendMethodChange(toYaml(updated));
-    return updated;
-  },
-
-  async list(userId, instanceId, options) {
-    const store = await ensureInitialized(userId);
-    const all = await store.listMethodChanges<MethodChangeYamlRecord>({
-      status: options.status,
-      limit: options.limit,
-    });
-    let filtered = all.filter((r) => r.user_id === userId && r.instance_id === instanceId);
-    if (options.maxAgeDays && options.maxAgeDays > 0) {
-      const cutoff = Date.now() - options.maxAgeDays * 24 * 3600 * 1000;
-      filtered = filtered.filter((r) => new Date(r.created_at).getTime() >= cutoff);
-    }
-    return filtered.map(fromYaml);
-  },
-};
-
-/** Mastra ledger read adapter; no Workspace fallback and no writes yet. */
 export const mastraMethodChangeBackend: MethodChangeBackend = {
   async propose(input) {
     const now = new Date().toISOString();
@@ -368,7 +297,7 @@ function payloadToMethod(payload: Record<string, any>): MethodChangeRecord {
 // ============ 出口:由 WORKSPACE_BACKEND 选择 ============
 
 function selectBackend(kind: BackendKind): MethodChangeBackend {
-  return kind === "workspace" ? workspaceMethodChangeBackend : kind === "mastra" ? mastraMethodChangeBackend : sqliteMethodChangeBackend;
+  return mastraMethodChangeBackend; /* E8: mastra only */
 }
 
 export const methodChangeBackend: MethodChangeBackend = selectBackend(ACTIVE_BACKEND);

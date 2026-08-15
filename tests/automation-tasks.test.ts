@@ -13,6 +13,9 @@ process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(TEST_ROOT, "automation.db");
 process.env.WORKSPACE_ROOT = path.join(TEST_ROOT, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(TEST_ROOT, "runtime");
+// E8: the mastra registry is the only storage root; isolate it per run so
+// asset files never leak across test runs (AUTOMATION_ASSET_SOURCE_IMMUTABLE).
+process.env.MASTRA_PROJECTS_ROOT = path.join(TEST_ROOT, "projects");
 mkdirSync(path.join(TEST_ROOT, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(TEST_ROOT, { recursive: true, force: true }));
 
@@ -30,11 +33,10 @@ async function fixture() {
       const db = await import("../src/db/index.js");
       db.initDb();
       const automation = await import("../src/services/automation-tasks.js");
-      const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
-      const workspaceA = resolveWorkspacePath(scopeA.userId);
-      const workspaceB = resolveWorkspacePath(scopeB.userId);
-      await mkdir(workspaceA, { recursive: true });
-      await mkdir(workspaceB, { recursive: true });
+      // E8: storage roots resolve to registered mastra project roots.
+      const { registerTestProject } = await import("./helpers/mastra-project.js");
+      const workspaceA = await registerTestProject(scopeA);
+      const workspaceB = await registerTestProject(scopeB);
       return { automation, db, workspaceA, workspaceB };
     })();
   }

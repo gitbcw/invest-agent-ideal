@@ -76,9 +76,7 @@ async function executeAgent(
   conversationId?: string,
   leaseToken?: string | null,
 ) {
-  const workspaceRoot = ACTIVE_BACKEND === "mastra"
-    ? await resolveRegisteredMastraProjectRoot(scope)
-    : (await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId }), resolveWorkspacePath(scope.userId));
+  const workspaceRoot = await resolveRegisteredMastraProjectRoot(scope);
   if (!workspaceRoot) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", "Mastra project is not registered");
   if (!task.sourceAsset || !task.workingAsset) throw new Error("AUTOMATION_ASSET_NOT_FOUND");
 

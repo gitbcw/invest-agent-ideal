@@ -9,6 +9,8 @@ process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(root, "automation.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+// E8: the mastra registry is the only storage root; isolate it per run.
+process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
 mkdirSync(path.join(root, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 
@@ -19,6 +21,10 @@ const fixture = (async () => {
   const automation = await import("../src/services/automation-tasks.js");
   const assets = await import("../src/services/user-assets.js");
   const classification = await import("../src/mcp/service-tool-classification.js");
+  // E8: register the asset-writing scopes before any storage resolution.
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  await registerTestProject({ userId: "mcp-direct-automation-a", projectId: "invest-agent", instanceId: "mcp-direct-automation-instance-a" });
+  await registerTestProject({ userId: "mcp-direct-automation-b", projectId: "invest-agent", instanceId: "mcp-direct-automation-instance-b" });
   return { tools, automation, assets, classification };
 })();
 

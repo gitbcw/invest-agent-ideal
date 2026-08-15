@@ -1074,73 +1074,8 @@ async function collectBehaviorStats(
   if (ACTIVE_BACKEND === "mastra") {
     return collectMastraBehaviorStats(userId, instanceId, startDate, endDate);
   }
-  if (!isWorkspaceBackend()) {
-    return {
-      available: false,
-      rangeStart: startDate,
-      rangeEnd: endDate,
-      actionConfirmedCount: 0,
-      conversationTurnCount: 0,
-      outOfScopeCount: 0,
-      recentActions: [],
-    };
-  }
-
-  try {
-    const store = new WorkspaceStore(userId);
-    type EventRecord = {
-      event_type?: string;
-      occurred_at?: string;
-      payload?: {
-        instance_id?: string;
-        code?: string;
-        action?: string;
-        price?: number | null;
-        quantity?: number | null;
-      };
-    };
-    const events = await store.listBehaviorEvents<EventRecord>();
-    const inRange = events.filter((e) => {
-      if (!e.occurred_at) return false;
-      // occurred_at 是 ISO 时间,startDate/endDate 是 YYYY-MM-DD 日期
-      const date = e.occurred_at.slice(0, 10);
-      return date >= startDate && date <= endDate;
-    });
-    const scoped = inRange.filter((e) => !e.payload?.instance_id || e.payload.instance_id === instanceId);
-
-    const actionConfirmed = scoped.filter((e) => e.event_type === "action_confirmed");
-    const conversationTurns = scoped.filter((e) => e.event_type === "wechat_conversation_turn");
-    const outOfScope = scoped.filter((e) => e.event_type === "out_of_scope_query");
-
-    return {
-      available: true,
-      rangeStart: startDate,
-      rangeEnd: endDate,
-      actionConfirmedCount: actionConfirmed.length,
-      conversationTurnCount: conversationTurns.length,
-      outOfScopeCount: outOfScope.length,
-      recentActions: actionConfirmed
-        .slice(-30) // 取最近 30 条(按写入顺序,jsonl 是 append-only)
-        .map((e) => ({
-          occurred_at: e.occurred_at ?? "",
-          code: e.payload?.code ?? null,
-          action: e.payload?.action ?? null,
-          price: e.payload?.price ?? null,
-          quantity: e.payload?.quantity ?? null,
-        })),
-    };
-  } catch (err) {
-    logger.warn(`collectBehaviorStats 失败,降级为 available=false: ${err}`);
-    return {
-      available: false,
-      rangeStart: startDate,
-      rangeEnd: endDate,
-      actionConfirmedCount: 0,
-      conversationTurnCount: 0,
-      outOfScopeCount: 0,
-      recentActions: [],
-    };
-  }
+  // (E8) workspace behavior-events source removed; mastra stats above.
+  throw new Error("UNREACHABLE");
 }
 
 function formatWeeklyViewpointSummary(summary: Awaited<ReturnType<typeof getWeeklyViewpointSummary>>): string {

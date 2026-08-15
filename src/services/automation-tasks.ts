@@ -638,8 +638,6 @@ export async function createAutomationTask(input: CreateAutomationTaskInput): Pr
   const scope = assertAutomationScope(input);
   if (ACTIVE_BACKEND === "mastra") {
     await mastraWorkspaceRegistry.bootstrap(scope);
-  } else {
-    await ensureWorkspace({ userId: scope.userId, tenantId: scope.userId, projectId: scope.projectId });
   }
   const name = normalizeTaskName(input.name);
   const description = normalizeDescription(input.description);

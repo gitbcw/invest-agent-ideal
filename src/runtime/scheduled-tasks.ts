@@ -30,9 +30,9 @@ const SCHEDULED_AGENT_TIMEOUT_MS =
 
 
 export function isLegacyReviewOrch(): boolean {
-  // The legacy prompt/file orchestration is a Workspace-backend rollback path
-  // only. Mastra owns review publication through service tools and projections.
-  return ACTIVE_BACKEND !== "mastra" && process.env.SCHEDULED_REVIEW_LEGACY_ORCH === "true";
+  // E8: the workspace rollback backend is removed; legacy orchestration is
+  // permanently off.
+  return false;
 }
 
 export interface ScheduledScope {

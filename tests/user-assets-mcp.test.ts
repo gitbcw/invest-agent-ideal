@@ -10,6 +10,8 @@ process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(root, "assets.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+// E8: the mastra registry is the only storage root; isolate it per run.
+process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
 mkdir(path.join(root, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 
@@ -17,8 +19,15 @@ const fixture = (async () => {
   const db = await import("../src/db/index.js");
   db.initDb();
   const assets = await import("../src/services/user-assets.js");
+  // E8: asset storage roots resolve to registered mastra project roots.
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const projectRoot = await registerTestProject({
+    userId: "mcp-asset-user",
+    projectId: "invest-agent",
+    instanceId: "mcp-asset-instance",
+  });
   const tools = await import("../src/mcp/service-tools-core.js");
-  return { db, assets, tools };
+  return { db, assets, tools, projectRoot };
 })();
 
 const scope = {
@@ -116,12 +125,12 @@ test("MCP asset tools permit same-scope CRUD while keeping delete confirmation-b
 });
 
 test("MCP promotes an active same-scope conversation attachment into My Files", async () => {
-  const { db, tools } = await fixture;
+  const { db, tools, projectRoot } = await fixture;
   seedConversation(db);
-  const { resolveWorkspacePath } = await import("../src/lib/workspace.js");
   const { registerAttachment } = await import("../src/services/file-retention.js");
   const bytes = Buffer.from("date,freight_index\n2026-08-08,1200\n");
-  const workspace = resolveWorkspacePath(scope.userId);
+  // E8: the attachment file lives inside the registered mastra project root.
+  const workspace = projectRoot;
   const relativePath = "attachments/2026-08-08/att_promote_freight.csv";
   const fullPath = path.join(workspace, relativePath);
   await mkdir(path.dirname(fullPath), { recursive: true });
@@ -210,9 +219,10 @@ test("MCP automation tools create active tasks without confirmation and enforce 
 });
 
 test("explicitly persistent AI artifacts appear in My Files and reuse versions by report path", async () => {
-  const { db, assets, tools } = await fixture;
+  const { db, assets, tools, projectRoot } = await fixture;
   seedConversation(db);
-  const reportDirectory = path.join(root, "workspaces", scope.userId, "reports", "tables");
+  // E8: artifact files live inside the registered mastra project root.
+  const reportDirectory = path.join(projectRoot, "reports", "tables");
   const reportPath = path.join(reportDirectory, "weekly-inventory.csv");
   await mkdir(reportDirectory, { recursive: true });
   await writeFile(reportPath, "source,inventory_change\nsmm,-1200\nmysteel,-900\n");
