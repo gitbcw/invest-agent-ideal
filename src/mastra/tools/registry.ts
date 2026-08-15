@@ -127,7 +127,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   {
     id: "assets.list",
     description: "List active same-scope user assets.",
-    inputSchema: { status: z.enum(["active", "archived", "all"]).optional(), search: z.string().max(200).optional(), format: z.enum(["markdown", "html", "csv", "xlsx", "pdf", "png", "jpeg", "webp", "svg"]).optional(), source: z.enum(["upload", "conversation", "automation", "restore", "system"]).optional(), limit: z.number().int().min(1).max(100).optional() },
+    inputSchema: { status: z.enum(["active", "archived", "all"]).optional(), search: z.string().max(200).optional(), format: z.enum(["markdown", "html", "csv", "xlsx", "pdf", "png", "jpeg", "webp", "svg", "yaml", "jsonl"]).optional(), source: z.enum(["upload", "conversation", "automation", "restore", "system"]).optional(), limit: z.number().int().min(1).max(100).optional() },
     annotations: { readOnlyHint: true },
   },
   {

@@ -23,7 +23,7 @@ import { normalizeImageBytes } from "./image-normalization.js";
 import { UserAssetError } from "./user-asset-error.js";
 export { UserAssetError } from "./user-asset-error.js";
 
-export type AssetFormat = "markdown" | "html" | "csv" | "xlsx" | "pdf" | "png" | "jpeg" | "webp" | "svg";
+export type AssetFormat = "markdown" | "html" | "csv" | "xlsx" | "pdf" | "png" | "jpeg" | "webp" | "svg" | "yaml" | "jsonl";
 export type UserAssetStatus = "active" | "archived";
 export type UserAssetSource = "upload" | "conversation" | "automation" | "restore" | "system";
 export type AssetScope = { userId: string; projectId: string; instanceId: string };
@@ -129,6 +129,9 @@ const MAX_BYTES: Record<AssetFormat, number> = {
   markdown: USER_ASSET_MAX_BYTES, html: USER_ASSET_MAX_BYTES, csv: USER_ASSET_MAX_BYTES,
   xlsx: USER_ASSET_MAX_BYTES, pdf: USER_ASSET_MAX_BYTES, png: USER_ASSET_MAX_BYTES,
   jpeg: USER_ASSET_MAX_BYTES, webp: USER_ASSET_MAX_BYTES, svg: USER_ASSET_MAX_BYTES,
+  // Workspace config assets (strategy/portfolio/watch yaml, jsonl state)
+  // migrated from the legacy runtime carry these text formats.
+  yaml: USER_ASSET_MAX_BYTES, jsonl: USER_ASSET_MAX_BYTES,
 };
 const MIME_BY_FORMAT: Record<AssetFormat, string[]> = {
   markdown: ["text/markdown", "text/plain"], html: ["text/html"],
@@ -136,17 +139,21 @@ const MIME_BY_FORMAT: Record<AssetFormat, string[]> = {
   xlsx: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
   pdf: ["application/pdf"], png: ["image/png"], jpeg: ["image/jpeg", "image/jpg"],
   webp: ["image/webp"], svg: ["image/svg+xml"],
+  yaml: ["text/yaml", "text/x-yaml", "application/yaml", "text/plain"],
+  jsonl: ["application/x-ndjson", "application/jsonl", "text/plain"],
 };
 const CANONICAL_MIME: Record<AssetFormat, string> = {
   markdown: "text/markdown", html: "text/html", csv: "text/csv",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   pdf: "application/pdf", png: "image/png", jpeg: "image/jpeg",
   webp: "image/webp", svg: "image/svg+xml",
+  yaml: "text/yaml", jsonl: "application/x-ndjson",
 };
 const EXTENSION_FORMAT: Record<string, AssetFormat> = {
   ".md": "markdown", ".markdown": "markdown", ".html": "html", ".htm": "html",
   ".csv": "csv", ".xlsx": "xlsx", ".pdf": "pdf", ".png": "png",
   ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp", ".svg": "svg",
+  ".yaml": "yaml", ".yml": "yaml", ".jsonl": "jsonl", ".ndjson": "jsonl",
 };
 const SOURCES = new Set<UserAssetSource>(["upload", "conversation", "automation", "restore", "system"]);
 
@@ -757,7 +764,7 @@ async function validateContent(format: AssetFormat, bytes: Buffer): Promise<void
       throw new UserAssetError("ASSET_INVALID_CONTENT", errorMessage(error));
     }
   }
-  if (format === "markdown" || format === "html" || format === "svg") {
+  if (format === "markdown" || format === "html" || format === "svg" || format === "yaml" || format === "jsonl") {
     let text: string;
     try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
     catch { throw new UserAssetError("ASSET_INVALID_CONTENT", "text asset must be UTF-8"); }
