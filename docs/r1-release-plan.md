@@ -1,6 +1,6 @@
 # R1 发布方案（Mastra 候选并行上线）
 
-状态：**部署完成、服务器侧冒烟通过**（2026-08-15）；待用户在火山控制台安全组放行公网端口 23657 后即可浏览器访问
+状态：**R1 并行上线完成、外网端到端验收通过**（2026-08-15）——真实对话链路（portal→relay→runtime→网关）5.9s 往返、trace 计费落库、三大页面 200；生产零触碰
 分支：`feat/mastra-mastra`（候选，460 测试 0 失败 + portal 43/43）
 前置：H1 已过、真实数据迁移验证已过、E1-E10 收口、服务器加固完成（4G swap / OpenClaw 清零 / 可用 5.9G）
 
@@ -48,4 +48,5 @@
 - PM2：invest-agent-mastra（23655 回环，111MB）+ mastra-portal（0.0.0.0:23657，62MB），均 max_memory_restart 500M，pm2 save 完成
 - 服务器侧冒烟：runtime health ok、connector 注册、登录 primary 成功、automations API 空（新库未走 onboarding，符合预期）、巡检页/onboarding 页 200、assistant status online
 - 生产零触碰：22649 → 307 正常、22655 health ok、原有 PM2 全部在线
-- **遗留**：公网 23657 被火山云安全组拦截（绑定 0.0.0.0、系统防火墙全放行、回环 200）——需用户在火山控制台放行 23657/TCP；relay 23658 回环无需放行
+- 安全组放行后外网验收（2026-08-15）：登录/巡检/onboarding/automations 全 200；**真实对话 E2E 通过**（gpt-5.6-terra、5.9s、status success、cost_amount 0.031192 落库——E10 计价链首次在生产形态实证）；runtime 23655 回环绑定公网不可达（正确）
+- 安全收紧：relay 改绑回环（PORTAL_RELAY_HOST 可覆写，公网 23658 已不可达）；建议安全组收回 23655/23658 两条放行（回环服务无需公网入口）
