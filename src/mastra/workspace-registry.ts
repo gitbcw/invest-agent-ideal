@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { recordFileLifecycleEvent } from "../services/file-lifecycle-audit.js";
@@ -83,6 +83,7 @@ export class MastraWorkspaceRegistry {
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
     }
+    await seedSystemSkills(path.join(projectRoot, "skills"));
     const project = { ...scope, projectRoot };
     await this.register(project);
     recordFileLifecycleEvent({
@@ -221,6 +222,44 @@ export function workspaceToolPolicy(scope: MastraWorkspaceScope): Record<string,
     mastra_workspace_kill_process: { enabled: false },
     mastra_workspace_lsp_inspect: { enabled: false },
   };
+}
+
+export function systemSkillsTemplateRoot(): string {
+  return path.resolve(process.env.SYSTEM_SKILLS_TEMPLATE_ROOT || path.join(process.cwd(), "templates", "skills"));
+}
+
+/**
+ * Seed the initial methodology skills into a fresh project's skills/ directory.
+ * Skills are user-evolvable assets from the moment they land: existing files
+ * are never overwritten, and a missing template root is not an error (older
+ * deployments may not carry templates/).
+ */
+export async function seedSystemSkills(targetSkillsDir: string): Promise<string[]> {
+  const templateRoot = systemSkillsTemplateRoot();
+  const entries = await readdir(templateRoot).catch(() => null);
+  if (!entries) return [];
+  const seeded: string[] = [];
+  for (const entry of entries) {
+    const sourceSkillDir = path.join(templateRoot, entry);
+    if (!(await stat(sourceSkillDir).catch(() => null))?.isDirectory()) continue;
+    const sourceFiles: string[] = [];
+    for (const file of await readdir(sourceSkillDir)) {
+      const sourceFile = path.join(sourceSkillDir, file);
+      if ((await stat(sourceFile).catch(() => null))?.isFile()) sourceFiles.push(file);
+    }
+    if (sourceFiles.length === 0) continue;
+    const targetSkillDir = path.join(targetSkillsDir, entry);
+    await mkdir(targetSkillDir, { recursive: true, mode: 0o700 });
+    for (const file of sourceFiles) {
+      const sourceFile = path.join(sourceSkillDir, file);
+      const targetFile = path.join(targetSkillDir, file);
+      const existed = await lstat(targetFile).then(() => true, () => false);
+      if (existed) continue;
+      await copyFile(sourceFile, targetFile);
+      seeded.push(path.posix.join("skills", entry, file));
+    }
+  }
+  return seeded;
 }
 
 function normalizeScope(scope: MastraWorkspaceScope): MastraWorkspaceScope {

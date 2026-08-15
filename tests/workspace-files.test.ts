@@ -37,7 +37,20 @@ test("workspace file browser lists user project files but excludes secrets and r
     const { listWorkspaceFiles, readWorkspaceFile, WorkspaceFileError } = await import("../src/services/workspace-files.js");
     const result = await listWorkspaceFiles({ userId: "files-user", projectId: "invest-agent", instanceId: "files-user" });
     const paths = result.items.map((item) => item.relativePath);
-    assert.deepEqual(paths, ["AGENTS.md", "chart.png", "config.yaml", "config.yml", "preview.html", "reports/daily/today.md"]);
+    assert.deepEqual(paths, [
+      "AGENTS.md",
+      "chart.png",
+      "config.yaml",
+      "config.yml",
+      "preview.html",
+      "reports/daily/today.md",
+      // Bootstrap seeds the four system methodology skills; they are regular
+      // user-evolvable project files and therefore listable.
+      "skills/fundamental-analysis/SKILL.md",
+      "skills/macro-analysis/SKILL.md",
+      "skills/risk-control/SKILL.md",
+      "skills/technical-analysis/SKILL.md",
+    ]);
     assert.equal(result.items.find((item) => item.relativePath === "preview.html")?.previewMode, "html");
     assert.equal(result.items.find((item) => item.relativePath === "chart.png")?.previewMode, "image");
     assert.equal(result.items.find((item) => item.relativePath === "config.yaml")?.mimeType, "application/yaml");

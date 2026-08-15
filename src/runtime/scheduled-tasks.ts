@@ -24,6 +24,7 @@ import {
 import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
+import { buildAgentInstructions } from "./agent-instructions.js";
 
 const SCHEDULED_AGENT_TIMEOUT_MS =
   Number(process.env.SCHEDULED_AGENT_TIMEOUT_MS) || 600_000;
@@ -376,7 +377,7 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
           instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID,
         },
         toolsets: externalMcp.toolsets,
-      }, { agentOptions: { tools: mastraTools } });
+      }, { agentOptions: { instructions: buildAgentInstructions(), tools: mastraTools } });
       const reply = mastraResult.text;
       await recordAgentTrace({
         traceId: input.messageId,

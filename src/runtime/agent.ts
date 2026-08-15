@@ -15,6 +15,8 @@ import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
+import { loadConversationHistory } from "../services/conversation-history.js";
+import { buildAgentInstructions } from "./agent-instructions.js";
 import { MastraUserPreferenceStore } from "../services/user-preferences.js";
 import { readMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { readMastraTradingStrategies } from "../lib/mastra-strategy-library.js";
@@ -201,10 +203,19 @@ export function createRuntimeAgent(): RuntimeAgent {
           }
         }
         const promptContext = await buildAgentPromptContext({
-          userText: buildChannelForwardPrompt(text, userContext, message.context?.attachments)
+          userText: buildChannelForwardPrompt(text, message.context?.attachments)
             + (await isInitializationUnfinished(userContext) ? buildInitializationNotice() : ""),
           userContext,
           includeContextPacket: false,
+        });
+        // Multi-turn context: the authoritative conversation_messages rows for
+        // this conversation, minus the already-persisted current turn. The
+        // adapter appends the live user message itself.
+        const turnRequestId = typeof message.context?.requestId === "string" ? message.context.requestId : undefined;
+        const history = loadConversationHistory({
+          conversationId,
+          excludeRequestId: turnRequestId ?? message.id,
+          excludeCurrentText: text,
         });
         const mastraTools = await createMastraToolMap({ ...userContext, instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId) });
         const workspaceScope = {
@@ -224,6 +235,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             conversationId,
             text: promptContext.promptText,
             messageId: message.id,
+            history,
             ...(selectedModel ? { model: selectedModel } : {}),
             timeoutMs: userChannel === "weixin-mobile"
               ? WEIXIN_DIRECT_AGENT_TIMEOUT_MS
@@ -235,7 +247,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             toolsets: externalMcp.toolsets,
             signal: cancelSignal,
             maxSteps: 20,
-          }, { agentOptions: { tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } });
+          }, { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } });
           const postProcessed = await postProcessAgentReply({ reply: mastraResult.text, userContext, originalText: text });
           const extractedVisuals = userChannel === "web"
             ? extractInlineSvgVisuals(postProcessed.finalReply)
@@ -318,16 +330,16 @@ async function postProcessAgentReply(input: {
   return { finalReply: input.reply };
 }
 
-function buildChannelForwardPrompt(text: string, context: UserContext, attachmentsInput?: unknown): string {
-  const channelContext = buildChannelContextInstruction(context.channel);
+function buildChannelForwardPrompt(text: string, attachmentsInput?: unknown): string {
+  // Channel presentation policy lives in the agent instructions now; the
+  // user-message wrapper only frames attachments that need interpretation.
   const attachmentContext = buildAttachmentPrompt(attachmentsInput);
-  if (!channelContext && !attachmentContext) return text;
+  if (!attachmentContext) return text;
   return [
-    channelContext,
     attachmentContext,
     "【用户消息】",
     text,
-  ].filter(Boolean).join("\n");
+  ].join("\n");
 }
 
 function buildAttachmentPrompt(input: unknown): string | null {

@@ -9,6 +9,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | Document | Use It For |
 | --- | --- |
 | [mastra-architecture-baseline.md](./mastra-architecture-baseline.md) | Candidate architecture baseline: verified topology, layering, data architecture, capability surface inventory, UX contracts, confirmed directions, and the layer-by-layer review agenda |
+| [context-and-prompt-architecture.md](./context-and-prompt-architecture.md) | Context/prompt layering for the Mastra runtime: persistent instructions, per-turn state injection, multi-turn history from the authoritative conversation table, and user-evolvable methodology skills |
 | [preset-system-design.md](./preset-system-design.md) | Preset object system design (draft): system provides generic capabilities; packs like the low-disturbance review mode are preset configuration data |
 | [scheduled-flows-to-automation-design.md](./scheduled-flows-to-automation-design.md) | Review/market-watch to automation-task unification design (draft): task model extensions, preference field mapping, migration phases |
 | [mastra-main-parity-verification.md](./mastra-main-parity-verification.md) | Capability parity verification against `main`: four-layer framework, G1-G23 gap ledger, and per-gap evidence |

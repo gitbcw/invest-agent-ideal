@@ -1015,6 +1015,7 @@ async function chatViaConversationLogOnce(input: {
       instanceId: runtime?.instanceId || scope.instanceId,
       instanceExpansionPath: runtime?.instanceExpansionPath,
       workspacePath: automationConversation?.workspacePath || workspaceRoot,
+      requestId,
       ...(automationConversation ? { taskType: "scheduled-automation" } : {}),
       ...(automationBinding ? { runId: automationBinding.runId, taskId: automationBinding.taskId } : {}),
       attachments: storedAttachments,

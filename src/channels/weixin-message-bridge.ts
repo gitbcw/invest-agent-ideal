@@ -335,6 +335,7 @@ export class InvestAgentMobileBridge {
           context: {
             channel: "weixin-mobile",
             conversationId,
+            requestId: idempotencyKey,
             userId: userContext.userId,
             projectId: userContext.projectId,
             instanceId: userContext.instanceId,
