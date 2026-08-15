@@ -427,13 +427,13 @@ test("conversation reconciliation restores a canonical failed assistant turn and
     ]);
 
     const beforeDuplicate = db
-      .prepare("SELECT message_id, role, content, status, request_id FROM conversation_message_mirror ORDER BY created_at, message_id")
+      .prepare("SELECT message_id, role, content, status, request_id FROM conversation_messages ORDER BY created_at, message_id")
       .all();
     const duplicate = await syncConversationDetail({ repo, conversationId: "conversation-failure", ...scope, requestPage });
     assert.equal(duplicate.complete, true);
     assert.deepEqual(
       db
-        .prepare("SELECT message_id, role, content, status, request_id FROM conversation_message_mirror ORDER BY created_at, message_id")
+        .prepare("SELECT message_id, role, content, status, request_id FROM conversation_messages ORDER BY created_at, message_id")
         .all(),
       beforeDuplicate
     );
@@ -469,7 +469,7 @@ test("conversation detail sync rejects a cross-scope conversation without writin
       conversationId: "shared-conversation-id",
       userId: "user-b",
       assistantId: "assistant-a",
-      instanceId: "instance-a",
+      instanceId: "instance-b",
       requestPage: async () => ({
         ok: true as const,
         data: {

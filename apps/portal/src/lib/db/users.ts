@@ -63,7 +63,7 @@ export class UserRepository {
     const id = `usr_${nanoid(16)}`;
     this.db
       .prepare(
-        `INSERT INTO users (
+        `INSERT INTO portal_users (
           id, username, password_hash, role, assistant_id, instance_id,
           display_name, must_change_password, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -84,13 +84,13 @@ export class UserRepository {
   }
 
   getById(id: string): UserRow | null {
-    const row = this.db.prepare("SELECT * FROM users WHERE id = ?").get(id) as RawUserRow | undefined;
+    const row = this.db.prepare("SELECT * FROM portal_users WHERE id = ?").get(id) as RawUserRow | undefined;
     return row ? mapRow(row) : null;
   }
 
   getByUsername(username: string): UserRow | null {
     const row = this.db
-      .prepare("SELECT * FROM users WHERE username = ?")
+      .prepare("SELECT * FROM portal_users WHERE username = ?")
       .get(username) as RawUserRow | undefined;
     return row ? mapRow(row) : null;
   }
@@ -99,20 +99,20 @@ export class UserRepository {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ?`
+        `UPDATE portal_users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ?`
       )
       .run(passwordHash, mustChangePassword ? 1 : 0, now, userId);
   }
 
   markLogin(userId: string): void {
     this.db
-      .prepare("UPDATE users SET last_login_at = ? WHERE id = ?")
+      .prepare("UPDATE portal_users SET last_login_at = ? WHERE id = ?")
       .run(new Date().toISOString(), userId);
   }
 
   list(): UserRow[] {
     const rows = this.db
-      .prepare("SELECT * FROM users ORDER BY created_at ASC")
+      .prepare("SELECT * FROM portal_users ORDER BY created_at ASC")
       .all() as RawUserRow[];
     return rows.map(mapRow);
   }
@@ -144,7 +144,7 @@ export class AuditRepository {
   }): void {
     this.db
       .prepare(
-        `INSERT INTO password_reset_audit (
+        `INSERT INTO portal_password_reset_audit (
           id, operator_id, operator_role, target_user_id, target_username,
           temporary_password_set, created_at, ip, user_agent
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -170,7 +170,7 @@ export class AuditRepository {
   }): void {
     this.db
       .prepare(
-        `INSERT INTO password_change_audit (id, user_id, username, created_at, ip, user_agent)
+        `INSERT INTO portal_password_change_audit (id, user_id, username, created_at, ip, user_agent)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
       .run(
@@ -193,7 +193,7 @@ export class AuditRepository {
   }): void {
     this.db
       .prepare(
-        `INSERT INTO auth_events (id, user_id, username, event, created_at, ip, user_agent, details)
+        `INSERT INTO portal_auth_events (id, user_id, username, event, created_at, ip, user_agent, details)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
