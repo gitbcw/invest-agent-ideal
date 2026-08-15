@@ -1,7 +1,7 @@
 import { openDatabase } from "@/lib/db";
 import { ConversationMirrorRepository } from "@/lib/db/conversations";
 import { getCurrentSession } from "@/lib/auth";
-import { badRequest, fail, forbidden, notFound, ok, unauthorized } from "@/lib/http";
+import { badRequest, fail, notFound, ok, unauthorized } from "@/lib/http";
 import {
   PORTAL_TYPES,
   type ConversationCancelResult
@@ -22,15 +22,12 @@ export async function POST(_request: Request, { params }: Params) {
   if (!params.id.trim()) return badRequest("会话 ID 不能为空");
 
   const repo = new ConversationMirrorRepository(openDatabase());
-  const conversation = repo.getConversation(params.id);
+  const conversation = repo.getConversation(params.id, {
+    userId: session.sub,
+    assistantId: session.assistantId,
+    instanceId: session.instanceId
+  });
   if (!conversation || conversation.deleted_at) return notFound("会话不存在");
-  if (
-    conversation.user_id !== session.sub
-    || conversation.assistant_id !== session.assistantId
-    || conversation.instance_id !== session.instanceId
-  ) {
-    return forbidden("无法操作该会话");
-  }
 
   const remote = await sendConnectorRequest<ConversationCancelResult>(
     session.assistantId,

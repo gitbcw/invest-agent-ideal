@@ -31,7 +31,7 @@ export async function syncConversationDetail(input: {
     assistantId: input.assistantId,
     instanceId: input.instanceId
   };
-  const existing = input.repo.getConversation(input.conversationId);
+  const existing = input.repo.getConversation(input.conversationId, scope);
   const pending = input.repo.getReconciliation({ ...scope, conversationId: input.conversationId });
   const seenCursors = new Set<string>();
   let cursor: string | undefined;

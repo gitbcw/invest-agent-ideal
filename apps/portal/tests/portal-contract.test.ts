@@ -68,13 +68,16 @@ test("conversation cancel route enforces full scope before ID-only connector for
     new URL("../src/app/api/conversations/[id]/cancel/route.ts", import.meta.url),
     "utf8"
   );
-  assert.match(route, /conversation\.user_id !== session\.sub/);
-  assert.match(route, /conversation\.assistant_id !== session\.assistantId/);
-  assert.match(route, /conversation\.instance_id !== session\.instanceId/);
+  // Ownership = the session's instance+assistant scope resolved inside
+  // getConversation; a scope miss is NOT_FOUND and never forwards to the
+  // connector. user_id equality is not an ownership signal (meta rows may
+  // not exist for fresh/imported conversations).
+  assert.match(route, /getConversation\(params\.id, \{/);
+  assert.match(route, /assistantId: session\.assistantId,/);
+  assert.match(route, /instanceId: session\.instanceId\s*\}\)/);
+  assert.doesNotMatch(route, /user_id !== session\.sub/);
   assert.match(route, /PORTAL_TYPES\.CONVERSATION_CANCEL/);
   assert.match(route, /\{ conversationId: params\.id \}/);
-  assert.doesNotMatch(route, /userId:\s*session\.sub/);
-  assert.doesNotMatch(route, /instanceId:\s*session\.instanceId/);
 });
 
 test("client IDs fall back when randomUUID is unavailable", () => {

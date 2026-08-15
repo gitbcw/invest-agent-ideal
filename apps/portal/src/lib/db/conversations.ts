@@ -188,7 +188,8 @@ const CONVERSATION_SELECT = `
   COALESCE(pcm.position, 0) AS position
 FROM conversation_sessions cs
 LEFT JOIN portal_conversation_meta pcm
-  ON cs.conversation_id = pcm.conversation_id AND pcm.user_id = @portalUserId
+  ON cs.conversation_id = pcm.conversation_id
+ AND (@portalUserId = '' OR pcm.user_id = @portalUserId)
 `;
 
 export class ConversationMirrorRepository {

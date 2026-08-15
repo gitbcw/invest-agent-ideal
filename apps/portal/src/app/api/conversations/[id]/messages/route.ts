@@ -7,7 +7,7 @@ import {
   InvalidConversationMessageCursorError,
   mapMessageRow
 } from "@/lib/db/conversations";
-import { badRequest, forbidden, notFound, ok, unauthorized } from "@/lib/http";
+import { badRequest, notFound, ok, unauthorized } from "@/lib/http";
 import { getCurrentSession } from "@/lib/auth";
 import { getConfig } from "@/lib/config";
 import { DOCUMENT_MIME, IMAGE_MIME, canonicalAttachmentMime, isCsvFile } from "@/lib/attachment-policy";
@@ -52,8 +52,11 @@ export async function GET(request: Request, { params }: Params) {
   const cursor = url.searchParams.get("cursor") ?? undefined;
   const db = openDatabase();
   const repo = new ConversationMirrorRepository(db);
-  const conv = repo.getConversation(params.id);
-  if (conv && conv.user_id !== session.sub) return forbidden();
+  const conv = repo.getConversation(params.id, {
+    userId: session.sub,
+    assistantId: session.assistantId,
+    instanceId: session.instanceId
+  });
   if (!conv) return notFound("会话不存在");
   try {
     const messages = repo.listMessages({
@@ -101,9 +104,13 @@ export async function POST(request: Request, { params }: Params) {
   const db = openDatabase();
   const repo = new ConversationMirrorRepository(db);
 
-  // 确保会话存在(本地云端镜像,作为占位)
-  const existing = repo.getConversation(conversationId);
-  if (existing && (existing.user_id !== session.sub || existing.assistant_id !== session.assistantId)) return forbidden();
+  // 确保会话存在(本地云端镜像,作为占位)。归属由会话的
+  // instance+assistant scope 判定：scope 命中即为当前用户的会话。
+  const existing = repo.getConversation(conversationId, {
+    userId: session.sub,
+    assistantId: session.assistantId,
+    instanceId: session.instanceId
+  });
   if (existing?.deleted_at) return notFound("会话不存在");
   if (!existing) {
     repo.upsertConversation({

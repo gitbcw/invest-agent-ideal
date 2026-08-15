@@ -7,7 +7,7 @@ import {
   mapConversationRow,
   mapMessageRow
 } from "@/lib/db/conversations";
-import { badRequest, forbidden, notFound, ok, unauthorized } from "@/lib/http";
+import { badRequest, notFound, ok, unauthorized } from "@/lib/http";
 import { getCurrentSession } from "@/lib/auth";
 import { PORTAL_TYPES, type ConversationGetResult } from "@/lib/protocol";
 import { sendConnectorRequest } from "@/lib/relay/server";
@@ -34,13 +34,17 @@ export async function GET(request: Request, { params }: Params) {
 
   const db = openDatabase();
   const repo = new ConversationMirrorRepository(db);
-  const conv = repo.getConversation(params.id);
-
-  // 鉴权:确保会话归属当前用户
-  if (conv && (conv.user_id !== session.sub || conv.assistant_id !== session.assistantId)) {
-    return forbidden("无法访问该会话");
-  }
-  if (conv?.deleted_at) return notFound("会话不存在");
+  // Ownership = the authenticated session's instance+assistant scope (1:1
+  // with the portal user). A scope-filtered miss is "not found"; user_id
+  // equality is not an ownership signal because meta rows may not exist yet.
+  const sessionScope = {
+    userId: session.sub,
+    assistantId: session.assistantId,
+    instanceId: session.instanceId
+  };
+  const conv = repo.getConversation(params.id, sessionScope);
+  if (!conv) return notFound("会话不存在");
+  if (conv.deleted_at) return notFound("会话不存在");
 
   const sync = await syncConversationDetail({
     repo,
@@ -62,7 +66,7 @@ export async function GET(request: Request, { params }: Params) {
     )
   });
 
-  const refreshedConversation = repo.getConversation(params.id);
+  const refreshedConversation = repo.getConversation(params.id, sessionScope);
   if (!refreshedConversation) {
     if (sync.error?.code === "CONVERSATION_NOT_FOUND") return notFound("会话不存在");
     if (sync.error?.code === "CONNECTOR_OFFLINE") return notFound("会话不存在,且助手离线,无法补齐");
@@ -118,10 +122,14 @@ export async function PATCH(request: Request, { params }: Params) {
   if (!session) return unauthorized();
   const db = openDatabase();
   const repo = new ConversationMirrorRepository(db);
-  const conv = repo.getConversation(params.id);
+  const sessionScope = {
+    userId: session.sub,
+    assistantId: session.assistantId,
+    instanceId: session.instanceId
+  };
+  const conv = repo.getConversation(params.id, sessionScope);
   if (!conv) return notFound("会话不存在");
   if (conv.deleted_at) return notFound("会话不存在");
-  if (conv.user_id !== session.sub || conv.assistant_id !== session.assistantId) return forbidden();
 
   let body: unknown;
   try {
@@ -178,13 +186,16 @@ export async function DELETE(_request: Request, { params }: Params) {
   if (!session) return unauthorized();
   const db = openDatabase();
   const repo = new ConversationMirrorRepository(db);
-  const conv = repo.getConversation(params.id);
+  const conv = repo.getConversation(params.id, {
+    userId: session.sub,
+    assistantId: session.assistantId,
+    instanceId: session.instanceId
+  });
   if (!conv || conv.deleted_at) return notFound("会话不存在");
-  if (conv.user_id !== session.sub || conv.assistant_id !== session.assistantId) return forbidden();
   repo.softDeleteConversation({
     conversationId: conv.conversation_id,
-    userId: conv.user_id,
-    assistantId: conv.assistant_id
+    userId: session.sub,
+    assistantId: session.assistantId
   });
   return ok({ conversationId: params.id, deleted: true });
 }

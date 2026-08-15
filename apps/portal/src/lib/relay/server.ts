@@ -340,13 +340,14 @@ function attachConnectorHandlers(
     }
     const conversationIds = new Set(payload.conversations.map((conversation) => conversation.conversationId));
     for (const conv of payload.conversations) {
-      const existing = conversations.getConversation(conv.conversationId);
-      if (
-        existing &&
-        (existing.user_id !== registered.userId ||
-          existing.assistant_id !== registered.assistantId ||
-          existing.instance_id !== registered.instanceId)
-      ) {
+      const existing = conversations.getConversation(conv.conversationId, {
+        userId: registered.userId,
+        assistantId: registered.assistantId,
+        instanceId: registered.instanceId
+      });
+      if (existing === null && conversations.getConversation(conv.conversationId) !== null) {
+        // The conversation exists but belongs to another scope — reject the
+        // sync instead of silently adopting it.
         socket.send(
           JSON.stringify(
             buildErrorResponse(
