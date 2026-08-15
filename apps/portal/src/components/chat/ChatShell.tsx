@@ -81,6 +81,8 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const [rightPanelWidth, setRightPanelWidth] = useState<number | null>(null);
   // Attachment opened from a message card via attachment.get → image Lightbox.
   const [attachmentLightbox, setAttachmentLightbox] = useState<{ attachmentId: string; title: string } | null>(null);
+  // 按回合模型选择（D25）：空字符串 = 服务端默认模型。
+  const [selectedModel, setSelectedModel] = useState<string>("");
   // Historical artifact cards still accept a deleted-id set, but the current
   // read-only Portal never mutates it.
   const deletedArtifactIds = useMemo(() => new Set<string>(), []);
@@ -535,7 +537,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
 
   // ---- 发送消息 ----
   const handleSend = useCallback(
-    async (text: string, attachments: ComposerAttachment[] = []) => {
+    async (text: string, attachments: ComposerAttachment[] = [], model?: string) => {
       const offline = status && !status.online;
       if (offline) return;
       const conversationId = activeId ?? `web_${nanoid(16)}`;
@@ -600,7 +602,8 @@ export function ChatShell({ initialUser }: ChatShellProps) {
           conversationId,
           {
             text,
-            attachments: attachments.map(({ id: _id, previewUrl: _previewUrl, ...item }) => item)
+            attachments: attachments.map(({ id: _id, previewUrl: _previewUrl, ...item }) => item),
+            model
           },
           localUserMessage.messageId
         );
@@ -984,6 +987,8 @@ export function ChatShell({ initialUser }: ChatShellProps) {
             disabledReason={disabledReason ?? (waiting ? "正在等待助手回复..." : undefined)}
             processing={waiting}
             stopping={Boolean(activeId && stoppingConversations[activeId])}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
             onSend={handleSend}
             onCancel={handleCancelConversation}
           />

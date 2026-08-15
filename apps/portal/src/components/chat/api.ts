@@ -225,7 +225,7 @@ export async function fetchConversation(
 
 export async function sendMessage(
   conversationId: string,
-  input: { text?: string; attachments?: PortalAttachmentPayload[] },
+  input: { text?: string; attachments?: PortalAttachmentPayload[]; model?: string },
   idempotencyKey?: string
 ): Promise<SendMessageResult> {
   const res = await fetch(`/api/conversations/${conversationId}/messages`, {

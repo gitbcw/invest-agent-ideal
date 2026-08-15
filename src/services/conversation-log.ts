@@ -611,6 +611,8 @@ export async function chatViaConversationLog(input: {
   attachments?: IncomingPortalAttachment[];
   idempotencyKey?: string;
   clientSentAt?: string;
+  /** Per-turn model selection (D25); empty/absent = service default model. */
+  model?: string;
   /** Internal/test injection point; Portal routes never accept an agent body field. */
   agent?: RuntimeAgent;
 }): Promise<ConversationChatResult> {
@@ -907,6 +909,7 @@ async function chatViaConversationLogOnce(input: {
   attachments?: IncomingPortalAttachment[];
   idempotencyKey?: string;
   clientSentAt?: string;
+  model?: string;
   agent?: RuntimeAgent;
 }, control: ActiveConversationChat): Promise<ConversationChatResult> {
   const scope = normalizeConversationScope(input);
@@ -1021,6 +1024,7 @@ async function chatViaConversationLogOnce(input: {
       ...(automationConversation ? { taskType: "scheduled-automation" } : {}),
       ...(automationBinding ? { runId: automationBinding.runId, taskId: automationBinding.taskId } : {}),
       attachments: storedAttachments,
+      ...(input.model ? { model: input.model } : {}),
       _cancelSignal: control.abortController.signal,
     },
   };

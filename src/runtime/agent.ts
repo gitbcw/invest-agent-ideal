@@ -118,6 +118,11 @@ export function createRuntimeAgent(): RuntimeAgent {
       const cancelSignal = message.context?._cancelSignal instanceof AbortSignal
         ? message.context._cancelSignal
         : undefined;
+      // D25: per-turn model selection from the Portal composer. Empty or
+      // absent falls through to the gateway default model.
+      const selectedModel = typeof message.context?.model === "string" && message.context.model.trim()
+        ? message.context.model.trim()
+        : undefined;
 
       try {
         if (cancelSignal?.aborted) throw new Error("TASK_CANCELLED");
@@ -174,6 +179,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             conversationId,
             text: promptContext.promptText,
             messageId: message.id,
+            ...(selectedModel ? { model: selectedModel } : {}),
             timeoutMs: userChannel === "weixin-mobile"
               ? WEIXIN_DIRECT_AGENT_TIMEOUT_MS
               : userChannel === "web"
@@ -201,7 +207,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             replyTextSanitized: cleaned, mode, reviewContextSummary: { budget: mastraResult.budget },
             status: "success", elapsedMs: Date.now() - startedAt, usage: mastraResult.usage,
             agentBackend: "mastra", agentModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
-            modelSource: "runtime-config",
+            modelSource: selectedModel ? "user-selection" : "runtime-config",
           });
           return textResponse(cleaned, true, extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined);
         } finally {

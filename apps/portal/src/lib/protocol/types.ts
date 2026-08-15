@@ -177,6 +177,8 @@ export interface ConversationChatRequest {
   attachments?: PortalAttachmentInput[];
   idempotencyKey: string;
   clientSentAt: string;
+  /** 用户选择的模型（网关模型 id）；不传或空 = 用服务端默认模型 */
+  model?: string;
 }
 
 /** Cancel the active turn for a conversation. Scope comes from connector registration. */

@@ -38,7 +38,8 @@ const AttachmentSchema = z.object({
 const SendSchema = z.object({
   text: z.string().trim().max(8000).optional(),
   attachments: z.array(AttachmentSchema).max(MAX_FILES_PER_MESSAGE).optional(),
-  idempotencyKey: z.string().min(1).max(128).optional()
+  idempotencyKey: z.string().min(1).max(128).optional(),
+  model: z.string().trim().max(128).optional()
 }).refine((item) => Boolean(item.text?.trim() || item.attachments?.length), "内容或附件至少需要一个");
 
 type Params = { params: { id: string } };
@@ -157,7 +158,8 @@ export async function POST(request: Request, { params }: Params) {
       text,
       attachments,
       idempotencyKey: idempotencyKey ?? userMessageId,
-      clientSentAt
+      clientSentAt,
+      model: parsed.data.model
     },
     relayTimeoutMs
   );

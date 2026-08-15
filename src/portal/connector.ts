@@ -396,6 +396,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         attachments: Array.isArray(message.payload?.attachments) ? message.payload.attachments : undefined,
         idempotencyKey: message.payload?.idempotencyKey,
         clientSentAt: message.payload?.clientSentAt,
+        model: typeof message.payload?.model === "string" && message.payload.model.trim() ? message.payload.model.trim() : undefined,
       })));
     case TYPES.CONVERSATION_CANCEL: {
       const conversationId = String(message.payload?.conversationId || "").trim();
