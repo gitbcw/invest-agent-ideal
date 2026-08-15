@@ -10,7 +10,6 @@
  */
 import { sqlite } from "../db/index.js";
 import { DEFAULT_PROJECT_ID } from "../lib/user-context.js";
-import { MastraUserPreferenceStore } from "./user-preferences.js";
 import { activateAutomationTask, createAutomationTask } from "./automation-tasks.js";
 import { getScheduledTaskType } from "./scheduled-task-types.js";
 import type { AutomationScope } from "./automation-tasks.js";
@@ -189,49 +188,6 @@ export async function applyPreset(scope: AutomationScope, presetId: string): Pro
     await activateAutomationTask({ ...scope, taskId: task.taskId });
     created.push({ taskId: task.taskId, taskType: template.taskType });
   }
-  await writePresetCompatPreferences(scope, preset);
   return { presetId: preset.id, presetVersion: preset.version, created, skipped };
 }
 
-/**
- * Migration-window compatibility: mirror the preset's scheduling semantics
- * into the runtime preferences the current scheduler reads. Removed when the
- * task-driven executor (design doc P2/P3) becomes authoritative.
- */
-async function writePresetCompatPreferences(scope: AutomationScope, preset: PresetDefinition): Promise<void> {
-  const projectId = scope.projectId || DEFAULT_PROJECT_ID;
-  const store = new MastraUserPreferenceStore(scope.userId, scope.instanceId, projectId);
-  const current = (await store.readSchedules()) ?? {};
-  const next: Record<string, unknown> = { ...current, timezone: (current as { timezone?: string }).timezone ?? BEIJING };
-  for (const template of preset.taskTemplates ?? []) {
-    if (template.taskType === "scheduled-daily-review") {
-      next.daily_review = { enabled: true, auto_run: true, default_time: template.schedule.time, trading_days_only: true };
-    } else if (template.taskType === "scheduled-weekly-review") {
-      next.weekly_review = { enabled: true, auto_run: true, default_time: `Saturday ${template.schedule.time}` };
-    } else if (template.taskType === "scheduled-monthly-review") {
-      next.monthly_review = { enabled: true, auto_run: true, default_time: `day_${template.schedule.monthlyDay ?? 1} ${template.schedule.time}`, review_previous_month: true };
-    } else if (template.taskType === "scheduled-market-watch") {
-      next.market_watch = {
-        enabled: true,
-        auto_run: true,
-        default_windows: template.schedule.windows ?? [template.schedule.time],
-        ...(preset.deliveryPolicy?.onlyPushOnException === false ? {} : { push_mode: "exception_only" }),
-      };
-    }
-  }
-  await store.writeSchedules(next as never);
-  // Onboarding-completion semantic (G18): applying a usage mode makes the
-  // scope schedulable until P4b retires the activation gate.
-  const existing = sqlite.prepare("SELECT preferences_json AS value FROM mastra_runtime_preferences WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
-    .get(scope.userId, projectId, scope.instanceId) as { value?: string } | undefined;
-  const preferences = existing ? JSON.parse(existing.value || "{}") : {};
-  preferences.schedulerActivation = "enabled";
-  if (existing) {
-    sqlite.prepare("UPDATE mastra_runtime_preferences SET preferences_json=?, updated_at=? WHERE user_id=? AND project_id=? AND instance_id=?")
-      .run(JSON.stringify(preferences), new Date().toISOString(), scope.userId, projectId, scope.instanceId);
-  } else {
-    const now = new Date().toISOString();
-    sqlite.prepare("INSERT INTO mastra_runtime_preferences (user_id,project_id,instance_id,preferences_json,source_checksums_json,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
-      .run(scope.userId, projectId, scope.instanceId, JSON.stringify(preferences), "{}", now, "service-owned", now, now);
-  }
-}

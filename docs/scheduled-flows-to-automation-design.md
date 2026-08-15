@@ -3,7 +3,7 @@
 状态：v1 已采纳；P1 已实施（2026-08-14）——schedule 支持 monthly/monthlyDay/windows；任务类型注册表（`src/services/scheduled-task-types.ts`，id 对齐授权表）；任务表新增 `task_type` 列；`nextAutomationRunAt` 支持 monthly 落点与 windows 多触发点。
 P2 已实施（2026-08-14）——runner 按任务自身 taskType 解析授权（复盘任务获得 reviews.save 授权）；`shouldFire` 防双发（活跃 typed 任务存在时偏好路径让位）；`applyPreset` 激活复盘任务（盯盘待 P3）。
 P3 已实施（2026-08-14）——盯盘任务 `wechat_on_condition` 条件投递（NO_PUSH 语义）+ 激活；`shouldRunMarketWatchTask` 防双发（活跃 typed 盯盘任务让位）。
-P4a 已实施（2026-08-14）——幂等迁移脚本 `scripts/mastra-preferences-to-tasks-migration.mjs`（支持 --dry-run）：既有偏好 → 按用户实际时间生成 typed 任务并激活，重复执行跳过；测试 `mastra-preferences-to-tasks-migration.test.ts`。P4b（废除 5 处偏好散读点与 schedulerActivation，需全量用户迁移验证后执行）待做
+P4a 已实施（2026-08-14）；**P4b 已执行（2026-08-15，真实数据迁移验证通过后）**：5 处偏好散读点与 schedulerActivation 门全量废除，复盘/盯盘唯一由 typed 任务驱动（D27）；偏好中调度字段只读留档
 关联：[preset-system-design.md](./preset-system-design.md)（前置消费方）、[mastra-architecture-baseline.md](./mastra-architecture-baseline.md) §6/§7.5
 裁决来源：D3（复盘、盯盘并入自动化任务；规则巡检另行重设计）、D9（通知偏好语义归预设）
 

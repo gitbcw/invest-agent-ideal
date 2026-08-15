@@ -13,7 +13,7 @@ process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 
-test("Mastra automation scheduler does not dispatch disabled target tasks", async () => {
+test("P4b: automation scheduler dispatches due tasks regardless of schedulerActivation (gate retired)", async () => {
   const { initDb, sqlite } = await import("../src/db/index.js");
   initDb();
   const scheduler = await import("../src/scheduler/automation.js");
@@ -34,11 +34,15 @@ test("Mastra automation scheduler does not dispatch disabled target tasks", asyn
     runAutomationTaskNow: async (input: unknown) => { calls.push(input); return { run: { runId: "run-1", status: "succeeded" }, task: dueTask } as never; },
   } as scheduler.AutomationSchedulerDependencies;
 
+  // The preference field is inert: due tasks dispatch whether the legacy
+  // schedulerActivation value is missing, disabled-named, or enabled.
   prefs("disabled_until_target_cold_start_and_explicit_enable");
-  assert.deepEqual(await scheduler.runAutomationSchedulerTick(now, dependencies), { due: 1, started: 0 });
-  assert.equal(calls.length, 0);
-  prefs("enabled");
   assert.deepEqual(await scheduler.runAutomationSchedulerTick(now, dependencies), { due: 1, started: 1 });
   assert.equal(calls.length, 1);
+  // flush the in-flight run so the second tick with the same key dispatches
+  await new Promise((resolve) => setImmediate(resolve));
+  prefs("enabled");
+  assert.deepEqual(await scheduler.runAutomationSchedulerTick(now, dependencies), { due: 1, started: 1 });
+  assert.equal(calls.length, 2);
   await new Promise((resolve) => setImmediate(resolve));
 });

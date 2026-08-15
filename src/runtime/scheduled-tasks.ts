@@ -5,13 +5,11 @@ import { buildAgentPromptContext } from "../runtime/prompt-context-builder.js";
 import { recordAgentTrace } from "../runtime/trace.js";
 import { extractFinalCustomerReply, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
+import { sqlite } from "../db/index.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import type { UserContext } from "../lib/user-context.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID } from "../lib/user-context.js";
-import { readSchedules } from "../lib/schedules-loader.js";
 import { ACTIVE_BACKEND } from "../lib/data-backend.js";
-import { MastraUserPreferenceStore } from "../services/user-preferences.js";
-import { WorkspaceStore } from "../lib/workspace-store.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { periodicReviewBackend } from "../lib/periodic-review-backend.js";
@@ -435,27 +433,24 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
   }
 }
 
+/**
+ * P4b: push mode comes from the active typed market-watch task's delivery
+ * policy (wechat_on_condition = exception_only/NO_PUSH semantics), not from
+ * scattered preference reads. No active task defaults to exception_only for
+ * the manual-trigger path.
+ */
 async function resolveMarketWatchPushMode(scope: ScheduledScope): Promise<MarketWatchPushMode> {
-  const schedules = ACTIVE_BACKEND === "mastra"
-    ? await new MastraUserPreferenceStore(scope.userId, scope.instanceId ?? DEFAULT_INSTANCE_ID, scope.projectId ?? DEFAULT_PROJECT_ID).readSchedules()
-    : readSchedules(scope.userId);
-  const watch = await readWatchConfig(scope);
-  const marketWatch = (schedules.market_watch ?? {}) as Record<string, unknown>;
-  const mode = String(watch?.mode || marketWatch.push_mode || "");
-  if (mode === "scheduled_intraday_brief" || marketWatch.only_push_on_exception === false || watch?.only_push_on_exception === false) {
-    return "scheduled_intraday_brief";
+  try {
+    const row = sqlite.prepare(
+      "SELECT revision.delivery AS deliveryJson FROM automation_tasks task JOIN automation_task_revisions revision ON revision.revision_id = task.current_revision_id WHERE task.user_id=? AND task.project_id=? AND task.instance_id=? AND task.task_type='scheduled-market-watch' AND task.status='active' LIMIT 1",
+    ).get(scope.userId, scope.projectId ?? DEFAULT_PROJECT_ID, scope.instanceId ?? DEFAULT_INSTANCE_ID) as { deliveryJson?: string } | undefined;
+    const delivery = row?.deliveryJson ? JSON.parse(row.deliveryJson) as { mode?: string } : null;
+    if (delivery?.mode === "wechat_on_condition") return "exception_only";
+    if (delivery?.mode === "wechat_summary") return "scheduled_intraday_brief";
+  } catch (error) {
+    logger.warn(`market-watch delivery policy read failed user=${scope.userId}: ${(error as Error).message}`);
   }
   return "exception_only";
-}
-
-async function readWatchConfig(scope: ScheduledScope) {
-  try {
-    if (ACTIVE_BACKEND === "mastra") return await new MastraUserPreferenceStore(scope.userId, scope.instanceId ?? DEFAULT_INSTANCE_ID, scope.projectId ?? DEFAULT_PROJECT_ID).readWatch();
-    return await new WorkspaceStore(scope.userId).readWatch();
-  } catch (error) {
-    logger.warn(`scheduled.marketWatch.readWatch failed user=${scope.userId}: ${(error as Error).message}`);
-    return null;
-  }
 }
 
 export function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: MarketWatchPushMode) {

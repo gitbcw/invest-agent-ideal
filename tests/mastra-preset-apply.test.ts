@@ -52,13 +52,12 @@ test("applying the low-disturbance preset creates typed tasks and compat prefere
     assert.equal(second.skipped.length, 4);
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS c FROM automation_tasks WHERE user_id=?").get(scope.userId).c, 4);
 
-    // Compat preferences keep the current preference-driven scheduler working.
+    // P4b: applyPreset no longer mirrors scheduling into runtime
+    // preferences — tasks are the only schedule source.
     const store = new MastraUserPreferenceStore(scope.userId, scope.instanceId, scope.projectId);
     const schedules = await store.readSchedules() as Record<string, unknown>;
-    assert.equal((schedules.daily_review as { default_time?: string }).default_time, "19:00");
-    assert.equal((schedules.monthly_review as { default_time?: string }).default_time, "day_1 09:00");
-    assert.deepEqual((schedules.market_watch as { default_windows?: string[] }).default_windows, ["09:55", "11:20", "14:30"]);
-    assert.equal((schedules.market_watch as { push_mode?: string }).push_mode, "exception_only");
+    assert.equal(schedules.daily_review, undefined);
+    assert.equal(schedules.market_watch, undefined);
 
     // Schedule math: monthly lands on monthlyDay; windows expand trigger times.
     const monthlyNext = nextAutomationRunAt({ frequency: "monthly", time: "09:00", timezone: "Asia/Shanghai", monthlyDay: 1 }, new Date("2026-08-14T00:00:00Z"));

@@ -19,7 +19,6 @@ import { eq } from "drizzle-orm";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import { ACTIVE_BACKEND } from "../lib/data-backend.js";
-import { MastraUserPreferenceStore } from "../services/user-preferences.js";
 import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
 import { readSchedules, entryHitsNow, beijingNow, beijingDateKey, type SchedulesYaml } from "../lib/schedules-loader.js";
 import { existsSync } from "node:fs";
@@ -109,13 +108,6 @@ function hasWorkspace(userId: string): boolean {
   return existsSync(join(resolveWorkspacePath(userId), "AGENTS.md"));
 }
 
-async function readScheduleConfig(scope: ReviewScope) {
-  if (ACTIVE_BACKEND === "mastra") {
-    return await new MastraUserPreferenceStore(scope.userId, scope.instanceId, scope.projectId ?? DEFAULT_PROJECT_ID).readSchedules() as SchedulesYaml;
-  }
-  return readSchedules(scope.userId);
-}
-
 async function hasExistingDailyReview(scope: ReviewScope, dateKey: string): Promise<boolean> {
   const row = await dailyPlanBackend.get(scope.userId, scope.instanceId, dateKey).catch(() => null);
   return Boolean(row);
@@ -137,40 +129,7 @@ function hasActiveTypedTask(scope: ReviewScope, taskType: string): boolean {
   }
 }
 
-async function shouldFire(kind: ReviewKind, scope: ReviewScope, now: Date, options: { skipExistingDailyReview?: boolean } = {}): Promise<boolean> {
-  if (kind === "daily" && !isAfterDailyReviewScanStart(now)) return false;
-  // Migration rule (scheduled-flows-to-automation design): when an active
-  // typed automation task owns this review kind for the scope, the task is
-  // authoritative and the preference-driven path must not double-fire.
-  if (hasActiveTypedTask(scope, TYPED_REVIEW_TASK[kind])) return false;
-  const dateKey = beijingDateKey(now);
 
-  let hit = false;
-  if (hasWorkspace(scope.userId)) {
-    const schedules = await readScheduleConfig(scope);
-    if (kind === "daily") hit = entryHitsNow(schedules.daily_review, now);
-    else if (kind === "weekly") hit = entryHitsNow(schedules.weekly_review, now);
-    else if (kind === "monthly") hit = entryHitsNow(schedules.monthly_review, now);
-    if (hit && options.skipExistingDailyReview !== false && kind === "daily" && schedules.run_policy?.skip_automatic_if_manual_report_exists !== false) {
-      if (await hasExistingDailyReview(scope, dateKey)) {
-        logger.info(`跳过自动日复盘 user=${scope.userId} instance=${scope.instanceId} date=${dateKey}: 当日已有复盘记录`);
-        hit = false;
-      }
-    }
-  } else if (scope.userId === DEFAULT_USER_ID && kind === "daily") {
-    const clock = beijingNow(now);
-    hit = clock.getHours() === fallbackHour && clock.getMinutes() === fallbackMinute;
-  }
-
-  return hit;
-}
-
-async function shouldPrepare(kind: ReviewKind, scope: ReviewScope, now: Date): Promise<{ dateKey: string } | null> {
-  if (!hasWorkspace(scope.userId)) return null;
-  const prepareFor = addMinutes(now, REVIEW_PREPARE_LEAD_MINUTES);
-  if (!(await shouldFire(kind, scope, prepareFor, { skipExistingDailyReview: true }))) return null;
-  return { dateKey: beijingDateKey(prepareFor) };
-}
 
 function addMinutes(date: Date, minutes: number) {
   return new Date(date.getTime() + minutes * 60 * 1000);
@@ -191,47 +150,9 @@ function preparedReviewPath(scope: ReviewScope, kind: ReviewKind, dateKey: strin
   });
 }
 
-async function readPreparedReviewPush(scope: ReviewScope, kind: ReviewKind, dateKey: string): Promise<PreparedReviewPush | null> {
-  try {
-    const file = await preparedReviewPath(scope, kind, dateKey);
-    if (!existsSync(file)) return null;
-    const parsed = JSON.parse(await readFile(file, "utf-8")) as Partial<PreparedReviewPush>;
-    if (parsed.kind !== kind || parsed.dateKey !== dateKey || typeof parsed.text !== "string" || !parsed.text.trim()) return null;
-    return {
-      kind,
-      userId: String(parsed.userId || scope.userId),
-      instanceId: String(parsed.instanceId || scope.instanceId || DEFAULT_INSTANCE_ID),
-      projectId: String(parsed.projectId || scope.projectId || DEFAULT_PROJECT_ID),
-      dateKey,
-      text: parsed.text,
-      preparedAt: String(parsed.preparedAt || ""),
-    };
-  } catch (error) {
-    logger.warn(`读取预生成复盘失败 kind=${kind} user=${scope.userId}: ${(error as Error).message}`);
-    return null;
-  }
-}
-
-async function writePreparedReviewPush(scope: ReviewScope, kind: ReviewKind, dateKey: string, text: string) {
-  const file = await preparedReviewPath(scope, kind, dateKey);
-  await mkdir(dirname(file), { recursive: true });
-  const payload: PreparedReviewPush = {
-    kind,
-    userId: scope.userId,
-    instanceId: scope.instanceId,
-    projectId: scope.projectId ?? DEFAULT_PROJECT_ID,
-    dateKey,
-    text,
-    preparedAt: new Date().toISOString(),
-  };
-  await writeFile(file, JSON.stringify(payload, null, 2), "utf-8");
-}
-
 async function shouldSkipFallbackDailyGeneration(kind: ReviewKind, scope: ReviewScope, dateKey: string, manualReason?: string) {
   if (kind !== "daily" || manualReason) return false;
   if (!hasWorkspace(scope.userId)) return false;
-  const schedules = await readScheduleConfig(scope);
-  if (schedules.run_policy?.skip_automatic_if_manual_report_exists === false) return false;
   return hasExistingDailyReview(scope, dateKey);
 }
 
@@ -246,70 +167,8 @@ async function getScheduledPreparedDailyReview(scope: ReviewScope, dateKey: stri
     : null;
 }
 
-function reviewPrepareTaskKey(kind: ReviewKind, scope: ReviewScope, dateKey: string) {
-  return `${dateKey}:${kind}-review-prepare:${scope.userId}:${scope.instanceId}`;
-}
-
 async function readReusableReviewText(scope: ReviewScope, kind: ReviewKind, dateKey: string): Promise<string | null> {
-  const prepared = await readPreparedReviewPush(scope, kind, dateKey);
-  if (prepared?.text) return prepared.text;
   return kind === "daily" ? getScheduledPreparedDailyReview(scope, dateKey) : null;
-}
-
-interface ReviewPrepareHandoffDependencies {
-  getState: (taskKey: string) => Promise<ScheduledTaskRunState | null>;
-  readText: () => Promise<string | null>;
-  reconcile: (now: Date) => Promise<number>;
-  sleep: (ms: number) => Promise<void>;
-  now: () => Date;
-}
-
-function prepareLeaseDeadline(state: ScheduledTaskRunState): number {
-  const explicit = state.leaseExpiresAt ? Date.parse(state.leaseExpiresAt) : Number.NaN;
-  if (Number.isFinite(explicit)) return explicit;
-  const claimedAt = Date.parse(state.claimedAt);
-  return Number.isFinite(claimedAt) ? claimedAt + REVIEW_PREPARE_LEASE_MS : Number.NaN;
-}
-
-async function waitForPreparedReview(
-  kind: ReviewKind,
-  scope: ReviewScope,
-  dateKey: string,
-  overrides: Partial<ReviewPrepareHandoffDependencies> = {},
-): Promise<string | null> {
-  const taskKey = reviewPrepareTaskKey(kind, scope, dateKey);
-  const deps: ReviewPrepareHandoffDependencies = {
-    getState: getScheduledTaskRunState,
-    readText: () => readReusableReviewText(scope, kind, dateKey),
-    reconcile: reconcileExpiredScheduledTaskRuns,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    now: () => new Date(),
-    ...overrides,
-  };
-
-  let state = await deps.getState(taskKey);
-  if (state?.status !== "claimed") return deps.readText();
-
-  let nextProgressLogAt = deps.now().getTime() + 30_000;
-  while (state?.status === "claimed") {
-    const text = await deps.readText();
-    if (text) return text;
-
-    const now = deps.now();
-    const deadline = prepareLeaseDeadline(state) + REVIEW_HANDOFF_SETTLE_BUFFER_MS;
-    if (!Number.isFinite(deadline) || now.getTime() >= deadline) {
-      await deps.reconcile(now);
-      return deps.readText();
-    }
-    if (now.getTime() >= nextProgressLogAt) {
-      logger.info(`等待复盘预生成交接 kind=${kind} user=${scope.userId} instance=${scope.instanceId} date=${dateKey} prepareTask=${taskKey}`);
-      nextProgressLogAt = now.getTime() + 30_000;
-    }
-    await deps.sleep(Math.min(REVIEW_HANDOFF_POLL_MS, deadline - now.getTime()));
-    state = await deps.getState(taskKey);
-  }
-
-  return deps.readText();
 }
 
 async function resolveReviewText(
@@ -326,9 +185,6 @@ async function resolveReviewText(
 ) {
   const readText = overrides.readText ?? (() => readReusableReviewText(scope, kind, dateKey));
   let text = await readText();
-  if (!text && !manualReason) {
-    text = await (overrides.waitForPrepare ?? (() => waitForPreparedReview(kind, scope, dateKey)))();
-  }
   if (!text) {
     const shouldSkip = await (overrides.shouldSkipFallback
       ?? (() => shouldSkipFallbackDailyGeneration(kind, scope, dateKey, manualReason)))();
@@ -338,47 +194,6 @@ async function resolveReviewText(
     }
   }
   return text;
-}
-
-async function triggerReviewPrepareNow(
-  kind: ReviewKind,
-  scope: ReviewScope,
-  dateKey: string,
-): Promise<{ taskKey: string; skipped: boolean }> {
-  const projectId = scope.projectId ?? DEFAULT_PROJECT_ID;
-  const taskKey = reviewPrepareTaskKey(kind, scope, dateKey);
-  const claimed = await claimScheduledTaskRun({
-    taskKey,
-    taskType: `${kind}-review-prepare`,
-    scheduledFor: dateKey,
-    userId: scope.userId,
-    projectId,
-    instanceId: scope.instanceId,
-    leaseMs: REVIEW_PREPARE_LEASE_MS,
-  });
-  if (!claimed) {
-    logger.info(`跳过 ${kind} 复盘预生成 user=${scope.userId} instance=${scope.instanceId}: task 已被其他进程领取`);
-    return { taskKey, skipped: true };
-  }
-
-  try {
-    const text = await runScheduledReviewTask({ userId: scope.userId, instanceId: scope.instanceId, projectId }, kind);
-    if (!text) {
-      await finishScheduledTaskRun(taskKey, { status: "skipped" });
-      return { taskKey, skipped: true };
-    }
-    await writePreparedReviewPush({ ...scope, projectId }, kind, dateKey, text);
-    await finishScheduledTaskRun(taskKey, { status: "success" });
-    logger.info(`复盘已预生成 kind=${kind} user=${scope.userId} instance=${scope.instanceId} date=${dateKey}`);
-    return { taskKey, skipped: false };
-  } catch (error) {
-    logger.error(`复盘预生成失败 kind=${kind} user=${scope.userId} instance=${scope.instanceId}: ${error}`);
-    await finishScheduledTaskRun(taskKey, {
-      status: "error",
-      errorMessage: formatUnknownError(error),
-    });
-    throw error;
-  }
 }
 
 export async function triggerReviewNow(
@@ -452,13 +267,14 @@ function isAfterDailyReviewScanStart(now: Date): boolean {
 }
 
 /**
- * 启动调度器。每分钟检查所有 schedulable scope。
+ * P4b (E4): scheduled reviews fire exclusively as typed automation tasks
+ * driven by the automation scheduler. The preference-driven minute loop is
+ * retired; this entry keeps the reconcile heartbeat (expired scheduled-task
+ * run cleanup) and initializes the manual fallback push time.
  */
 export async function startReviewScheduler(
-  pushFn: PushCallback,
-  getScopes: () => Promise<ReviewScope[]> = async () => [
-    { userId: DEFAULT_USER_ID, instanceId: DEFAULT_INSTANCE_ID, projectId: DEFAULT_PROJECT_ID },
-  ],
+  _pushFn: PushCallback,
+  _getScopes?: () => Promise<ReviewScope[]>,
 ) {
   const { hour: initHour, minute: initMinute } = await getReviewPushTime();
   fallbackHour = initHour;
@@ -473,26 +289,12 @@ export async function startReviewScheduler(
         lastScheduledTaskReconcileAt = now.getTime();
         await reconcileExpiredScheduledTaskRuns(now);
       }
-      const scopes = await getScopes();
-      for (const scope of scopes) {
-        for (const kind of ["daily", "weekly", "monthly"] as ReviewKind[]) {
-          const prepare = await shouldPrepare(kind, scope, now);
-          if (prepare) {
-            logger.info(`提前预生成 ${kind} 复盘 user=${scope.userId} instance=${scope.instanceId} date=${prepare.dateKey}`);
-            await triggerReviewPrepareNow(kind, scope, prepare.dateKey);
-          }
-          if (await shouldFire(kind, scope, now, { skipExistingDailyReview: false })) {
-            logger.info(`触发 ${kind} 复盘 user=${scope.userId} instance=${scope.instanceId}`);
-            await triggerReviewNow(kind, scope, pushFn, now);
-          }
-        }
-      }
     } catch (error) {
-      logger.error(`复盘调度循环失败: ${error}`);
+      logger.error(`复盘调度 reconcile 失败: ${error}`);
     }
   }, 60 * 1000);
 
-  logger.info(`复盘调度器已启动(${ACTIVE_BACKEND === "mastra" ? "service-owned preferences" : "Workspace schedules.yaml"} + DEFAULT 用户兜底 ${fallbackHour}:${String(fallbackMinute).padStart(2, "0")}; 提前预生成 ${REVIEW_PREPARE_LEAD_MINUTES}min)`);
+  logger.info(`复盘偏好调度已退役（P4b）：复盘/预生成由 typed 自动化任务驱动；本循环仅保留 scheduled_task_runs reconcile`);
 }
 
 export function stopReviewScheduler() {
@@ -504,12 +306,6 @@ export function stopReviewScheduler() {
 
 export const __test__ = {
   addMinutes,
-  prepareLeaseDeadline,
   preparedReviewPath,
-  readPreparedReviewPush,
   resolveReviewText,
-  reviewPrepareTaskKey,
-  shouldPrepare,
-  waitForPreparedReview,
-  writePreparedReviewPush,
 };

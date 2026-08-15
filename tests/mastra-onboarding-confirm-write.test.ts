@@ -107,7 +107,8 @@ test("onboarding confirm writes land in service-owned mastra projections", async
     const taskTypes = sqlite.prepare("SELECT task_type AS t, status FROM automation_tasks WHERE user_id=?").all(userId).map((r) => `${r.t}:${r.status}`);
     assert.equal(taskTypes.filter((entry) => entry.endsWith(":active")).length, 4);
     const prefs = readProjection("mastra_runtime_preferences", "preferences_json");
-    assert.equal(prefs.schedulerActivation, "enabled");
+    // P4b: schedulerActivation is retired; onboarding completion no longer writes it.
+    assert.notEqual(prefs.schedulerActivation, "enabled");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

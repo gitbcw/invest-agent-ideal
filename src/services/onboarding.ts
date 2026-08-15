@@ -273,13 +273,10 @@ export async function prepareMastraOnboardingDraftCommit(input: {
   const now = input.now || new Date().toISOString();
   // Product decision (2026-08-14): a user who finishes onboarding is schedulable.
   // Migrated targets keep their imported activation until explicitly changed.
-  const schedulerActivation = nextState.status === "completed"
-    ? "enabled"
-    : preferences.schedulerActivation || "disabled_until_target_cold_start_and_explicit_enable";
+  // P4b: schedulerActivation is retired — active typed tasks are the gate.
   const nextPreferences = {
     ...preferences, schedules, notification, watch, onboardingState: nextState,
     sourceRevision: now,
-    schedulerActivation,
   };
   return {
     state: nextState,
@@ -373,13 +370,9 @@ export function openMastraOnboardingStore(input: {
       upsertOwnedState("mastra_project_profiles", "profile_json", JSON.stringify(strategy));
       // Product decision (2026-08-14): a user who finishes onboarding is schedulable.
       // Migrated targets keep their imported activation until explicitly changed.
-      const schedulerActivation = state.status === "completed"
-        ? "enabled"
-        : preferences.schedulerActivation || "disabled_until_target_cold_start_and_explicit_enable";
       const nextPreferences = {
         ...preferences, schedules, notification, watch, onboardingState: state,
         sourceRevision: now,
-        schedulerActivation,
       };
       const preferenceExists = sqlite.prepare("SELECT 1 AS one FROM mastra_runtime_preferences WHERE user_id=? AND project_id=? AND instance_id=? LIMIT 1")
         .get(input.userId, projectId, input.instanceId);

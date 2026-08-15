@@ -24,8 +24,10 @@ test("Mastra scheduler scopes stay inert until explicit activation", async () =>
   sqlite.prepare("INSERT INTO ai_instances (id, owner_user_id, project_id, name, status, config, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', '{}', ?, ?) ON CONFLICT(id) DO UPDATE SET status='active'").run(scope.instanceId, scope.userId, scope.projectId, "scheduler test", now, now);
   const put = (activation: string) => sqlite.prepare("INSERT INTO mastra_runtime_preferences (user_id,project_id,instance_id,preferences_json,source_checksums_json,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,project_id,instance_id) DO UPDATE SET preferences_json=excluded.preferences_json").run(scope.userId, scope.projectId, scope.instanceId, JSON.stringify({ schedulerActivation: activation, schedules: {} }), "{}", "test", "test", now, now);
 
+  // P4b: schedulerActivation no longer gates schedulable scopes; these
+  // scopes feed the rule patrol, and reviews/market-watch are typed tasks.
   put("disabled_until_target_cold_start_and_explicit_enable");
-  assert.equal((await listSchedulableScopes()).some((item) => item.instanceId === scope.instanceId), false);
+  assert.equal((await listSchedulableScopes()).some((item) => item.instanceId === scope.instanceId), true);
   put("enabled");
   assert.equal((await listSchedulableScopes()).some((item) => item.instanceId === scope.instanceId), true);
 });
