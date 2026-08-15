@@ -76,7 +76,7 @@ curl http://127.0.0.1:22648/health
 - 规格：4 vCPU / 7.5G 内存 / 40G 盘（使用约 62%）。**此前无 swap**。
 - 2026-08-15 事故：无 swap 内存耗尽活锁（kswapd 占满 4 核 sys 态、load ~220、PSI memfull 98%、sshd 无法完成握手），只能硬重启。atop 取证：`/var/log/atop/atop_20260815_until14:02:21`。
 - 加固：`/swapfile` 4G 已启用并写入 fstab；`vm.swappiness=10` 持久化于 `/etc/sysctl.d/99-swap.conf`。
-- openclaw-gateway（claw 用户 systemd user 服务，端口 18789）已按用户裁决完全卸载：进程/端口清零、npm 全局包移除（714 依赖）、user 单元删除、数据目录归档至 `/home/claw/openclaw-data-backup-20260815.tar.gz` 后删除。claw 用户的 `message-relay`（18790）保留待裁决。
+- openclaw-gateway（claw 用户 systemd user 服务，端口 18789）已按用户裁决完全卸载：进程/端口清零、npm 全局包移除（714 依赖）、user 单元删除、数据目录归档至 `/home/claw/openclaw-data-backup-20260815.tar.gz` 后删除。claw 用户的 `message-relay`（18790）亦已按用户裁决卸载（单元删除、目录归档至 `/home/claw/message-relay-backup-20260815.tar.gz`），并已 `loginctl disable-linger claw`——claw 用户服务不再随开机自启，整套 OpenClaw 残留清零。
 - 服务器还承载 11 个 PM2 应用（invest-agent 全家桶 + market-data-tool/qsse/cockpit 等）+ MariaDB；发布新服务前先核对 `free -m` 可用内存（当前基线：已用 ~1.8G，可用 ~5.9G + 4G swap）。
 
 ## 2. 版本基线
