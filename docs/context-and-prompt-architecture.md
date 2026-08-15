@@ -53,3 +53,11 @@
 - 播种读取运行目录下的 `templates/skills`；发布必须同步模板目录（普通代码发布本来就包含模板）。
 - 服务器存量三个 beta 用户项目执行一次 `scripts/seed-mastra-skills.mjs`（先 `--dry-run` 核对）。
 - 历史注入会增加每轮 token 消耗（约等于最近 24 条消息的文本量），计价与 trace 已覆盖该成本。
+
+### 部署记录（2026-08-15）
+
+- dist + templates/skills + seed 脚本 rsync 上传，runtime PM2 重启后 health ok；portal 无改动未动。
+- **修复迁移遗留缺陷**：mg/dyk/111 三个项目由迁移脚本直接建目录，缺 `.agent-project/manifest.json`，导致 `resolveProjectStorageRoot` 与 workspace 挂载全部失败（错误日志中 111 用户当日多次 `WORKSPACE_FILE_SCOPE_UNAVAILABLE`）。已用 `mastraWorkspaceRegistry.bootstrap()` 按 `ai_instances` 权威 scope 补齐 manifest 与骨架；存量 `methods/strategy-rules.md` 与 `assets/` 未触碰。
+- 四个项目（含 primary）skills 播种完成，二次 dry-run 确认 0 待播种（幂等成立）。
+- E2E 冒烟（raw `/agent/message`）：三轮 success（gpt-5.6-terra）；软初始化提醒自然融入回复；权威表历史注入经"暗号探针"验证——仅在 `conversation_messages` 写入的暗号被下一轮准确复述。探针数据已清理。
+- 注意：raw HTTP 路径不落库（不写 conversation_messages），多轮历史只在 Portal/微信两条持久化链路生效，属预期行为。
