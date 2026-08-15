@@ -260,6 +260,16 @@ export function Sidebar({
               <AlarmClock size={16} strokeWidth={1.8} aria-hidden="true" />
               自动化任务
             </button>
+            <button
+              type="button"
+              className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "patrol" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`}
+              aria-label="规则巡检"
+              title="规则巡检"
+              onClick={onOpenPatrol}
+            >
+              <Radar size={16} strokeWidth={1.8} aria-hidden="true" />
+              规则巡检
+            </button>
             <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "assets" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="我的文件" title="我的文件" onClick={onOpenAssets}>
               <Files size={16} strokeWidth={1.8} aria-hidden="true" />
               我的文件
