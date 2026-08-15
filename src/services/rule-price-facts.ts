@@ -9,7 +9,8 @@
  * 设计要点:
  *   - 短 TTL 缓存（5 秒）：同一 tick 内或短时间内的重复请求只打一次 provider。
  *   - 批量去重：重复 code 只请求一次。
- *   - 当前全部返回 usable=false + failureCode，不触网、不抛异常。
+ *   - 价格经 market-data MCP 获取（同机 HTTP）；MCP 不可用或未配置时全部
+ *     返回 usable=false + failureCode，不触达用户、不抛异常。
  */
 
 import type { StockQuote } from "./market-types.js";
@@ -58,9 +59,39 @@ export async function getRulePrices(codes: string[]): Promise<Map<string, RulePr
 }
 
 async function fetchRulePricesFromProviders(codes: string[]): Promise<Map<string, RulePriceFact>> {
+  // 服务自有行情 provider 已退役 (WP5/F4)；价格事实经 market-data MCP 获取。
+  // 任何失败都降级为 usable=false + failureCode，绝不抛进巡检循环。
   const result = new Map<string, RulePriceFact>();
-  for (const code of codes) {
-    result.set(code, { code, price: null, asOf: null, usable: false, provider: null, failureCode: "market_data_provider_retired" });
+  try {
+    const { mcpRealtimeQuotes } = await import("./market-data-mcp.js");
+    const quotes = await mcpRealtimeQuotes(codes);
+    for (const code of codes) {
+      const quote = quotes.get(code);
+      if (quote && quote.price !== null && Number.isFinite(quote.price) && quote.price > 0) {
+        result.set(code, {
+          code,
+          price: quote.price,
+          asOf: quote.asOf,
+          usable: true,
+          provider: quote.provider,
+          ...(quote.status && quote.status !== "normal" ? { failureCode: `status:${quote.status}` } : {}),
+        });
+      } else {
+        result.set(code, {
+          code,
+          price: null,
+          asOf: quote?.asOf ?? null,
+          usable: false,
+          provider: quote?.provider ?? null,
+          failureCode: quote ? "invalid_price" : "missing",
+        });
+      }
+    }
+  } catch (error) {
+    const failureCode = (error as { code?: string })?.code ?? "market_data_mcp_failed";
+    for (const code of codes) {
+      result.set(code, { code, price: null, asOf: null, usable: false, provider: null, failureCode });
+    }
   }
   return result;
 }

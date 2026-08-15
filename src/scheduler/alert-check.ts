@@ -233,7 +233,27 @@ function buildStage2AlertItem(
     };
   }
 
-  // WP8: 8 类非价格规则已退役 (WP6)。求值代码已删除,此处不会到达。
+  if (rule.ruleType === "ma_cross") {
+    const period = Number(rule.params.period);
+    const direction = String(rule.params.direction);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const maToday = Number(evaluated.facts.maToday);
+    const signalKey = `${rule.stockCode}:watch-rule:ma-cross:${direction}:${period}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      dedupe,
+      message: `${rule.stockName}(${rule.stockCode}) 触发均线规则：${direction === "break_above" ? "突破" : "跌破"} ${period} 日均线，现价 ${closeToday.toFixed(2)}，MA${period} ${maToday.toFixed(2)}`,
+    };
+  }
+
+  // 其余 8 类非价格规则保持退役 (WP8)；求值代码已删除,此处不会到达。
   return null;
 }
 

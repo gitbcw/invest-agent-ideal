@@ -158,7 +158,7 @@ test("sina fallback provider adds fallback warning in facts", async () => {
 import { readFileSync } from "node:fs";
 import { validateWatchRule } from "../src/services/watch-rules.js";
 
-test("F4: rule-price-facts does not import marketDataReadCapability", () => {
+test("F4: rule-price-facts sources prices from the market-data MCP, not retired providers", () => {
   const source = readFileSync("src/services/rule-price-facts.ts", "utf8");
   const importLines = source.split("\n").filter((l) => l.trim().startsWith("import"));
   assert.ok(
@@ -166,7 +166,7 @@ test("F4: rule-price-facts does not import marketDataReadCapability", () => {
     "rule-price-facts must not import marketDataReadCapability",
   );
   assert.ok(!source.includes("from \"./stock.js\""), "rule-price-facts must not import retired stock providers");
-  assert.ok(source.includes("market_data_provider_retired"), "retired provider failure code is explicit");
+  assert.ok(source.includes("market-data-mcp.js"), "prices come from the market-data MCP client");
 });
 
 test("F4: rule-price-facts has TTL cache", () => {

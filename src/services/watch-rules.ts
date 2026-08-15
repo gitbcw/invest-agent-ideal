@@ -4,9 +4,11 @@ import { sqlite } from "../db/index.js";
 import { alertRules } from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { getRulePrices, type RulePriceFact } from "./rule-price-facts.js";
+import { computeMA } from "./indicators.js";
 
-// WP8: 8 类非价格规则已退役删除。只剩 price_cross。
-export type WatchRuleType = "price_cross";
+// WP8 曾把非价格规则退役；2026-08-15 起 ma_cross 经 market-data MCP 复活
+// (K线由 MCP 提供,服务不再有自有行情 provider)。
+export type WatchRuleType = "price_cross" | "ma_cross";
 export type WatchRulePriority = "P0" | "P1" | "P2";
 export type WatchRuleStatus = "active" | "beta" | "deprecated";
 export type WatchRuleTargetScope = "holding" | "watchlist" | "plan" | "manual";
@@ -152,11 +154,35 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
     },
     supportsDryRun: true,
   },
+  {
+    key: "ma_cross",
+    label: "均线突破/跌破",
+    status: "active",
+    description: "日收盘上穿或下破指定周期均线时触发（当日与前一日对比判定交叉）。",
+    targetScopes: ["holding", "watchlist", "manual"],
+    paramsSchema: {
+      period: { type: "number", required: true, min: 2, max: 250, default: 25 },
+      direction: { type: "enum", required: true, options: ["break_above", "break_below"], default: "break_above" },
+    },
+    defaults: { period: 25, direction: "break_above", cooldownMinutes: 240 },
+    examples: [
+      {
+        stockCode: "600036",
+        params: { period: 25, direction: "break_above" },
+      },
+    ],
+    cooldownCapabilities: {
+      supportedModes: ["cooldown", "state"],
+      defaultMinutes: 240,
+    },
+    supportsDryRun: true,
+  },
 ];
 
 const WATCH_RULE_RELATION = "stage2_watch_rule";
 const RULE_TYPE_TO_INDICATOR_KEY: Record<WatchRuleType, string> = {
   price_cross: "watch_rule_price_cross",
+  ma_cross: "watch_rule_ma_cross",
 };
 
 export function listWatchRuleCatalog(): WatchRuleCatalogItem[] {
@@ -405,12 +431,104 @@ export async function dryRunWatchRuleById(id: number, userId = DEFAULT_USER_ID, 
   return dryRunWatchRule(rule);
 }
 
+type DailyKlineFetcher = (code: string, count: number) => Promise<{ items: Array<{ date: string; open: number; close: number; high: number; low: number; volume: number }>; provider: string | null; fetchedAt: string | null }>;
+
+const KLINE_CACHE_TTL_MS = 60_000;
+let klineCache: { key: string; result: Awaited<ReturnType<DailyKlineFetcher>>; expiresAt: number } | null = null;
+
+let fetchDailyKlines: DailyKlineFetcher = async (code, count) => {
+  const cacheKey = `${code}:${count}`;
+  if (klineCache && klineCache.key === cacheKey && klineCache.expiresAt > Date.now()) {
+    return klineCache.result;
+  }
+  const { mcpDailyKlines } = await import("./market-data-mcp.js");
+  const result = await mcpDailyKlines(code, count);
+  klineCache = { key: cacheKey, result, expiresAt: Date.now() + KLINE_CACHE_TTL_MS };
+  return result;
+};
+
+/** 测试注入点：替换K线来源。传 null 恢复 MCP 默认实现。 */
+export function setDailyKlineFetcherForTests(fetcher: DailyKlineFetcher | null): void {
+  klineCache = null;
+  fetchDailyKlines = fetcher
+    ? fetcher
+    : async (code, count) => {
+      const { mcpDailyKlines } = await import("./market-data-mcp.js");
+      return mcpDailyKlines(code, count);
+    };
+}
+
 export async function dryRunWatchRule(rule: WatchRuleRecord, priceFact?: RulePriceFact | null): Promise<DryRunWatchRuleResult> {
   if (rule.ruleType === "price_cross") {
     const fact = priceFact === undefined
       ? (await getRulePrices([rule.stockCode])).get(rule.stockCode) ?? null
       : priceFact;
     return evaluatePriceCrossFromFact(rule, fact);
+  }
+
+  if (rule.ruleType === "ma_cross") {
+    // 语义与生产一致（2026-08-15 经 MCP 复活）：当日收盘与 N 日均线的
+    // 交叉事件——昨收不高于昨 MA 且 今收高于今 MA 记 break_above（反向为
+    // break_below）。K线取 max(80, period+5) 根日线。
+    const period = Math.trunc(Number(rule.params.period));
+    const direction = rule.params.direction === "break_below" ? "break_below" : "break_above";
+    if (!Number.isInteger(period) || period < 2 || period > 250) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "ma_cross.period 参数无效" };
+    }
+    let klines: Awaited<ReturnType<DailyKlineFetcher>>;
+    try {
+      klines = await fetchDailyKlines(rule.stockCode, Math.max(80, period + 5));
+    } catch (error) {
+      return {
+        ok: true,
+        triggered: false,
+        rule,
+        facts: { failureCode: (error as { code?: string })?.code ?? "kline_fetch_failed" },
+        reason: `K线获取失败：${(error as Error).message.slice(0, 120)}`,
+      };
+    }
+    if (klines.items.length < period + 2) {
+      return {
+        ok: true,
+        triggered: false,
+        rule,
+        facts: { klineCount: klines.items.length, required: period + 2 },
+        reason: "K线数量不足，无法判断均线突破",
+      };
+    }
+    const closes = klines.items.map((item) => item.close);
+    const maValues = computeMA(closes, period).values;
+    const lastIdx = closes.length - 1;
+    const prevIdx = lastIdx - 1;
+    const maToday = maValues[lastIdx];
+    const maPrev = maValues[prevIdx];
+    if (maToday == null || maPrev == null) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "均线结果为空" };
+    }
+    const closeToday = closes[lastIdx];
+    const closePrev = closes[prevIdx];
+    const triggered = direction === "break_above"
+      ? closePrev <= maPrev && closeToday > maToday
+      : closePrev >= maPrev && closeToday < maToday;
+    const verb = direction === "break_above" ? "突破" : "跌破";
+    return {
+      ok: true,
+      triggered,
+      rule,
+      facts: {
+        closeToday,
+        closePrev,
+        maToday,
+        maPrev,
+        period,
+        direction,
+        marketTime: klines.fetchedAt,
+        sourceProvider: klines.provider,
+      },
+      reason: triggered
+        ? `${rule.stockName}(${rule.stockCode}) 触发均线规则：${verb} ${period} 日均线，现价 ${closeToday.toFixed(2)}，MA${period} ${maToday.toFixed(2)}`
+        : `${rule.stockName}(${rule.stockCode}) 未${verb} ${period} 日均线，现价 ${closeToday.toFixed(2)}，MA${period} ${maToday.toFixed(2)}`,
+    };
   }
 
   return {
@@ -471,6 +589,7 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
 
 function normalizeRuleType(value: string): WatchRuleType {
   if (value === RULE_TYPE_TO_INDICATOR_KEY.price_cross || value === "price_cross") return "price_cross";
+  if (value === RULE_TYPE_TO_INDICATOR_KEY.ma_cross || value === "ma_cross") return "ma_cross";
   // WP8: 8 类非价格规则已退役,反序列化时归一为 price_cross 避免 DB 残留行报错
   return "price_cross";
 }
@@ -511,7 +630,13 @@ function normalizeRuleParams(ruleType: WatchRuleType, params: Record<string, unk
     if (!Number.isFinite(value) || value <= 0) errors.push("price_cross.value 必须是正数");
     return { operator: operator ?? ">=", value };
   }
-  // WP8: 8 类非价格规则已退役。仅保留 price_cross 参数规范化。
+  if (ruleType === "ma_cross") {
+    const period = Math.trunc(Number(params.period));
+    const direction = params.direction === "break_below" ? "break_below" : params.direction === "break_above" ? "break_above" : null;
+    if (!Number.isInteger(period) || period < 2 || period > 250) errors.push("ma_cross.period 必须是 2 到 250 之间的整数");
+    if (!direction) errors.push("ma_cross.direction 必须是 break_above 或 break_below");
+    return { period: Number.isInteger(period) ? period : 25, direction: direction ?? "break_above" };
+  }
   errors.push(`不支持的规则类型：${ruleType}`);
   return {};
 }
@@ -523,8 +648,7 @@ function severityFromPriority(priority: WatchRulePriority): "high" | "medium" | 
 }
 
 function priorityFromSeverity(severity?: string, ruleType?: WatchRuleType): WatchRulePriority {
-  // WP8: price_cross 是唯一规则类型,统一 P0
-  if (ruleType === "price_cross") return "P0";
+  if (ruleType === "price_cross" || ruleType === "ma_cross") return "P0";
   if (severity === "high") return "P0";
   if (severity === "medium") return "P1";
   return "P2";
@@ -536,5 +660,6 @@ function scheduleForRule(_ruleType: WatchRuleType) {
 
 function ruleTypeCondition(ruleType: WatchRuleType) {
   if (ruleType === "price_cross") return "watch_rule.price_cross";
+  if (ruleType === "ma_cross") return "watch_rule.ma_cross";
   return "watch_rule.unknown";
 }

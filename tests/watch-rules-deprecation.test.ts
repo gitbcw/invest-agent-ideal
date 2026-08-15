@@ -9,16 +9,18 @@ import { listWatchRuleCatalog, validateWatchRule } from "../src/services/watch-r
  * 现在 catalog 只剩 price_cross,退役规则类型不再存在于 WatchRuleType 联合中。
  */
 
+// ma_cross 于 2026-08-15 经 market-data MCP 复活（K线由 MCP 提供）；
+// 其余 7 类非价格规则保持退役。
 const RETIRED_TYPES = [
-  "ma_cross", "macd_cross", "kdj_cross", "rsi_threshold",
+  "macd_cross", "kdj_cross", "rsi_threshold",
   "boll_break", "wr_threshold", "volume_ratio", "near_plan_level",
 ];
 
-test("catalog only contains price_cross after WP8 cleanup", async () => {
+test("catalog contains price_cross and the revived ma_cross", async () => {
   const catalog = await listWatchRuleCatalog();
-  assert.equal(catalog.length, 1, "only price_cross remains");
-  assert.equal(catalog[0].key, "price_cross");
-  assert.equal(catalog[0].status, "active");
+  assert.equal(catalog.length, 2, "price_cross + ma_cross");
+  assert.equal(catalog.find((c) => c.key === "price_cross")?.status, "active");
+  assert.equal(catalog.find((c) => c.key === "ma_cross")?.status, "active");
 });
 
 test("retired rule types no longer in catalog", async () => {
