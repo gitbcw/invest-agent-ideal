@@ -95,7 +95,11 @@ export function startRelayServer(options: RelayServerOptions = {}) {
   const port = options.port ?? cfg.relayPort;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
 
-  const wss = new WebSocketServer({ port });
+  // Bind loopback by default: the relay is same-host connector plumbing and
+  // must not be publicly reachable even when the cloud security group opens
+  // the port. Set PORTAL_RELAY_HOST explicitly to override.
+  const host = process.env.PORTAL_RELAY_HOST?.trim() || "127.0.0.1";
+  const wss = new WebSocketServer({ port, host });
   const registry = getGlobalRegistry();
   const db = openDatabase();
   const conversations = new ConversationMirrorRepository(db);
