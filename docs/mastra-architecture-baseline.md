@@ -235,6 +235,6 @@ db/         schema + drizzle
 | E6 | G23 trace tool_calls 事件捕获修复 | §8 | ✅ 已实施（Mastra≥1.5x payload 包装形状解包 + toolCalls/toolResults 聚合合并出终态；4 测试证据） |
 | E7 | runtime 进 apps/ 物理迁移 | T5 | ⏸ 低优先 |
 | E8 | workspace 回滚后端拆除 | D21/§4 | ⏸ 真实数据迁移验证 + H1 后 |
-| E9 | G21 巡检可见性 | §6 | ✅ v2 已实施（2026-08-15，按用户反馈从合成任务改为**专属页面**）：新 `/patrol` 规则巡检面板（状态卡/运行历史/立即巡检-不推送）+ 侧边栏入口；runtime 新增 rule_patrol.status/run_now connector 命令（`src/services/rule-patrol.ts`）。复盘/盯盘 typed 任务仍在自动化面 |
+| E9 | G21 巡检可见性 | §6 | ✅ v3 已实施（2026-08-15，两轮用户反馈演进）：专属 `/patrol` 页（PortalSidebar 同构布局）含**规则管理**（新建/编辑/启停/删除/试运行，经 rule_patrol.rules.* connector 命令直连 watch-rules 服务，写操作落审计）、状态卡、运行历史、立即巡检（不推送）。端到端实测 create/list/update/disable/dry-run/delete 全通 |
 | E10 | **开销统计配套（按模型计费）** | D24 | ✅ 已实施（2026-08-15，C1-C4）：[cost-statistics-design.md](./cost-statistics-design.md)——per-model 费率注册表（临时值）、trace 写入时计价、幂等回填（候选历史 11 条已补）、admin 视图服务端化+按模型视图；费率终定后换表即可 |
 | — | **Gate H1 本地最终体验验收** | 长工作包 | ✅ **已通过（2026-08-15）**：用户核验对话/文件/表格卡片交互/自动化任务列表/审计；长工作包完成，下一步为 R1 发布讨论（须用户另行授权） |
