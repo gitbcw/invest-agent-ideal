@@ -60,8 +60,15 @@ const automation = await connector.__test__.handleCommand(scope, command("automa
 }));
 if (!automation.ok || automation.data?.status !== "paused") throw new Error(`automation create failed: ${JSON.stringify(automation)}`);
 const task = automation.data;
-for (const relativePath of [task.sourceAsset?.relativePath, task.workingAsset?.relativePath]) {
-  if (!relativePath || !existsSync(path.join(projectRoot, relativePath))) throw new Error(`automation asset missing: ${relativePath}`);
+// Automation source/working assets live under the registry-canonical project
+// root at automations/<taskId>/<role>/<fileName>; the smoke must pass that
+// same root (digest layout) so the bytes land beside the imported domains.
+for (const ref of [task.sourceAsset, task.workingAsset]) {
+  if (!ref?.assetId || !ref.relativePath) throw new Error(`automation asset reference incomplete: ${JSON.stringify(ref)}`);
+  const absolute = path.join(projectRoot, ref.relativePath);
+  if (!existsSync(absolute)) throw new Error(`automation asset missing: ${ref.relativePath}`);
+  const bytes = await readFile(absolute);
+  if (ref.checksum && bytes.length !== ref.sizeBytes) throw new Error(`automation asset size mismatch: ${ref.relativePath}`);
 }
 
 console.log(JSON.stringify({

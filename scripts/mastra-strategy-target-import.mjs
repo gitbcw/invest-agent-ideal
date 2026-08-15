@@ -29,7 +29,20 @@ await assertFile(sourcePath, "strategy source");
 const sourceBytes = await readFile(sourcePath);
 if (sha256(sourceBytes) !== source.sha256) throw new Error("MASTRA_STRATEGY_SOURCE_CHANGED: source checksum differs from dry-run");
 const projectId = args.projectId ? requiredId(args.projectId, "--project-id") : "invest-agent";
-const profileJson = JSON.stringify(profile.fields);
+// D5/E1 alignment: the investment-profile field shape is retired on the
+// candidate runtime — initDb strips these keys from profile_json, so writing
+// them here would be silently undone at first boot. Drop them at import and
+// report the drop instead of claiming a migration that cannot survive.
+const RETIRED_PROFILE_KEYS = ["style", "selectedStylePack", "riskPreference", "investmentHorizon", "positionRoles", "buyRules", "sellRules", "rebalanceRules", "riskRules", "sourceRevision", "userMode", "investorSegment", "decisionCadence", "preferredAssets"];
+const { droppedRetiredKeys, keptFields } = Object.entries(profile.fields).reduce(
+  (acc, [key, value]) => {
+    if (RETIRED_PROFILE_KEYS.includes(key)) acc.droppedRetiredKeys.push(key);
+    else acc.keptFields[key] = value;
+    return acc;
+  },
+  { droppedRetiredKeys: [], keptFields: {} },
+);
+const profileJson = JSON.stringify(keptFields);
 const now = new Date().toISOString();
 const db = new Database(targetDbPath);
 try {
@@ -65,6 +78,8 @@ try {
     scope: { userId: source.userId, projectId, instanceId: source.instanceId },
     source: { path: source.sourcePath, checksum: source.sha256 },
     profileChecksum: sha256(profileJson),
+    droppedRetiredKeys,
+    note: droppedRetiredKeys.length > 0 ? "investment-profile fields retired per D5/E1; not migrated, stripped by runtime initDb" : undefined,
   }, null, 2));
 } finally {
   db.close();

@@ -230,11 +230,11 @@ db/         schema + drizzle
 | E1 | 投资画像移除实施（五项清单） | D20/§7 | ✅ 已实施（commit；清单修正：/investment-state admin 总览保留——读的是持仓/预案非画像；投影键剔除迁移保守跳过与 StrategyYaml 冲突的 allocation/notes/markets） |
 | E2 | T1 backend 接口化收拢（ACTIVE_BACKEND 仅存 lib/） | D21/§3 | ⏸ 重定界为 H1 后独立提交系列（见 D22）；本轮仅落地 alert-check 增量（随 E3） |
 | E3 | risk_taxonomy.yaml workspace 死路径清理 | D19/§6 | ✅ 已实施（loadPriorityConfig 收敛为 SERVICE_PRIORITY_CONFIG 常量） |
-| E4 | P4b 偏好散读点与 schedulerActivation 废除 | D13 | ⏸ 等全量迁移验证 |
+| E4 | P4b 偏好散读点与 schedulerActivation 废除 | D13 | 🔓 已解锁（2026-08-15 真实数据迁移验证通过，P4a 幂等实证）→ 待执行 |
 | E5 | G22 对话内文件交付修复 | §10.1 | ✅ 已实施（终态：`spreadsheet.create` 走官方 artifact 管线——deliveries/ 落盘 + publish 绑定 turn + assetId 链接资产库，回复挂标准附件卡片；经四轮收敛，中间两轮自创链接方案已撤销，见 D23；门户与正式仓字节对齐） |
 | E6 | G23 trace tool_calls 事件捕获修复 | §8 | ✅ 已实施（Mastra≥1.5x payload 包装形状解包 + toolCalls/toolResults 聚合合并出终态；4 测试证据） |
 | E7 | runtime 进 apps/ 物理迁移 | T5 | ⏸ 低优先 |
-| E8 | workspace 回滚后端拆除 | D21/§4 | ⏸ 真实数据迁移验证 + H1 后 |
+| E8 | workspace 回滚后端拆除 | D21/§4 | 🔓 门已开（2026-08-15 迁移验证 + H1 双门满足）→ 待执行（独立系列） |
 | E9 | G21 巡检可见性 | §6 | ✅ v3 已实施（2026-08-15，两轮用户反馈演进）：专属 `/patrol` 页（PortalSidebar 同构布局）含**规则管理**（新建/编辑/启停/删除/试运行，经 rule_patrol.rules.* connector 命令直连 watch-rules 服务，写操作落审计）、状态卡、运行历史、立即巡检（不推送）。端到端实测 create/list/update/disable/dry-run/delete 全通 |
 | E10 | **开销统计配套（按模型计费）** | D24 | ✅ 已实施（2026-08-15，C1-C4）：[cost-statistics-design.md](./cost-statistics-design.md)——per-model 费率注册表（临时值）、trace 写入时计价、幂等回填（候选历史 11 条已补）、admin 视图服务端化+按模型视图；费率终定后换表即可 |
 | — | **Gate H1 本地最终体验验收** | 长工作包 | ✅ **已通过（2026-08-15）**：用户核验对话/文件/表格卡片交互/自动化任务列表/审计；长工作包完成，下一步为 R1 发布讨论（须用户另行授权） |

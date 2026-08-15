@@ -17,6 +17,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [mastra-workspace-exit-mapping_acceptance_review.md](./mastra-workspace-exit-mapping_acceptance_review.md) | Independent acceptance status: WP0-WP7 evidence, unresolved H1, and release exclusions |
 | [mastra-long-work-package.md](./mastra-long-work-package.md) | Scope, work-package stages, ownership and user gates for the candidate branch |
 | [mastra-real-data-migration-plan.md](./mastra-real-data-migration-plan.md) | Backup-copy-only migration validation; never a production migration command |
+| [mastra-real-data-migration-validation-2026-08-15.md](./mastra-real-data-migration-validation-2026-08-15.md) | Executed real-data migration validation: phases, evidence, findings F1-F3, E4/E8 gate unlock |
 | [mastra-main-sync.md](./mastra-main-sync.md) | Rules for selectively porting `main` behavior without restoring ACP runtime code |
 
 The Mastra candidate is deliberately not a production release: runtime `23656`,
