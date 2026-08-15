@@ -207,6 +207,7 @@ db/         schema + drizzle
 | D21 | 数据层收敛定稿（2026-08-14 议程 6 核对，agent 按最优判断落地）：T1 backend 接口化收拢（28 文件实测，portfolio/watchlist/plans 已示范，验收 = ACTIVE_BACKEND 仅存 lib/）；T2 投影维持单行 + 兄弟键显性契约；T3 表命名不改（迁移成本 > 一致性收益）；T4 已随 D16 消解；T5 挂工程项。**workspace 回滚后端拆除时机：保留至真实数据迁移验证 + H1 验收通过后独立清理（convergence scan 防回潮）**；G23 修为 run-turn 事件捕获、G22/G23 均 H1 前工程项。逐层核对议程 1-8 全部走完，转工程项执行期 |
 | D22 | 工程执行轮记录（2026-08-14）：E1/E3/E5/E6 已实施并各有 commit+测试证据（npm test 460/460）。**E2 全量收隆重定界为 H1 后独立提交系列**——两个 mastra 根解析器（resolveRegisteredMastraProjectRoot 返回 undefined vs resolveProjectStorageRoot 抛错）失败语义不同、各站点 workspace 回退细节各异，H1 前硬推属拿回归风险换可读性；本轮仅随 E3 落地 alert-check 增量。D20 清单执行修正：/investment-state 为 admin 持仓总览（非画像消费）保留；投影键剔除保守跳过与 StrategyYaml 同名的 allocation/notes/markets（来源不可区分，防数据丢失）。G22 落地形态为"工具结果+prompt 双重交付指引"，消息内资产卡片受 artifact 路径白名单限制留 E9 |
 | D23 | **交互复用边界**（2026-08-15 用户裁决，G22 四轮收敛的产物）：重构主战场是 runtime；Portal 交互层是已实现资产**直接复用不重设计**。新 runtime 能力必须优先映射到既有交互契约（artifact 卡片/文件面板/自动化工作区/资产库）；本质需要新交互面才新增 UI 且须显式立项（先例 D15 onboarding）。G22 前两轮在门户端自创链接交付属越界（已撤销、门户恢复与正式仓字节对齐，仅剩 onboarding 增量）；校验手段 `diff -rq` 正式仓 src vs apps/portal/src。**补充（同日）**：架构驱动的交互演进是预期例外——为承接新 runtime 能力（按回合模型选择等）会有受控交互改变，首个在途实例为模型选择器（正式仓 WIP `local/ea43db2`/`4dd6d0d`，model 经 conversation.chat 透传；runtime model-gateway 已就绪），此类改变走"立项→合正式仓→导入候选"路径。落稿 [adr-mastra-runtime-portal-monorepo.md](./adr-mastra-runtime-portal-monorepo.md) 交互复用边界节 |
+| D26 | **E9 v2 与模型选择器位置**（2026-08-15 用户反馈裁决）：① 规则巡检不放自动化任务列表（"太隐晦"）——**新增专属小页面** `/patrol` 专门管巡检，后续再评估归属；② 模型选择器放在**在线状态位置**（chat 顶栏左侧），不放输入框 |
 | D25 | **模型选择器落地路径**（2026-08-15 用户裁决）：D23 的"立项→合正式仓→导入候选"路径对本项**例外**——模型选择器依赖候选 runtime 的按回合模型能力，正式仓主线没有也不需要；**直接在候选分支实现**（参照正式仓 WIP `local/ea43db2`/`4dd6d0d` 的交互与协议形态），正式仓保持不动。D23 边界校验的预期差异清单相应扩为：onboarding + 模型选择器。同日授权：巡检可见性（E9）自主设计落地、队列自主推进、硬缺口再上浮 |
 | D24 | **开销统计重建**（2026-08-15 用户提出，仅记录待规划）：ACP 时代开销统计一直不准；换内核后须重建配套，含按不同模型计费。现状事实：token 用量已准（`usage_source=actual`，thought/缓存读分离），但 `agent_traces.cost_amount/cost_currency` 系统性为 null（网关不回传费用、无计价表），平台 admin 费用视图（`admin/platform-ui/owner/view-cost.ts`）依赖该字段。规划范围（待展开）：按模型计价表 → 从实际 usage 计算费用落 trace → 平台费用视图聚合。挂 E10 |
 
@@ -234,6 +235,6 @@ db/         schema + drizzle
 | E6 | G23 trace tool_calls 事件捕获修复 | §8 | ✅ 已实施（Mastra≥1.5x payload 包装形状解包 + toolCalls/toolResults 聚合合并出终态；4 测试证据） |
 | E7 | runtime 进 apps/ 物理迁移 | T5 | ⏸ 低优先 |
 | E8 | workspace 回滚后端拆除 | D21/§4 | ⏸ 真实数据迁移验证 + H1 后 |
-| E9 | G21 巡检可见性 | §6 | ✅ 已实施（2026-08-15）：规则巡检以只读合成任务并入自动化面（`__rule_alert_check__`，无规则时不出现；运行历史映射 scheduled_task_runs；生命周期操作按设计拒绝）；复盘/盯盘 typed 任务本就可见——任务列表即调度可见面，零 Portal 改动。D23 例外由 D25 授权 |
+| E9 | G21 巡检可见性 | §6 | ✅ v2 已实施（2026-08-15，按用户反馈从合成任务改为**专属页面**）：新 `/patrol` 规则巡检面板（状态卡/运行历史/立即巡检-不推送）+ 侧边栏入口；runtime 新增 rule_patrol.status/run_now connector 命令（`src/services/rule-patrol.ts`）。复盘/盯盘 typed 任务仍在自动化面 |
 | E10 | **开销统计配套（按模型计费）** | D24 | ✅ 已实施（2026-08-15，C1-C4）：[cost-statistics-design.md](./cost-statistics-design.md)——per-model 费率注册表（临时值）、trace 写入时计价、幂等回填（候选历史 11 条已补）、admin 视图服务端化+按模型视图；费率终定后换表即可 |
 | — | **Gate H1 本地最终体验验收** | 长工作包 | ✅ **已通过（2026-08-15）**：用户核验对话/文件/表格卡片交互/自动化任务列表/审计；长工作包完成，下一步为 R1 发布讨论（须用户另行授权） |

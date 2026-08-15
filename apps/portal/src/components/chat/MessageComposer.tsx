@@ -6,7 +6,6 @@ import { ArrowUp, Paperclip, Square } from "lucide-react";
 import type { PortalAttachmentPayload } from "./api";
 import type { AttachmentView } from "./types";
 import { DOCUMENT_MIME, IMAGE_MIME, canonicalAttachmentMime, isCsvFile } from "@/lib/attachment-policy";
-import { MODEL_OPTIONS } from "@/lib/models";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
@@ -19,10 +18,7 @@ interface MessageComposerProps {
   disabledReason?: string;
   processing?: boolean;
   stopping?: boolean;
-  /** 按回合模型选择（D25）：空字符串 = 服务端默认模型。 */
-  selectedModel: string;
-  onModelChange: (model: string) => void;
-  onSend: (text: string, attachments: ComposerAttachment[], model?: string) => Promise<void>;
+  onSend: (text: string, attachments: ComposerAttachment[]) => Promise<void>;
   onCancel?: () => Promise<void>;
 }
 
@@ -36,8 +32,6 @@ export function MessageComposer({
   disabledReason,
   processing = false,
   stopping = false,
-  selectedModel,
-  onModelChange,
   onSend,
   onCancel
 }: MessageComposerProps) {
@@ -89,7 +83,7 @@ export function MessageComposer({
     setAttachments([]);
     setSending(true);
     try {
-      await onSend(text, outgoing, selectedModel || undefined);
+      await onSend(text, outgoing);
     } finally {
       outgoing.forEach((item) => {
         if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
@@ -208,18 +202,6 @@ export function MessageComposer({
           >
             <Paperclip size={18} strokeWidth={1.8} aria-hidden="true" />
           </button>
-          <select
-            className="h-9 shrink-0 cursor-pointer rounded-md border border-black/10 bg-[#f7f7f8] px-2 text-xs text-[#5f6368] outline-none transition hover:bg-black/5 focus:border-[#7a8d83] disabled:opacity-50"
-            value={selectedModel}
-            onChange={(e) => onModelChange(e.target.value)}
-            disabled={inputDisabled || sending}
-            aria-label="选择模型"
-            title="选择模型"
-          >
-            {MODEL_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
           <div className="flex-1">
           <textarea
             ref={textareaRef}

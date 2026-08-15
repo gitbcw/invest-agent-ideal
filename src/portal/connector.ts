@@ -4,6 +4,7 @@ import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { cancelConversationChat, chatViaConversationLog, ConversationScopeError, getConversation, listConversations } from "../services/conversation-log.js";
+import { getRulePatrolStatus, listRulePatrolRuns, runRulePatrolNow } from "../services/rule-patrol.js";
 import { listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { AttachmentStoreError } from "../lib/attachment-store.js";
 import { WorkspaceReportAssetError, readWorkspaceReportAsset } from "../services/workspace-report-assets.js";
@@ -95,6 +96,8 @@ const TYPES = {
   AUTOMATION_BATCH_ACTION: "automation.batch_action",
   AUTOMATION_RUN_NOW: "automation.run_now",
   AUTOMATION_RUNS_LIST: "automation.runs.list",
+  RULE_PATROL_STATUS: "rule_patrol.status",
+  RULE_PATROL_RUN_NOW: "rule_patrol.run_now",
   AUTOMATION_RUN_GET: "automation.run.get",
   AUTOMATION_ASSET_GET: "automation.asset.get",
   AUTOMATION_CONTINUE_IN_CHAT: "automation.continue_in_chat",
@@ -405,6 +408,15 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         ...commandScope,
         conversationId,
       })));
+    }
+    case TYPES.RULE_PATROL_STATUS: {
+      const patrolScope = automationScope(scope);
+      const status = getRulePatrolStatus(patrolScope);
+      return finish(ok(message.type, message.requestId, { status, runs: listRulePatrolRuns(patrolScope, 20) }));
+    }
+    case TYPES.RULE_PATROL_RUN_NOW: {
+      const patrolScope = automationScope(scope);
+      return finish(ok(message.type, message.requestId, await runRulePatrolNow(patrolScope)));
     }
     case TYPES.AUTOMATION_LIST:
       return finish(ok(message.type, message.requestId, await listAutomationTaskPage(automationScope(scope), normalizeAutomationListQuery(message.payload))));

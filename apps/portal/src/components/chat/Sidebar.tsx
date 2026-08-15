@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { AlarmClock, Check, ChevronDown, ChevronRight, Files, Folder, FolderPlus, MessageCircle, PanelLeftClose, PanelLeftOpen, Pencil, Search, SquarePen, Tag, Trash2, X } from "lucide-react";
+import { AlarmClock, Check, Radar, ChevronDown, ChevronRight, Files, Folder, FolderPlus, MessageCircle, PanelLeftClose, PanelLeftOpen, Pencil, Search, SquarePen, Tag, Trash2, X } from "lucide-react";
 
 import type { ConversationListItem } from "./types";
 import { UserMenu } from "./UserMenu";
@@ -32,8 +32,9 @@ interface SidebarProps {
   onDropConversation: (conversation: ConversationListItem, labelId: string | null) => void;
   onDropConversationOrder: (conversation: ConversationListItem, target: ConversationListItem) => void;
   username: string;
-  activeDestination?: "automations" | "assets";
+  activeDestination?: "automations" | "assets" | "patrol";
   onOpenAutomations: () => void;
+  onOpenPatrol: () => void;
   onOpenAssets: () => void;
   onOpenManual: () => void;
   onChangePassword: () => void;
@@ -63,6 +64,7 @@ export function Sidebar({
   username,
   activeDestination,
   onOpenAutomations,
+  onOpenPatrol,
   onOpenAssets,
   onOpenManual,
   onChangePassword,
@@ -170,6 +172,15 @@ export function Sidebar({
                   onClick={onOpenAutomations}
                 >
                   <AlarmClock size={17} strokeWidth={1.8} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className={`flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-black/5 hover:text-[#202123] ${activeDestination === "patrol" ? "bg-white text-[#365b40] shadow-sm" : "text-[#5f6368]"}`}
+                  aria-label="规则巡检"
+                  title="规则巡检"
+                  onClick={onOpenPatrol}
+                >
+                  <Radar size={17} strokeWidth={1.8} aria-hidden="true" />
                 </button>
                 <button type="button" className={`flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-black/5 hover:text-[#202123] ${activeDestination === "assets" ? "bg-white text-[#365b40] shadow-sm" : "text-[#5f6368]"}`} aria-label="我的文件" title="我的文件" onClick={onOpenAssets}>
                   <Files size={17} strokeWidth={1.8} aria-hidden="true" />

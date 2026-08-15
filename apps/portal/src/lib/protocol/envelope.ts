@@ -158,6 +158,8 @@ export const PORTAL_TYPES = {
   AUTOMATION_BATCH_ACTION: "automation.batch_action",
   AUTOMATION_RUN_NOW: "automation.run_now",
   AUTOMATION_RUNS_LIST: "automation.runs.list",
+  RULE_PATROL_STATUS: "rule_patrol.status",
+  RULE_PATROL_RUN_NOW: "rule_patrol.run_now",
   AUTOMATION_RUN_GET: "automation.run.get",
   AUTOMATION_ASSET_GET: "automation.asset.get",
   AUTOMATION_CONTINUE_IN_CHAT: "automation.continue_in_chat",

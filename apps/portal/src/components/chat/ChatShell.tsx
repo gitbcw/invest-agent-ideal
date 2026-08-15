@@ -48,6 +48,7 @@ import {
 } from "./conversation-navigation";
 import { toView, type ArtifactCardView, type ChatMessageView, type ConversationListItem } from "./types";
 import type { WorkspaceFileItem } from "@/lib/protocol";
+import { MODEL_OPTIONS } from "@/lib/models";
 
 interface ChatShellProps {
   initialUser: {
@@ -537,7 +538,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
 
   // ---- 发送消息 ----
   const handleSend = useCallback(
-    async (text: string, attachments: ComposerAttachment[] = [], model?: string) => {
+    async (text: string, attachments: ComposerAttachment[] = []) => {
       const offline = status && !status.online;
       if (offline) return;
       const conversationId = activeId ?? `web_${nanoid(16)}`;
@@ -603,7 +604,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
           {
             text,
             attachments: attachments.map(({ id: _id, previewUrl: _previewUrl, ...item }) => item),
-            model
+            model: selectedModel || undefined
           },
           localUserMessage.messageId
         );
@@ -712,7 +713,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         }));
       }
     },
-    [activeId, setConversationProcessing, status, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]
+    [activeId, selectedModel, setConversationProcessing, status, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]
   );
 
   const handleCancelConversation = useCallback(async () => {
@@ -892,6 +893,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         onDropConversationOrder={(conversation, target) => void handleDropConversationOrder(conversation, target)}
         username={initialUser.username}
         onOpenAutomations={() => window.location.assign("/automations")}
+        onOpenPatrol={() => window.location.assign("/patrol")}
         onOpenAssets={() => window.location.assign("/assets")}
         onOpenManual={() => window.location.assign("/manual")}
         onChangePassword={() => setChangePasswordOpen(true)}
@@ -912,6 +914,18 @@ export function ChatShell({ initialUser }: ChatShellProps) {
               {status.online ? "在线" : "离线"}
             </span>
           ) : null}
+          <select
+            className="ml-2 h-8 shrink-0 cursor-pointer rounded-md border border-black/10 bg-[#f7f7f8] px-2 text-xs text-[#5f6368] outline-none transition hover:bg-black/5 focus:border-[#7a8d83] disabled:opacity-50"
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            disabled={offline}
+            aria-label="选择模型"
+            title="选择模型（当前会话发送时生效）"
+          >
+            {MODEL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
         </div>
           <div className="flex items-center gap-2">
             {capabilities.workspaceFileList ? (
@@ -987,8 +1001,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
             disabledReason={disabledReason ?? (waiting ? "正在等待助手回复..." : undefined)}
             processing={waiting}
             stopping={Boolean(activeId && stoppingConversations[activeId])}
-            selectedModel={selectedModel}
-            onModelChange={setSelectedModel}
             onSend={handleSend}
             onCancel={handleCancelConversation}
           />

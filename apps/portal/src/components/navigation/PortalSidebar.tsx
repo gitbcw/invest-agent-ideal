@@ -21,7 +21,7 @@ import {
   conversationNavigationUrl
 } from "@/components/chat/conversation-navigation";
 
-type PortalSection = "automations" | "assets";
+type PortalSection = "automations" | "assets" | "patrol";
 
 // Reuse the chat page's actual sidebar, including its conversation list and
 // account actions, rather than maintaining a second navigation implementation.
@@ -128,6 +128,7 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
     }}
     username={username}
     onOpenAutomations={() => window.location.assign("/automations")}
+    onOpenPatrol={() => window.location.assign("/patrol")}
     onOpenAssets={() => window.location.assign("/assets")}
     onOpenManual={() => window.location.assign("/manual")}
     onChangePassword={() => window.location.assign("/change-password")}

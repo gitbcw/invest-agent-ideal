@@ -1122,117 +1122,6 @@ export async function listAutomationTasks(input: AutomationScope, query: Automat
   return (await listAutomationTaskPage(input, query)).items;
 }
 
-/**
- * E9 / G21 rule-patrol visibility: rule inspection is deliberately NOT an
- * automation task (D19 — event-driven evaluation, not rhythmic work), but its
- * execution leaves rows in scheduled_task_runs. Surface it through the
- * existing automation surface as one synthetic, read-only task entry so the
- * Portal task list is the single schedule-visibility pane. Lifecycle actions
- * on the synthetic id fail with AUTOMATION_TASK_NOT_FOUND by design.
- */
-export const RULE_ALERT_CHECK_TASK_ID = "__rule_alert_check__";
-
-function scopeHasWatchRules(scope: AutomationScope): boolean {
-  const row = sqlite.prepare("SELECT 1 AS one FROM alert_rules WHERE user_id = ? AND instance_id = ? LIMIT 1").get(scope.userId, scope.instanceId);
-  return Boolean(row);
-}
-
-function ruleAlertCheckLatestRun(scope: AutomationScope): AutomationTaskSummary["latestRun"] {
-  const row = sqlite.prepare(`
-    SELECT task_key, status, finished_at AS finishedAt, error_message AS errorMessage, attempts AS attempt
-    FROM scheduled_task_runs
-    WHERE user_id = ? AND project_id = ? AND instance_id = ? AND task_type = 'rule-alert-check'
-    ORDER BY created_at DESC, task_key DESC LIMIT 1
-  `).get(scope.userId, scope.projectId, scope.instanceId) as { task_key: string; status: string; finishedAt: string | null; errorMessage: string | null; attempt: number } | undefined;
-  if (!row) return undefined;
-  return {
-    runId: row.task_key,
-    status: row.status === "claimed" ? "running" : row.status === "success" ? "succeeded" : row.status === "error" ? "failed" : "skipped",
-    origin: "scheduled",
-    finishedAt: row.finishedAt,
-    resultSummary: row.status === "skipped" ? "无命中" : row.status === "success" ? "命中并推送" : null,
-    errorMessage: row.errorMessage,
-    attempt: row.attempt,
-  };
-}
-
-function ruleAlertCheckSyntheticTask(scope: AutomationScope): AutomationTaskSummary {
-  const now = nowIso();
-  return {
-    ...scope,
-    taskId: RULE_ALERT_CHECK_TASK_ID,
-    taskType: "rule-alert-check",
-    status: "active",
-    currentRevision: 1,
-    currentRevisionId: null,
-    nextRunAt: null,
-    consecutiveFailures: 0,
-    createdAt: now,
-    updatedAt: now,
-    revision: {
-      ...scope,
-      revisionId: `${RULE_ALERT_CHECK_TASK_ID}:r1`,
-      taskId: RULE_ALERT_CHECK_TASK_ID,
-      revision: 1,
-      name: "规则巡检",
-      description: "交易时段按巡检间隔评估 watch_rules 明确规则并推送命中（系统调度，非自动化任务；条目只读）",
-      instruction: "",
-      schedule: { frequency: "trading_days", time: "", timezone: "Asia/Shanghai" },
-      inputs: [],
-      output: { mode: "none" },
-      delivery: { mode: "none" },
-      sourceAssetId: null,
-      workingAssetId: null,
-      createdAt: now,
-    },
-    sourceAsset: null,
-    workingAsset: null,
-    latestRun: ruleAlertCheckLatestRun(scope),
-  };
-}
-
-function ruleAlertCheckRuns(scope: AutomationScope, limit: number, cursor: { createdAt: string; attempt: number; runId: string } | undefined): { items: AutomationRunSummary[]; nextCursor?: string } {
-  const where = ["user_id = ?", "project_id = ?", "instance_id = ?", "task_type = 'rule-alert-check'"];
-  const params: unknown[] = [scope.userId, scope.projectId, scope.instanceId];
-  if (cursor) {
-    where.push("(created_at < ? OR (created_at = ? AND task_key < ?))");
-    params.push(cursor.createdAt, cursor.createdAt, cursor.runId);
-  }
-  const rows = sqlite.prepare(`
-    SELECT task_key, status, scheduled_for AS scheduledFor, claimed_at AS claimedAt, finished_at AS finishedAt,
-           error_message AS errorMessage, push_job_id AS pushJobId, attempts AS attempt, created_at AS createdAt, updated_at AS updatedAt
-    FROM scheduled_task_runs
-    WHERE ${where.join(" AND ")}
-    ORDER BY created_at DESC, task_key DESC
-    LIMIT ?
-  `).all(...params, limit + 1) as Array<{ task_key: string; status: string; scheduledFor: string; claimedAt: string; finishedAt: string | null; errorMessage: string | null; pushJobId: string | null; attempt: number; createdAt: string; updatedAt: string }>;
-  const mapStatus = (status: string): AutomationTaskRunStatus => (status === "claimed" ? "running" : status === "success" ? "succeeded" : status === "error" ? "failed" : "skipped");
-  const items = rows.slice(0, limit).map((row) => ({
-    ...scope,
-    runId: row.task_key,
-    taskId: RULE_ALERT_CHECK_TASK_ID,
-    revisionId: `${RULE_ALERT_CHECK_TASK_ID}:r1`,
-    origin: "scheduled" as const,
-    idempotencyKey: row.task_key,
-    attempt: row.attempt,
-    revision: 1,
-    scheduledFor: row.scheduledFor,
-    status: mapStatus(row.status),
-    claimedAt: row.claimedAt,
-    startedAt: row.claimedAt,
-    finishedAt: row.finishedAt,
-    deliveryStatus: row.pushJobId ? ("sent" as const) : ("not_requested" as const),
-    pushJobId: row.pushJobId,
-    resultSummary: row.status === "skipped" ? "无命中" : row.status === "success" ? "命中并推送" : null,
-    errorMessage: row.errorMessage,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    taskName: "规则巡检",
-  }));
-  const last = items.at(-1);
-  return { items, ...(rows.length > limit && last ? { nextCursor: encodeRunCursor(last as AutomationTaskRunRecord) } : {}) };
-}
-
 export async function listAutomationTaskPage(input: AutomationScope, query: AutomationListQuery = {}): Promise<{ items: AutomationTaskSummary[]; nextCursor?: string }> {
   const scope = assertAutomationScope(input);
   const rows = sqlite.prepare(`
@@ -1247,9 +1136,8 @@ export async function listAutomationTaskPage(input: AutomationScope, query: Auto
   const deliverySet = query.deliveryModes?.length ? new Set(query.deliveryModes) : null;
   const outputSet = query.outputModes?.length ? new Set(query.outputModes) : null;
   const latestRuns = latestRunsByTask(scope);
-  const typedTasks = rows.map((row) => taskRecordFromRow(row, scope));
-  if (scopeHasWatchRules(scope)) typedTasks.push(ruleAlertCheckSyntheticTask(scope));
-  const all = typedTasks
+  const all = rows
+    .map((row) => taskRecordFromRow(row, scope))
     .filter((task) => statuses.includes(task.status))
     .filter((task) => !search || `${task.revision.name}\n${task.revision.description ?? ""}`.toLocaleLowerCase().includes(search))
     .filter((task) => !frequencySet || frequencySet.has(task.revision.schedule.frequency))
@@ -1269,9 +1157,6 @@ export async function listAutomationTaskPage(input: AutomationScope, query: Auto
 
 export async function getAutomationTask(input: AutomationTaskLookup): Promise<AutomationTaskRecord | null> {
   const scope = assertAutomationScope(input);
-  if (input.taskId === RULE_ALERT_CHECK_TASK_ID) {
-    return scopeHasWatchRules(scope) ? ruleAlertCheckSyntheticTask(scope) : null;
-  }
   const taskId = normalizeTaskId(input.taskId);
   const row = readTaskRow(taskId);
   if (!row) return null;
@@ -1907,10 +1792,6 @@ export async function listAutomationTaskRuns(input: AutomationTaskRunListInput):
 
 export async function listAutomationTaskRunsPage(input: AutomationTaskRunListInput): Promise<{ items: AutomationRunSummary[]; nextCursor?: string }> {
   const scope = assertAutomationScope(input);
-  if (input.taskId === RULE_ALERT_CHECK_TASK_ID) {
-    if (!scopeHasWatchRules(scope)) return { items: [] };
-    return ruleAlertCheckRuns(scope, normalizeListLimit(input.limit), decodeRunCursor(input.cursor));
-  }
   const where = ["automation_task_runs.user_id = ?", "automation_task_runs.project_id = ?", "automation_task_runs.instance_id = ?"];
   const params: unknown[] = [scope.userId, scope.projectId, scope.instanceId];
   if (input.taskId) {
