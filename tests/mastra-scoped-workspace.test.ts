@@ -124,7 +124,9 @@ test("scoped Workspace has containment, private skills, no sandbox, and an expli
     assert.equal(tools.enabled, false);
     assert.equal(tools.mastra_workspace_delete.enabled, false);
     assert.equal(tools.mastra_workspace_execute_command.enabled, false);
-    assert.equal(tools.mastra_workspace_write_file.requireApproval, true);
+    // Ordinary writes run without tool-level approval (audit + read-before-
+    // write remain); destructive tools stay disabled. See workspace-registry.
+    assert.equal(tools.mastra_workspace_write_file.requireApproval, false);
     assert.equal(tools.mastra_workspace_write_file.requireReadBeforeWrite, true);
   } finally {
     await rm(root, { recursive: true, force: true });

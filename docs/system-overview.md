@@ -6,7 +6,7 @@ This page is the 10-minute map for Invest Agent. It explains the current runtime
 
 ## What This System Is
 
-Invest Agent is a WeChat-first AI investment assistant. In the current product semantics, one user maps to one investment assistant and one workspace. `instanceId` still exists in code and SQLite as an internal compatibility and isolation key, but the user-facing product should not present a multi-instance selector.
+Invest Agent is a web-portal-first AI investment assistant; WeChat serves as the push channel and a lightweight conversation channel. In the current product semantics, one user maps to one investment assistant and one workspace. `instanceId` still exists in code and SQLite as an internal compatibility and isolation key, but the user-facing product should not present a multi-instance selector.
 
 The current main path is intentionally simple:
 

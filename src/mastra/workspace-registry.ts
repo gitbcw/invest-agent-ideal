@@ -210,9 +210,14 @@ export function workspaceToolPolicy(scope: MastraWorkspaceScope): Record<string,
     mastra_workspace_list_files: { enabled: true },
     mastra_workspace_grep: { enabled: true },
     mastra_workspace_search: { enabled: true },
-    mastra_workspace_write_file: { enabled: true, requireApproval: true, requireReadBeforeWrite: true },
-    mastra_workspace_edit_file: { enabled: true, requireApproval: true, requireReadBeforeWrite: true },
-    mastra_workspace_mkdir: { enabled: true, requireApproval: true },
+    // Per docs/mastra-workspace-exit-mapping.md §8.1: ordinary writes are
+    // audited (hooks below) + read-before-write; conversational confirmation
+    // is the product-level gate for user assets. Tool-level approval has no
+    // interactive surface in the runtime and would suspend writes forever
+    // while the model still claims success. Destructive tools stay disabled.
+    mastra_workspace_write_file: { enabled: true, requireApproval: false, requireReadBeforeWrite: true },
+    mastra_workspace_edit_file: { enabled: true, requireApproval: false, requireReadBeforeWrite: true },
+    mastra_workspace_mkdir: { enabled: true, requireApproval: false },
     mastra_workspace_delete: { enabled: false },
     mastra_workspace_ast_edit: { enabled: false },
     mastra_workspace_file_stat: { enabled: false },

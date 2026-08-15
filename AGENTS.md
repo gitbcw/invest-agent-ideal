@@ -1,6 +1,6 @@
 # Invest Agent 开发 Agent 入口
 
-Invest Agent 是一个微信优先的投资决策助手。本文件只保留开发 Agent 必须始终遵守的项目红线；当前文档索引见 [docs/README.md](docs/README.md)，需要项目事实或领域契约时再按索引查找。
+Invest Agent 是一个网页端（Portal）优先的投资决策助手，微信作为推送渠道与轻量沟通渠道。本文件只保留开发 Agent 必须始终遵守的项目红线；当前文档索引见 [docs/README.md](docs/README.md)，需要项目事实或领域契约时再按索引查找。
 
 ## 全局红线
 
