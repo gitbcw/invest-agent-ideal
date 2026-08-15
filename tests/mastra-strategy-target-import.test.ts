@@ -15,7 +15,7 @@ function report(checksum = "source-checksum", style = "swing") {
   return {
     mode: "dry_run",
     source: { workspaceId: "alice", userId: "alice", instanceId: "invest-agent-alice", sourcePath: "config/strategy.yaml", sha256: checksum },
-    mapping: { serviceMigration: { fields: { style, markets: [], sourceRevision: "2026-08-02" }, idempotencyKey: `strategy-profile:${style}` } },
+    mapping: { serviceMigration: { fields: { style, notes: style, markets: [], sourceRevision: "2026-08-02" }, idempotencyKey: `strategy-profile:${style}` } },
   };
 }
 
