@@ -431,17 +431,24 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
     }
     case TYPES.RULE_PATROL_RULES_CREATE: {
       const patrolScope = automationScope(scope);
+      const ruleType: "price_cross" | "ma_cross" = message.payload?.ruleType === "ma_cross" ? "ma_cross" : "price_cross";
+      const params: Record<string, unknown> = ruleType === "ma_cross"
+        ? {
+          period: Math.trunc(Number(message.payload?.period)),
+          direction: message.payload?.direction === "break_below" ? "break_below" : "break_above",
+        }
+        : {
+          operator: message.payload?.operator === "<=" ? "<=" : ">=",
+          value: Number(message.payload?.value),
+        };
       const input = {
         userId: patrolScope.userId,
         instanceId: patrolScope.instanceId,
         stockCode: String(message.payload?.stockCode || "").trim(),
         stockName: String(message.payload?.stockName || "").trim() || undefined,
-        ruleType: "price_cross" as const,
+        ruleType,
         targetScope: "manual" as const,
-        params: {
-          operator: message.payload?.operator === "<=" ? "<=" : ">=",
-          value: Number(message.payload?.value),
-        },
+        params,
         notification: {
           priority: message.payload?.priority === "P0" || message.payload?.priority === "P1" ? message.payload.priority : "P2",
           push: true,
@@ -458,8 +465,8 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         operation: "rule_patrol.rules.create",
         resourceType: "watch_rule",
         resourceId: String(rule.id),
-        requestBody: { stockCode: input.stockCode, operator: input.params.operator, value: input.params.value },
-        resultSummary: `portal patrol page created price_cross rule for ${input.stockCode}`,
+        requestBody: { stockCode: input.stockCode, ruleType: input.ruleType, params: input.params },
+        resultSummary: `portal patrol page created ${input.ruleType} rule for ${input.stockCode}`,
         status: "success",
       }).catch(() => undefined);
       return finish(ok(message.type, message.requestId, { rule }));
@@ -472,6 +479,12 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       if (typeof message.payload?.stockName === "string" && message.payload.stockName.trim()) update.stockName = message.payload.stockName.trim();
       if (message.payload?.operator === ">=" || message.payload?.operator === "<=") {
         update.params = { operator: message.payload.operator, value: Number(message.payload?.value) };
+      }
+      if (message.payload?.period !== undefined || message.payload?.direction !== undefined) {
+        update.params = {
+          period: Math.trunc(Number(message.payload?.period)),
+          direction: message.payload?.direction === "break_below" ? "break_below" : "break_above",
+        };
       }
       if (message.payload?.enabled === true || message.payload?.enabled === false) update.enabled = message.payload.enabled;
       if (message.payload?.priority === "P0" || message.payload?.priority === "P1" || message.payload?.priority === "P2") {

@@ -28,7 +28,8 @@ type PatrolRule = {
   id: number;
   stockCode: string;
   stockName: string;
-  params: { operator?: string; value?: number } & Record<string, unknown>;
+  ruleType?: "price_cross" | "ma_cross";
+  params: { operator?: string; value?: number; period?: number; direction?: string } & Record<string, unknown>;
   notification?: { priority?: string } & Record<string, unknown>;
   enabled: boolean;
   createdAt?: string;
@@ -46,9 +47,22 @@ type RunNowResult = {
   error?: string;
 };
 
-type RuleFormState = { stockCode: string; stockName: string; operator: ">=" | "<="; value: string; priority: "P0" | "P1" | "P2" };
+type RuleFormState = {
+  stockCode: string; stockName: string; ruleType: "price_cross" | "ma_cross";
+  operator: ">=" | "<="; value: string; period: string; direction: "break_above" | "break_below";
+  priority: "P0" | "P1" | "P2";
+};
 
-const EMPTY_FORM: RuleFormState = { stockCode: "", stockName: "", operator: "<=", value: "", priority: "P2" };
+const EMPTY_FORM: RuleFormState = { stockCode: "", stockName: "", ruleType: "price_cross", operator: "<=", value: "", period: "25", direction: "break_below", priority: "P2" };
+
+function describeRule(rule: PatrolRule): string {
+  if (rule.ruleType === "ma_cross") {
+    const period = Number(rule.params.period ?? 25);
+    const direction = rule.params.direction === "break_above" ? "上穿" : "下破";
+    return `${direction} ${period} 日均线`;
+  }
+  return `${rule.params.operator === ">=" ? "上穿 ≥" : "下破 ≤"} ${rule.params.value}`;
+}
 
 const STATUS_LABEL: Record<PatrolRun["status"], string> = { running: "进行中", succeeded: "命中并推送", failed: "失败", skipped: "无命中" };
 const STATUS_STYLE: Record<PatrolRun["status"], string> = {
@@ -127,8 +141,11 @@ export function PatrolShell() {
     setForm({
       stockCode: rule.stockCode,
       stockName: rule.stockName,
+      ruleType: rule.ruleType === "ma_cross" ? "ma_cross" : "price_cross",
       operator: rule.params.operator === ">=" ? ">=" : "<=",
       value: String(rule.params.value ?? ""),
+      period: String(rule.params.period ?? 25),
+      direction: rule.params.direction === "break_above" ? "break_above" : "break_below",
       priority: rule.notification?.priority === "P0" || rule.notification?.priority === "P1" ? rule.notification.priority : "P2",
     });
     setFormError(null);
@@ -138,22 +155,29 @@ export function PatrolShell() {
   const submitRule = useCallback(async () => {
     setFormError(null);
     const value = Number(form.value);
+    const period = Math.trunc(Number(form.period));
     if (!/^\d{6}$/.test(form.stockCode.trim())) { setFormError("股票代码必须是 6 位数字（如 600519）"); return; }
     if (!form.stockName.trim()) { setFormError("请填写股票名称"); return; }
-    if (!Number.isFinite(value) || value <= 0) { setFormError("阈值必须是正数"); return; }
+    if (form.ruleType === "ma_cross" && (!Number.isInteger(period) || period < 2 || period > 250)) { setFormError("均线周期必须是 2 到 250 之间的整数"); return; }
+    if (form.ruleType === "price_cross" && (!Number.isFinite(value) || value <= 0)) { setFormError("阈值必须是正数"); return; }
     setSaving(true);
     try {
+      const base = { stockCode: form.stockCode.trim(), stockName: form.stockName.trim(), priority: form.priority };
+      const typed =
+        form.ruleType === "ma_cross"
+          ? { ruleType: "ma_cross", period, direction: form.direction }
+          : { ruleType: "price_cross", operator: form.operator, value };
       if (editingId === null) {
         await patrolFetch("/api/patrol/rules", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...form, stockCode: form.stockCode.trim(), stockName: form.stockName.trim(), value }),
+          body: JSON.stringify({ ...base, ...typed }),
         });
       } else {
         await patrolFetch(`/api/patrol/rules/${editingId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stockName: form.stockName.trim(), operator: form.operator, value, priority: form.priority }),
+          body: JSON.stringify({ ...base, ...typed }),
         });
       }
       setFormOpen(false);
@@ -309,26 +333,66 @@ export function PatrolShell() {
                   />
                 </label>
                 <label className="text-xs text-[#6f7d73]">
-                  触发条件
+                  规则类型
                   <select
-                    value={form.operator}
-                    onChange={(e) => setForm({ ...form, operator: e.target.value as RuleFormState["operator"] })}
-                    className="mt-1 w-full rounded-md border border-[#c8cfca] bg-white px-2 py-1.5 text-sm text-[#22301f] outline-none focus:border-[#52705f]"
+                    value={form.ruleType}
+                    onChange={(e) => setForm({ ...form, ruleType: e.target.value as RuleFormState["ruleType"] })}
+                    disabled={editingId !== null}
+                    className="mt-1 w-full rounded-md border border-[#c8cfca] bg-white px-2 py-1.5 text-sm text-[#22301f] outline-none focus:border-[#52705f] disabled:bg-[#eef2ee] disabled:text-[#9aa39c]"
                   >
-                    <option value={"<="}>下破 ≤（跌到价提醒）</option>
-                    <option value={">="}>上穿 ≥（涨到价提醒）</option>
+                    <option value="price_cross">到价提醒（价格阈值）</option>
+                    <option value="ma_cross">均线突破/跌破</option>
                   </select>
                 </label>
-                <label className="text-xs text-[#6f7d73]">
-                  阈值（元）
-                  <input
-                    value={form.value}
-                    onChange={(e) => setForm({ ...form, value: e.target.value })}
-                    placeholder="1600"
-                    inputMode="decimal"
-                    className="mt-1 w-full rounded-md border border-[#c8cfca] bg-white px-2 py-1.5 text-sm text-[#22301f] outline-none focus:border-[#52705f]"
-                  />
-                </label>
+                {form.ruleType === "price_cross" ? (
+                  <>
+                    <label className="text-xs text-[#6f7d73]">
+                      触发条件
+                      <select
+                        value={form.operator}
+                        onChange={(e) => setForm({ ...form, operator: e.target.value as RuleFormState["operator"] })}
+                        className="mt-1 w-full rounded-md border border-[#c8cfca] bg-white px-2 py-1.5 text-sm text-[#22301f] outline-none focus:border-[#52705f]"
+                      >
+                        <option value={"<="}>下破 ≤（跌到价提醒）</option>
+                        <option value={">="}>上穿 ≥（涨到价提醒）</option>
+                      </select>
+                    </label>
+                    <label className="text-xs text-[#6f7d73]">
+                      阈值（元）
+                      <input
+                        value={form.value}
+                        onChange={(e) => setForm({ ...form, value: e.target.value })}
+                        placeholder="1600"
+                        inputMode="decimal"
+                        className="mt-1 w-full rounded-md border border-[#c8cfca] bg-white px-2 py-1.5 text-sm text-[#22301f] outline-none focus:border-[#52705f]"
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    <label className="text-xs text-[#6f7d73]">
+                      方向
+                      <select
+                        value={form.direction}
+                        onChange={(e) => setForm({ ...form, direction: e.target.value as RuleFormState["direction"] })}
+                        className="mt-1 w-full rounded-md border border-[#c8cfca] bg-white px-2 py-1.5 text-sm text-[#22301f] outline-none focus:border-[#52705f]"
+                      >
+                        <option value="break_below">下破均线（跌破提醒）</option>
+                        <option value="break_above">上穿均线（突破提醒）</option>
+                      </select>
+                    </label>
+                    <label className="text-xs text-[#6f7d73]">
+                      均线周期（日）
+                      <input
+                        value={form.period}
+                        onChange={(e) => setForm({ ...form, period: e.target.value })}
+                        placeholder="25"
+                        inputMode="numeric"
+                        className="mt-1 w-full rounded-md border border-[#c8cfca] bg-white px-2 py-1.5 text-sm text-[#22301f] outline-none focus:border-[#52705f]"
+                      />
+                    </label>
+                  </>
+                )}
                 <label className="text-xs text-[#6f7d73]">
                   提醒级别
                   <select
@@ -376,7 +440,7 @@ export function PatrolShell() {
                         <span className="font-medium">{rule.stockName}</span>
                         <span className="ml-1 text-xs text-[#6f7d73]">{rule.stockCode}</span>
                       </td>
-                      <td className="py-2 pr-3 text-[#22301f]">{rule.params.operator === ">=" ? "上穿 ≥" : "下破 ≤"} {rule.params.value}</td>
+                      <td className="py-2 pr-3 text-[#22301f]">{describeRule(rule)}</td>
                       <td className="py-2 pr-3 text-[#6f7d73]">{PRIORITY_LABEL[rule.notification?.priority ?? "P2"] ?? "一般"}</td>
                       <td className="py-2 pr-3">
                         <button
