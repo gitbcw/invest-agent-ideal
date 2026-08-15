@@ -16,6 +16,8 @@ import { runMastraTurn } from "../mastra/run-turn.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 import { MastraUserPreferenceStore } from "../services/user-preferences.js";
+import { readMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
+import { readMastraTradingStrategies } from "../lib/mastra-strategy-library.js";
 import { sqlite } from "../db/index.js";
 
 async function hasAnyTypedScheduledTask(userContext: UserContext): Promise<boolean> {
@@ -26,6 +28,61 @@ async function hasAnyTypedScheduledTask(userContext: UserContext): Promise<boole
   } catch {
     return false;
   }
+}
+
+/**
+ * R1 feedback (2026-08-15): initialization guidance for the web channel.
+ * A user with no holdings, no watchlist and no strategy pack has not
+ * finished initialization; each NEW conversation must open with
+ * deterministic onboarding guidance instead of silently answering
+ * portfolio-adjacent questions. Later turns stay guided through the
+ * service notice injected into the prompt.
+ */
+async function isInitializationUnfinished(userContext: UserContext): Promise<boolean> {
+  try {
+    const instanceId = userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId);
+    const projectId = userContext.projectId ?? "invest-agent";
+    const store = new MastraUserPreferenceStore(userContext.userId, instanceId, projectId);
+    const state = await store.readOnboardingState();
+    if (state?.completed_at) return false;
+    if (await hasAnyTypedScheduledTask(userContext)) return false;
+    const portfolio = readMastraPortfolioProjection(userContext.userId, instanceId) as
+      | { holdings?: unknown[]; watchlist?: unknown[] }
+      | null;
+    const hasHoldings = Array.isArray(portfolio?.holdings) && portfolio!.holdings!.length > 0;
+    const hasWatchlist = Array.isArray(portfolio?.watchlist) && portfolio!.watchlist!.length > 0;
+    const strategies = readMastraTradingStrategies({ userId: userContext.userId, projectId, instanceId });
+    return !hasHoldings && !hasWatchlist && strategies.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function isConversationOpening(conversationId: string): boolean {
+  // In production the current user message is persisted BEFORE the agent
+  // turn (with a different message id), so an opening turn already counts
+  // one user row: <= 1 means this is the first user turn of the conversation.
+  try {
+    const row = sqlite.prepare(
+      "SELECT COUNT(*) AS n FROM conversation_messages WHERE conversation_id = ? AND role = 'user'",
+    ).get(conversationId) as { n: number };
+    return row.n <= 1;
+  } catch {
+    return false;
+  }
+}
+
+function buildInitializationGuidanceMessage(): string {
+  return [
+    "欢迎！我注意到你的账户还是空白状态——没有持仓、观察仓，也没有配置策略。",
+    "",
+    "为了让后续的分析、复盘和提醒真正围绕你的投资，建议先完成初始化（约 2 分钟），两种方式任选：",
+    "",
+    "1. **Portal 初始化向导**（推荐）：在左侧或顶栏进入「初始化」页面，粘贴持仓文本、选择策略包即可；",
+    "2. **对话内导入**：直接把你的持仓发给我（每行「股票名称 + 6 位代码」，可附成本价），我带你逐步建立持仓、观察仓和策略。",
+    "",
+    "如果你想先随便问问题也可以，随时说「开始导入」我就带你走初始化。",
+  ].join("\n");
 }
 
 const WEIXIN_DIRECT_AGENT_TIMEOUT_MS =
@@ -156,8 +213,22 @@ export function createRuntimeAgent(): RuntimeAgent {
             // Preference read failures must not block the WeChat message path.
           }
         }
+        // Initialization guidance (web): deterministic on conversation open.
+        if (conversationId !== "unknown" && await isInitializationUnfinished(userContext)
+          && isConversationOpening(conversationId)) {
+          return textResponse(buildInitializationGuidanceMessage());
+        }
+        let onboardingNotice = "";
+        if (await isInitializationUnfinished(userContext)) {
+          onboardingNotice = [
+            "",
+            "【服务提示】当前用户尚未完成初始化（无持仓、无观察仓、无策略包）。",
+            "回答用户问题前，先简要引导完成初始化：指路 Portal「初始化」向导，或邀请用户直接在对话中粘贴持仓文本由你带领导入（可用 onboarding.draft 工具）。",
+            "用户明确表示只想提问时，先简短提醒一次初始化入口，再正常回答。",
+          ].join("\n");
+        }
         const promptContext = await buildAgentPromptContext({
-          userText: buildChannelForwardPrompt(text, userContext, message.context?.attachments),
+          userText: buildChannelForwardPrompt(text, userContext, message.context?.attachments) + onboardingNotice,
           userContext,
           includeContextPacket: false,
         });
@@ -334,3 +405,5 @@ export function buildChannelContextInstruction(channel: UserContext["channel"]):
   }
   return null;
 }
+
+export const __test__ = { isInitializationUnfinished, isConversationOpening, buildInitializationGuidanceMessage };
