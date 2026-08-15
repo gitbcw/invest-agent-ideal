@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, Play, Radar } from "lucide-react";
+import { Play, Radar } from "lucide-react";
+import { PortalSidebar } from "@/components/navigation/PortalSidebar";
 
 /**
  * E9 v2 / G21: dedicated rule-patrol page. Rule inspection is a system
@@ -93,14 +93,11 @@ export function PatrolShell() {
   }, [load]);
 
   return (
-    <div className="min-h-screen bg-[#f4f7f4] px-4 py-6 sm:px-8">
+    <div className="flex min-h-screen bg-[#f4f7f4] text-[#263129]">
+      <PortalSidebar active="patrol" />
+      <div className="min-w-0 flex-1 px-4 py-6 sm:px-8">
       <div className="mx-auto max-w-4xl">
-        <Link href="/chat" className="inline-flex items-center gap-1 text-sm text-[#6f7d73] hover:text-[#36543d]">
-          <ArrowLeft size={15} />
-          返回对话
-        </Link>
-
-        <div className="mt-5 rounded-2xl border border-[#e0e7e1] bg-white p-5 shadow-[0_2px_6px_rgba(41,61,45,0.03)] sm:p-8">
+        <div className="rounded-2xl border border-[#e0e7e1] bg-white p-5 shadow-[0_2px_6px_rgba(41,61,45,0.03)] sm:p-8">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2 text-[#527a5d]">
@@ -202,6 +199,7 @@ export function PatrolShell() {
             </div>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
