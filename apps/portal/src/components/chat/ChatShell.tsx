@@ -339,7 +339,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       }));
       return { processing };
     } catch (err) {
-      if (err instanceof PortalApiError && err.code === "NOT_FOUND") {
+      if (err instanceof PortalApiError && (err.code === "NOT_FOUND" || err.code === "FORBIDDEN")) {
         conversationMissing = true;
         setConversationProcessing(conversationId, false);
         setStoppingConversations((current) => {
