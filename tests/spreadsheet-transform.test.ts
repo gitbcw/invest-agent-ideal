@@ -42,8 +42,9 @@ test("spreadsheet.transform applies structured changes to a staged workbook", as
       inputPath: "inputs/1-tracker.xlsx",
       outputPath: "outputs/tracker-v2.xlsx",
       changes: {
+        // 嵌套数组形态（多行塞进一个 appendRows 项）必须展开为多行，而不是压进一个单元格。
         appendRows: [
-          { sheet: "热点", values: ["2026-W33", "储能政策", "宁德时代"] },
+          { sheet: "热点", values: [["2026-W33", "储能政策", "宁德时代"], ["2026-W33", "AI 算力", "中际旭创"]] },
         ],
         setColumnWidths: [{ sheet: "热点", column: 2, width: 24 }],
       },
@@ -57,8 +58,11 @@ test("spreadsheet.transform applies structured changes to a staged workbook", as
       outputBytes.buffer.slice(outputBytes.byteOffset, outputBytes.byteOffset + outputBytes.byteLength) as ArrayBuffer
     );
     const rows = reopened.getWorksheet("热点")!.getSheetValues().filter(Boolean);
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 4, "nested appendRows must expand into one row per record");
     assert.equal(String(rows[2][1]), "2026-W33");
+    assert.equal(String(rows[3][2]), "AI 算力");
+    // 每个单元格必须是标量，不允许整行被压成 JSON 字符串。
+    assert.ok(!String(rows[2][1]).startsWith("["));
 
     // 越界路径必须被拒绝（暂存目录之外不可读写）。
     const escape = await callServiceTool("spreadsheet.transform", {

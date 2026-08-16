@@ -1893,6 +1893,12 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
   const outputAbsolute = resolveInside(outputPath);
   if (outputAbsolute === inputAbsolute) throw new Error("outputPath must differ from inputPath; keep the staged input untouched");
 
+  const SHEET_OPERATION_KEYS = ["createSheets", "renameSheets", "setCells", "appendRows", "setColumnWidths", "setRowHeights", "mergeCells", "freezePanes", "autoFilters"] as const;
+  const changes = (value.changes ?? {}) as Record<string, unknown>;
+  const ignoredChangeKeys = Object.keys(changes).filter((key) => !(SHEET_OPERATION_KEYS as readonly string[]).includes(key));
+  const hasOperation = SHEET_OPERATION_KEYS.some((key) => Array.isArray(changes[key]) && (changes[key] as unknown[]).length > 0);
+  if (!hasOperation) throw new Error("changes is empty: provide at least one non-empty operation (e.g. appendRows); refusing to produce a no-op copy of the input");
+
   const bytes = Buffer.from(await readFile(inputAbsolute));
   const workbook = new ExcelJS.Workbook();
   const workbookBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -1909,7 +1915,7 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
     requestBody: { inputPath, outputPath, changes: value.changes },
     resultSummary: `transformed staged workbook; bytes=${output.length}`,
   });
-  return { ok: true, outputPath, bytes: output.length };
+  return { ok: true, outputPath, bytes: output.length, ...(ignoredChangeKeys.length ? { ignoredChangeKeys } : {}) };
 }
 
 async function createSpreadsheetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {

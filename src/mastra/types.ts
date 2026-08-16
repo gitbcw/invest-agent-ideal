@@ -36,6 +36,8 @@ export interface MastraToolCallSummary {
   elapsedMs?: number;
   inputChars?: number;
   outputChars?: number;
+  /** 仅失败结果保留的截断错误摘录（不含入参/成功输出），用于排查假成功。 */
+  errorExcerpt?: string;
 }
 
 /** A completed Mastra turn carries bounded observability fields. */

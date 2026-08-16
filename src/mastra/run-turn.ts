@@ -253,7 +253,27 @@ function mapOneToolCall(value: unknown, fallbackStartedAt: string): MastraToolCa
     ...(elapsedMs !== undefined ? { elapsedMs } : {}),
     ...(input !== undefined ? { inputChars: safeSerializedSize(input) } : {}),
     ...(output !== undefined ? { outputChars: safeSerializedSize(output) } : {}),
+    ...(errorExcerptOf(status, output) ? { errorExcerpt: errorExcerptOf(status, output) } : {}),
   };
+}
+
+/**
+ * 失败结果的截断错误摘录。成功输出永不保留；错误文本剥离 base64 等大块内容，
+ * 只留可诊断的消息字段——否则假成功（工具失败后模型按意图宣称成功）无法排查。
+ */
+function errorExcerptOf(status: string | undefined, output: unknown): string | undefined {
+  // 流事件里的输出可能是 JSON 字符串；失败判定与字段提取都要先穿透。
+  const normalized = typeof output === "string" && output.trim().startsWith("{")
+    ? (() => { try { return JSON.parse(output); } catch { return output; } })()
+    : output;
+  const failed = status === "error" || (isRecord(normalized) && normalized.ok === false);
+  if (!failed) return undefined;
+  const fields = isRecord(normalized)
+    ? [normalized.error, normalized.message, normalized.reason, normalized.hint]
+    : [typeof normalized === "string" ? normalized : undefined];
+  const text = fields.filter((item): item is string => typeof item === "string" && item.length > 0).join(" | ");
+  if (!text) return "error without message";
+  return text.replace(/[A-Za-z0-9+/=]{120,}/g, "<redacted>").slice(0, 300);
 }
 
 /** Map Mastra tool-call chunks without retaining arguments or tool results. */

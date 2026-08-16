@@ -89,7 +89,15 @@ export function applyAutomationSheetChanges(workbook: ExcelJS.Workbook, changes:
   for (const change of Array.isArray(changes.appendRows) ? changes.appendRows : []) {
     const sheet = getSheet(change.sheet);
     if (!Array.isArray(change.values)) throw new Error("invalid appendRows item");
-    sheet.addRow(change.values);
+    // 兼容两种自然形态：values 为一行的单元格数组，或为多行的二维数组
+    // （模型经常把多行整体放进一个 appendRows 项）。对象单元格字符串化，
+    // 避免整行被压进一个单元格。
+    const rows = change.values.length > 0 && change.values.every((cell) => Array.isArray(cell))
+      ? (change.values as unknown[][])
+      : [change.values];
+    for (const row of rows) {
+      sheet.addRow(row.map((cell) => (cell === null || cell === undefined ? "" : typeof cell === "object" ? JSON.stringify(cell) : cell)) as ExcelJS.CellValue[]);
+    }
   }
   for (const change of Array.isArray(changes.setColumnWidths) ? changes.setColumnWidths : []) {
     const sheet = getSheet(change.sheet);
