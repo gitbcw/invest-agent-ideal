@@ -1955,68 +1955,41 @@ async function createSpreadsheetTool(input: Record<string, unknown> | undefined,
     noteRow.alignment = { wrapText: true, vertical: "top" };
   }
   const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
-  const saved = await saveConversationArtifactAsUserAsset({
-    ...assetScope(context),
-    name: title || fileName.replace(/\.xlsx$/i, ""),
-    fileName,
-    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    bytes,
-    confirmedByUser: true,
-    conversationId: context.conversationId ?? null,
-    runId: context.runId ?? null,
-    idempotencyKey: `spreadsheet:${context.conversationId ?? "unknown"}:${fileName}`,
+  // G22 + 用户文件库治理契约：对话内生成的表格是普通聊天交付物，只走
+  // deliveries/ + 会话附件卡片，不自动写入「我的文件」；用户在 Portal 卡片
+  // 上点「保存」（asset.conversation.save）才登记为长期资产并占用配额。
+  // 附件发布是唯一交付路径，失败即工具失败，不允许静默丢失或假成功。
+  const projectId = context.projectId || DEFAULT_PROJECT_ID;
+  const projectRoot = await resolveProjectStorageRoot({ userId: context.userId, projectId, instanceId: context.instanceId });
+  const deliveryDir = path.join(projectRoot, "deliveries");
+  await mkdir(deliveryDir, { recursive: true });
+  await writeFile(path.join(deliveryDir, fileName), bytes);
+  const published = await publishConversationArtifact({
+    userId: context.userId,
+    instanceId: context.instanceId,
+    relativePath: `deliveries/${fileName}`,
+    kind: "data",
+    title: title || fileName.replace(/\.xlsx$/i, ""),
+    idempotencyKey: `spreadsheet-artifact:${context.conversationId ?? "unknown"}:${fileName}`,
+    scope: {
+      projectId,
+      assistantId: context.instanceId,
+      conversationId: context.conversationId ?? null,
+      source: "artifacts.publish",
+    },
   });
-  await audit(context, { operation: "spreadsheet.create", resourceType: "user_asset", resourceId: saved.assetId, requestBody: { fileName, columns: columns.length, rows: rows.length }, resultSummary: `created xlsx asset=${saved.assetId}; bytes=${bytes.length}` });
-  // Canonical delivery flow (same pipeline as reviews.save): the generated
-  // workbook also lands in deliveries/ and is published as a conversation
-  // artifact bound to the current turn, so the assistant reply carries the
-  // standard artifact card with preview/download in the Portal. The durable
-  // My Files entry is the user asset saved above and stays linked via
-  // assetId/versionId. A publish failure must not fail the tool.
-  let artifact: ConversationArtifact | undefined;
-  try {
-    const projectId = context.projectId || DEFAULT_PROJECT_ID;
-    const projectRoot = await resolveProjectStorageRoot({ userId: context.userId, projectId, instanceId: context.instanceId });
-    const deliveryDir = path.join(projectRoot, "deliveries");
-    await mkdir(deliveryDir, { recursive: true });
-    await writeFile(path.join(deliveryDir, fileName), bytes);
-    const published = await publishConversationArtifact({
-      userId: context.userId,
-      instanceId: context.instanceId,
-      relativePath: `deliveries/${fileName}`,
-      kind: "data",
-      title: title || fileName.replace(/\.xlsx$/i, ""),
-      assetId: saved.assetId,
-      versionId: saved.currentVersion?.versionId ?? null,
-      idempotencyKey: `spreadsheet-artifact:${context.conversationId ?? "unknown"}:${fileName}`,
-      scope: {
-        projectId,
-        assistantId: context.instanceId,
-        conversationId: context.conversationId ?? null,
-        source: "artifacts.publish",
-      },
-    });
-    artifact = published;
-  } catch (error) {
-    await audit(context, {
-      operation: "spreadsheet.create",
-      resourceType: "conversation_artifact",
-      requestBody: { artifactPublish: "failed", fileName },
-      resultSummary: `artifact publish skipped: ${(error as Error).message}`,
-      status: "error",
-    }).catch(() => undefined);
-  }
+  const artifact = published;
+  await audit(context, { operation: "spreadsheet.create", resourceType: "conversation_artifact", resourceId: artifact.artifactId, requestBody: { fileName, columns: columns.length, rows: rows.length }, resultSummary: `delivered xlsx artifact=${artifact.artifactId} (unsaved); bytes=${bytes.length}` });
   return {
     ok: true,
-    asset: publicAssetDescriptor(saved),
-    version: saved.currentVersion ? publicAssetVersion(saved.currentVersion) : null,
     artifact,
     fileName,
     rows: rows.length,
     columns: columns.length,
     delivery: {
-      location: "portal_my_files",
-      instruction: "文件已生成：用户资产库存有持久副本，且服务已自动发布附件卡片挂在本次回复下方（含预览/下载）。回复正文告知文件已生成并给出文件名即可；不要在正文放置任何下载链接或路径。",
+      location: "conversation_artifact_card",
+      savedToMyFiles: false,
+      instruction: "文件已生成为本次回复下方的附件卡片（可预览/下载）。它尚未保存到「我的文件」：请告知用户文件已生成，并说明如需留存可在卡片上点「保存到我的文件」；用户明确要求保存时才说明已入库。不要在正文放置任何下载链接或路径。",
     },
   };
 }

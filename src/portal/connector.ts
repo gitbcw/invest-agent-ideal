@@ -776,6 +776,16 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       if (!artifactId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "artifactId is required"));
       const result = await readConversationArtifactPayload({ artifactId, userId: scope.userId, instanceId: scope.instanceId });
       const saved = await saveConversationArtifactAsUserAsset({ ...automationScope(scope), name: typeof message.payload?.name === "string" ? message.payload.name : result.descriptor.title, fileName: result.payload.fileName, mimeType: result.payload.mimeType, bytes: Buffer.from(result.payload.base64, "base64"), confirmedByUser: true, conversationId: result.descriptor.conversationId, idempotencyKey: typeof message.payload?.idempotencyKey === "string" ? message.payload.idempotencyKey : `conversation-save:${artifactId}` });
+      // 回写附件绑定：保存后卡片必须翻到「已保存到我的文件」态；
+      // 未绑定时用户会重复点击保存，卡片也永远显示未保存。
+      if (saved.currentVersionId) {
+        try {
+          sqlite.prepare("UPDATE conversation_artifacts SET asset_id = ?, version_id = ?, updated_at = ? WHERE artifact_id = ? AND user_id = ? AND instance_id = ?")
+            .run(saved.assetId, saved.currentVersionId, new Date().toISOString(), artifactId, scope.userId, scope.instanceId);
+        } catch (error) {
+          logger.warn(`附件保存绑定回写失败 artifact=${artifactId}: ${(error as Error).message}`);
+        }
+      }
       return finish(ok(message.type, message.requestId, sanitizeAssetDescriptor(saved)));
     }
     case TYPES.ASSET_RENAME: {

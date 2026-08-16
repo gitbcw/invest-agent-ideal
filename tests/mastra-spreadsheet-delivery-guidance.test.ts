@@ -44,10 +44,12 @@ test("spreadsheet.create delivers via the canonical artifact-card pipeline (G22)
     } as any);
 
     assert.equal(result.ok, true);
-    assert.equal(result.asset.status, "active");
 
-    // Canonical delivery: a conversation artifact bound to this turn, so the
-    // assistant message carries the standard artifact card in the Portal.
+    // G22 + 文件库治理契约：对话生成的表格是普通聊天交付物——只发附件卡片，
+    // 不自动入「我的文件」；用户在卡片点「保存」后才登记资产并占配额。
+    assert.equal(result.asset, undefined, "spreadsheet.create must not auto-save to My Files");
+    assert.equal(result.version, undefined, "no asset version without an explicit user save");
+    assert.equal(result.delivery.savedToMyFiles, false);
     assert.ok(result.artifact, "tool result must carry the published artifact");
     assert.equal(result.artifact.kind, "data");
     assert.equal(result.artifact.fileName, "持仓概览.xlsx");
@@ -56,8 +58,10 @@ test("spreadsheet.create delivers via the canonical artifact-card pipeline (G22)
     const { sqlite } = await import("../src/db/index.js");
     const row = sqlite.prepare("SELECT conversation_id AS cid, turn_id AS turn, asset_id AS asset, version_id AS version FROM conversation_artifacts ORDER BY created_at DESC LIMIT 1").get() as Record<string, unknown>;
     assert.equal(row.cid, "conv-delivery");
-    assert.equal(row.asset, result.asset.assetId, "artifact linked to the durable My Files asset");
-    assert.equal(row.version, result.version.versionId);
+    assert.equal(row.asset, null, "artifact must stay unbound until the user saves it");
+    assert.equal(row.version, null);
+    const assetRows = sqlite.prepare("SELECT COUNT(*) AS c FROM user_assets WHERE user_id = ?").get(userId) as { c: number };
+    assert.equal(assetRows.c, 0, "no user asset may be created by conversational spreadsheet generation");
 
     // No link-invention contract: guidance points at the attached card.
     assert.equal(result.delivery.url, undefined);
