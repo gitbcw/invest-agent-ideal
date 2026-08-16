@@ -13,9 +13,20 @@
 const dryRun = process.argv.includes("--dry-run");
 const force = process.argv.includes("--force");
 process.env.WORKSPACE_BACKEND ??= "mastra";
-const { initDb, sqlite } = await import("../src/db/index.js");
+// 本地仓库有 src/（tsx 直跑），服务器部署只有 dist/——按存在性回退。
+async function importAppModule(relative) {
+  for (const base of ["../src", "../dist"]) {
+    try {
+      return await import(new URL(`${base}/${relative}`, import.meta.url).href);
+    } catch (error) {
+      if (error.code !== "ERR_MODULE_NOT_FOUND") throw error;
+    }
+  }
+  throw new Error(`cannot resolve app module: ${relative}`);
+}
+const { initDb, sqlite } = await importAppModule("db/index.js");
 initDb();
-const { computeModelCost, isPricedModel } = await import("../src/services/model-pricing.js");
+const { computeModelCost, isPricedModel } = await importAppModule("services/model-pricing.js");
 
 const tokenFilter = "(COALESCE(input_tokens,0) > 0 OR COALESCE(output_tokens,0) > 0 OR COALESCE(thought_tokens,0) > 0)";
 const rows = force
@@ -39,6 +50,6 @@ for (const row of rows) {
 const grand = [...report.costByModel.values()].reduce((sum, bucket) => sum + bucket.cost, 0);
 console.log(`[cost-backfill] mode=${dryRun ? "dry-run" : "apply"}${force ? " +force" : ""} rows=${report.total} priced=${report.priced} fallback=${report.fallback}`);
 for (const [model, bucket] of [...report.costByModel.entries()].sort()) {
-  console.log(`  ${model}: rows=${bucket.rows} cost=$${bucket.cost.toFixed(4)}`);
+  console.log(`  ${model}: rows=${bucket.rows} cost=¥${bucket.cost.toFixed(4)}`);
 }
-console.log(`[cost-backfill] total=$${grand.toFixed(4)}${report.fallback > 0 ? ` (fallback rows priced at the DEFAULT tier: ${report.fallback} — registry covers ${isPricedModel("gpt-5.6-terra") ? "known models only" : "no models"})` : ""}`);
+console.log(`[cost-backfill] total=¥${grand.toFixed(4)}${report.fallback > 0 ? ` (fallback rows priced at the DEFAULT tier: ${report.fallback} — registry covers ${isPricedModel("gpt-5.6-terra") ? "known models only" : "no models"})` : ""}`);

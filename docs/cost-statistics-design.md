@@ -1,8 +1,8 @@
 # 开销统计重建设计（Cost Statistics Design）
 
-状态：**已采纳并实施**（2026-08-15，C1-C4 全部落地，npm test 463/463）；费率为网络检索临时值（见 §3），owner 终定后换表即可——换表只影响未来回合，历史重述用回填脚本 `--force`
+状态：**2026-08-16 币种重述为人民币**（用户裁决：换内核后旧成本数据归档清空、全量按人民币表重算；归档在服务器 `data/archives/agent-trace-cost-*.jsonl`，重算走 `scripts/mastra-cost-archive-reset.mjs` + `mastra-cost-backfill.mjs --force`，迁移重跑后须再执行一次）；C1-C4 机制不变，npm test 480/480
 关联：[mastra-architecture-baseline.md](./mastra-architecture-baseline.md) D24/E10、[mastra-main-parity-verification.md](./mastra-main-parity-verification.md)
-裁决来源：D24（2026-08-15 用户提出：ACP 时代开销统计一直不准，换内核后须重建配套，含按模型计费）
+裁决来源：D24（2026-08-15 用户提出：ACP 时代开销统计一直不准，换内核后须重建配套，含按模型计费）；2026-08-16 用户裁决（人民币口径）
 
 ## 1. 问题与现状事实
 
