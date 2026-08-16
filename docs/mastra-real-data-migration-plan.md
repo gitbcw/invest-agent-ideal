@@ -32,6 +32,9 @@
 | 交易动作/记忆 | `trade_actions`, `memory/behavior_events.jsonl` | append-only service events | 不覆盖既有事件，只追加缺失事件 |
 | 报告与附件 | `conversation_artifacts`, `user_assets`, `reviews/`, `attachments/` | asset index + 独立受控字节根 | 先复制字节，再登记索引和 checksum |
 | 调度配置 | `config/schedules.yaml`, `config/watch.yaml` | scheduler settings/rules | 暂停调度后导入，启用前 dry-run |
+| 门户展示态 | 生产 portal.db `conversation_mirror`（软删/归档/置顶/重命名/标签） | Mastra runtime.db `portal_conversation_meta` + `conversation_labels` | 会话表导入后执行 `scripts/mastra-portal-presentation-import.mjs`，按 username 映射门户用户，幂等 upsert |
+
+门户展示态是 2026-08-16 自由测试发现的缺口：生产门户把软删除等状态存在 portal 独立 SQLite 的 `conversation_mirror`，而候选门户直接使用 runtime.db 的 `portal_conversation_meta`；只做 runtime 表级迁移时，生产已删除会话（首批 19 条）会在候选侧栏复活。任何重跑迁移都必须在会话域完成后追加执行该导入脚本。
 
 权威归属以 [table-ownership.md](/Users/combo/MyFile/projects/invest-agent-ideal-mastra/docs/table-ownership.md) 为准；若 SQLite 与 Workspace 同时存在，以当前生产运行路径的最新、可校验版本为源，不允许静默覆盖。
 
