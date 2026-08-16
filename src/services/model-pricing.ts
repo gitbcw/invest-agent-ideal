@@ -43,7 +43,19 @@ export interface ModelPricingEntry {
   /** Bare model id as recorded in agent_traces.agent_model (no gateway prefix). */
   model: string;
   currency: "CNY";
+  /** Single-rate tier (also the pre-cutover price for time-tiered models). */
   tier: ModelPriceTier;
+  /** Peak/off-peak schedule (DeepSeek 2026-08-17 起). */
+  timeTiered?: TimeTieredPricing;
+}
+
+export interface TimeTieredPricing {
+  /** ISO instant the peak/off-peak schedule takes effect (Beijing 2026-08-17 00:00). */
+  effectiveFrom: string;
+  /** Beijing-time windows [startHour, endHour) billed at the peak rate. */
+  peakWindowsUtcPlus8: Array<[number, number]>;
+  peak: ModelPriceTier;
+  offPeak: ModelPriceTier;
 }
 
 /** Bookkeeping FX rate for USD-listed models. Adjust by commit, not per row. */
@@ -64,8 +76,27 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
   { model: "gpt-5.6-sol", currency: "CNY", tier: GPT_5_6_TIERS.sol },
   { model: "gpt-5.6-terra", currency: "CNY", tier: GPT_5_6_TIERS.terra },
   { model: "gpt-5.6-luna", currency: "CNY", tier: GPT_5_6_TIERS.luna },
-  { model: "deepseek-v4-flash", currency: "CNY", tier: { input: 1, output: 2, cacheRead: 0.02 } },
-  { model: "deepseek-v4-pro", currency: "CNY", tier: { input: 3, output: 6, cacheRead: 0.025 } },
+  {
+    model: "deepseek-v4-flash", currency: "CNY",
+    tier: { input: 1, output: 2, cacheRead: 0.02 },
+    timeTiered: {
+      // 2026-08-17 00:00 北京时间生效；高峰 9-12 / 14-18 点，空闲价 = 高峰一半。
+      effectiveFrom: "2026-08-16T16:00:00.000Z",
+      peakWindowsUtcPlus8: [[9, 12], [14, 18]],
+      peak: { input: 3.0, output: 9.0, cacheRead: 0.10 },
+      offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05 },
+    },
+  },
+  {
+    model: "deepseek-v4-pro", currency: "CNY",
+    tier: { input: 3, output: 6, cacheRead: 0.025 },
+    timeTiered: {
+      effectiveFrom: "2026-08-16T16:00:00.000Z",
+      peakWindowsUtcPlus8: [[9, 12], [14, 18]],
+      peak: { input: 9.0, output: 27.0, cacheRead: 0.30 },
+      offPeak: { input: 4.5, output: 13.5, cacheRead: 0.15 },
+    },
+  },
   { model: "doubao-seed-2-0-lite-260428", currency: "CNY", tier: { input: 6, output: 30 } },
   { model: "doubao-seed-2-1-turbo-260628", currency: "CNY", tier: { input: 6, output: 30 } },
 ];
@@ -108,15 +139,32 @@ export function isPricedModel(model: string | undefined | null): boolean {
   return PRICING_BY_MODEL.has(resolveRegistryModel(normalizeModelId(model)));
 }
 
-function tierFor(model: string | undefined | null): { tier: ModelPriceTier; source: CostSource } {
+/** Beijing-time peak check for time-tiered providers (UTC+8, hour windows). */
+export function isBeijingPeakHour(at: Date, windows: Array<[number, number]>): boolean {
+  const beijingHour = (((at.getUTCHours() + 8) % 24) + 24) % 24;
+  return windows.some(([start, end]) => beijingHour >= start && beijingHour < end);
+}
+
+function tierFor(model: string | undefined | null, at?: Date): { tier: ModelPriceTier; source: CostSource } {
   const normalized = normalizeModelId(model);
   const entry = PRICING_BY_MODEL.get(resolveRegistryModel(normalized));
-  if (entry) return { tier: entry.tier, source: "priced" };
+  if (entry) {
+    const when = at ?? new Date();
+    if (entry.timeTiered && when.getTime() >= Date.parse(entry.timeTiered.effectiveFrom)) {
+      const tier = isBeijingPeakHour(when, entry.timeTiered.peakWindowsUtcPlus8) ? entry.timeTiered.peak : entry.timeTiered.offPeak;
+      return { tier, source: "priced" };
+    }
+    return { tier: entry.tier, source: "priced" };
+  }
   return { tier: DEFAULT_TIER, source: "priced-fallback" };
 }
 
 /** Registry summary for API surfaces (admin cost view rate badges). */
-export function pricingSummary(): { currency: "CNY"; models: Array<{ model: string; tier: Required<ModelPriceTier> }> ; defaultTier: Required<ModelPriceTier> } {
+export function pricingSummary(): {
+  currency: "CNY";
+  models: Array<{ model: string; tier: Required<ModelPriceTier>; timeTiered?: { effectiveFrom: string; peak: Required<ModelPriceTier>; offPeak: Required<ModelPriceTier>; peakWindowsUtcPlus8: Array<[number, number]> } }>;
+  defaultTier: Required<ModelPriceTier>;
+} {
   const expand = (tier: ModelPriceTier): Required<ModelPriceTier> => ({
     input: tier.input,
     output: tier.output,
@@ -126,14 +174,27 @@ export function pricingSummary(): { currency: "CNY"; models: Array<{ model: stri
   });
   return {
     currency: "CNY",
-    models: MODEL_PRICING.map((entry) => ({ model: entry.model, tier: expand(entry.tier) })),
+    models: MODEL_PRICING.map((entry) => ({
+      model: entry.model,
+      tier: expand(entry.tier),
+      ...(entry.timeTiered ? {
+        timeTiered: {
+          effectiveFrom: entry.timeTiered.effectiveFrom,
+          peak: expand(entry.timeTiered.peak),
+          offPeak: expand(entry.timeTiered.offPeak),
+          peakWindowsUtcPlus8: entry.timeTiered.peakWindowsUtcPlus8,
+        },
+      } : {}),
+    })),
     defaultTier: expand(DEFAULT_TIER),
   };
 }
 
 /**
  * Price one turn's usage. Provider-reported cost (gateway passthrough)
- * always wins when present; otherwise compute from the registry.
+ * always wins when present; otherwise compute from the registry. `at`
+ * selects peak/off-peak for time-tiered models (write time by default;
+ * backfill passes the row's created_at).
  */
 export function computeModelCost(
   model: string | undefined | null,
@@ -145,11 +206,13 @@ export function computeModelCost(
     cachedWriteTokens?: number;
     costAmount?: number;
   },
+  options?: { at?: Date | string | number },
 ): ModelCostResult {
   if (typeof usage.costAmount === "number" && Number.isFinite(usage.costAmount) && usage.costAmount > 0) {
     return { amount: usage.costAmount, currency: "CNY", source: "gateway" };
   }
-  const { tier, source } = tierFor(model);
+  const when = options?.at === undefined ? new Date() : new Date(options.at);
+  const { tier, source } = tierFor(model, Number.isNaN(when.getTime()) ? undefined : when);
   const perM = (tokens: number | undefined, rate: number) => (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0 ? (tokens / 1_000_000) * rate : 0);
   const amount =
     perM(usage.inputTokens, tier.input)

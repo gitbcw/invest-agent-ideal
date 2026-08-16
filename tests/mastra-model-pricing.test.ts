@@ -43,6 +43,22 @@ test("model pricing registry computes per-model costs with provider-aligned defa
   assert.ok(summary.models.some((entry) => entry.model === "gpt-5.6-sol" && entry.tier.input === 33.75));
   assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-pro" && entry.tier.input === 3));
   assert.ok(summary.defaultTier.cacheRead > 0);
+
+  // DeepSeek peak/off-peak restatement (effective 2026-08-17 Beijing).
+  // 高峰（北京 10:00 = UTC 02:00）：flash 输入 ¥3/M。
+  const peak = computeModelCost("deepseek-v4-flash", { inputTokens: 1_000_000 }, { at: "2026-08-18T02:00:00.000Z" });
+  assert.equal(peak.amount, 3);
+  // 空闲（北京 22:00 = UTC 14:00）：flash 输入 ¥1.5/M。
+  const offPeak = computeModelCost("deepseek-v4-flash", { inputTokens: 1_000_000 }, { at: "2026-08-18T14:00:00.000Z" });
+  assert.equal(offPeak.amount, 1.5);
+  // 生效前（北京 8-16 23:59）：沿用旧单一价 ¥1/M。
+  const beforeCutover = computeModelCost("deepseek-v4-flash", { inputTokens: 1_000_000 }, { at: "2026-08-16T15:59:00.000Z" });
+  assert.equal(beforeCutover.amount, 1);
+  // pro 高峰输出 ¥27/M。
+  const proPeak = computeModelCost("deepseek-v4-pro", { outputTokens: 1_000_000 }, { at: "2026-08-20T06:30:00.000Z" });
+  assert.equal(proPeak.amount, 27);
+  // 峰谷模型带时段信息进 summary 供费率徽标展示。
+  assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-flash" && entry.timeTiered && entry.timeTiered.peak.input === 3));
 });
 
 test("recordAgentTrace prices usage at write time with costSource envelope (E10 C2)", async () => {

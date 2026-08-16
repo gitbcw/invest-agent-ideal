@@ -44,7 +44,13 @@ function fmtCost(v){return '¥'+Number(v||0).toFixed(2);}
 function pricingBadges(pricing){
   if(!pricing)return '';
   const tierOf=(t)=>'输入 '+fmtRate(t.input)+' · 输出 '+fmtRate(t.output)+' · 推理 '+fmtRate(t.thought)+' · 缓存读 '+fmtRate(t.cacheRead);
-  const parts=pricing.models.map((m)=>badge(esc(m.model)+': '+tierOf(m.tier),'info')).join('');
+  const parts=pricing.models.map((m)=>{
+    if(m.timeTiered){
+      const tt=m.timeTiered;
+      return badge(esc(m.model)+': 空闲 输入 '+fmtRate(tt.offPeak.input)+' / 输出 '+fmtRate(tt.offPeak.output)+' · 高峰 输入 '+fmtRate(tt.peak.input)+' / 输出 '+fmtRate(tt.peak.output)+'（北京时段峰谷）','info');
+    }
+    return badge(esc(m.model)+': '+tierOf(m.tier),'info');
+  }).join('');
   return '<div class="cost-source">'+parts+badge('其他模型兜底: '+tierOf(pricing.defaultTier)+'（人民币计价）','ok')+'</div>';
 }
 function fmtRate(r){return '¥'+Number(r)+'/M';}

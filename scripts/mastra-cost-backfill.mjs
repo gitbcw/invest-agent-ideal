@@ -29,14 +29,16 @@ initDb();
 const { computeModelCost, isPricedModel } = await importAppModule("services/model-pricing.js");
 
 const tokenFilter = "(COALESCE(input_tokens,0) > 0 OR COALESCE(output_tokens,0) > 0 OR COALESCE(thought_tokens,0) > 0)";
+const selectBase = `SELECT id, agent_model AS model, input_tokens AS inputTokens, output_tokens AS outputTokens, thought_tokens AS thoughtTokens, cached_read_tokens AS cachedReadTokens, cached_write_tokens AS cachedWriteTokens, cost_amount AS costAmount, created_at AS createdAt FROM agent_traces`;
 const rows = force
-  ? sqlite.prepare(`SELECT id, agent_model AS model, input_tokens AS inputTokens, output_tokens AS outputTokens, thought_tokens AS thoughtTokens, cached_read_tokens AS cachedReadTokens, cached_write_tokens AS cachedWriteTokens, cost_amount AS costAmount FROM agent_traces WHERE ${tokenFilter} ORDER BY id`).all()
-  : sqlite.prepare(`SELECT id, agent_model AS model, input_tokens AS inputTokens, output_tokens AS outputTokens, thought_tokens AS thoughtTokens, cached_read_tokens AS cachedReadTokens, cached_write_tokens AS cachedWriteTokens, cost_amount AS costAmount FROM agent_traces WHERE cost_amount IS NULL AND ${tokenFilter} ORDER BY id`).all();
+  ? sqlite.prepare(`${selectBase} WHERE ${tokenFilter} ORDER BY id`).all()
+  : sqlite.prepare(`${selectBase} WHERE cost_amount IS NULL AND ${tokenFilter} ORDER BY id`).all();
 
 const update = sqlite.prepare("UPDATE agent_traces SET cost_amount = ?, cost_currency = ? WHERE id = ?");
 const report = { total: rows.length, priced: 0, fallback: 0, costByModel: new Map() };
 for (const row of rows) {
-  const cost = computeModelCost(row.model, row);
+  // 按行发生时间计价：峰谷模型（DeepSeek 2026-08-17 起）取回填行的时间段费率。
+  const cost = computeModelCost(row.model, row, { at: row.createdAt });
   const key = `${row.model || "unknown"}${cost.source === "priced-fallback" ? " (fallback)" : ""}`;
   const bucket = report.costByModel.get(key) ?? { rows: 0, cost: 0 };
   bucket.rows += 1;
