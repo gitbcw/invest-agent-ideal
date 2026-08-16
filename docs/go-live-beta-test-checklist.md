@@ -104,7 +104,7 @@
 
 1. 按昨晚备份重跑真实数据迁移后，**必须依次执行**：
    - `node scripts/mastra-portal-presentation-import.mjs --source <备份>/databases/portal.db --target data/runtime.db`（恢复生产侧软删除/归档/置顶/重命名/标签；2026-08-16 发现的迁移缺口）
-   - `node scripts/mastra-cost-archive-reset.mjs && node scripts/mastra-cost-backfill.mjs --force`（迁移会带回旧计价 trace；归档清空后按人民币费率表全量重算，2026-08-16 用户裁决的成本重述口径）
+   - `node scripts/mastra-cost-archive-reset.mjs --purge`（**统计起点切换**：迁移带回的全部旧 trace 先归档 JSONL 再整体移出 agent_traces；token 与成本都从上线时点从零累积，**不回填历史**——2026-08-16 用户裁决，旧口径本就不准。上线后的新 trace 按人民币费率表写入时计价）
 2. 服务端核查：PM2 两进程在线、health ok、错误日志无新增、内存余量正常。
 3. 候选保持现地址 23657 不变——「上线」即通知 mg/dyk/111 开始日常使用候选 Portal，生产 22649 继续并行运行（微信推送仍走生产，无冲突）。
 4. 上线后我持续观察 trace 与错误日志。

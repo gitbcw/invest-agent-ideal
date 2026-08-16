@@ -1,6 +1,6 @@
 # 开销统计重建设计（Cost Statistics Design）
 
-状态：**2026-08-16 币种重述为人民币**（用户裁决：换内核后旧成本数据归档清空、全量按人民币表重算；归档在服务器 `data/archives/agent-trace-cost-*.jsonl`，重算走 `scripts/mastra-cost-archive-reset.mjs` + `mastra-cost-backfill.mjs --force`，迁移重跑后须再执行一次）；C1-C4 机制不变，npm test 480/480
+状态：**2026-08-16 币种重述为人民币 + 上线统计起点切换**（用户裁决：①计价币种改人民币；②过往统计本就不准，上线时点用 `mastra-cost-archive-reset.mjs --purge` 把旧 trace 归档 JSONL 后整体移出统计表——token 与成本都从上线从零累积，不回填历史；上线后新 trace 按人民币表写入时计价。归档在服务器 `data/archives/agent-trace-cost-*.jsonl`，迁移重跑后须再执行一次）；C1-C4 机制不变，npm test 480/480
 关联：[mastra-architecture-baseline.md](./mastra-architecture-baseline.md) D24/E10、[mastra-main-parity-verification.md](./mastra-main-parity-verification.md)
 裁决来源：D24（2026-08-15 用户提出：ACP 时代开销统计一直不准，换内核后须重建配套，含按模型计费）；2026-08-16 用户裁决（人民币口径）
 
