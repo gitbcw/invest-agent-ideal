@@ -12,6 +12,122 @@ export class AutomationSpreadsheetValidationError extends Error {
 }
 
 /**
+ * Structured sheet changes accepted by both the staged ACP helper script and
+ * the in-process spreadsheet.transform service tool. Data only — never code.
+ */
+export interface AutomationSheetChanges {
+  createSheets?: Array<{ name?: string }>;
+  renameSheets?: Array<{ sheet?: string; name?: string }>;
+  setCells?: Array<{
+    sheet?: string; row?: number; column?: number; value?: unknown; formula?: string; result?: unknown;
+    numberFormat?: string; font?: { bold?: boolean; italic?: boolean; color?: string };
+    fillColor?: string; alignment?: { horizontal?: string; vertical?: string; wrapText?: boolean };
+  }>;
+  appendRows?: Array<{ sheet?: string; values?: unknown[] }>;
+  setColumnWidths?: Array<{ sheet?: string; column?: number; width?: number }>;
+  setRowHeights?: Array<{ sheet?: string; row?: number; height?: number }>;
+  mergeCells?: Array<{ sheet?: string; range?: string }>;
+  freezePanes?: Array<{ sheet?: string; xSplit?: number; ySplit?: number }>;
+  autoFilters?: Array<{ sheet?: string; range?: string }>;
+}
+
+function argbColor(value: unknown): { argb: string } {
+  const text = String(value || "").replace(/^#/, "").toUpperCase();
+  if (!/^[0-9A-F]{6}$/.test(text)) throw new Error("invalid color");
+  return { argb: "FF" + text };
+}
+
+/** Apply the shared change set to a loaded workbook in place. */
+export function applyAutomationSheetChanges(workbook: ExcelJS.Workbook, changes: AutomationSheetChanges): void {
+  const getSheet = (name: unknown) => {
+    const key = String(name || "");
+    // 未指定表名且工作簿只有一个工作表时自动定位；报错时列出可用表名，
+    // 让调用方（执行代理）能一次重试自纠。
+    const sheet = key
+      ? workbook.getWorksheet(key)
+      : workbook.worksheets.length === 1 ? workbook.worksheets[0] : undefined;
+    if (!sheet) {
+      throw new Error(`worksheet not found: ${key || "(unspecified)"}; available sheets: ${workbook.worksheets.map((item) => item.name).join(", ")}`);
+    }
+    return sheet;
+  };
+  for (const change of Array.isArray(changes.createSheets) ? changes.createSheets : []) {
+    const name = String(change.name || "").trim();
+    if (!name || name.length > 31 || workbook.getWorksheet(name)) throw new Error("invalid createSheets item");
+    workbook.addWorksheet(name);
+  }
+  for (const change of Array.isArray(changes.renameSheets) ? changes.renameSheets : []) {
+    const sheet = getSheet(change.sheet);
+    const name = String(change.name || "").trim();
+    if (!name || name.length > 31 || workbook.getWorksheet(name)) throw new Error("invalid renameSheets item");
+    sheet.name = name;
+  }
+  for (const change of Array.isArray(changes.setCells) ? changes.setCells : []) {
+    const sheet = getSheet(change.sheet);
+    const row = Number(change.row);
+    const column = Number(change.column);
+    if (!Number.isInteger(row) || row < 1 || !Number.isInteger(column) || column < 1) {
+      throw new Error("invalid setCells item");
+    }
+    const cell = sheet.getCell(row, column);
+    cell.value = (typeof change.formula === "string"
+      ? { formula: change.formula, result: change.result ?? undefined }
+      : change.value ?? null) as ExcelJS.CellValue;
+    if (change.numberFormat !== undefined) cell.numFmt = String(change.numberFormat);
+    if (change.font && typeof change.font === "object") cell.font = {
+      bold: change.font.bold === true,
+      italic: change.font.italic === true,
+      color: change.font.color ? argbColor(change.font.color) : undefined,
+    };
+    if (change.fillColor) cell.fill = { type: "pattern", pattern: "solid", fgColor: argbColor(change.fillColor) };
+    if (change.alignment && typeof change.alignment === "object") cell.alignment = {
+      horizontal: (["left", "center", "right"] as const).includes(change.alignment.horizontal as "left" | "center" | "right") ? change.alignment.horizontal as "left" | "center" | "right" : undefined,
+      vertical: (["top", "middle", "bottom"] as const).includes(change.alignment.vertical as "top" | "middle" | "bottom") ? change.alignment.vertical as "top" | "middle" | "bottom" : undefined,
+      wrapText: change.alignment.wrapText === true,
+    };
+  }
+  for (const change of Array.isArray(changes.appendRows) ? changes.appendRows : []) {
+    const sheet = getSheet(change.sheet);
+    if (!Array.isArray(change.values)) throw new Error("invalid appendRows item");
+    sheet.addRow(change.values);
+  }
+  for (const change of Array.isArray(changes.setColumnWidths) ? changes.setColumnWidths : []) {
+    const sheet = getSheet(change.sheet);
+    const column = Number(change.column);
+    const width = Number(change.width);
+    if (!Number.isInteger(column) || column < 1 || !Number.isFinite(width) || width < 1 || width > 100) throw new Error("invalid setColumnWidths item");
+    sheet.getColumn(column).width = width;
+  }
+  for (const change of Array.isArray(changes.setRowHeights) ? changes.setRowHeights : []) {
+    const sheet = getSheet(change.sheet);
+    const row = Number(change.row);
+    const height = Number(change.height);
+    if (!Number.isInteger(row) || row < 1 || !Number.isFinite(height) || height < 1 || height > 300) throw new Error("invalid setRowHeights item");
+    sheet.getRow(row).height = height;
+  }
+  for (const change of Array.isArray(changes.mergeCells) ? changes.mergeCells : []) {
+    const sheet = getSheet(change.sheet);
+    const range = String(change.range || "").toUpperCase();
+    if (!/^[A-Z]{1,3}[1-9][0-9]*:[A-Z]{1,3}[1-9][0-9]*$/.test(range)) throw new Error("invalid mergeCells item");
+    sheet.mergeCells(range);
+  }
+  for (const change of Array.isArray(changes.freezePanes) ? changes.freezePanes : []) {
+    const sheet = getSheet(change.sheet);
+    const xSplit = Number(change.xSplit || 0);
+    const ySplit = Number(change.ySplit || 0);
+    if (!Number.isInteger(xSplit) || xSplit < 0 || !Number.isInteger(ySplit) || ySplit < 0) throw new Error("invalid freezePanes item");
+    sheet.views = xSplit || ySplit ? [{ state: "frozen", xSplit, ySplit }] : [];
+  }
+  for (const change of Array.isArray(changes.autoFilters) ? changes.autoFilters : []) {
+    const sheet = getSheet(change.sheet);
+    const range = String(change.range || "").toUpperCase();
+    if (!/^[A-Z]{1,3}[1-9][0-9]*:[A-Z]{1,3}[1-9][0-9]*$/.test(range)) throw new Error("invalid autoFilters item");
+    sheet.autoFilter = range;
+  }
+  if (workbook.worksheets.length === 0) throw new Error("workbook requires at least one worksheet");
+}
+
+/**
  * Validates the two explicitly supported automation asset formats before the
  * service persists them. This deliberately happens at the service boundary
  * (including ACP output commits), rather than relying on the model prompt.

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import ExcelJS from "exceljs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { db, sqlite } from "../db/index.js";
 import { alertRules, conversationArtifacts, conversationMessages, mastraProjectProfiles, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
@@ -433,6 +433,8 @@ async function dispatchServiceTool(
       return publishArtifact(input, context);
     case "spreadsheet.create":
       return createSpreadsheetTool(input, context);
+    case "spreadsheet.transform":
+      return transformSpreadsheetTool(input, context);
     case "watch_rules.catalog":
       return { ok: true, userId: context.userId, instanceId: context.instanceId, items: listWatchRuleCatalog() };
     case "watch_rules.list":
@@ -1853,6 +1855,61 @@ async function publishArtifact(input: Record<string, unknown> | undefined, conte
     instanceId: context.instanceId,
     artifact: available,
   };
+}
+
+/**
+ * In-process XLSX transformation for staging-directory workbooks. The mastra
+ * runtime has no command execution, so the staged automation-sheet.mjs helper
+ * is unusable there; this tool applies the same structured change set with the
+ * application's own ExcelJS and writes a NEW file inside the same workspace.
+ * It never commits asset versions — automation output commits stay owned by
+ * the runner via stagedOutput, which is why this classifies as read.
+ */
+async function transformSpreadsheetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  try {
+    return await transformSpreadsheetToolInner(input, context);
+  } catch (error) {
+    // 结构化错误返回（而非抛出）：执行代理依赖 error 文本自纠参数，
+    // 裸异常会让它误判工具不可用并放弃更新绑定工作簿。
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: "spreadsheet_transform_failed", message, hint: "修正 inputPath（用任务说明中 stagedPath 的精确值）、outputPath 或 changes 后重试；sheet 名必须与工作簿一致。" };
+  }
+}
+
+async function transformSpreadsheetToolInner(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const value = input ?? {};
+  const inputPath = stringInput(value.inputPath);
+  const outputPath = stringInput(value.outputPath);
+  if (!inputPath || !outputPath) throw new Error("inputPath and outputPath are required");
+  if (!/\.xlsx$/i.test(inputPath) || !/\.xlsx$/i.test(outputPath)) throw new Error("inputPath and outputPath must be .xlsx files inside the current workspace");
+  if (!context.workspacePath) throw new Error("spreadsheet.transform requires a workspace path (automation staging or user project)");
+  const base = path.resolve(context.workspacePath);
+  const resolveInside = (relative: string) => {
+    const absolute = path.resolve(base, relative);
+    if (absolute !== base && !absolute.startsWith(base + path.sep)) throw new Error("path must stay inside the current workspace");
+    return absolute;
+  };
+  const inputAbsolute = resolveInside(inputPath);
+  const outputAbsolute = resolveInside(outputPath);
+  if (outputAbsolute === inputAbsolute) throw new Error("outputPath must differ from inputPath; keep the staged input untouched");
+
+  const bytes = Buffer.from(await readFile(inputAbsolute));
+  const workbook = new ExcelJS.Workbook();
+  const workbookBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  await (workbook.xlsx.load as unknown as (input: ArrayBuffer) => Promise<unknown>)(workbookBytes);
+  const { applyAutomationSheetChanges, validateAutomationSpreadsheet } = await import("../services/automation-spreadsheet.js");
+  applyAutomationSheetChanges(workbook, (value.changes ?? {}) as Parameters<typeof applyAutomationSheetChanges>[1]);
+  const output = Buffer.from(await workbook.xlsx.writeBuffer());
+  await validateAutomationSpreadsheet({ extension: ".xlsx", bytes: output });
+  await mkdir(path.dirname(outputAbsolute), { recursive: true });
+  await writeFile(outputAbsolute, output, { mode: 0o600 });
+  await audit(context, {
+    operation: "spreadsheet.transform",
+    resourceType: "user_asset",
+    requestBody: { inputPath, outputPath, changes: value.changes },
+    resultSummary: `transformed staged workbook; bytes=${output.length}`,
+  });
+  return { ok: true, outputPath, bytes: output.length };
 }
 
 async function createSpreadsheetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {

@@ -25,7 +25,7 @@ const REGISTERED_TOOLS = [
   "reviews.save",
   "portfolio.apply_changes", "watchlist.add", "plans.set", "plans.watch_conditions",
   "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create",
-  "confirmations.request", "artifacts.publish", "spreadsheet.create",
+  "confirmations.request", "artifacts.publish", "spreadsheet.create", "spreadsheet.transform",
   "onboarding.confirm_portfolio",
   "onboarding.draft.get", "onboarding.draft.upsert_step", "onboarding.draft.request_confirmation",
 ];

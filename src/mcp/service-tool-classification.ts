@@ -52,6 +52,9 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   "confirmations.request": "other-write",
   "artifacts.publish": "other-write",
   "spreadsheet.create": "other-write",
+  // In-process staging-file transformation; asset version commits stay with
+  // the automation runner, so this grants no service write path.
+  "spreadsheet.transform": "read",
   "assets.version.commit": "other-write",
   "assets.conversation.save": "other-write",
   "assets.attachment.save": "other-write",

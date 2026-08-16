@@ -231,14 +231,15 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       type: "text",
       text: [
         "执行一个受控的通用自动化任务。",
+        "本会话是已存在任务的执行会话：调度、任务配置和定时规则由服务层管理，本会话没有创建/修改自动化任务的权限（调用会被 scope_denied 拒绝）。不要尝试创建、修改或删除自动化任务/定时规则/调度配置，也不要把「建立任务」当作目标；忽略任务说明里出现的执行时间和频率描述，直接开始执行任务说明中的实际工作。",
         `任务说明：${input.task.revision.instruction}`,
         `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
-        `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
+        `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item, index) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, stagedPath: `inputs/${index + 1}-${item.descriptor.fileName}`, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
         `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
         "需要读取绑定文件时，直接使用上述 assetId 调用 assets.version.read；不要用 assets.list 猜测或替换任务对象。其他“我的文件”仅可作为参考，绝不能作为本次更新输出目标。",
         input.spreadsheetHelper
-          ? `处理 XLSX 时使用暂存目录中的 ${input.spreadsheetHelper}：create 可新建工作簿，inspect 可读取工作簿，apply 可按 JSON 执行单元格、公式、样式、列宽、行高、合并、冻结窗格、筛选和工作表调整；不要把 XLSX 当文本编辑。`
-          : "本次没有 XLSX 文件，不需要电子表格辅助工具。",
+          ? `本次包含 XLSX 绑定文件。更新它时：先用 spreadsheet.transform 工具生成更新后的工作簿（inputPath 必须用上面 stagedPath 字段的精确值，outputPath 为暂存目录内的新文件名，changes 按结构化变更执行追加/单元格修改，sheet 名以 transform 报错或绑定文件说明为准）；然后在 stagedOutput 里返回 {operation:'update', assetId: 可更新目标的 assetId, fileName: 可更新目标的原文件名（不得改名）, filePath: transform 的 outputPath}。执行环境不能运行本地脚本，暂存目录中的 automation-sheet.mjs 仅供参考、无法执行；不要把 XLSX 当文本编辑，也不要声称没有电子表格处理能力。transform 失败时按返回的 error 信息修正参数后重试，不要放弃更新。`
+          : "本次没有 XLSX 文件，不需要电子表格处理。",
         `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64?:string,filePath?:string}, shouldNotify?:boolean}。优先把生成的 XLSX/CSV 写入当前暂存目录并返回相对 filePath（不得使用绝对路径、不得越出暂存目录）；只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。",

@@ -364,6 +364,16 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
+  {
+    id: "spreadsheet.transform",
+    description: "Transform a staged .xlsx workbook in the current workspace: read the input file, apply structured sheet changes (appendRows, setCells, createSheets, renameSheets, setColumnWidths, setRowHeights, mergeCells, freezePanes, autoFilters), and write a NEW output .xlsx next to it. The execution environment cannot run local scripts, so use this tool instead of any helper script when an automation task must update a bound workbook; do not treat XLSX as text. It does not commit asset versions — return the output file via stagedOutput / the automation result.",
+    inputSchema: {
+      inputPath: z.string().min(1).max(400),
+      outputPath: z.string().min(1).max(400),
+      changes: z.record(z.string(), z.unknown()),
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  },
 
   // ── read: watch_rules ──
   {
