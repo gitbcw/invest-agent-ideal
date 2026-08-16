@@ -2481,7 +2481,8 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
   if (!operation || !CONFIRMED_WRITE_OPERATIONS.has(operation)) throw new Error("operation is not confirmable");
   if (!context.conversationId) throw new Error("conversationId is required for confirmation");
   const preview = await validateConfirmationDraft(operation, payload, context);
-  const target = confirmationTarget(operation, payload, context);
+  const canonical = await canonicalizeConfirmationPayload(operation, payload, context);
+  const target = confirmationTarget(operation, canonical, context);
   const pending = await createSandboxConfirmation(mcpSandboxContext(context, `mcp-request:${Date.now()}`), target);
   await audit(context, {
     operation: "confirmations.request",
@@ -2547,6 +2548,57 @@ async function validateConfirmationDraft(
   return undefined;
 }
 
+// 确认草案的载荷以“语义形态”存储与比对。模型在 confirmations.request 与执行
+// 工具两轮分别构造参数，可能多带 schema 外的键（如 expectedRevision）、省略
+// 可选空字段或调整键序；这些不改变用户确认的交易内容。严格 JSON 相等会把可
+// 消费的确认变成永久 mismatch，表现为微信端“确认死循环”（2026-08-16）。
+// 持仓类操作用规划摘要比对；其余操作做空值裁剪。
+function pruneConfirmationPayload(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const items = value.map(pruneConfirmationPayload).filter((item) => item !== undefined);
+    return items.length ? items : undefined;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const pruned = pruneConfirmationPayload(item);
+      if (pruned !== undefined) out[key] = pruned;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  if (value === null || value === undefined || value === "") return undefined;
+  return value;
+}
+
+async function canonicalizeConfirmationPayload(
+  operation: string,
+  payload: Record<string, unknown>,
+  context: ServiceToolContext
+): Promise<Record<string, unknown>> {
+  if (operation === "portfolio.apply_changes") {
+    const plan = await planPortfolioChanges(payload, context);
+    const digest = {
+      expectedLastConfirmedAt: plan.expectedLastConfirmedAt,
+      cashRatioPercent: plan.allocation.cashRatioPercent,
+      removeHoldingCodes: plan.removedHoldings.map((holding) => holding.code).sort(),
+      upsertHoldings: plan.upsertedHoldings
+        .map((holding) => ({
+          code: holding.code,
+          name: holding.name,
+          weight: holding.weight ?? null,
+          cost: holding.cost ?? null,
+          shares: holding.shares ?? null,
+          notes: holding.notes ?? null,
+        }))
+        .sort((a, b) => a.code.localeCompare(b.code)),
+      watchlistRemovalCodes: plan.removedWatchlist.map((item) => item.code).sort(),
+      watchlistKeepCodes: [...plan.keptWatchlistCodes].sort(),
+    };
+    return (pruneConfirmationPayload(digest) ?? {}) as Record<string, unknown>;
+  }
+  return (pruneConfirmationPayload(payload) ?? {}) as Record<string, unknown>;
+}
+
 async function prepareBoundConfirmation(
   input: Record<string, unknown> | undefined,
   context: ServiceToolContext,
@@ -2558,14 +2610,20 @@ async function prepareBoundConfirmation(
   if (!context.conversationId) throw new Error("conversationId is required for confirmed writes");
   await requireRecentUserConfirmation(context, operation, confirmationId);
   const payload = stripConfirmationFields(input);
+  const canonical = await canonicalizeConfirmationPayload(operation, payload, context);
   const sandboxContext = mcpSandboxContext(context, `mcp-confirm:${Date.now()}`);
-  const target = confirmationTarget(operation, payload, context);
+  const target = confirmationTarget(operation, canonical, context);
   const result = await validateSandboxConfirmation(
     sandboxContext,
     confirmationId,
     target
   );
-  if (!result.ok) throw new Error(`confirmation invalid: ${result.reason}`);
+  if (!result.ok) {
+    const hint = result.reason === "confirmation payload mismatch"
+      ? "（执行参数与用户确认的草案不一致：请用与草案一致的参数重试，或重新生成草案并再次征求用户确认；本次未执行任何写入）"
+      : "";
+    throw new Error(`confirmation invalid: ${result.reason}${hint}`);
+  }
   return {
     confirmationId,
     consume: async () => {

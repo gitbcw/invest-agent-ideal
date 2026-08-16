@@ -422,3 +422,98 @@ test("concurrent confirmed applies serialize on the resource lock; the stale rev
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("portfolio.apply_changes confirmation survives schema-noise between draft and apply (weixin regression 2026-08-16)", async () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-portfolio-noise-"));
+  process.env.NODE_ENV = "test";
+  process.env.DB_PATH = path.join(tempRoot, "test.db");
+  process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
+  process.env.INVEST_AGENT_SANDBOX_SECRET_FILE = path.join(tempRoot, ".sandbox-secret");
+
+  try {
+    const { eq } = await import("drizzle-orm");
+    const { db, initDb } = await import("../src/db/index.js");
+    const { conversationMessages, conversationSessions, pendingSandboxConfirmations } = await import("../src/db/schema.js");
+    const { ensureWorkspace, resolveWorkspacePath } = await import("../src/lib/workspace.js");
+    const { readMastraPortfolioProjection } = await import("../src/lib/mastra-portfolio-backend.js");
+    const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+
+    const userId = "portfolio-noise-user";
+    const instanceId = "invest-agent-portfolio-noise-user";
+    const conversationId = "portfolio-noise-conversation";
+    const context = { userId, instanceId, projectId: "invest-agent", conversationId, workspacePath: resolveWorkspacePath(userId) };
+    const revision = "2026-08-10T22:27:18.271Z";
+
+    initDb();
+    await ensureWorkspace({ userId, tenantId: userId, projectId: "invest-agent" });
+    // 与 2026-08-16 微信复现场景一致的种子：赣锋 25% / 盛新 10% / 现金 65%。
+    const seedPortfolio = {
+      cash: { ratio_percent: 65, notes: "现金仓位约 65%" },
+      holdings: [
+        { code: "002460", name: "赣锋锂业", weight: 25, notes: "仓位25%" },
+        { code: "002240", name: "盛新锂能", weight: 10, notes: "仓位10%" },
+      ],
+      watchlist: [],
+      accounts: [],
+      last_confirmed_at: revision,
+      last_confirmed_by: "user",
+    };
+    (await import("../src/db/index.js")).sqlite.prepare(
+      `INSERT INTO mastra_portfolio_states (user_id,project_id,instance_id,portfolio_json,source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    ).run(userId, "invest-agent", instanceId, JSON.stringify(seedPortfolio), "service-owned://portfolio", "service:test-seed", revision, "test-seed", revision, revision);
+    const now = new Date().toISOString();
+    await db.insert(conversationSessions).values({
+      conversationId, userId, projectId: "invest-agent", instanceId, assistantId: instanceId,
+      channel: "weixin-mobile", title: "Noise regression", createdAt: now, updatedAt: now,
+    });
+
+    // 模型起草时带了 schema 外的 expectedRevision、显式空 watchlistActions。
+    const requested = await callServiceTool("confirmations.request", {
+      operation: "portfolio.apply_changes",
+      payload: {
+        expectedRevision: revision,
+        expectedLastConfirmedAt: revision,
+        removeHoldingCodes: [],
+        upsertHoldings: [
+          { code: "002240", name: "盛新锂能", shares: null, cost: null, weight: 21, notes: "持仓占比调整为 21%" },
+          { code: "002460", name: "赣锋锂业", shares: null, cost: null, weight: 18, notes: "持仓占比调整为 18%" },
+        ],
+        cashRatioPercent: 61,
+        watchlistActions: [],
+      },
+      summary: "请确认调整持仓比例",
+    }, context) as { confirmationId: string };
+
+    await db.insert(conversationMessages).values({
+      messageId: "portfolio-noise-confirmation-message",
+      conversationId, userId, projectId: "invest-agent", instanceId, assistantId: instanceId,
+      channel: "weixin-mobile", role: "user", content: "确认",
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    });
+
+    // 执行轮经 zod schema 过滤后的干净参数：无 expectedRevision、省略空的可选字段。
+    const applied = await callServiceTool("portfolio.apply_changes", {
+      confirmedByUser: true,
+      confirmationId: requested.confirmationId,
+      expectedLastConfirmedAt: revision,
+      upsertHoldings: [
+        { code: "002240", name: "盛新锂能", weight: 21, notes: "持仓占比调整为 21%" },
+        { code: "002460", name: "赣锋锂业", weight: 18, notes: "持仓占比调整为 18%" },
+      ],
+      cashRatioPercent: 61,
+    }, context) as { ok: boolean };
+    assert.equal(applied.ok, true, "apply must succeed despite schema noise between draft and apply payloads");
+
+    const saved = readMastraPortfolioProjection(userId, instanceId) as {
+      holdings?: Array<{ code: string; weight?: number }>;
+      cash?: { ratio_percent?: number };
+    };
+    assert.equal(saved.holdings?.find((item) => item.code === "002240")?.weight, 21);
+    assert.equal(saved.holdings?.find((item) => item.code === "002460")?.weight, 18);
+    assert.equal(saved.cash?.ratio_percent, 61);
+    const [confirmation] = await db.select().from(pendingSandboxConfirmations).where(eq(pendingSandboxConfirmations.id, requested.confirmationId));
+    assert.equal(confirmation?.status, "confirmed");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
