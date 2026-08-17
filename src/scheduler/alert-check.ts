@@ -44,23 +44,6 @@ interface PlanItem {
   source?: "daily_review" | "manual";
 }
 
-interface MarketWatchWindow {
-  time?: string;
-  name?: string;
-  purpose?: string;
-  enabled?: boolean;
-}
-
-interface MarketWatchPolicy {
-  enabled: boolean;
-  onlyPushOnException: boolean;
-  defaultCheckWindows: MarketWatchWindow[];
-  exceptionRules: string[];
-  nonExceptionRules: string[];
-}
-
-const MARKET_WATCH_WINDOW_TOLERANCE_MINUTES = 3;
-
 /**
  * 规则巡检执行器。
  *
@@ -70,7 +53,6 @@ const MARKET_WATCH_WINDOW_TOLERANCE_MINUTES = 3;
 export async function runAlertCheck(options: { force?: boolean; userId?: string; instanceId?: string } = {}): Promise<AlertItem[]> {
   const userId = options.userId ?? DEFAULT_USER_ID;
   const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
-  const watchPolicy = await loadMarketWatchPolicy(userId);
   const planMap = await loadLatestPlanMap(userId, instanceId);
   const alertItems: AlertItem[] = [];
 
@@ -97,7 +79,7 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
     }
   }
 
-  const deduped = await filterAndRecordAlerts(userId, instanceId, alertItems, watchPolicy);
+  const deduped = await filterAndRecordAlerts(userId, instanceId, alertItems);
 
   if (deduped.length > 0) {
     logger.info(`巡检发现 ${deduped.length} 条提醒`);
@@ -110,28 +92,8 @@ export async function runAlertCheck(options: { force?: boolean; userId?: string;
 export function formatAlerts(alerts: AlertItem[]): string {
   if (alerts.length === 0) return "";
 
-  const high = alerts.filter((a) => a.severity === "high");
-  const medium = alerts.filter((a) => a.severity === "medium");
-  const low = alerts.filter((a) => a.severity === "low");
-
   const lines: string[] = ["⏰ 行情提醒\n"];
-
-  if (high.length > 0) {
-    lines.push("【重要】");
-    for (const a of high) lines.push(formatAlertLine(a));
-    lines.push("");
-  }
-
-  if (medium.length > 0) {
-    lines.push("【关注】");
-    for (const a of medium) lines.push(formatAlertLine(a));
-  }
-
-  if (low.length > 0) {
-    lines.push("");
-    lines.push("【观察】");
-    for (const a of low) lines.push(formatAlertLine(a));
-  }
+  for (const a of alerts) lines.push(formatAlertLine(a));
 
   lines.push("", "—", "仅供参考，不构成投资建议");
   return lines.join("\n");
@@ -212,7 +174,7 @@ function buildStage2AlertItem(
   );
   const priority = rule.notification.priority;
   const severity = severityFromPriority(priority);
-  const dedupe = normalizeAlertDedupe(rule.cooldown, severity);
+  const dedupe = normalizeAlertDedupe(rule.cooldown);
 
   if (rule.ruleType === "price_cross") {
     const operator = String(rule.params.operator);
@@ -262,7 +224,6 @@ export async function filterAndRecordAlerts(
   userId: string,
   instanceId: string,
   items: AlertItem[],
-  watchPolicy: MarketWatchPolicy
 ): Promise<AlertItem[]> {
   const now = new Date();
   const createdAt = now.toISOString();
@@ -346,9 +307,7 @@ export async function filterAndRecordAlerts(
       await upsertActiveSignalState(userId, instanceId, item, createdAt);
     }
     dailyCounts.set(item.stockCode, (dailyCounts.get(item.stockCode) ?? 0) + 1);
-    if (shouldPushAlert(item, watchPolicy)) {
-      result.push(item);
-    }
+    result.push(item);
   }
 
   return result;
@@ -500,103 +459,13 @@ function usesStateDedupe(item: AlertItem) {
   return item.dedupe.mode === "state";
 }
 
-/** 级别决定默认冷却档位：高级别允许更快重复提醒，低级别更安静。规则显式 cooldown 优先。 */
-const SEVERITY_DEFAULT_COOLDOWN_MINUTES: Record<AlertItem["severity"], number> = { high: 30, medium: 120, low: 240 };
-
-export function normalizeAlertDedupe(value: Record<string, unknown>, severity?: AlertItem["severity"]): AlertItem["dedupe"] {
-  const fallback = (severity && SEVERITY_DEFAULT_COOLDOWN_MINUTES[severity]) || 240;
-  const minutes = Number(value.minutes ?? value.cooldownMinutes ?? fallback);
+/** 默认冷却 120 分钟；规则显式 cooldown 优先。 */
+export function normalizeAlertDedupe(value: Record<string, unknown>): AlertItem["dedupe"] {
+  const minutes = Number(value.minutes ?? value.cooldownMinutes ?? 120);
   return {
     mode: value.mode === "state" ? "state" : "cooldown",
-    minutes: Number.isFinite(minutes) && minutes > 0 ? minutes : 240,
+    minutes: Number.isFinite(minutes) && minutes > 0 ? minutes : 120,
   };
-}
-
-async function loadMarketWatchPolicy(userId: string): Promise<MarketWatchPolicy> {
-  const fallback: MarketWatchPolicy = {
-    enabled: true,
-    onlyPushOnException: true,
-    defaultCheckWindows: [],
-    exceptionRules: [],
-    nonExceptionRules: [],
-  };
-  try {
-    if (ACTIVE_BACKEND === "mastra") {
-      const watch = await new MastraUserPreferenceStore(userId, defaultInstanceIdForUser(userId), DEFAULT_PROJECT_ID).readWatch();
-      if (!watch) return fallback;
-      return {
-        enabled: watch.mode !== "disabled" && watch.mode !== "off",
-        onlyPushOnException: watch.only_push_on_exception !== false,
-        defaultCheckWindows: normalizeWatchWindows(watch.default_check_windows),
-        exceptionRules: normalizeWatchRules(watch.exception_rules),
-        nonExceptionRules: normalizeWatchRules(watch.non_exception_rules),
-      };
-    }
-    // E8: workspace watch config retired; mastra scopes read their preference
-    // projection above. Non-mastra scopes keep the fallback defaults.
-    return fallback;
-  } catch (error) {
-    logger.warn(`读取盯盘配置失败 user=${userId}: ${(error as Error).message}`);
-    return fallback;
-  }
-}
-
-function normalizeWatchWindows(value: unknown): MarketWatchWindow[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      if (typeof item === "string") return { time: item.trim() } as MarketWatchWindow;
-      if (!item || typeof item !== "object") return null;
-      const raw = item as Record<string, unknown>;
-      const time = typeof raw.time === "string" ? raw.time.trim() : "";
-      if (!time) return null;
-      return {
-        time,
-        name: typeof raw.name === "string" ? raw.name.trim() : undefined,
-        purpose: typeof raw.purpose === "string" ? raw.purpose.trim() : undefined,
-        enabled: typeof raw.enabled === "boolean" ? raw.enabled : undefined,
-      } satisfies MarketWatchWindow;
-    })
-    .filter((item): item is MarketWatchWindow => Boolean(item));
-}
-
-function normalizeWatchRules(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
-}
-
-function shouldRunMarketWatchNow(policy: MarketWatchPolicy, now = new Date()): boolean {
-  if (!policy.enabled) return false;
-  const bj = beijingNow(now);
-  if (!isBeijingTradingDay(now)) return false;
-
-  const windows = policy.defaultCheckWindows.filter((window) => window.enabled !== false);
-  if (windows.length === 0) {
-    const timeNum = bj.getHours() * 100 + bj.getMinutes();
-    return (timeNum >= 920 && timeNum <= 1130) || (timeNum >= 1300 && timeNum <= 1500);
-  }
-
-  return windows.some((window) => isWithinWindow(window.time, bj, MARKET_WATCH_WINDOW_TOLERANCE_MINUTES));
-}
-
-function isWithinWindow(timeText: string | undefined, bj: Date, toleranceMinutes: number): boolean {
-  if (!timeText) return false;
-  const m = /^(\d{1,2}):(\d{2})$/.exec(timeText.trim());
-  if (!m) return false;
-  const hour = Number(m[1]);
-  const minute = Number(m[2]);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return false;
-  const target = new Date(bj);
-  target.setHours(hour, minute, 0, 0);
-  const diffMinutes = Math.abs((bj.getTime() - target.getTime()) / 60000);
-  return diffMinutes <= toleranceMinutes;
-}
-
-function shouldPushAlert(alert: AlertItem, policy: MarketWatchPolicy): boolean {
-  if (!policy.onlyPushOnException) return true;
-  // 低打扰模式：仅高级别盘中推送；中低级别仍落库，可在巡检页与晚间查看。
-  // 偏好里的 exception_rules 清单是给规则创建参考的语义文档，不参与执行判断。
-  return alert.severity === "high";
 }
 
 // ============ 信号优先级解析(WP3a 2026-06-21) ============

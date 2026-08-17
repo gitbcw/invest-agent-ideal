@@ -50,10 +50,9 @@ type RunNowResult = {
 type RuleFormState = {
   stockCode: string; stockName: string; ruleType: "price_cross" | "ma_cross";
   operator: ">=" | "<="; value: string; period: string; direction: "break_above" | "break_below";
-  priority: "P0" | "P1" | "P2";
 };
 
-const EMPTY_FORM: RuleFormState = { stockCode: "", stockName: "", ruleType: "price_cross", operator: "<=", value: "", period: "25", direction: "break_below", priority: "P2" };
+const EMPTY_FORM: RuleFormState = { stockCode: "", stockName: "", ruleType: "price_cross", operator: "<=", value: "", period: "25", direction: "break_below" };
 
 function describeRule(rule: PatrolRule): string {
   if (rule.ruleType === "ma_cross") {
@@ -68,7 +67,6 @@ const STATUS_LABEL: Record<PatrolRun["status"], string> = { running: "进行中"
 const STATUS_STYLE: Record<PatrolRun["status"], string> = {
   running: "bg-amber-50 text-amber-700", succeeded: "bg-emerald-50 text-emerald-700", failed: "bg-red-50 text-red-700", skipped: "bg-zinc-100 text-zinc-600",
 };
-const PRIORITY_LABEL: Record<string, string> = { P0: "重要", P1: "关注", P2: "一般" };
 
 function fmtTime(value: string | null): string {
   if (!value) return "-";
@@ -146,7 +144,6 @@ export function PatrolShell() {
       value: String(rule.params.value ?? ""),
       period: String(rule.params.period ?? 25),
       direction: rule.params.direction === "break_above" ? "break_above" : "break_below",
-      priority: rule.notification?.priority === "P0" || rule.notification?.priority === "P1" ? rule.notification.priority : "P2",
     });
     setFormError(null);
     setFormOpen(true);
@@ -162,7 +159,7 @@ export function PatrolShell() {
     if (form.ruleType === "price_cross" && (!Number.isFinite(value) || value <= 0)) { setFormError("阈值必须是正数"); return; }
     setSaving(true);
     try {
-      const base = { stockCode: form.stockCode.trim(), stockName: form.stockName.trim(), priority: form.priority };
+      const base = { stockCode: form.stockCode.trim(), stockName: form.stockName.trim() };
       const typed =
         form.ruleType === "ma_cross"
           ? { ruleType: "ma_cross", period, direction: form.direction }
@@ -393,18 +390,6 @@ export function PatrolShell() {
                     </label>
                   </>
                 )}
-                <label className="text-xs text-[#6f7d73]">
-                  提醒级别
-                  <select
-                    value={form.priority}
-                    onChange={(e) => setForm({ ...form, priority: e.target.value as RuleFormState["priority"] })}
-                    className="mt-1 w-full rounded-md border border-[#c8cfca] bg-white px-2 py-1.5 text-sm text-[#22301f] outline-none focus:border-[#52705f]"
-                  >
-                    <option value="P0">重要</option>
-                    <option value="P1">关注</option>
-                    <option value="P2">一般</option>
-                  </select>
-                </label>
               </div>
               {formError ? <div className="mt-2 text-sm text-red-700">{formError}</div> : null}
               <div className="mt-3 flex gap-2">
@@ -427,7 +412,6 @@ export function PatrolShell() {
                   <tr className="border-b border-[#e0e7e1] text-left text-xs text-[#6f7d73]">
                     <th className="py-2 pr-3 font-medium">股票</th>
                     <th className="py-2 pr-3 font-medium">条件</th>
-                    <th className="py-2 pr-3 font-medium">级别</th>
                     <th className="py-2 pr-3 font-medium">状态</th>
                     <th className="py-2 pr-3 font-medium">更新时间</th>
                     <th className="py-2 font-medium">操作</th>
@@ -441,7 +425,6 @@ export function PatrolShell() {
                         <span className="ml-1 text-xs text-[#6f7d73]">{rule.stockCode}</span>
                       </td>
                       <td className="py-2 pr-3 text-[#22301f]">{describeRule(rule)}</td>
-                      <td className="py-2 pr-3 text-[#6f7d73]">{PRIORITY_LABEL[rule.notification?.priority ?? "P2"] ?? "一般"}</td>
                       <td className="py-2 pr-3">
                         <button
                           type="button"
