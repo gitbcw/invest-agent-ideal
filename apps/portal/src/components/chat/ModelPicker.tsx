@@ -108,9 +108,9 @@ export function ModelPicker({
               onClick={() => { onChange(opt.value); setOpen(false); }}
               className={`w-full cursor-pointer rounded-md px-3 py-2 text-left transition hover:bg-[#f2f5f2] ${value === opt.value ? "bg-[#eef3ef]" : ""}`}
             >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate text-xs font-medium text-[#22301f]">{opt.label}</span>
-                <span className="shrink-0 text-[10px] text-[#8a938c]">{opt.inputPrice !== null ? `¥${opt.inputPrice}/${opt.outputPrice}` : ""}</span>
+              <div className="flex items-baseline gap-2">
+                <span className="shrink-0 text-xs font-medium text-[#22301f]">{opt.label}</span>
+                <span className="text-[10px] text-[#8a938c]">{opt.inputPrice !== null ? `¥${opt.inputPrice}/${opt.outputPrice}` : ""}</span>
               </div>
               <div className="mt-0.5 text-[11px] leading-4 text-[#8a938c]">{opt.description}</div>
             </button>
