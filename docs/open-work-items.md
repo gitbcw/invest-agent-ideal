@@ -88,6 +88,31 @@
 - 数据源：`agent_traces`（个人维度查本人；已有 cost_amount/cost_currency/tokens/agent_model/elapsed_ms）。
 - 平台侧管理视图（admin 成本总览）已有设计见 [cost-statistics-design.md](./cost-statistics-design.md)，本页为终端用户个人视角，不重复建设管理端能力。
 
-## W4+ · owner 待补充
+
+## W4 · 行情数据源韧性治理（回放实测暴露，2026-08-17）
+
+**状态**：待实现。依据：mg 全量回放 164 轮中 16 轮无回复，全部集中在盘中实时拉全市场数据的重负载场景（行业资金流复盘 4、公式验证长会话 10、周复盘 1、指标分析 1）；日志直接证据为 `market-data-tool` MCP 连接超时（3 秒握手失败即终）与 LLM 上游偶发 `upstream failed`。
+
+- 行情 MCP 连接/调用失败增加重试与退避（当前一次超时即整轮失败）。
+- 重负载问题的市场数据查询做批量化/缓存（行业资金流单轮要打满全市场）。
+- 与 W1-P3（轮内换模型重试）互补：一个救数据源，一个救模型上游。
+
+## W5 · 部署重启优雅排空
+
+**状态**：待实现。回放期间两次部署重启各打断 1 个在途轮次（「服务重启中断」直接失败）。发布时应支持排空等待或至少让在途轮次完成后再退出。
+
+## 附 · 经典回归用例集（工具轻量化）
+
+2026-08-17 全量回放（12 会话 164 轮，报告 `data/migration-golive-20260817` 同级 `data/replay-mgreplay-20260817/report.html`）只作为一次性摸底，**不再全量重跑**。日常回归用 9 条经典用例（约 10 分钟）：
+
+```bash
+# 以 mgreplay 账号重放经典用例（计划/输出均可覆盖）
+cd data/replay-mgreplay-20260817
+REPLAY_PLAN=./classic-plan.json REPLAY_RESULTS=./classic-results.jsonl REPLAY_CONVMAP=./classic-conv-map.json node driver.mjs
+```
+
+用例覆盖：周复盘（重）、行业资金流（最重）、个股+自选写操作、策略问答、公式分析×2、个股趋势（轻）、公众号链接（外部依赖）、附件缺失边界。mgreplay 账号与 connector 已常驻，状态导入（持仓/记忆/偏好）随当日迁移完成。
+
+## W6+ · owner 待补充
 
 （owner 口述新工作项追加于此，Agent 负责整理成条目并回填细节。）
