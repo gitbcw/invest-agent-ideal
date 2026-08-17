@@ -22,6 +22,7 @@ import {
   scheduledMessageIdempotencyKey,
   type ScheduledMessageKind,
 } from "../services/scheduled-message-policy.js";
+import { runModelProbes } from "../services/model-health.js";
 
 export type PushCallback = (message: string, options?: {
   userId?: string;
@@ -45,6 +46,8 @@ const MARKET_WATCH_MAX_QUEUE_DELAY_MS = normalizePositiveInteger(
 let pushFn: PushCallback | null = null;
 let alertIntervalId: ReturnType<typeof setInterval> | null = null;
 let onboardingDraftCommitIntervalId: ReturnType<typeof setInterval> | null = null;
+let modelProbeIntervalId: ReturnType<typeof setInterval> | null = null;
+let modelProbeStartupTimer: ReturnType<typeof setTimeout> | null = null;
 let activeMarketWatchWorkers = 0;
 const ruleAlertFiredKeys = new Set<string>();
 const runningRuleAlertTasks = new Set<string>();
@@ -265,6 +268,15 @@ export async function startScheduler() {
   // 收盘后平台级数据质量汇总
   await startDataQualityScheduler();
   await startAutomationScheduler();
+  // W1-P2 模型健康探针：启动 90s 后首探，此后每小时一轮。
+  modelProbeStartupTimer = setTimeout(() => {
+    void runModelProbes().then((results: Array<{ model: string; ok: boolean; latencyMs?: number }>) => {
+      if (results.some((item: { ok: boolean }) => !item.ok)) logger.warn(`模型探针存在失败: ${JSON.stringify(results)}`);
+    }).catch((error: unknown) => logger.warn("模型探针异常:", error));
+  }, 90_000);
+  modelProbeIntervalId = setInterval(() => {
+    void runModelProbes().catch((error: unknown) => logger.warn("模型探针异常:", error));
+  }, 60 * 60 * 1000);
 
   const pushTime = await getReviewPushTime();
   logger.info(`定时任务已启动（规则巡检分钟扫描默认间隔 ${intervalMin}min；Onboarding 草稿提交 5s；复盘/盯盘由 typed 自动化任务驱动；复盘推送 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}；数据质量 15:30）`);
@@ -275,6 +287,14 @@ export function stopScheduler() {
   if (alertIntervalId !== null) {
     clearInterval(alertIntervalId);
     alertIntervalId = null;
+  }
+  if (modelProbeStartupTimer !== null) {
+    clearTimeout(modelProbeStartupTimer);
+    modelProbeStartupTimer = null;
+  }
+  if (modelProbeIntervalId !== null) {
+    clearInterval(modelProbeIntervalId);
+    modelProbeIntervalId = null;
   }
   if (onboardingDraftCommitIntervalId !== null) {
     clearInterval(onboardingDraftCommitIntervalId);

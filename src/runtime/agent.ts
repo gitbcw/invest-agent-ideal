@@ -13,7 +13,7 @@ import { OUTPUT_VOLUME_POLICY } from "./spreadsheet-output-policy.js";
 import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
 import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
-import { resolveAutoModel } from "../services/model-health.js";
+import { recordModelFeedback, resolveAutoModel } from "../services/model-health.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 import { loadConversationHistory } from "../services/conversation-history.js";
@@ -179,7 +179,7 @@ export function createRuntimeAgent(): RuntimeAgent {
       const autoRoute = !requestedModel || requestedModel === "auto"
         ? resolveAutoModel({ hasImage: hasImageTurn })
         : undefined;
-      const selectedModel = requestedModel && requestedModel !== "auto" ? requestedModel : autoRoute?.model;
+      let selectedModel = requestedModel && requestedModel !== "auto" ? requestedModel : autoRoute?.model;
       const modelSource = requestedModel && requestedModel !== "auto" ? "user-selection" : "auto";
 
       try {
@@ -243,7 +243,7 @@ export function createRuntimeAgent(): RuntimeAgent {
         });
         const externalMcp = await resolveExternalMastraToolsets("interactive");
         try {
-          const mastraResult = await runMastraTurn({
+          const turnParams = {
             conversationId,
             text: promptContext.promptText,
             messageId: message.id,
@@ -259,7 +259,43 @@ export function createRuntimeAgent(): RuntimeAgent {
             toolsets: externalMcp.toolsets,
             signal: cancelSignal,
             maxSteps: 20,
-          }, { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } });
+          } as Parameters<typeof runMastraTurn>[0];
+          const turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
+          // W1-P3 自动路由轮内兜底：首字超时（45s）或可重试错误时，换下一顺位模型重试一次。
+          const AUTO_FIRST_TOKEN_TIMEOUT_MS = Number(process.env.MASTRA_AUTO_FIRST_TOKEN_TIMEOUT_MS ?? 45_000);
+          const isRetriableTurnError = (text: string) =>
+            text.includes("MASTRA_FIRST_TOKEN_TIMEOUT")
+            || text.includes("MASTRA_TURN_TIMEOUT")
+            || text.includes("MASTRA_EMPTY_RESPONSE")
+            || text.includes("upstream")
+            || text.includes("fetch failed")
+            || text.includes("ECONNRESET");
+          let mastraResult: Awaited<ReturnType<typeof runMastraTurn>>;
+          if (!autoRoute) {
+            mastraResult = await runMastraTurn(turnParams, turnDeps);
+          } else {
+            const excluded: string[] = [];
+            let attemptModel = selectedModel ?? "";
+            for (let attempt = 0; ; attempt++) {
+              try {
+                mastraResult = await runMastraTurn(
+                  { ...turnParams, model: attemptModel, ...(attempt === 0 ? { firstTokenTimeoutMs: AUTO_FIRST_TOKEN_TIMEOUT_MS } : {}) },
+                  turnDeps,
+                );
+                break;
+              } catch (error) {
+                const errorText = formatUnknownError(error);
+                recordModelFeedback(attemptModel, { ok: false });
+                const canRetry = attempt === 0 && isRetriableTurnError(errorText) && !(cancelSignal?.aborted ?? false);
+                if (!canRetry) throw error;
+                excluded.push(attemptModel);
+                const next = resolveAutoModel({ hasImage: hasImageTurn, exclude: excluded });
+                logger.warn(`自动路由轮内兜底：${attemptModel} 失败（${errorText.slice(0, 120)}），换用 ${next.model} 重试`);
+                attemptModel = next.model;
+                selectedModel = attemptModel;
+              }
+            }
+          }
           const postProcessed = await postProcessAgentReply({ reply: mastraResult.text, userContext, originalText: text });
           const extractedVisuals = userChannel === "web"
             ? extractInlineSvgVisuals(postProcessed.finalReply)

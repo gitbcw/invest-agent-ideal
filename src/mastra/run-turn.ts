@@ -16,6 +16,7 @@ export const DEFAULT_MASTRA_MAX_STEPS = 20;
 export type MastraTurnErrorCode =
   | "MASTRA_TURN_BUSY"
   | "MASTRA_TURN_TIMEOUT"
+  | "MASTRA_FIRST_TOKEN_TIMEOUT"
   | "TASK_CANCELLED"
   | "MASTRA_EMPTY_RESPONSE"
   | "MASTRA_TURN_ERROR";
@@ -69,6 +70,8 @@ export interface MastraTurnParams {
   text: string;
   messageId?: string;
   timeoutMs?: number;
+  /** W1-P3：首字看门狗——该窗口内没有任何首 token 则中止本轮（调用方可换模型重试）。 */
+  firstTokenTimeoutMs?: number;
   cwd?: string;
   userContext?: UserContext;
   model?: string;
@@ -374,7 +377,7 @@ function textFromChunk(chunk: unknown): string {
   return candidates.find((candidate): candidate is string => typeof candidate === "string") ?? "";
 }
 
-async function collectStream(value: unknown): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
+async function collectStream(value: unknown, onFirstText?: () => void): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
   const iterable = asAsyncIterable(value);
   if (!iterable) return { text: "", toolCalls: [] };
   const chunks: string[] = [];
@@ -383,7 +386,10 @@ async function collectStream(value: unknown): Promise<{ text: string; usage?: un
   let firstTextAtMs: number | undefined;
   for await (const chunk of iterable) {
     const chunkText = textFromChunk(chunk);
-    if (firstTextAtMs === undefined && chunkText) firstTextAtMs = Date.now();
+    if (firstTextAtMs === undefined && chunkText) {
+      firstTextAtMs = Date.now();
+      onFirstText?.();
+    }
     chunks.push(chunkText);
     if (isRecord(chunk)) {
       const type = typeof chunk.type === "string" ? chunk.type : "";
@@ -406,7 +412,7 @@ async function collectStream(value: unknown): Promise<{ text: string; usage?: un
   return { text: chunks.join(""), usage, toolCalls, ...(firstTextAtMs !== undefined ? { firstTextAtMs } : {}) };
 }
 
-async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string): Promise<{
+async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string, onFirstText?: () => void): Promise<{
   text: string;
   usage?: unknown;
   toolCalls?: unknown;
@@ -418,7 +424,7 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
   if (typeof output === "string") return { text: output };
   const directRecord = isRecord(output) ? output : undefined;
   const stream = directRecord?.textStream ?? directRecord?.fullStream;
-  const collected = stream === undefined ? { text: "", toolCalls: [] as unknown[] } : await collectStream(stream);
+  const collected = stream === undefined ? { text: "", toolCalls: [] as unknown[] } : await collectStream(stream, onFirstText);
   const directText = directRecord ? await awaitValue(directRecord.text as string | PromiseLike<string> | undefined) : undefined;
   const text = typeof directText === "string" ? directText : collected.text;
   const usage = directRecord ? await awaitValue(directRecord.usage) : undefined;
@@ -488,6 +494,15 @@ export async function runMastraTurn(
   active.add(conversationId);
   let timer: NodeJS.Timeout | undefined;
   let abortFromExternal: (() => void) | undefined;
+  let firstTokenTimedOut = false;
+  let firstTokenWatchdog: NodeJS.Timeout | undefined;
+  const clearFirstTokenWatchdog = () => {
+    if (firstTokenWatchdog !== undefined) {
+      clearTimeout(firstTokenWatchdog);
+      firstTokenWatchdog = undefined;
+    }
+  };
+  const firstTokenWindow = Number(params.firstTokenTimeoutMs);
   try {
     const startedAtMs = (dependencies.now ?? Date.now)();
     const timingStartedAtMs = Date.now();
@@ -498,6 +513,12 @@ export async function runMastraTurn(
     const timeoutMs = normalizeTimeout(params.timeoutMs);
     const maxSteps = normalizeMaxSteps(params.maxSteps ?? dependencies.maxSteps);
     const abortController = new AbortController();
+    if (Number.isFinite(firstTokenWindow) && firstTokenWindow > 0) {
+      firstTokenWatchdog = setTimeout(() => {
+        firstTokenTimedOut = true;
+        abortController.abort();
+      }, firstTokenWindow);
+    }
     const externalSignal = params.signal;
     abortFromExternal = () => abortController.abort(externalSignal?.reason);
     if (externalSignal) {
@@ -565,7 +586,7 @@ export async function runMastraTurn(
     const output = await Promise.race([streamPromise, timeoutPromise]);
     const outputStartedAtMs = Date.now();
     const mapped = await Promise.race([
-      resolveOutput(output, params.text, startedAt),
+      resolveOutput(output, params.text, startedAt, clearFirstTokenWatchdog),
       timeoutPromise,
     ]);
     outputCollectMs = Math.max(0, Date.now() - outputStartedAtMs);
@@ -596,14 +617,29 @@ export async function runMastraTurn(
       ...(toolCalls ? { toolCalls } : {}),
     };
   } catch (error) {
+    if (firstTokenTimedOut) {
+      throw new MastraTurnError(
+        `MASTRA_FIRST_TOKEN_TIMEOUT: 首字超时（${firstTokenWindow}ms）：conversationId=${conversationId}`,
+        "MASTRA_FIRST_TOKEN_TIMEOUT",
+        conversationId,
+      );
+    }
     throw mapError(error, conversationId);
   } finally {
+    clearFirstTokenWatchdog();
     if (timer) clearTimeout(timer);
     if (params.signal && abortFromExternal) {
       params.signal.removeEventListener("abort", abortFromExternal);
     }
     active.delete(conversationId);
   }
+}
+
+;
+
+/** 当前在途轮数（优雅排空观测用，W5）。 */
+export function activeMastraTurnCount(): number {
+  return activeConversations.size;
 }
 
 /** Create a runner with isolated busy state, useful for deterministic tests. */

@@ -14,6 +14,8 @@ export interface AutoChainEntry {
   model: string;
   /** 仅作为能力兜底档（true = 仅图片轮可选）。 */
   imageTier?: boolean;
+  /** 纯文本模型（true = 图片轮不可选，如 DeepSeek 系列）。 */
+  textOnly?: boolean;
 }
 
 export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
@@ -21,7 +23,7 @@ export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "gpt-5.6-terra" },
   { model: "gpt-5.5" },
   { model: "doubao-seed-2-1-turbo-260628", imageTier: true },
-  { model: "deepseek-v4-pro" },
+  { model: "deepseek-v4-pro", textOnly: true },
 ];
 
 /** UI 展示用的一句话定位说明（W2）。不在此列的模型不进入选择器。 */
@@ -39,6 +41,7 @@ const SLOW_FIRST_TOKEN_MS = 30_000;
 const MAX_ERROR_RATE = 0.2;
 const DEGRADE_EVIDENCES = 2;
 const RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
+const PROBATION_GOOD_EVIDENCES = 2;
 const MAX_EVENTS_PER_MODEL = 50;
 const SETTINGS_KEY = "model_health_state";
 
@@ -52,6 +55,8 @@ interface ModelState {
   events: FeedbackEvent[];
   consecutiveBad: number;
   degradedAt?: number;
+  /** 冷却期满后的缓刑期：连续 2 次好探针（或好真实调用）才恢复健康。 */
+  probation?: number;
 }
 
 const states = new Map<string, ModelState>();
@@ -61,7 +66,8 @@ let nowFn: () => number = Date.now;
 /** 测试钩子：重置内存态并注入时钟。 */
 export function __resetModelHealthForTest(now?: () => number): void {
   states.clear();
-  loaded = false;
+  // 测试隔离：置 loaded=true 阻止从（可能残留的）旧库快照回灌状态。
+  loaded = true;
   nowFn = now ?? Date.now;
 }
 
@@ -71,13 +77,14 @@ function loadSnapshot(): void {
   try {
     const row = sqlite.prepare("SELECT value FROM settings WHERE key = ?").get(SETTINGS_KEY) as { value: string } | undefined;
     if (!row?.value) return;
-    const parsed = JSON.parse(row.value) as Record<string, { events?: FeedbackEvent[]; consecutiveBad?: number; degradedAt?: number }>;
+    const parsed = JSON.parse(row.value) as Record<string, { events?: FeedbackEvent[]; consecutiveBad?: number; degradedAt?: number; probation?: number }>;
     for (const [model, saved] of Object.entries(parsed)) {
       if (!Array.isArray(saved.events)) continue;
       states.set(model, {
         events: saved.events.filter((event) => event && typeof event.at === "number").slice(-MAX_EVENTS_PER_MODEL),
         consecutiveBad: Number.isFinite(saved.consecutiveBad) ? Number(saved.consecutiveBad) : 0,
         ...(typeof saved.degradedAt === "number" ? { degradedAt: saved.degradedAt } : {}),
+        ...(typeof saved.probation === "number" ? { probation: saved.probation } : {}),
       });
     }
   } catch (error) {
@@ -92,7 +99,7 @@ function persistSnapshot(): void {
       // 只保留窗口内事件，避免快照无限增长。
       const cutoff = nowFn() - WINDOW_MS;
       const events = state.events.filter((event) => event.at >= cutoff);
-      snapshot[model] = { events, consecutiveBad: state.consecutiveBad, ...(state.degradedAt !== undefined ? { degradedAt: state.degradedAt } : {}) };
+      snapshot[model] = { events, consecutiveBad: state.consecutiveBad, ...(state.degradedAt !== undefined ? { degradedAt: state.degradedAt } : {}), ...(state.probation !== undefined ? { probation: state.probation } : {}) };
     }
     sqlite.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(SETTINGS_KEY, JSON.stringify(snapshot));
@@ -131,6 +138,13 @@ export function recordModelFeedback(model: string | undefined, input: { ok: bool
     }
   } else {
     state.consecutiveBad = 0;
+    if (state.probation !== undefined) {
+      state.probation += 1;
+      if (state.probation >= PROBATION_GOOD_EVIDENCES) {
+        delete state.probation;
+        logger.info(`模型恢复 model=${model}（缓刑期内连续 ${PROBATION_GOOD_EVIDENCES} 次好证据）`);
+      }
+    }
   }
   persistSnapshot();
 }
@@ -139,7 +153,7 @@ export interface ModelHealthView {
   model: string;
   healthy: boolean;
   inChain: boolean;
-  reason: "no-data" | "degraded" | "cooldown-retry" | "window-ok" | "window-bad";
+  reason: "no-data" | "degraded" | "probation" | "cooldown-retry" | "window-ok" | "window-bad";
   recentCalls: number;
   errorRate: number;
   p50FirstTokenMs: number | null;
@@ -160,12 +174,21 @@ export function getModelHealth(model: string): ModelHealthView {
   };
   if (state.degradedAt !== undefined) {
     if (now - state.degradedAt >= RECOVERY_COOLDOWN_MS) {
-      // 冷却期满：本次查询乐观放行，并把坏证据计数停在 1（再失败一次即重新降级）。
+      // 冷却期满进入缓刑：不再计时降级，但需要连续 2 次好证据（探针或真实调用）才恢复。
       state.degradedAt = undefined;
-      state.consecutiveBad = Math.min(state.consecutiveBad, 1);
+      state.probation = state.probation ?? 0;
       persistSnapshot();
     } else {
       return { ...base, healthy: false, reason: "degraded", errorRate: events.length ? events.filter((event) => !event.ok).length / events.length : 0, p50FirstTokenMs: p50(events) };
+    }
+  }
+  if (state.probation !== undefined) {
+    if (state.probation >= PROBATION_GOOD_EVIDENCES) {
+      delete state.probation;
+      state.consecutiveBad = 0;
+      persistSnapshot();
+    } else {
+      return { ...base, healthy: false, reason: "probation", errorRate: events.length ? events.filter((event) => !event.ok).length / events.length : 0, p50FirstTokenMs: p50(events) };
     }
   }
   if (events.length === 0) return { ...base, healthy: true, reason: "no-data", errorRate: 0, p50FirstTokenMs: null };
@@ -188,10 +211,12 @@ export interface AutoRouteResult {
 }
 
 /** 候选链解析：图片轮兜底走豆包，纯文本轮兜底走 DeepSeek Flash。 */
-export function resolveAutoModel(input: { hasImage: boolean }): AutoRouteResult {
-  // 图片轮：GPT 三档 + 豆包（去掉 flash）；纯文本轮：GPT 三档 + flash（去掉豆包）。
+export function resolveAutoModel(input: { hasImage: boolean; exclude?: string[] }): AutoRouteResult {
+  // 图片轮：GPT 三档 + 豆包（去掉 flash）；纯文本轮：GPT 三档 + pro（去掉豆包）。
+  const excluded = new Set(input.exclude ?? []);
   const usable = AUTO_MODEL_CHAIN
-    .filter((entry) => (input.hasImage ? entry.model !== "deepseek-v4-flash" : entry.imageTier !== true));
+    .filter((entry) => (input.hasImage ? entry.textOnly !== true : entry.imageTier !== true))
+    .filter((entry) => !excluded.has(entry.model));
   const skipped: AutoRouteResult["skipped"] = [];
   for (const entry of usable) {
     const health = getModelHealth(entry.model);
@@ -199,6 +224,42 @@ export function resolveAutoModel(input: { hasImage: boolean }): AutoRouteResult 
     skipped.push({ model: entry.model, reason: health.reason });
   }
   return { model: usable[0]?.model ?? AUTO_MODEL_CHAIN[0].model, skipped };
+}
+
+/** W1-P2 小时探针：对候选链模型发最小补全，测响应时延（近似首字）。
+ *  结果走同一反馈通道；为降级后没有流量的模型提供恢复依据。 */
+export async function runModelProbes(env: NodeJS.ProcessEnv = process.env): Promise<Array<{ model: string; ok: boolean; latencyMs?: number }>> {
+  const baseUrl = (env.MASTRA_GATEWAY_BASE_URL ?? env.GATEWAY_BASE_URL ?? env.OPENAI_BASE_URL ?? "").replace(/\/$/, "");
+  const apiKey = env.MASTRA_GATEWAY_API_KEY ?? env.GATEWAY_API_KEY ?? env.OPENAI_API_KEY ?? "";
+  const results: Array<{ model: string; ok: boolean; latencyMs?: number }> = [];
+  if (!baseUrl || !apiKey) {
+    logger.warn("模型探针未运行：网关地址或密钥未配置");
+    return results;
+  }
+  for (const entry of AUTO_MODEL_CHAIN) {
+    const startedAt = Date.now();
+    let ok = false;
+    let latencyMs: number | undefined;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20_000);
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: entry.model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream: false }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      latencyMs = Date.now() - startedAt;
+      ok = response.ok;
+      if (!ok) logger.warn(`模型探针失败 model=${entry.model} status=${response.status}`);
+    } catch (error) {
+      logger.warn(`模型探针异常 model=${entry.model}: ${(error as Error).message}`);
+    }
+    recordModelFeedback(entry.model, { ok, ...(latencyMs !== undefined ? { firstTokenMs: latencyMs } : {}) });
+    results.push({ model: entry.model, ok, ...(latencyMs !== undefined ? { latencyMs } : {}) });
+  }
+  return results;
 }
 
 /** models.state 展示视图（connector 命令 / 平台管理端用）。 */

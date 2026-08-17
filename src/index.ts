@@ -1,6 +1,7 @@
 import { startServer } from "./server.js";
 import { initDb } from "./db/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/index.js";
+import { activeMastraTurnCount } from "./mastra/run-turn.js";
 import { startFileRetentionScheduler, stopFileRetentionScheduler } from "./scheduler/file-retention.js";
 import { logger } from "./lib/logger.js";
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
@@ -67,6 +68,15 @@ async function main() {
     shuttingDown = true;
     logger.info(`收到 ${signal}，正在停止投资选股智能体...`);
     if (!offlineMode) stopScheduler();
+    // W5 优雅排空：等待在途 Agent 轮次完成（上限 240s），避免发布重启打断用户请求。
+    if (!offlineMode) {
+      const drainDeadline = Date.now() + 240_000;
+      while (activeMastraTurnCount() > 0 && Date.now() < drainDeadline) {
+        logger.info(`优雅排空中：${activeMastraTurnCount()} 个在途轮次...`);
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+      }
+      if (activeMastraTurnCount() > 0) logger.warn(`排空超时，仍有 ${activeMastraTurnCount()} 个轮次在途，强制退出`);
+    }
     stopAttachmentRetentionCleanup();
     stopFileRetentionScheduler();
     stopPlatformWeixinListeners();

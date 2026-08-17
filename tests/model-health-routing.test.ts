@@ -62,13 +62,42 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 1_000 });
     assert.equal(getModelHealth("gpt-5.6-terra").healthy, false);
 
-    // 冷却期满（30 分钟）：sol 乐观恢复为链首。
-    clock += 31 * 60 * 1000;
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-sol");
-    // 乐观恢复后再来一个坏证据：立即再次降级（计数已停在 1）。
+    // P2 缓刑恢复语义：冷却期满后不立即恢复，需连续 2 次好证据（探针或真实调用）。
+    __resetModelHealthForTest(() => clock);
     clock += 60_000;
-    recordModelFeedback("gpt-5.6-sol", { ok: false });
+    recordModelFeedback("gpt-5.6-sol", { ok: true, firstTokenMs: 45_000 });
+    clock += 60_000;
+    recordModelFeedback("gpt-5.6-sol", { ok: true, firstTokenMs: 45_000 });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
+    clock += 31 * 60 * 1000;
+    // 冷却期满：仍处缓刑，不回到链首。
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
+    // 第 1 次好证据（探针）：仍在缓刑。
+    recordModelFeedback("gpt-5.6-sol", { ok: true, firstTokenMs: 1_000 });
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
+    // 第 2 次好证据：恢复健康，回到链首。
+    clock += 60_000;
+    recordModelFeedback("gpt-5.6-sol", { ok: true, firstTokenMs: 1_000 });
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-sol");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    delete process.env.DB_PATH;
+    delete process.env.WORKSPACE_ROOT;
+  }
+});
+
+test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
+  process.env.WORKSPACE_BACKEND = "mastra";
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "model-health-excl-"));
+  process.env.NODE_ENV = "test";
+  process.env.DB_PATH = path.join(tempRoot, "test.db");
+  process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
+  try {
+    const { __resetModelHealthForTest, resolveAutoModel } = await import("../src/services/model-health.js");
+    __resetModelHealthForTest();
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-sol");
+    assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] }).model, "deepseek-v4-pro");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "doubao-seed-2-1-turbo-260628"] }).model, "gpt-5.6-sol");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
