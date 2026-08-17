@@ -58,24 +58,32 @@ export interface TimeTieredPricing {
   offPeak: ModelPriceTier;
 }
 
-/** Bookkeeping FX rate for USD-listed models. Adjust by commit, not per row. */
-export const USD_TO_CNY_RATE = 6.75;
+/**
+ * 美元牌价模型走中转网关的折算系数：美元数值按 1:1 视为人民币基数，再乘以折扣系数。
+ * 系数随中转成本在 0.2~0.4 间浮动；默认 0.4，可用 GATEWAY_USD_RELAY_RATE 覆盖。
+ * 调整通过提交进行（对齐美元牌价变更），不逐行随手改。
+ */
+export const GATEWAY_USD_RELAY_RATE = (() => {
+  const raw = Number(process.env.GATEWAY_USD_RELAY_RATE);
+  return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.4;
+})();
 
 const usd = (input: number, output: number): ModelPriceTier => ({
-  input: Math.round(input * USD_TO_CNY_RATE * 100) / 100,
-  output: Math.round(output * USD_TO_CNY_RATE * 100) / 100,
+  input: Math.round(input * GATEWAY_USD_RELAY_RATE * 100) / 100,
+  output: Math.round(output * GATEWAY_USD_RELAY_RATE * 100) / 100,
 });
 
 const GPT_5_6_TIERS: Record<"sol" | "terra" | "luna", ModelPriceTier> = {
-  sol: usd(5, 30),    // ¥33.75 / ¥202.50
-  terra: usd(2, 12),  // ¥13.50 / ¥81.00
-  luna: usd(0.2, 1.2) // ¥1.35 / ¥8.10
+  sol: usd(5, 30),    // ¥2.0 / ¥12.0
+  terra: usd(2.5, 15), // ¥1.0 / ¥6.0
+  luna: usd(0.2, 1.2) // ¥0.08 / ¥0.48
 };
 
 export const MODEL_PRICING: ModelPricingEntry[] = [
   { model: "gpt-5.6-sol", currency: "CNY", tier: GPT_5_6_TIERS.sol },
   { model: "gpt-5.6-terra", currency: "CNY", tier: GPT_5_6_TIERS.terra },
   { model: "gpt-5.6-luna", currency: "CNY", tier: GPT_5_6_TIERS.luna },
+  { model: "gpt-5.5", currency: "CNY", tier: usd(5, 30) }, // 与 sol 同牌价：¥2.0 / ¥12.0
   {
     model: "deepseek-v4-flash", currency: "CNY",
     tier: { input: 1, output: 2, cacheRead: 0.02 },

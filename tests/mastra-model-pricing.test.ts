@@ -11,14 +11,14 @@ process.env.WORKSPACE_BACKEND = "mastra";
 test("model pricing registry computes per-model costs with provider-aligned defaults", async () => {
   const { computeModelCost, isPricedModel, pricingSummary, normalizeModelId } = await import("../src/services/model-pricing.js");
 
-  // Registry hit: per-model tier (terra ¥13.5/¥81 per M, RMB restatement 2026-08-16).
+  // Registry hit: per-model tier (terra ¥1.0/¥6.0 per M; USD $2.5/$15 via gateway relay 0.4).
   const terra = computeModelCost("gpt-5.6-terra", {
     inputTokens: 1_000_000, outputTokens: 1_000_000, thoughtTokens: 500_000, cachedReadTokens: 2_000_000,
   });
   assert.equal(terra.source, "priced");
   assert.equal(terra.currency, "CNY");
-  // input 13.5 + output 81 + thought 40.5 (output rate) + cacheRead 2.7 (input/10 on 2M)
-  assert.equal(terra.amount, 13.5 + 81 + 40.5 + 2.7);
+  // input 1.0 + output 6.0 + thought 3.0 (output rate) + cacheRead 0.2 (input/10 on 2M)
+  assert.equal(terra.amount, 1.0 + 6.0 + 3.0 + 0.2);
 
   // Gateway prefix stripping.
   assert.equal(normalizeModelId("gateway/gpt-5.6-luna"), "gpt-5.6-luna");
@@ -27,7 +27,7 @@ test("model pricing registry computes per-model costs with provider-aligned defa
   // Unknown model falls back to the default tier and is flagged, never silent.
   const fallback = computeModelCost("gpt-5.4", { inputTokens: 1_000_000, outputTokens: 1_000_000 });
   assert.equal(fallback.source, "priced-fallback");
-  assert.equal(fallback.amount, 13.5 + 81);
+  assert.equal(fallback.amount, 1.0 + 6.0);
   assert.equal(isPricedModel("gpt-5.4"), false);
 
   // Provider-reported cost wins over local pricing.
@@ -40,7 +40,8 @@ test("model pricing registry computes per-model costs with provider-aligned defa
 
   // Summary exposes the active card for API surfaces.
   const summary = pricingSummary();
-  assert.ok(summary.models.some((entry) => entry.model === "gpt-5.6-sol" && entry.tier.input === 33.75));
+  assert.ok(summary.models.some((entry) => entry.model === "gpt-5.6-sol" && entry.tier.input === 2.0));
+  assert.ok(summary.models.some((entry) => entry.model === "gpt-5.5" && entry.tier.input === 2.0));
   assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-pro" && entry.tier.input === 3));
   assert.ok(summary.defaultTier.cacheRead > 0);
 
@@ -86,8 +87,8 @@ test("recordAgentTrace prices usage at write time with costSource envelope (E10 
     });
 
     const row = sqlite.prepare("SELECT cost_amount AS cost, cost_currency AS currency, usage_raw AS raw FROM agent_traces WHERE conversation_id='conv-cost'").get() as { cost: number; currency: string; raw: string };
-    // terra: 0.5M*13.5 + 0.1M*81 + 0.05M*81 + 1M*1.35 = 6.75 + 8.1 + 4.05 + 1.35
-    assert.equal(row.cost, 20.25);
+    // terra: 0.5M*1.0 + 0.1M*6.0 + 0.05M*6.0 + 1M*0.1 = 0.5 + 0.6 + 0.3 + 0.1
+    assert.equal(row.cost, 1.5);
     assert.equal(row.currency, "CNY");
     const envelope = JSON.parse(row.raw) as { costSource: string };
     assert.equal(envelope.costSource, "priced");
@@ -141,8 +142,8 @@ test("cost backfill prices only null rows by default and is idempotent (E10 C3)"
 
     const after = sqlite.prepare("SELECT conversation_id AS cid, cost_amount AS cost FROM agent_traces ORDER BY id").all() as Array<{ cid: string; cost: number }>;
     const byCid = Object.fromEntries(after.map((row) => [row.cid, row.cost]));
-    assert.equal(byCid["bf-1"], 13.5);    // terra 1M input (RMB)
-    assert.equal(byCid["bf-2"], 1.35);    // luna 1M input (RMB)
+    assert.equal(byCid["bf-1"], 1.0);     // terra 1M input (RMB, relay 0.4)
+    assert.equal(byCid["bf-2"], 0.08);    // luna 1M input (RMB, relay 0.4)
     assert.equal(byCid["bf-done"], 9.99); // untouched (already priced)
     assert.equal(byCid["bf-empty"], null); // no tokens -> out of backfill scope, stays null
   } finally {
