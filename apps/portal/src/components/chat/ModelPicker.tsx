@@ -110,7 +110,7 @@ export function ModelPicker({
             >
               <div className="flex items-baseline justify-between gap-2">
                 <span className="truncate text-xs font-medium text-[#22301f]">{opt.label}</span>
-                <span className="w-14 shrink-0 text-left tabular-nums text-[10px] text-[#8a938c]">{opt.inputPrice !== null ? `¥${opt.inputPrice}/${opt.outputPrice}` : ""}</span>
+                <span className="shrink-0 text-[10px] text-[#8a938c]">{opt.inputPrice !== null ? `¥${opt.inputPrice}/${opt.outputPrice}` : ""}</span>
               </div>
               <div className="mt-0.5 text-[11px] leading-4 text-[#8a938c]">{opt.description}</div>
             </button>
