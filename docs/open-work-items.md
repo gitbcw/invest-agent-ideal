@@ -113,6 +113,16 @@ REPLAY_PLAN=./classic-plan.json REPLAY_RESULTS=./classic-results.jsonl REPLAY_CO
 
 用例覆盖：周复盘（重）、行业资金流（最重）、个股+自选写操作、策略问答、公式分析×2、个股趋势（轻）、公众号链接（外部依赖）、附件缺失边界。mgreplay 账号与 connector 已常驻，状态导入（持仓/记忆/偏好）随当日迁移完成。
 
-## W6+ · owner 待补充
+## W6 · 微信在途轮次的中断源排查
+
+**状态**：待实现。2026-08-17 实测：发版 SIGINT 时优雅排空正确检测到 1 个在途微信轮次，但该轮在信号后 ~3 秒内被中断（无回复、无错误 trace、排空随即放行）。需定位中断源（疑似 weixin 监听/桥接层把信号传播为轮次 abort），保证排空窗口内真正跑完。
+
+## 附 · 微信通道修复记录（2026-08-17，已完成）
+
+- 根因一：发版重启杀监听且不自愈 → `PLATFORM_WEIXIN_AUTO_START=true`（owner 授权），实测重启后自动恢复 invest-agent-111 监听。
+- 根因二：生产迁移的微信会话行 `project_id` 为旧口径 `invest-agent-<user>`，与新系统 `invest-agent` 白名单不匹配 → `CONVERSATION_SCOPE_MISMATCH` 拒收；已规范化 16 会话/658 消息。
+- 验证：owner 实机「你好」20 秒收到回复，「日复盘」会话续聊正常。
+
+## W7+ · owner 待补充
 
 （owner 口述新工作项追加于此，Agent 负责整理成条目并回填细节。）
