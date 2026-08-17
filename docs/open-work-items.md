@@ -123,6 +123,13 @@ REPLAY_PLAN=./classic-plan.json REPLAY_RESULTS=./classic-results.jsonl REPLAY_CO
 - 根因二：生产迁移的微信会话行 `project_id` 为旧口径 `invest-agent-<user>`，与新系统 `invest-agent` 白名单不匹配 → `CONVERSATION_SCOPE_MISMATCH` 拒收；已规范化 16 会话/658 消息。
 - 验证：owner 实机「你好」20 秒收到回复，「日复盘」会话续聊正常。
 
+## 附 · 用户文件迁移缺口补齐（2026-08-17，已完成）
+
+- 现象：111 的「我的文件」多数预览报「文件内容不可用」。审计：66 个在册资产仅 29 个文件在位。
+- 根因：cutover 整库拷贝带过来了 user_assets/user_asset_versions 记录，但这些记录指向的存储文件在生产的**旧工作区布局**（`invest-agent-data/workspaces/<user>/assets/<id>/`），不在六域迁移范围，未随 data/projects 重建。
+- 修复：从生产按 asset id 补拷 37 个目录到新 digest 根（只读拷贝，生产未动）；复核 66/66 在位。
+- 教训（后续 runbook 修订要点）：**任何数据刷新流程必须包含「user_assets 文件从旧工作区布局到 digest 根的搬运」步骤**；生产退役后文件可从 DR 备份的 workspaces 快照恢复。
+
 ## W7+ · owner 待补充
 
 （owner 口述新工作项追加于此，Agent 负责整理成条目并回填细节。）
