@@ -23,7 +23,7 @@ export const AUTO_MODEL_VALUE = "auto";
 
 /** 兜底快照（与 runtime 注册表同步维护，峰谷按峰值）。 */
 export const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
-  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", description: "旗舰质量，复杂分析与长推理首选，价格最高", inputPrice: 2.0, outputPrice: 12.0 },
+  { value: "gpt-5.6-sol", label: "GPT-5.6 Sol", description: "旗舰质量，复杂分析与长推理首选", inputPrice: 2.0, outputPrice: 12.0 },
   { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", description: "高质量均衡档，日常深度分析推荐", inputPrice: 1.0, outputPrice: 6.0 },
   { value: "gpt-5.5", label: "GPT-5.5", description: "上代旗舰，质量稳定，速度通常更快", inputPrice: 2.0, outputPrice: 12.0 },
   { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro", description: "深度思考档，中文与工具调用强", inputPrice: 9.0, outputPrice: 27.0 },
