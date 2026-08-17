@@ -131,6 +131,7 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
     onOpenPatrol={() => window.location.assign("/patrol")}
     onOpenAssets={() => window.location.assign("/assets")}
     onOpenManual={() => window.location.assign("/manual")}
+    onOpenUsage={() => window.location.assign("/usage")}
     onChangePassword={() => window.location.assign("/change-password")}
     onLogout={() => void logout().then(() => window.location.assign("/login"))}
   />;

@@ -23,6 +23,7 @@ import {
 } from "../handlers/review.js";
 import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
+import { resolveAutoModel } from "../services/model-health.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 import { buildAgentInstructions } from "./agent-instructions.js";
 
@@ -365,10 +366,12 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
     const mastraTools = await createMastraToolMap({ ...input.userContext, instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID });
     const externalMcp = await resolveExternalMastraToolsets("scheduled-read");
     try {
+      const autoRoute = resolveAutoModel({ hasImage: false });
       const mastraResult = await runMastraTurn({
         conversationId: input.conversationId,
         text: input.promptText,
         messageId: input.messageId,
+        model: autoRoute.model,
         timeoutMs: SCHEDULED_AGENT_TIMEOUT_MS,
         userContext: input.userContext,
         requestContext: {
@@ -397,10 +400,11 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
         reviewContextSummary: input.reviewContextSummary,
         status: "success",
         elapsedMs: Date.now() - startedAt,
+        firstTokenMs: mastraResult.firstTokenMs,
         usage: mastraResult.usage,
         agentBackend: "mastra",
         agentModel: mastraResult.model,
-        modelSource: "runtime-config",
+        modelSource: "auto",
         toolCalls: mastraResult.toolCalls,
       });
       return reply;

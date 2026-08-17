@@ -39,6 +39,7 @@ interface SidebarProps {
   onOpenManual: () => void;
   onChangePassword: () => void;
   onLogout: () => void;
+  onOpenUsage: () => void;
 }
 
 export function Sidebar({
@@ -68,7 +69,8 @@ export function Sidebar({
   onOpenAssets,
   onOpenManual,
   onChangePassword,
-  onLogout
+  onLogout,
+  onOpenUsage
 }: SidebarProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [expandedLabelIds, setExpandedLabelIds] = useState<Record<string, boolean>>({});
@@ -195,6 +197,7 @@ export function Sidebar({
               onOpenManual={onOpenManual}
               onChangePassword={onChangePassword}
               onLogout={onLogout}
+          onOpenUsage={onOpenUsage}
             />
           </div>
         </aside>
@@ -315,6 +318,7 @@ export function Sidebar({
           onOpenManual={onOpenManual}
           onChangePassword={onChangePassword}
           onLogout={onLogout}
+          onOpenUsage={onOpenUsage}
         />
       </div>
       </aside>

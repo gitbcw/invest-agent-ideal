@@ -4,6 +4,7 @@ import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { redactSensitiveText } from "../lib/customer-output.js";
 import { computeModelCost } from "../services/model-pricing.js";
+import { recordModelFeedback } from "../services/model-health.js";
 
 const TEXT_LIMIT = 8000;
 const ERROR_LIMIT = 1200;
@@ -54,6 +55,7 @@ export interface AgentTraceInput {
   status: TraceStatus;
   errorMessage?: string;
   elapsedMs?: number;
+  firstTokenMs?: number;
   usage?: AgentTokenUsage;
 }
 
@@ -127,6 +129,7 @@ export async function recordAgentTrace(input: AgentTraceInput) {
       status: input.status,
       errorMessage: truncate(input.errorMessage, ERROR_LIMIT),
       elapsedMs: input.elapsedMs,
+      firstTokenMs: input.firstTokenMs,
       inputTokens: input.usage?.inputTokens,
       outputTokens: input.usage?.outputTokens,
       thoughtTokens: input.usage?.thoughtTokens,
@@ -141,6 +144,8 @@ export async function recordAgentTrace(input: AgentTraceInput) {
       usageRaw: serializeJsonForStorage(usageRawEnvelope, 2000),
       createdAt: new Date().toISOString(),
     });
+    // W1: 每条 trace 即模型健康反馈（成败 + 首字延迟）。
+    recordModelFeedback(input.agentModel, { ok: input.status === "success", firstTokenMs: input.firstTokenMs });
   } catch (error) {
     logger.warn("agent trace write failed:", error);
   }

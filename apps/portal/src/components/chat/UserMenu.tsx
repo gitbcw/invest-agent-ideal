@@ -1,17 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, ChevronDown, KeyRound, LogOut } from "lucide-react";
+import { BarChart3, BookOpen, ChevronDown, KeyRound, LogOut } from "lucide-react";
 
 interface UserMenuProps {
   username: string;
   compact?: boolean;
   onOpenManual: () => void;
+  onOpenUsage: () => void;
   onChangePassword: () => void;
   onLogout: () => void;
 }
 
-export function UserMenu({ username, compact = false, onOpenManual, onChangePassword, onLogout }: UserMenuProps) {
+export function UserMenu({ username, compact = false, onOpenManual, onOpenUsage, onChangePassword, onLogout }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -57,6 +58,18 @@ export function UserMenu({ username, compact = false, onOpenManual, onChangePass
           >
             <BookOpen size={15} aria-hidden="true" />
             <span>使用手册</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-black/5"
+            onClick={() => {
+              setOpen(false);
+              onOpenUsage();
+            }}
+          >
+            <BarChart3 size={15} aria-hidden="true" />
+            <span>使用记录</span>
           </button>
           <button
             type="button"

@@ -374,14 +374,17 @@ function textFromChunk(chunk: unknown): string {
   return candidates.find((candidate): candidate is string => typeof candidate === "string") ?? "";
 }
 
-async function collectStream(value: unknown): Promise<{ text: string; usage?: unknown; toolCalls: unknown[] }> {
+async function collectStream(value: unknown): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
   const iterable = asAsyncIterable(value);
   if (!iterable) return { text: "", toolCalls: [] };
   const chunks: string[] = [];
   const toolCalls: unknown[] = [];
   let usage: unknown;
+  let firstTextAtMs: number | undefined;
   for await (const chunk of iterable) {
-    chunks.push(textFromChunk(chunk));
+    const chunkText = textFromChunk(chunk);
+    if (firstTextAtMs === undefined && chunkText) firstTextAtMs = Date.now();
+    chunks.push(chunkText);
     if (isRecord(chunk)) {
       const type = typeof chunk.type === "string" ? chunk.type : "";
       if (type === "error" || type.includes("error")) {
@@ -400,7 +403,7 @@ async function collectStream(value: unknown): Promise<{ text: string; usage?: un
       }
     }
   }
-  return { text: chunks.join(""), usage, toolCalls };
+  return { text: chunks.join(""), usage, toolCalls, ...(firstTextAtMs !== undefined ? { firstTextAtMs } : {}) };
 }
 
 async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string): Promise<{
@@ -409,6 +412,7 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
   toolCalls?: unknown;
   toolResults?: unknown;
   model?: string;
+  firstTextAtMs?: number;
 }> {
   const output = await outputValue;
   if (typeof output === "string") return { text: output };
@@ -431,6 +435,7 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
     toolCalls: toolCalls ?? (collected.toolCalls.length > 0 ? collected.toolCalls : undefined),
     toolResults,
     model,
+    ...(collected.firstTextAtMs !== undefined ? { firstTextAtMs: collected.firstTextAtMs } : {}),
   };
 }
 
@@ -569,8 +574,10 @@ export async function runMastraTurn(
     const toolCalls = mergeMastraToolCallsAndResults(mapped.toolCalls, mapped.toolResults, new Date(startedAtMs))
       ?? mapMastraToolCalls(mapped.toolCalls, new Date(startedAtMs));
     const model = mapped.model ?? params.model ?? gateway?.defaultModel;
+    const firstTokenMs = mapped.firstTextAtMs !== undefined ? Math.max(0, mapped.firstTextAtMs - startedAtMs) : undefined;
     return {
       text,
+      ...(firstTokenMs !== undefined ? { firstTokenMs } : {}),
       usage: mapMastraUsage(mapped.usage, params.text, text),
       budget: {
         state: "completed",

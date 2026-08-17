@@ -1120,6 +1120,7 @@ export function initDb() {
   ensureColumn("codex_acp_traces", "usage_raw", "TEXT");
   ensureColumn("agent_traces", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("agent_traces", "trace_id", "TEXT");
+  ensureColumn("agent_traces", "first_token_ms", "INTEGER");
   ensureColumn("agent_traces", "run_id", "TEXT");
   ensureColumn("agent_traces", "task_id", "TEXT");
   ensureColumn("agent_traces", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");

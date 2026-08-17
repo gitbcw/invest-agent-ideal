@@ -13,6 +13,7 @@ import { OUTPUT_VOLUME_POLICY } from "./spreadsheet-output-policy.js";
 import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
 import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
+import { resolveAutoModel } from "../services/model-health.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
 import { loadConversationHistory } from "../services/conversation-history.js";
@@ -164,11 +165,22 @@ export function createRuntimeAgent(): RuntimeAgent {
       const cancelSignal = message.context?._cancelSignal instanceof AbortSignal
         ? message.context._cancelSignal
         : undefined;
-      // D25: per-turn model selection from the Portal composer. Empty or
-      // absent falls through to the gateway default model.
-      const selectedModel = typeof message.context?.model === "string" && message.context.model.trim()
+      // D25/W1: per-turn model selection. Explicit model locks in; empty or
+      // "auto" routes through the health-gated auto chain.
+      const requestedModel = typeof message.context?.model === "string" && message.context.model.trim()
         ? message.context.model.trim()
         : undefined;
+      const hasImageTurn = Array.isArray(message.context?.attachments)
+        && message.context.attachments.some((item) => {
+          const record = item as Record<string, unknown> | null;
+          const mime = typeof record?.mimeType === "string" ? record.mimeType : typeof record?.type === "string" ? record.type : "";
+          return mime.startsWith("image/");
+        });
+      const autoRoute = !requestedModel || requestedModel === "auto"
+        ? resolveAutoModel({ hasImage: hasImageTurn })
+        : undefined;
+      const selectedModel = requestedModel && requestedModel !== "auto" ? requestedModel : autoRoute?.model;
+      const modelSource = requestedModel && requestedModel !== "auto" ? "user-selection" : "auto";
 
       try {
         if (cancelSignal?.aborted) throw new Error("TASK_CANCELLED");
@@ -264,7 +276,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             replyTextSanitized: cleaned, mode, reviewContextSummary: { budget: mastraResult.budget },
             status: "success", elapsedMs: Date.now() - startedAt, usage: mastraResult.usage,
             agentBackend: "mastra", agentModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
-            modelSource: selectedModel ? "user-selection" : "runtime-config",
+            modelSource, firstTokenMs: mastraResult.firstTokenMs,
           });
           return textResponse(cleaned, true, extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined);
         } finally {

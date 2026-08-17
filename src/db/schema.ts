@@ -433,6 +433,7 @@ export const agentTraces = sqliteTable("agent_traces", {
   status: text("status").notNull(),
   errorMessage: text("error_message"),
   elapsedMs: integer("elapsed_ms"),
+  firstTokenMs: integer("first_token_ms"),
   inputTokens: integer("input_tokens"),
   outputTokens: integer("output_tokens"),
   thoughtTokens: integer("thought_tokens"),

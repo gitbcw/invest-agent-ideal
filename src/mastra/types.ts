@@ -57,6 +57,8 @@ export interface MastraBudgetSnapshot {
 export interface MastraTurnResult {
   text: string;
   usage: MastraTokenUsage;
+  /** 首 token 延迟（ms），W1 模型健康的降级依据。 */
+  firstTokenMs?: number;
   budget: MastraBudgetSnapshot;
   backendId: MastraBackendId;
   model?: string;

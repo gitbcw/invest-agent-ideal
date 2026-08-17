@@ -70,6 +70,8 @@ import {
 } from "../services/user-assets.js";
 import { assertUploadRequestSize, getStorageUsage } from "../services/user-storage-quota.js";
 import { backfillFormalReportAssetMappings, getReportAssetMappingForRead, listReportAssetMappings, registerReportAssetMapping } from "../services/report-asset-mappings.js";
+import { modelRoutingSnapshot, resolveAutoModel } from "../services/model-health.js";
+import { pricingSummary } from "../services/model-pricing.js";
 
 const PROTOCOL_VERSION = "2026-08-05";
 const LEGACY_PROTOCOL_VERSION = "2026-07-04";
@@ -99,6 +101,9 @@ const TYPES = {
   AUTOMATION_RUN_NOW: "automation.run_now",
   AUTOMATION_RUNS_LIST: "automation.runs.list",
   RULE_PATROL_STATUS: "rule_patrol.status",
+  MODELS_STATE: "models.state",
+  USAGE_SUMMARY: "usage.summary",
+  USAGE_RECORDS: "usage.records",
   RULE_PATROL_RUN_NOW: "rule_patrol.run_now",
   RULE_PATROL_RULES_LIST: "rule_patrol.rules.list",
   RULE_PATROL_RULES_CREATE: "rule_patrol.rules.create",
@@ -269,6 +274,29 @@ function localPayloadScope(scope: ConnectorScope, payload: any) {
   };
 }
 
+function usageRange(message: { payload?: unknown }): { from: string; to: string } {
+  const payload = (message.payload ?? {}) as Record<string, unknown>;
+  const fromRaw = typeof payload.from === "string" && /^\d{4}-\d{2}-\d{2}/.test(payload.from) ? payload.from : "";
+  const toRaw = typeof payload.to === "string" && /^\d{4}-\d{2}-\d{2}/.test(payload.to) ? payload.to : "";
+  const now = new Date();
+  const isoDay = (date: Date) => date.toISOString().slice(0, 10);
+  const from = fromRaw || isoDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
+  const to = toRaw || `${isoDay(now)}T23:59:59.999Z`;
+  return { from: from.length === 10 ? `${from}T00:00:00.000Z` : from, to: to.length === 10 ? `${to}T23:59:59.999Z` : to };
+}
+
+function usageCursor(message: { payload?: unknown }): number {
+  const payload = (message.payload ?? {}) as Record<string, unknown>;
+  const cursor = Number(payload.cursor);
+  return Number.isFinite(cursor) && cursor > 0 ? cursor : Number.MAX_SAFE_INTEGER;
+}
+
+function usageLimit(message: { payload?: unknown }): number {
+  const payload = (message.payload ?? {}) as Record<string, unknown>;
+  const limit = Number(payload.limit);
+  return Number.isFinite(limit) && limit >= 1 && limit <= 200 ? Math.floor(limit) : 50;
+}
+
 function automationScope(scope: ConnectorScope) {
   return { userId: scope.userId, instanceId: scope.instanceId, projectId: scope.projectId };
 }
@@ -415,6 +443,79 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         ...commandScope,
         conversationId,
       })));
+    }
+    case TYPES.USAGE_SUMMARY: {
+      const usageScope = automationScope(scope);
+      const range = usageRange(message);
+      const totals = sqlite.prepare(`
+        SELECT COUNT(*) AS calls,
+               COALESCE(SUM(total_tokens), 0) AS tokens,
+               COALESCE(SUM(cost_amount), 0) AS cost,
+               COALESCE(SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END), 0) AS failures
+        FROM agent_traces
+        WHERE user_id = ? AND instance_id = ? AND created_at >= ? AND created_at <= ?
+      `).get(usageScope.userId, usageScope.instanceId, range.from, range.to);
+      const byModel = sqlite.prepare(`
+        SELECT agent_model AS model, COUNT(*) AS calls,
+               COALESCE(SUM(cost_amount), 0) AS cost,
+               COALESCE(SUM(total_tokens), 0) AS tokens
+        FROM agent_traces
+        WHERE user_id = ? AND instance_id = ? AND created_at >= ? AND created_at <= ?
+        GROUP BY agent_model ORDER BY cost DESC
+      `).all(usageScope.userId, usageScope.instanceId, range.from, range.to);
+      const byDay = sqlite.prepare(`
+        SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS calls,
+               COALESCE(SUM(cost_amount), 0) AS cost
+        FROM agent_traces
+        WHERE user_id = ? AND instance_id = ? AND created_at >= ? AND created_at <= ?
+        GROUP BY day ORDER BY day
+      `).all(usageScope.userId, usageScope.instanceId, range.from, range.to);
+      return finish(ok(message.type, message.requestId, { range, totals, byModel, byDay }));
+    }
+    case TYPES.USAGE_RECORDS: {
+      const usageScope = automationScope(scope);
+      const range = usageRange(message);
+      const cursor = usageCursor(message);
+      const limit = usageLimit(message);
+      const rows = sqlite.prepare(`
+        SELECT id, created_at, agent_model AS model, model_source AS modelSource, conversation_id AS conversationId,
+               channel, status, input_tokens AS inputTokens, output_tokens AS outputTokens, total_tokens AS totalTokens,
+               cost_amount AS cost, elapsed_ms AS elapsedMs, first_token_ms AS firstTokenMs
+        FROM agent_traces
+        WHERE user_id = ? AND instance_id = ? AND created_at >= ? AND created_at <= ? AND id < ?
+        ORDER BY id DESC LIMIT ?
+      `).all(usageScope.userId, usageScope.instanceId, range.from, range.to, cursor, limit + 1);
+      const hasMore = rows.length > limit;
+      const items = (hasMore ? rows.slice(0, limit) : rows) as Array<Record<string, unknown>>;
+      return finish(ok(message.type, message.requestId, {
+        items,
+        nextCursor: hasMore ? String(items[items.length - 1]?.id ?? cursor) : null,
+      }));
+    }
+    case TYPES.MODELS_STATE: {
+      const snapshot = modelRoutingSnapshot();
+      const pricing = pricingSummary();
+      const options = Object.entries(snapshot.descriptions).map(([model, description]) => {
+        const entry = pricing.models.find((item) => item.model === model);
+        return {
+          model,
+          description,
+          inputPrice: entry?.tier.input ?? null,
+          outputPrice: entry?.tier.output ?? null,
+          timeTiered: entry?.timeTiered
+            ? { peak: entry.timeTiered.peak, offPeak: entry.timeTiered.offPeak }
+            : null,
+        };
+      });
+      return finish(ok(message.type, message.requestId, {
+        auto: {
+          textModel: resolveAutoModel({ hasImage: false }).model,
+          imageModel: resolveAutoModel({ hasImage: true }).model,
+        },
+        chain: snapshot.chain,
+        thresholds: snapshot.thresholds,
+        options,
+      }));
     }
     case TYPES.RULE_PATROL_STATUS: {
       const patrolScope = automationScope(scope);
