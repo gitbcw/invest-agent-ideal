@@ -173,51 +173,61 @@ function restartAlertInterval(_minutes: number) {
           : shouldRunRuleAlertCheckTask({ userId, instanceId, projectId }, fallbackInterval, now);
         try {
           if (!ruleAlertHit) continue;
-          const claimed = await claimScheduledTaskRun({
-            taskKey: ruleAlertHit.taskKey,
-            taskType: "rule-alert-check",
-            scheduledFor: ruleAlertHit.scheduledFor,
-            userId,
-            projectId,
-            instanceId,
-          });
-          if (!claimed) {
-            logger.info(`跳过规则巡检 user=${userId} instance=${instanceId} slot=${ruleAlertHit.slot}: task 已被其他进程领取`);
-            continue;
-          }
           runningRuleAlertTasks.add(runningKey);
           try {
             const items = await runAlertCheck({ force: true, userId, instanceId });
-            if (items.length > 0) {
-              const text = formatAlerts(items);
-              const messageKind = "rule_alert" as const;
-              const delivery = resolveScheduledMessageExpiry(messageKind, now);
-              const pushResult = await getPushFn()(text, {
+            // 无命中不落运行记录、不打日志：巡检默认每 5 分钟一轮，仅命中与失败留痕。
+            if (items.length === 0) continue;
+            const claimed = await claimScheduledTaskRun({
+              taskKey: ruleAlertHit.taskKey,
+              taskType: "rule-alert-check",
+              scheduledFor: ruleAlertHit.scheduledFor,
+              userId,
+              projectId,
+              instanceId,
+            });
+            if (!claimed) {
+              logger.info(`跳过规则巡检 user=${userId} instance=${instanceId} slot=${ruleAlertHit.slot}: task 已被其他进程领取`);
+              continue;
+            }
+            const text = formatAlerts(items);
+            const messageKind = "rule_alert" as const;
+            const delivery = resolveScheduledMessageExpiry(messageKind, now);
+            const pushResult = await getPushFn()(text, {
+              userId,
+              projectId,
+              instanceId,
+              messageKind,
+              expiresAt: delivery.expiresAt,
+              originTaskKey: ruleAlertHit.taskKey,
+              retryPolicy: delivery.retryPolicy,
+              idempotencyKey: scheduledMessageIdempotencyKey({
+                userId,
+                instanceId,
+                kind: messageKind,
+                businessPeriod: ruleAlertHit.taskKey,
+              }),
+              maxAttempts: delivery.maxAttempts,
+            });
+            await finishScheduledTaskRun(ruleAlertHit.taskKey, {
+              status: "success",
+              pushJobId: typeof pushResult === "string" ? pushResult : undefined,
+            });
+            logger.info(`规则巡检命中 user=${userId} instance=${instanceId} slot=${ruleAlertHit.slot} alerts=${items.length}`);
+          } catch (error) {
+            // 失败必须留痕：评估或推送异常时补记 error 运行记录（claim 幂等，已领取时仅在 claimed 行上生效）。
+            try {
+              await claimScheduledTaskRun({
+                taskKey: ruleAlertHit.taskKey,
+                taskType: "rule-alert-check",
+                scheduledFor: ruleAlertHit.scheduledFor,
                 userId,
                 projectId,
                 instanceId,
-                messageKind,
-                expiresAt: delivery.expiresAt,
-                originTaskKey: ruleAlertHit.taskKey,
-                retryPolicy: delivery.retryPolicy,
-                idempotencyKey: scheduledMessageIdempotencyKey({
-                  userId,
-                  instanceId,
-                  kind: messageKind,
-                  businessPeriod: ruleAlertHit.taskKey,
-                }),
-                maxAttempts: delivery.maxAttempts,
               });
-              await finishScheduledTaskRun(ruleAlertHit.taskKey, {
-                status: "success",
-                pushJobId: typeof pushResult === "string" ? pushResult : undefined,
-              });
-              logger.info(`规则巡检命中 user=${userId} instance=${instanceId} slot=${ruleAlertHit.slot} alerts=${items.length}`);
-            } else {
-              await finishScheduledTaskRun(ruleAlertHit.taskKey, { status: "skipped" });
-              logger.info(`规则巡检无命中 user=${userId} instance=${instanceId} slot=${ruleAlertHit.slot}`);
+            } catch {
+              // 留痕失败不掩盖原始错误
             }
-          } catch (error) {
             await finishScheduledTaskRun(ruleAlertHit.taskKey, {
               status: "error",
               errorMessage: formatUnknownError(error),
@@ -292,7 +302,6 @@ function shouldRunRuleAlertCheckTask(scope: SchedulableScope, intervalMinutes: n
   const key = `${dateKey}:rule-alert-check:${scope.userId}:${scope.instanceId}:${slot}`;
   if (ruleAlertFiredKeys.has(key)) return null;
   ruleAlertFiredKeys.add(key);
-  logger.info(`命中规则巡检 user=${scope.userId} instance=${scope.instanceId} slot=${slot}`);
   return { taskKey: key, scheduledFor: `${dateKey}:${slot}`, slot };
 }
 
