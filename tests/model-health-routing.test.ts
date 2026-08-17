@@ -43,14 +43,14 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     clock += 60_000;
     recordModelFeedback("gpt-5.5", { ok: true, firstTokenMs: 60_000 });
     // 文本轮兜底走 flash；图片轮兜底走豆包。
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-v4-flash");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-v4-pro");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "doubao-seed-2-1-turbo-260628");
 
     // 全链降级时按优先级硬选链首。
     clock += 60_000;
-    recordModelFeedback("deepseek-v4-flash", { ok: false });
+    recordModelFeedback("deepseek-v4-pro", { ok: false });
     clock += 60_000;
-    recordModelFeedback("deepseek-v4-flash", { ok: false });
+    recordModelFeedback("deepseek-v4-pro", { ok: false });
     clock += 60_000;
     recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
     clock += 60_000;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AUTO_MODEL_VALUE, FALLBACK_MODEL_OPTIONS, buildModelOption, type ModelOption } from "@/lib/models";
+import { AUTO_MODEL_VALUE, FALLBACK_MODEL_OPTIONS, type ModelOption } from "@/lib/models";
 
 interface ModelsStateResponse {
   ok: boolean;
@@ -11,16 +11,13 @@ interface ModelsStateResponse {
       model: string;
       description: string;
       inputPrice: number | null;
-      outputPrice: number | null;
-      timeTiered: { peak: { input: number; output: number }; offPeak: { input: number; output: number } } | null;
     }>;
   };
 }
 
 const LABELS: Record<string, string> = {
-  "gpt-5.6-terra": "GPT-5.6 Terra",
-  "gpt-5.6-luna": "GPT-5.6 Luna",
   "gpt-5.6-sol": "GPT-5.6 Sol",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-5.5": "GPT-5.5",
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "deepseek-v4-flash": "DeepSeek V4 Flash",
@@ -62,7 +59,7 @@ export function ModelPicker({
     if (!remote?.options?.length) return FALLBACK_MODEL_OPTIONS;
     const built = remote.options
       .filter((item) => LABELS[item.model])
-      .map((item) => buildModelOption(item.model, LABELS[item.model], item.description, item.inputPrice !== null ? { input: item.inputPrice ?? 0, output: item.outputPrice ?? 0 } : null, item.timeTiered));
+      .map((item) => ({ value: item.model, label: LABELS[item.model], description: item.description, price: item.inputPrice }));
     return built.sort((a, b) => {
       const order = Object.keys(LABELS);
       return order.indexOf(a.value) - order.indexOf(b.value);
@@ -112,14 +109,12 @@ export function ModelPicker({
             >
               <div className="flex items-baseline justify-between gap-2">
                 <span className="truncate text-xs font-medium text-[#22301f]">{opt.label}</span>
-                <span className="shrink-0 text-[10px] text-[#8a938c]">
-                  {opt.priceText}
-                  {opt.tierNote ? <span className="ml-1 rounded bg-[#f0f2f0] px-1 py-px text-[9px] text-[#6f7d73]">{opt.tierNote}</span> : null}
-                </span>
+                <span className="shrink-0 text-[10px] text-[#8a938c]">{opt.price !== null ? `¥${opt.price}` : ""}</span>
               </div>
               <div className="mt-0.5 text-[11px] leading-4 text-[#8a938c]">{opt.description}</div>
             </button>
           ))}
+          <div className="border-t border-[#eef2ee] px-3 py-1.5 text-[10px] text-[#a2aaa4]">价格为每百万 tokens 输入价（峰谷模型按峰值）</div>
         </div>
       ) : null}
     </div>

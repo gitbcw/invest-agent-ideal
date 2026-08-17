@@ -497,15 +497,13 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       const pricing = pricingSummary();
       const options = Object.entries(snapshot.descriptions).map(([model, description]) => {
         const entry = pricing.models.find((item) => item.model === model);
-        return {
-          model,
-          description,
-          inputPrice: entry?.tier.input ?? null,
-          outputPrice: entry?.tier.output ?? null,
-          timeTiered: entry?.timeTiered
-            ? { peak: entry.timeTiered.peak, offPeak: entry.timeTiered.offPeak }
-            : null,
-        };
+        // 展示口径（owner 2026-08-17）：只显示输入价；峰谷模型统一按峰值。
+        const displayPrice = entry
+          ? entry.timeTiered
+            ? entry.timeTiered.peak.input
+            : entry.tier.input
+          : null;
+        return { model, description, inputPrice: displayPrice };
       });
       return finish(ok(message.type, message.requestId, {
         auto: {

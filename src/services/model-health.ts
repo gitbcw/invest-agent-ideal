@@ -21,17 +21,16 @@ export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "gpt-5.6-terra" },
   { model: "gpt-5.5" },
   { model: "doubao-seed-2-1-turbo-260628", imageTier: true },
-  { model: "deepseek-v4-flash" },
+  { model: "deepseek-v4-pro" },
 ];
 
-/** UI 展示用的一句话定位说明（W2）。 */
+/** UI 展示用的一句话定位说明（W2）。不在此列的模型不进入选择器。 */
 export const MODEL_DESCRIPTIONS: Record<string, string> = {
   "gpt-5.6-sol": "旗舰质量，复杂分析与长推理首选，价格最高",
   "gpt-5.6-terra": "高质量均衡档，日常深度分析推荐",
-  "gpt-5.6-luna": "轻量快速档，简单问答与高频调用",
   "gpt-5.5": "上代旗舰，质量稳定，速度通常更快",
   "deepseek-v4-pro": "深度思考档，中文与工具调用强",
-  "deepseek-v4-flash": "极速性价比档，适合日常问答",
+  "deepseek-v4-flash": "极速性价比档，仅手动可选",
   "doubao-seed-2-1-turbo-260628": "多模态档，支持图片理解",
 };
 
