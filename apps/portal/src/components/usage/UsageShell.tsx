@@ -100,6 +100,20 @@ export function UsageShell({ username }: { username: string }) {
 
   const maxDayCost = Math.max(0.000001, ...(summary?.byDay ?? []).map((d) => d.cost));
   const maxModelCost = Math.max(0.000001, ...(summary?.byModel ?? []).map((m) => m.cost));
+  // 补齐区间内每一天（无数据的天按 0 画基线），否则稀疏数据只剩孤柱。
+  const daySeries: Array<{ day: string; calls: number; cost: number }> = [];
+  {
+    const byDayMap = new Map((summary?.byDay ?? []).map((d) => [d.day, d]));
+    const cursor = new Date(rangeParams().from + "T00:00:00Z");
+    const end = new Date(rangeParams().to + "T00:00:00Z");
+    for (let guard = 0; guard <= 370 && cursor <= end; guard++) {
+      const key = cursor.toISOString().slice(0, 10);
+      const hit = byDayMap.get(key);
+      daySeries.push({ day: key, calls: hit?.calls ?? 0, cost: hit?.cost ?? 0 });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+  }
+  const dayLabelStep = daySeries.length <= 10 ? 1 : daySeries.length <= 31 ? 5 : Math.ceil(daySeries.length / 12);
 
   return (
     <div className="flex min-h-screen flex-col bg-[#f6f8f6]">
@@ -158,13 +172,20 @@ export function UsageShell({ username }: { username: string }) {
         <section className="grid gap-4 md:grid-cols-2">
           <div className="rounded-lg border border-[#e3e6e3] bg-white p-4">
             <div className="mb-3 text-sm font-medium text-[#22301f]">按天开销</div>
-            <div className="flex h-40 items-end gap-1">
-              {(summary?.byDay ?? []).map((day) => (
-                <div key={day.day} className="group relative flex flex-1 flex-col items-center justify-end" title={`${day.day}：${fmtCost(day.cost)}（${day.calls} 次）`}>
-                  <div className="w-full max-w-[18px] rounded-t bg-[#7a9d8a] transition group-hover:bg-[#52705f]" style={{ height: `${Math.max(4, (day.cost / maxDayCost) * 130)}px` }} />
+            <div className="flex h-48 items-end gap-1 pt-4">
+              {daySeries.map((day, index) => (
+                <div key={day.day} className="group relative flex min-w-0 flex-1 flex-col items-center justify-end gap-1" title={`${day.day}：${fmtCost(day.cost)}（${day.calls} 次）`}>
+                  <span className="text-[9px] leading-none text-[#8a938c]">{day.cost > 0 ? fmtCost(day.cost).replace("¥", "") : ""}</span>
+                  <div
+                    className={`w-full max-w-[18px] rounded-t transition ${day.cost > 0 ? "bg-[#7a9d8a] group-hover:bg-[#52705f]" : "bg-[#e3e6e3]"}`}
+                    style={{ height: `${Math.max(day.cost > 0 ? 4 : 2, (day.cost / maxDayCost) * 120)}px` }}
+                  />
+                  <span className="w-full truncate text-center text-[9px] leading-none text-[#a2aaa4]">
+                    {index % dayLabelStep === 0 ? day.day.slice(5) : ""}
+                  </span>
                 </div>
               ))}
-              {!summary?.byDay.length ? <div className="w-full text-center text-xs text-[#8a938c]">暂无数据</div> : null}
+              {!daySeries.length ? <div className="w-full text-center text-xs text-[#8a938c]">暂无数据</div> : null}
             </div>
           </div>
           <div className="rounded-lg border border-[#e3e6e3] bg-white p-4">
