@@ -11,6 +11,7 @@ interface ModelsStateResponse {
       model: string;
       description: string;
       inputPrice: number | null;
+      outputPrice: number | null;
     }>;
   };
 }
@@ -59,7 +60,7 @@ export function ModelPicker({
     if (!remote?.options?.length) return FALLBACK_MODEL_OPTIONS;
     const built = remote.options
       .filter((item) => LABELS[item.model])
-      .map((item) => ({ value: item.model, label: LABELS[item.model], description: item.description, price: item.inputPrice }));
+      .map((item) => ({ value: item.model, label: LABELS[item.model], description: item.description, inputPrice: item.inputPrice, outputPrice: item.outputPrice }));
     return built.sort((a, b) => {
       const order = Object.keys(LABELS);
       return order.indexOf(a.value) - order.indexOf(b.value);
@@ -109,12 +110,12 @@ export function ModelPicker({
             >
               <div className="flex items-baseline justify-between gap-2">
                 <span className="truncate text-xs font-medium text-[#22301f]">{opt.label}</span>
-                <span className="shrink-0 text-[10px] text-[#8a938c]">{opt.price !== null ? `${opt.price}元/百万token` : ""}</span>
+                <span className="shrink-0 text-[10px] text-[#8a938c]">{opt.inputPrice !== null ? `${opt.inputPrice}/${opt.outputPrice}元` : ""}</span>
               </div>
               <div className="mt-0.5 text-[11px] leading-4 text-[#8a938c]">{opt.description}</div>
             </button>
           ))}
-          <div className="border-t border-[#eef2ee] px-3 py-1.5 text-[10px] text-[#a2aaa4]">峰谷模型按峰值输入价显示</div>
+          <div className="border-t border-[#eef2ee] px-3 py-1.5 text-[10px] text-[#a2aaa4]">价格为每百万 tokens 的输入/输出价（峰谷模型按峰值）</div>
         </div>
       ) : null}
     </div>

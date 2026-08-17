@@ -497,13 +497,14 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       const pricing = pricingSummary();
       const options = Object.entries(snapshot.descriptions).map(([model, description]) => {
         const entry = pricing.models.find((item) => item.model === model);
-        // 展示口径（owner 2026-08-17）：只显示输入价；峰谷模型统一按峰值。
-        const displayPrice = entry
-          ? entry.timeTiered
-            ? entry.timeTiered.peak.input
-            : entry.tier.input
-          : null;
-        return { model, description, inputPrice: displayPrice };
+        // 展示口径（owner 2026-08-17 二次修订）：输入/输出双价；峰谷模型统一按峰值。
+        const tier = entry?.timeTiered ? entry.timeTiered.peak : entry?.tier;
+        return {
+          model,
+          description,
+          inputPrice: tier?.input ?? null,
+          outputPrice: tier?.output ?? null,
+        };
       });
       return finish(ok(message.type, message.requestId, {
         auto: {
