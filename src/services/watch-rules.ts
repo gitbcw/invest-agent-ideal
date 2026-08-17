@@ -647,11 +647,12 @@ function severityFromPriority(priority: WatchRulePriority): "high" | "medium" | 
   return "low";
 }
 
-function priorityFromSeverity(severity?: string, ruleType?: WatchRuleType): WatchRulePriority {
-  if (ruleType === "price_cross" || ruleType === "ma_cross") return "P0";
+function priorityFromSeverity(severity?: string, _ruleType?: WatchRuleType): WatchRulePriority {
   if (severity === "high") return "P0";
   if (severity === "medium") return "P1";
-  return "P2";
+  if (severity === "low") return "P2";
+  // 缺省级别为中等：显式传入的 severity/notification.priority 始终优先。
+  return "P1";
 }
 
 function scheduleForRule(_ruleType: WatchRuleType) {

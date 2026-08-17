@@ -212,7 +212,7 @@ function buildStage2AlertItem(
   );
   const priority = rule.notification.priority;
   const severity = severityFromPriority(priority);
-  const dedupe = normalizeAlertDedupe(rule.cooldown);
+  const dedupe = normalizeAlertDedupe(rule.cooldown, severity);
 
   if (rule.ruleType === "price_cross") {
     const operator = String(rule.params.operator);
@@ -500,8 +500,12 @@ function usesStateDedupe(item: AlertItem) {
   return item.dedupe.mode === "state";
 }
 
-export function normalizeAlertDedupe(value: Record<string, unknown>): AlertItem["dedupe"] {
-  const minutes = Number(value.minutes ?? value.cooldownMinutes ?? 240);
+/** 级别决定默认冷却档位：高级别允许更快重复提醒，低级别更安静。规则显式 cooldown 优先。 */
+const SEVERITY_DEFAULT_COOLDOWN_MINUTES: Record<AlertItem["severity"], number> = { high: 30, medium: 120, low: 240 };
+
+export function normalizeAlertDedupe(value: Record<string, unknown>, severity?: AlertItem["severity"]): AlertItem["dedupe"] {
+  const fallback = (severity && SEVERITY_DEFAULT_COOLDOWN_MINUTES[severity]) || 240;
+  const minutes = Number(value.minutes ?? value.cooldownMinutes ?? fallback);
   return {
     mode: value.mode === "state" ? "state" : "cooldown",
     minutes: Number.isFinite(minutes) && minutes > 0 ? minutes : 240,
@@ -590,9 +594,9 @@ function isWithinWindow(timeText: string | undefined, bj: Date, toleranceMinutes
 
 function shouldPushAlert(alert: AlertItem, policy: MarketWatchPolicy): boolean {
   if (!policy.onlyPushOnException) return true;
-  // Low-disturbance and evening-summary preferences do not generate intraday
-  // pushes. Risk levels and legacy exception lists cannot override them.
-  return false;
+  // 低打扰模式：仅高级别盘中推送；中低级别仍落库，可在巡检页与晚间查看。
+  // 偏好里的 exception_rules 清单是给规则创建参考的语义文档，不参与执行判断。
+  return alert.severity === "high";
 }
 
 // ============ 信号优先级解析(WP3a 2026-06-21) ============
