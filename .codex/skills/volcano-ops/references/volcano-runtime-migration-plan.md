@@ -278,7 +278,6 @@ PORTAL_CONNECTOR_TOKEN=<production-token>
 - `templates/workspace/AGENTS.md`
 - `templates/workspace/skills/market-watch/*.md`
 - `templates/workspace/skills/wechat-onboarding/prompt.md`
-- `src/acp/mobile-prompt.ts`
 - 所有写死 `127.0.0.1:22655` 的 sandbox API 调用说明
 
 第一阶段不建议这样做，保持内部 `22655` 更稳。

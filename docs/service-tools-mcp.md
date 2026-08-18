@@ -21,7 +21,7 @@
 
 Implementation:
 
-- ACP wiring: `src/acp/stdio-agent.ts`
+- Runtime wiring: `src/mastra/tools/registry.ts`
 - MCP entrypoint: `src/mcp/invest-agent-service-tools.ts`
 - Tool core: `src/mcp/service-tools-core.ts`
 - Smoke: `npm run smoke:mcp-service-tools`
@@ -139,13 +139,7 @@ Run locally or on Volcano:
 npm run smoke:mcp-service-tools
 ```
 
-For a no-push, fixed-content publication probe against an explicitly authorized test scope:
-
-```bash
-npm run smoke:scheduled-review-publication -- <userId> <instanceId> <YYYY-MM-DD>
-```
-
-The probe does not collect market data or enqueue a push. It opens an isolated scheduled ACP session with only `reviews.save`, verifies the exact user/instance publication artifact, and retries at most once.
+The retired ACP-era publication probe (no-push, fixed-content `reviews.save` check against an explicitly authorized test scope) was removed with the ACP runtime; scheduled publication behavior is now covered by `tests/scheduled-daily-review-contract.test.ts`.
 
 Expected checks:
 
