@@ -16,3 +16,12 @@ test("R4: market-watch prompt does not force named tools or forbid NO_PUSH", () 
   assert.match(prompt, /工具选择.*自行决定|研究方法.*自行决定/);
   assert.doesNotMatch(prompt, /AGENTS\.md|Workspace|Skills|ACP|Codex|Hermes/i);
 });
+
+test("market-watch push body requires a WeChat-renderable Markdown brief", () => {
+  const prompt = buildMarketWatchTaskPrompt({ userId: "user-a", instanceId: "instance-a" }, "scheduled_intraday_brief");
+  assert.match(prompt, /只输出微信正文/);
+  assert.match(prompt, /必须使用适合微信阅读且可由微信渲染的简洁 Markdown/);
+  assert.match(prompt, /`\*\*重点\*\*`/);
+  assert.match(prompt, /列表或短标题/);
+  assert.match(prompt, /不要写成无格式的连续纯文本/);
+});

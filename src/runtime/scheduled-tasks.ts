@@ -323,7 +323,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
   if (reportKey) {
     promptLines.push(
       `发布是本任务唯一完成路径：完成研究后必须调用 reviews.save，kind 传 "${kind}"，reportKey 传 "${reportKey}"，content 放完整 Markdown，pushBrief 放独立的微信简报。`,
-      "pushBrief 会直接作为微信消息发送给用户，必须使用适合微信阅读且可由微信渲染的简洁 Markdown。",
+      "pushBrief 会直接作为微信消息发送给用户，必须使用适合微信阅读且可由微信渲染的简洁 Markdown；使用 `**重点**` 和清晰分段，并按内容需要使用列表或短标题，不要写成无格式的连续纯文本。",
       "若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。仅在 reviews.save 返回成功后，才可给出最终回复，且最终回复必须逐字使用该次成功保存的 pushBrief。",
     );
   }
@@ -471,7 +471,7 @@ export function buildMarketWatchTaskPrompt(userContext: UserContext, pushMode: M
     "数据来源只写可读来源摘要；禁止展示原始 URL、endpoint 或接口路径。",
     "输出协议（精确）：",
     "- 若按用户配置本轮不应推送，只输出：NO_PUSH",
-    "- 若按用户配置本轮应推送，只输出微信正文（适合微信阅读的 Markdown）",
+    "- 若按用户配置本轮应推送，只输出微信正文：必须使用适合微信阅读且可由微信渲染的简洁 Markdown；使用 `**重点**` 和清晰分段，并按内容需要使用列表或短标题，不要写成无格式的连续纯文本。",
     "这条内容会直接作为微信消息发送给用户。不要披露内部实现、运行环境、接口细节、后台任务或本地路径。",
     `当前用户: ${userContext.userId}`,
     `当前实例: ${userContext.instanceId}`,
