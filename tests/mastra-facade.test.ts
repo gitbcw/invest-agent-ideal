@@ -79,6 +79,48 @@ test("runMastraTurn creates a real server-side RequestContext for dynamic Mastra
   assert.equal(requestContext?.get?.("instanceId"), "instance-alpha");
 });
 
+test("runMastraTurn sends inline images as multimodal content parts", async () => {
+  const seen: { messages?: unknown } = {};
+  const agent: MastraAgentLike = {
+    stream(messages) {
+      seen.messages = messages;
+      return { text: "ok" };
+    },
+  };
+  const result = await runMastraTurn(
+    {
+      conversationId: "inline-images",
+      text: "看图",
+      images: [{ mimeType: "image/png", base64: "aW1n" }],
+    },
+    { agent },
+  );
+  assert.equal(result.text, "ok");
+  const messages = seen.messages as Array<{ role: string; content: unknown }>;
+  const last = messages[messages.length - 1];
+  assert.equal(last.role, "user");
+  const parts = last.content as Array<{ type: string; text?: string; data?: string; mediaType?: string }>;
+  assert.ok(Array.isArray(parts), "user content should be a parts array when images are attached");
+  assert.equal(parts[0].type, "text");
+  assert.equal(parts[0].text, "看图");
+  assert.equal(parts[1].type, "file");
+  assert.equal(parts[1].data, "aW1n");
+  assert.equal(parts[1].mediaType, "image/png");
+});
+
+test("runMastraTurn without images keeps plain string content", async () => {
+  const seen: { messages?: unknown } = {};
+  const agent: MastraAgentLike = {
+    stream(messages) {
+      seen.messages = messages;
+      return { text: "ok" };
+    },
+  };
+  await runMastraTurn({ conversationId: "plain-text", text: "hi" }, { agent });
+  const messages = seen.messages as Array<{ role: string; content: unknown }>;
+  assert.equal(messages[messages.length - 1].content, "hi");
+});
+
 test("Mastra model configuration is snapshotted per turn and changes only affect later agents", async () => {
   const previousModel = process.env.MASTRA_DEFAULT_MODEL;
   const captured: string[] = [];

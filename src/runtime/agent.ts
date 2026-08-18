@@ -1,5 +1,7 @@
 import type { AgentMessage, AgentResponse } from "./protocol.js";
 import { textResponse } from "./protocol.js";
+import { stat, readFile } from "node:fs/promises";
+import path from "node:path";
 import { logger } from "../lib/logger.js";
 import { dedupeRepeatedCustomerText, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
@@ -250,12 +252,14 @@ export function createRuntimeAgent(): RuntimeAgent {
           runId: turnRequestId ?? message.id,
         });
         try {
+          const inlineImages = await loadImageAttachmentParts(message.context?.attachments, userContext.workspacePath);
           const turnParams = {
             conversationId,
             text: promptContext.promptText,
             messageId: message.id,
             history,
             ...(selectedModel ? { model: selectedModel } : {}),
+            ...(inlineImages.length > 0 ? { images: inlineImages } : {}),
             timeoutMs: userChannel === "weixin-mobile"
               ? WEIXIN_DIRECT_AGENT_TIMEOUT_MS
               : userChannel === "web"
@@ -395,6 +399,50 @@ async function postProcessAgentReply(input: {
   return { finalReply: input.reply };
 }
 
+const MAX_INLINE_IMAGES_PER_TURN = 4;
+const DEFAULT_IMAGE_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Load image attachments from the turn workspace so vision-capable models
+ * receive them as inline image parts. Failures degrade to a text-only turn
+ * (the attachment prompt still lists the file) instead of failing the turn.
+ */
+async function loadImageAttachmentParts(
+  attachments: unknown,
+  workspacePath: string | undefined,
+): Promise<Array<{ mimeType: string; base64: string }>> {
+  if (!Array.isArray(attachments) || !workspacePath || attachments.length === 0) return [];
+  const maxBytes = Number(process.env.AGENT_IMAGE_ATTACHMENT_MAX_BYTES) || DEFAULT_IMAGE_ATTACHMENT_MAX_BYTES;
+  const workspaceRoot = path.resolve(workspacePath);
+  const images: Array<{ mimeType: string; base64: string }> = [];
+  for (const item of attachments) {
+    if (images.length >= MAX_INLINE_IMAGES_PER_TURN) break;
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const mimeType = typeof record.mimeType === "string" ? record.mimeType : "";
+    const relativePath = typeof record.relativePath === "string" ? record.relativePath : "";
+    const label = typeof record.fileName === "string" ? record.fileName : relativePath || "(unknown)";
+    if (!mimeType.startsWith("image/") || !relativePath) continue;
+    if (relativePath.includes("..") || path.isAbsolute(relativePath)) {
+      logger.warn(`图片附件路径异常，跳过内联: ${relativePath}`);
+      continue;
+    }
+    const absolute = path.join(workspaceRoot, relativePath);
+    try {
+      const info = await stat(absolute);
+      if (!info.isFile()) continue;
+      if (info.size > maxBytes) {
+        logger.warn(`图片附件超过内联上限（${info.size}/${maxBytes} 字节），跳过: ${label}`);
+        continue;
+      }
+      images.push({ mimeType, base64: (await readFile(absolute)).toString("base64") });
+    } catch (error) {
+      logger.warn(`图片附件读取失败（降级为纯文本轮）: ${label}: ${(error as Error).message}`);
+    }
+  }
+  return images;
+}
+
 function buildChannelForwardPrompt(text: string, attachmentsInput?: unknown): string {
   // Channel presentation policy lives in the agent instructions now; the
   // user-message wrapper only frames attachments that need interpretation.
@@ -425,7 +473,7 @@ function buildAttachmentPrompt(input: unknown): string | null {
   if (lines.length === 0) return null;
   return [
     "【附件上下文】用户随消息发送了附件，附件已保存到当前 workspace 的受控目录。",
-    "图片附件：可以读取图片并识别截图内容；如附件是持仓/观察仓/交易记录截图，请先识别成结构化草案，列出股票名称/代码/数量或金额/成本价/关注原因/不确定字段，并明确要求用户确认后再写入；不要直接落库。",
+    "图片附件：已作为图片内容直接附在本条消息中，请直接查看图片识别内容；不要用文件工具读取图片字节（读出来的是二进制文本，没有意义）。如附件是持仓/观察仓/交易记录截图，请先识别成结构化草案，列出股票名称/代码/数量或金额/成本价/关注原因/不确定字段，并明确要求用户确认后再写入；不要直接落库。",
     "文档附件：PDF/Word/PPT/Excel/CSV/html/md/txt 等，若当前会话接入了文档解析工具（如 mineru），优先调用该工具把附件解析为结构化文本，不要自己写解析代码；解析后请先概括内容，再提取和投资决策相关的结构化信息、事实依据和不确定字段。",
     "所有附件：不要向用户暴露 localPath 或内部目录；如果用户明确要求保存附件、或要求基于附件创建自动化任务，先调用 assets.attachment.save 将 attachment_id 保存到“我的文件”，再使用返回的 assetId；不要手工读取或编码附件字节。若只是分析附件，保持临时状态。",
     ...lines,

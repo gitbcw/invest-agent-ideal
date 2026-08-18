@@ -87,6 +87,12 @@ export interface MastraTurnParams {
   requestContext?: Record<string, unknown>;
   /** Server-owned upper bound; callers cannot exceed the runtime ceiling. */
   maxSteps?: number;
+  /**
+   * Inline images attached to this user turn. Mastra converts AI-SDK file
+   * parts into OpenAI image_url data URLs, so vision-capable models actually
+   * see the image instead of a text-encoded byte dump.
+   */
+  images?: ReadonlyArray<{ mimeType: string; base64: string }>;
 }
 
 export interface MastraTurnDependencies {
@@ -553,9 +559,15 @@ export async function runMastraTurn(
     }
 
     const history = params.history ?? params.messages ?? [];
+    const userContent: unknown = params.images && params.images.length > 0
+      ? [
+          { type: "text", text: params.text },
+          ...params.images.map((image) => ({ type: "file", data: image.base64, mediaType: image.mimeType })),
+        ]
+      : params.text;
     const messages: MastraMessage[] = [
       ...history.map((message) => ({ ...message })),
-      { role: "user", content: params.text },
+      { role: "user", content: userContent },
     ];
     const streamOptions: Record<string, unknown> = {
       abortSignal: abortController.signal,
