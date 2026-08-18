@@ -139,20 +139,7 @@ export function withExternalToolCallObserver(
 ): Record<string, unknown> {
   const wrapped: Record<string, unknown> = {};
   for (const [serverId, toolset] of Object.entries(toolsets)) {
-    if (!toolset || typeof toolset !== "object") {
-      wrapped[serverId] = toolset;
-      continue;
-    }
-    const tools = (toolset as { tools?: unknown }).tools;
-    if (!tools || typeof tools !== "object") {
-      wrapped[serverId] = toolset;
-      continue;
-    }
-    const wrappedTools: Record<string, unknown> = {};
-    for (const [toolName, tool] of Object.entries(tools as Record<string, unknown>)) {
-      wrappedTools[toolName] = wrapObservableTool(String(serverId), String(toolName), tool, scope);
-    }
-    wrapped[serverId] = { ...(toolset as Record<string, unknown>), tools: wrappedTools };
+    wrapped[serverId] = wrapObservableToolset(String(serverId), toolset, scope);
   }
   return wrapped;
 }
@@ -165,23 +152,48 @@ function serializedLength(value: unknown): number | undefined {
   }
 }
 
+function isToolLike(tool: unknown): tool is { execute: (...args: unknown[]) => Promise<unknown> } {
+  return Boolean(tool) && typeof tool === "object" && typeof (tool as { execute?: unknown }).execute === "function";
+}
+
+/**
+ * `MCPClient.listToolsets()` returns Record<serverId, Record<toolName, Tool>>;
+ * a legacy `{ tools: {...} }` shape is still tolerated. Tool copies keep the
+ * original prototype so instanceof checks survive.
+ */
+function wrapObservableToolset(serverId: string, toolset: unknown, scope: ExternalToolCallObserverScope): unknown {
+  if (!toolset || typeof toolset !== "object") return toolset;
+  const container = toolset as { tools?: unknown };
+  const tools = container.tools && typeof container.tools === "object" ? container.tools : toolset;
+  const wrappedTools: Record<string, unknown> = {};
+  let wrappedAny = false;
+  for (const [toolName, tool] of Object.entries(tools as Record<string, unknown>)) {
+    if (isToolLike(tool)) {
+      wrappedTools[toolName] = wrapObservableTool(serverId, String(toolName), tool, scope);
+      wrappedAny = true;
+    } else {
+      wrappedTools[toolName] = tool;
+    }
+  }
+  if (!wrappedAny) return toolset;
+  if (tools === toolset) return wrappedTools;
+  return { ...(toolset as Record<string, unknown>), tools: wrappedTools };
+}
+
 function wrapObservableTool(
   serverId: string,
   toolName: string,
-  tool: unknown,
+  tool: { execute: (...args: unknown[]) => Promise<unknown> } & object,
   scope: ExternalToolCallObserverScope,
 ): unknown {
-  if (!tool || typeof tool !== "object") return tool;
-  const execute = (tool as { execute?: unknown }).execute;
-  if (typeof execute !== "function") return tool;
-  const originalExecute = execute as (this: unknown, ...args: unknown[]) => Promise<unknown>;
-  const wrappedExecute = async function (this: unknown, ...args: unknown[]) {
+  const originalExecute = tool.execute;
+  const wrappedExecute = async function (...args: unknown[]) {
     const startedAt = Date.now();
     let status: "completed" | "failed" = "completed";
     let errorClass: string | undefined;
     let outputChars: number | undefined;
     try {
-      const result = await originalExecute.apply(this, args);
+      const result = await originalExecute.apply(tool, args);
       outputChars = serializedLength(result);
       return result;
     } catch (error) {
@@ -205,5 +217,7 @@ function wrapObservableTool(
       }
     }
   };
-  return { ...(tool as Record<string, unknown>), execute: wrappedExecute };
+  const copy = Object.create(Object.getPrototypeOf(tool), Object.getOwnPropertyDescriptors(tool)) as Record<string, unknown>;
+  Object.defineProperty(copy, "execute", { value: wrappedExecute, writable: true, configurable: true, enumerable: true });
+  return copy;
 }
