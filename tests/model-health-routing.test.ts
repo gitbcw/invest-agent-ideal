@@ -42,9 +42,9 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     recordModelFeedback("gpt-5.5", { ok: false });
     clock += 60_000;
     recordModelFeedback("gpt-5.5", { ok: true, firstTokenMs: 60_000 });
-    // 文本轮兜底走 flash；图片轮兜底走豆包。
+    // 文本轮兜底走 deepseek；图片轮兜底走 qwen flash。
     assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-v4-pro");
-    assert.equal(resolveAutoModel({ hasImage: true }).model, "doubao-seed-2-1-turbo-260628");
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "qwen3.7-flash");
 
     // 全链降级时按优先级硬选链首。
     clock += 60_000;
@@ -52,9 +52,9 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     clock += 60_000;
     recordModelFeedback("deepseek-v4-pro", { ok: false });
     clock += 60_000;
-    recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
+    recordModelFeedback("qwen3.7-flash", { ok: false });
     clock += 60_000;
-    recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
+    recordModelFeedback("qwen3.7-flash", { ok: false });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-sol");
 
     // 好证据重置计数：降级后一次好调用不足以恢复（冷却未到），但计数清零。
@@ -97,7 +97,7 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     __resetModelHealthForTest();
     assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-sol");
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] }).model, "deepseek-v4-pro");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "doubao-seed-2-1-turbo-260628"] }).model, "gpt-5.6-sol");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "qwen3.7-flash"] }).model, "gpt-5.6-sol");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
