@@ -28,6 +28,7 @@ export const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
   { value: "gpt-5.5", label: "GPT-5.5", description: "上代旗舰，质量稳定，速度通常更快", inputPrice: 2.0, outputPrice: 12.0 },
   { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro", description: "深度思考档，中文与工具调用强", inputPrice: 9.0, outputPrice: 27.0 },
   { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash", description: "极速性价比档，仅手动可选", inputPrice: 3.0, outputPrice: 9.0 },
+  { value: "qwen3.7-flash", label: "Qwen3.7 Flash", description: "极速轻量档，快速问答与批量轻任务适用，仅手动可选", inputPrice: 0.6, outputPrice: 2.4 },
   { value: "doubao-seed-2-1-turbo-260628", label: "豆包 Seed 2.1 Turbo", description: "多模态档，支持图片理解", inputPrice: 6, outputPrice: 30 },
 ];
 

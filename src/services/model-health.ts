@@ -33,6 +33,7 @@ export const MODEL_DESCRIPTIONS: Record<string, string> = {
   "gpt-5.5": "上代旗舰，质量稳定，速度通常更快",
   "deepseek-v4-pro": "深度思考档，中文与工具调用强",
   "deepseek-v4-flash": "极速性价比档，仅手动可选",
+  "qwen3.7-flash": "极速轻量档，快速问答与批量轻任务适用，仅手动可选",
   "doubao-seed-2-1-turbo-260628": "多模态档，支持图片理解",
 };
 

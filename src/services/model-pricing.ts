@@ -105,6 +105,8 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
       offPeak: { input: 4.5, output: 13.5, cacheRead: 0.15 },
     },
   },
+  // qwen3.7-flash：owner 提供牌价 2026-08-18（输入 0.6 元 / 输出 2.4 元，单一价）。
+  { model: "qwen3.7-flash", currency: "CNY", tier: { input: 0.6, output: 2.4 } },
   { model: "doubao-seed-2-0-lite-260428", currency: "CNY", tier: { input: 6, output: 30 } },
   { model: "doubao-seed-2-1-turbo-260628", currency: "CNY", tier: { input: 6, output: 30 } },
 ];
