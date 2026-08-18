@@ -136,7 +136,7 @@ REPLAY_PLAN=./classic-plan.json REPLAY_RESULTS=./classic-results.jsonl REPLAY_CO
 ## 附 · 上线 24h 诊断修复记录（2026-08-18）
 
 - **C2 · 旧会话 403（已修复）**：mg 等 3 个真实用户在迁移前 web 会话发送消息全部 `CONVERSATION_SCOPE_MISMATCH`（HTTP 403），根因与 8-17 微信通道根因二相同（旧口径 `project_id='invest-agent-<user>'`），8-17 的规范化只覆盖了微信通道。8-18 晚以 `scripts/normalize-legacy-conversation-project.mjs`（dry-run→备份→apply）规范化全部 62 会话/697 消息；备份 `data/runtime.db.pre-c2-normalize-2026-08-18T1131`。
-- **C1 · 单会话 7 万条 NULL message_id 复制风暴（防御已上，数据清理待授权）**：portal 镜像 `upsertMessage` 的 `ON CONFLICT(message_id)` 无法去重 NULL 行，会话同步每轮把 NULL 行原样再插（每 pass 上限 ~10k）。防御：portal `upsertMessage` 拒绝空 messageId、detail sync 跳过无 id 消息。mg 会话 `web_bkplCAkSHoHr84Wo` 的 70,118 条垃圾行清理需要 owner 授权后另行执行。
+- **C1 · 单会话 7 万条 NULL message_id 复制风暴（已闭环）**：portal 镜像 `upsertMessage` 的 `ON CONFLICT(message_id)` 无法去重 NULL 行，会话同步每轮把 NULL 行原样再插（每 pass 上限 ~10k）。防御：portal `upsertMessage` 拒绝空 messageId、detail sync 跳过无 id 消息。数据清理已获 owner 授权并于 2026-08-18 晚执行：`scripts/dedupe-null-message-id-rows.mjs` 删除 70,110 条重复、按组保留 8 条真实轮次唯一副本（洪水轮次无 canonical 行，保留副本是唯一记录），表 71,988→1,882 行；备份 `data/runtime.db.pre-c1-dedupe-2026-08-18T1204`。
 - **C4 · 模型兜底加强**：自动路由轮内兜底从一跳扩展为走完整条自动链（`MASTRA_AUTO_FALLBACK_MAX`，默认 3 跳），网关 upstream 错误（如 `Upstream error: 400`）纳入可重试签名（大小写不敏感）。8-18 上午 111 的 market-watch 失败即「deepseek 首字超时→兜底到 sol→sol 网关 400→无下一跳」链路。
 - **观测缺口**：`external_mcp_tool_calls` 随 ACP 退役停写；已在 W4 共享连接收口点（`withExternalToolCallObserver`）恢复记录（chat 与 scheduled 两条路径）。`conversation_task_runs` 为 ACP 时代死台账（无写入方，仅启动恢复引用），在 table-ownership 标注 legacy。
 
