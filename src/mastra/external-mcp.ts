@@ -1,5 +1,6 @@
 import { logger } from "../lib/logger.js";
 import { buildExternalRegistrations, isExternalRegistrationActivated } from "../mcp/external-mcp-registrations.js";
+import { recordObservedExternalToolCall } from "../services/external-mcp-observer.js";
 
 export interface ResolvedExternalMcp {
   id: string;
@@ -111,9 +112,98 @@ export async function resolveExternalMastraToolsets(
   return { toolsets: shared.toolsets, disconnect: async () => undefined };
 }
 
-/** 测试钩子：清空共享连接。 */
+/** Test hook: clear shared connections. */
 export function __resetExternalMcpConnectionsForTest(): void {
   for (const connection of connections.values()) void connection.disconnect().catch(() => undefined);
   connections.clear();
   inflight.clear();
+}
+
+export interface ExternalToolCallObserverScope {
+  userId: string;
+  projectId: string;
+  instanceId: string;
+  conversationId?: string;
+  runId?: string;
+}
+
+/**
+ * Wrap every tool in the shared toolsets with a `external_mcp_tool_calls`
+ * recorder. The old HTTP-observer path died with the ACP runtime; this
+ * restores the audit evidence at the W4 shared-connection choke point.
+ * Recording failures must never affect the tool call itself.
+ */
+export function withExternalToolCallObserver(
+  toolsets: Record<string, unknown>,
+  scope: ExternalToolCallObserverScope,
+): Record<string, unknown> {
+  const wrapped: Record<string, unknown> = {};
+  for (const [serverId, toolset] of Object.entries(toolsets)) {
+    if (!toolset || typeof toolset !== "object") {
+      wrapped[serverId] = toolset;
+      continue;
+    }
+    const tools = (toolset as { tools?: unknown }).tools;
+    if (!tools || typeof tools !== "object") {
+      wrapped[serverId] = toolset;
+      continue;
+    }
+    const wrappedTools: Record<string, unknown> = {};
+    for (const [toolName, tool] of Object.entries(tools as Record<string, unknown>)) {
+      wrappedTools[toolName] = wrapObservableTool(String(serverId), String(toolName), tool, scope);
+    }
+    wrapped[serverId] = { ...(toolset as Record<string, unknown>), tools: wrappedTools };
+  }
+  return wrapped;
+}
+
+function serializedLength(value: unknown): number | undefined {
+  try {
+    return JSON.stringify(value)?.length;
+  } catch {
+    return undefined;
+  }
+}
+
+function wrapObservableTool(
+  serverId: string,
+  toolName: string,
+  tool: unknown,
+  scope: ExternalToolCallObserverScope,
+): unknown {
+  if (!tool || typeof tool !== "object") return tool;
+  const execute = (tool as { execute?: unknown }).execute;
+  if (typeof execute !== "function") return tool;
+  const originalExecute = execute as (this: unknown, ...args: unknown[]) => Promise<unknown>;
+  const wrappedExecute = async function (this: unknown, ...args: unknown[]) {
+    const startedAt = Date.now();
+    let status: "completed" | "failed" = "completed";
+    let errorClass: string | undefined;
+    let outputChars: number | undefined;
+    try {
+      const result = await originalExecute.apply(this, args);
+      outputChars = serializedLength(result);
+      return result;
+    } catch (error) {
+      status = "failed";
+      errorClass = error instanceof Error ? error.name : typeof error;
+      throw error;
+    } finally {
+      try {
+        void recordObservedExternalToolCall({
+          scope,
+          serverId,
+          toolName,
+          status,
+          elapsedMs: Date.now() - startedAt,
+          inputChars: serializedLength(args[0]),
+          outputChars,
+          errorClass,
+        }).catch(() => undefined);
+      } catch {
+        // Observability must not break the tool call.
+      }
+    }
+  };
+  return { ...(tool as Record<string, unknown>), execute: wrappedExecute };
 }

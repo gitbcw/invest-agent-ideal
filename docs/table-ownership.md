@@ -25,7 +25,7 @@
 | `ai_instances` | 用户助手注册(历史表名) | 平台元数据 + 路由依据;产品语义上一用户一助手 |
 | `settings` | 系统级 KV(signal_config、巡检间隔、复盘模板) | 平台默认值,跨用户共享 |
 | `agent_traces` | 运行时调用审计 | 系统审计,与用户方法无关；兼容迁移会从冻结的 `codex_acp_traces` 单向复制历史行 |
-| `external_mcp_tool_calls` | 外部 MCP observer 调用证据 | service-to-external 协议边界审计；按 user/instance/conversation、server 和 tool 查询 |
+| `external_mcp_tool_calls` | 外部 MCP observer 调用证据 | service-to-external 协议边界审计；按 user/instance/conversation、server 和 tool 查询。ACP HTTP observer 退役后由 Mastra 共享连接层 `withExternalToolCallObserver` 包装写入（2026-08-18 恢复） |
 | `conversation_sessions` | canonical conversation log 会话索引 | 用户门户与微信共享的权威对话历史索引;云端 portal 只保存镜像,本地 SQLite 是权威源 |
 | `conversation_messages` | canonical conversation log 消息明细 | 用户门户 `conversation.list/get/chat` 和微信对话审计共用;需要分页、幂等和跨 channel 查询索引 |
 | `conversation_artifacts` | 一等 AI artifact 权威索引(复盘、公司分析、指标、正式发布的图表/文档) | 文件树、过期/删除生命周期、retention 分类和同路径版本 tombstone 都靠这张表权威判定;Workspace 文件本身归该用户实例,但索引与生命周期状态归服务层 |
@@ -38,6 +38,7 @@
 | `pending_sandbox_confirmations` | 待确认的沙箱操作 | 跨进程状态(微信消息 ↔ 沙箱执行) |
 | `onboarding_drafts` | Onboarding 草稿、确认版本与异步提交快照 | 草稿期不能写 Workspace；需要跨会话确认绑定、后台提交领取、失败恢复和通知去重 |
 | `conversation_tasks` | 旧会话任务草案表 | 保留作考古；conversation-task 草案系统已于 2026-06-23 删除 |
+| `conversation_task_runs` | （legacy）ACP 时代异步任务台账 | Mastra 运行时无写入方（轮次状态由 `conversation_turn_active` + `agent_traces` 承担），仅启动恢复逻辑读；保留作考古 |
 | `push_jobs` | 微信推送队列、会话失效后的等待重试内容 | 系统调度器职责；`message_kind`、`expires_at`、`origin_task_key`、受控 `retry_policy` 与 `terminal_reason` 是服务层权威状态；`awaiting_user` 在用户重新发起微信会话后自动重入队，不提供手动补发 |
 | `weixin_delivery_attempts` | 微信投递尝试、会话活性和手动探测证据 | 需要跨进程保留“距最近入站多久仍可投递”的可审计样本 |
 | `scheduled_task_runs` | 定时任务运行记录 | scheduler claim / 去重 / 状态审计；生成重试预算、租约、有效期、错误类别与稳定产物引用属于服务层，不写入 Workspace |

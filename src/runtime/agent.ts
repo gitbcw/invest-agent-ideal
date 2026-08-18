@@ -15,7 +15,7 @@ import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { recordModelFeedback, resolveAutoModel } from "../services/model-health.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
-import { resolveExternalMastraToolsets } from "../mastra/external-mcp.js";
+import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../mastra/external-mcp.js";
 import { loadConversationHistory } from "../services/conversation-history.js";
 import { buildAgentInstructions } from "./agent-instructions.js";
 import { MastraUserPreferenceStore } from "../services/user-preferences.js";
@@ -242,6 +242,13 @@ export function createRuntimeAgent(): RuntimeAgent {
           bindings: await getMastraBindings(),
         });
         const externalMcp = await resolveExternalMastraToolsets("interactive");
+        const observedToolsets = withExternalToolCallObserver(externalMcp.toolsets, {
+          userId,
+          projectId: userContext.projectId ?? "invest-agent",
+          instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userId),
+          conversationId,
+          runId: turnRequestId ?? message.id,
+        });
         try {
           const turnParams = {
             conversationId,
@@ -256,27 +263,33 @@ export function createRuntimeAgent(): RuntimeAgent {
                 : AGENT_EVALUATION_CASE_TIMEOUT_MS > 0 ? AGENT_EVALUATION_CASE_TIMEOUT_MS : undefined,
             userContext,
             requestContext: workspaceScope,
-            toolsets: externalMcp.toolsets,
+            toolsets: observedToolsets,
             signal: cancelSignal,
             maxSteps: 20,
           } as Parameters<typeof runMastraTurn>[0];
           const turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
-          // W1-P3 自动路由轮内兜底：首字超时（45s）或可重试错误时，换下一顺位模型重试一次。
+          // W1-P3 自动路由轮内兜底：首字超时（45s）或可重试的上游错误时，沿自动链换下一顺位模型重试。
+          // 2026-08-18 加强：从只允许一跳扩展到走完整条自动链（默认最多 3 次兜底），
+          // 并把网关 upstream 错误（如 Upstream error: 400）纳入可重试签名。
           const AUTO_FIRST_TOKEN_TIMEOUT_MS = Number(process.env.MASTRA_AUTO_FIRST_TOKEN_TIMEOUT_MS ?? 45_000);
-          const isRetriableTurnError = (text: string) =>
-            text.includes("MASTRA_FIRST_TOKEN_TIMEOUT")
-            || text.includes("MASTRA_TURN_TIMEOUT")
-            || text.includes("MASTRA_EMPTY_RESPONSE")
-            || text.includes("upstream")
-            || text.includes("fetch failed")
-            || text.includes("ECONNRESET");
+          const AUTO_FALLBACK_MAX = Math.max(1, Number(process.env.MASTRA_AUTO_FALLBACK_MAX ?? 3));
+          const isRetriableTurnError = (text: string) => {
+            const normalized = text.toLowerCase();
+            return normalized.includes("mastra_first_token_timeout")
+              || normalized.includes("mastra_turn_timeout")
+              || normalized.includes("mastra_empty_response")
+              || normalized.includes("upstream")
+              || normalized.includes("fetch failed")
+              || normalized.includes("econnreset");
+          };
           let mastraResult: Awaited<ReturnType<typeof runMastraTurn>>;
           if (!autoRoute) {
             mastraResult = await runMastraTurn(turnParams, turnDeps);
           } else {
             const excluded: string[] = [];
             let attemptModel = selectedModel ?? "";
-            for (let attempt = 0; ; attempt++) {
+            let attempt = 0;
+            for (;;) {
               try {
                 mastraResult = await runMastraTurn(
                   { ...turnParams, model: attemptModel, ...(attempt === 0 ? { firstTokenTimeoutMs: AUTO_FIRST_TOKEN_TIMEOUT_MS } : {}) },
@@ -286,11 +299,15 @@ export function createRuntimeAgent(): RuntimeAgent {
               } catch (error) {
                 const errorText = formatUnknownError(error);
                 recordModelFeedback(attemptModel, { ok: false });
-                const canRetry = attempt === 0 && isRetriableTurnError(errorText) && !(cancelSignal?.aborted ?? false);
-                if (!canRetry) throw error;
                 excluded.push(attemptModel);
                 const next = resolveAutoModel({ hasImage: hasImageTurn, exclude: excluded });
-                logger.warn(`自动路由轮内兜底：${attemptModel} 失败（${errorText.slice(0, 120)}），换用 ${next.model} 重试`);
+                const canRetry = attempt < AUTO_FALLBACK_MAX
+                  && !excluded.includes(next.model)
+                  && isRetriableTurnError(errorText)
+                  && !(cancelSignal?.aborted ?? false);
+                if (!canRetry) throw error;
+                attempt += 1;
+                logger.warn(`自动路由轮内兜底（第 ${attempt}/${AUTO_FALLBACK_MAX} 跳）：${attemptModel} 失败（${errorText.slice(0, 120)}），换用 ${next.model} 重试`);
                 attemptModel = next.model;
                 selectedModel = attemptModel;
               }

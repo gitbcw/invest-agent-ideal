@@ -122,6 +122,7 @@ export async function syncConversationDetail(input: {
       }
     }
     for (const message of remote.data.messages) {
+      if (!message.messageId) continue;
       try {
         input.repo.upsertMessage({
           ...message,

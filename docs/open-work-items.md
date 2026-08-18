@@ -99,7 +99,7 @@
 
 ## W5 · 部署重启优雅排空
 
-**状态**：待实现。回放期间两次部署重启各打断 1 个在途轮次（「服务重启中断」直接失败）。发布时应支持排空等待或至少让在途轮次完成后再退出。
+**状态**：已实现并部署（2026-08-17，commit 792928d）。shutdown 等待在途轮次最长 240s。2026-08-18 复盘补充：排空要生效还依赖 PM2 条目携带 `kill_timeout`（300s，ecosystem.mastra.config.cjs）；8-17 晚 20:45 的中断发生在旧进程条目（默认 kill_timeout ~1.6s）上，SIGKILL 早于排空。8-18 14:36 重建的条目已带 kill_timeout=300000（`pm2 jlist` 可核对）。发布必须走 `pm2 restart`（保留条目），不要 `pm2 delete + start dist/index.js` 之外的旁路杀进程。
 
 ## 附 · 经典回归用例集（工具轻量化）
 
@@ -115,7 +115,10 @@ REPLAY_PLAN=./classic-plan.json REPLAY_RESULTS=./classic-results.jsonl REPLAY_CO
 
 ## W6 · 微信在途轮次的中断源排查
 
-**状态**：待实现。2026-08-17 实测：发版 SIGINT 时优雅排空正确检测到 1 个在途微信轮次，但该轮在信号后 ~3 秒内被中断（无回复、无错误 trace、排空随即放行）。需定位中断源（疑似 weixin 监听/桥接层把信号传播为轮次 abort），保证排空窗口内真正跑完。
+**状态**：已修复（2026-08-18）。8-17 现象的两个根因：
+- 根因一（主因）：当时 PM2 进程条目仍是默认 kill_timeout（~1.6s），SIGINT 后主进程被 SIGKILL，240s 排空从未真正执行（日志实锤：SIGINT 后 0.9s 新进程即启动）。已随 W5 的 ecosystem kill_timeout=300000 生效修复。
+- 根因二：微信回复由 fork 出的 listener worker 内 SDK 直接送达；worker 收到 SIGINT/stop 原本立即 abort 退出，即使主进程排空跑完在途轮，回复也无处转发。修复：worker 停止接收新消息后等待在途 chat 完成并送达再退出（宽限期 `INVEST_AGENT_WEIXIN_SHUTDOWN_GRACE_MS`，默认与排空预算对齐 240s；父进程断开则立即退出）。停止窗口内的新微信消息回复明确的发布提示而不是静默丢失。
+- 验收方式：下一次发布窗口若有微信在途轮，观察「优雅排空中」日志后主进程存活至轮次完成、worker 在回复送达后退出。
 
 ## 附 · 微信通道修复记录（2026-08-17，已完成）
 
@@ -129,6 +132,13 @@ REPLAY_PLAN=./classic-plan.json REPLAY_RESULTS=./classic-results.jsonl REPLAY_CO
 - 根因：cutover 整库拷贝带过来了 user_assets/user_asset_versions 记录，但这些记录指向的存储文件在生产的**旧工作区布局**（`invest-agent-data/workspaces/<user>/assets/<id>/`），不在六域迁移范围，未随 data/projects 重建。
 - 修复：从生产按 asset id 补拷 37 个目录到新 digest 根（只读拷贝，生产未动）；复核 66/66 在位。
 - 教训（后续 runbook 修订要点）：**任何数据刷新流程必须包含「user_assets 文件从旧工作区布局到 digest 根的搬运」步骤**；生产退役后文件可从 DR 备份的 workspaces 快照恢复。
+
+## 附 · 上线 24h 诊断修复记录（2026-08-18）
+
+- **C2 · 旧会话 403（已修复）**：mg 等 3 个真实用户在迁移前 web 会话发送消息全部 `CONVERSATION_SCOPE_MISMATCH`（HTTP 403），根因与 8-17 微信通道根因二相同（旧口径 `project_id='invest-agent-<user>'`），8-17 的规范化只覆盖了微信通道。8-18 晚以 `scripts/normalize-legacy-conversation-project.mjs`（dry-run→备份→apply）规范化全部 62 会话/697 消息；备份 `data/runtime.db.pre-c2-normalize-2026-08-18T1131`。
+- **C1 · 单会话 7 万条 NULL message_id 复制风暴（防御已上，数据清理待授权）**：portal 镜像 `upsertMessage` 的 `ON CONFLICT(message_id)` 无法去重 NULL 行，会话同步每轮把 NULL 行原样再插（每 pass 上限 ~10k）。防御：portal `upsertMessage` 拒绝空 messageId、detail sync 跳过无 id 消息。mg 会话 `web_bkplCAkSHoHr84Wo` 的 70,118 条垃圾行清理需要 owner 授权后另行执行。
+- **C4 · 模型兜底加强**：自动路由轮内兜底从一跳扩展为走完整条自动链（`MASTRA_AUTO_FALLBACK_MAX`，默认 3 跳），网关 upstream 错误（如 `Upstream error: 400`）纳入可重试签名（大小写不敏感）。8-18 上午 111 的 market-watch 失败即「deepseek 首字超时→兜底到 sol→sol 网关 400→无下一跳」链路。
+- **观测缺口**：`external_mcp_tool_calls` 随 ACP 退役停写；已在 W4 共享连接收口点（`withExternalToolCallObserver`）恢复记录（chat 与 scheduled 两条路径）。`conversation_task_runs` 为 ACP 时代死台账（无写入方，仅启动恢复引用），在 table-ownership 标注 legacy。
 
 ## W7+ · owner 待补充
 

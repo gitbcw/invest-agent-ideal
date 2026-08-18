@@ -432,6 +432,14 @@ export class ConversationMirrorRepository {
   // ─── Messages ────────────────────────────────────────────────────────
 
   upsertMessage(input: ConversationMessage): void {
+    // Rows without a message id can never be deduplicated by the
+    // ON CONFLICT(message_id) clause below (NULL never conflicts), so
+    // accepting one would re-insert it on every sync pass. This is the
+    // amplification path behind the 2026-08-17 mirror flood; skip instead.
+    if (!input.messageId) {
+      console.warn(`[mirror] skip upsert of message without id conversation=${input.conversationId} role=${input.role}`);
+      return;
+    }
     const conversation = this.getConversation(input.conversationId);
     if (!conversation) throw new ConversationScopeMismatchError("conversation must exist before inserting a message");
     const runtimeUserId = this.resolveRuntimeUserId(conversation.user_id) ?? conversation.user_id;
