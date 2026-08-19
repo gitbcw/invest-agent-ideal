@@ -70,6 +70,19 @@ test("generic automation prompt defaults to provisional public values and avoids
   assert.match(runnerSource, /不得为了证明执行过而写入空值、零值、估算值或无意义状态行/);
 });
 
+test("delivery-enabled generic tasks must produce a WeChat-renderable Markdown summary", async () => {
+  // The migrated scheduled briefs (market-watch / daily review) push
+  // result_summary straight to WeChat; a0f7997 covered only the legacy
+  // scheduler prompts, so the generic runner template needs the same rule.
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.match(runnerSource, /revision\.delivery\.mode === "none"/);
+  assert.match(runnerSource, /summary 会直接作为微信消息正文发送给用户/);
+  assert.match(runnerSource, /必须使用适合微信阅读且可由微信渲染的简洁 Markdown/);
+  assert.match(runnerSource, /不要写成无格式的连续纯文本/);
+  assert.match(runnerSource, /禁止输出 Markdown 表格/);
+});
+
 test("assistant and generic automation prompts require XLSX for user-facing tables", async () => {
   const source = await import("node:fs/promises");
   const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");

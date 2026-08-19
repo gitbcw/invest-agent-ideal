@@ -243,6 +243,13 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64?:string,filePath?:string}, shouldNotify?:boolean}。优先把生成的 XLSX/CSV 写入当前暂存目录并返回相对 filePath（不得使用绝对路径、不得越出暂存目录）；只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。",
+        ...(input.task.revision.delivery.mode === "none"
+          ? []
+          : [
+              // summary doubles as the WeChat push body for delivery-enabled
+              // tasks (a0f7997 covered the legacy scheduler prompts only).
+              "本任务的结果会推送微信：summary 会直接作为微信消息正文发送给用户，必须使用适合微信阅读且可由微信渲染的简洁 Markdown；使用 `**重点**` 和清晰分段，并按内容需要使用列表或短标题，不要写成无格式的连续纯文本；禁止输出 Markdown 表格（微信不渲染表格）。若按任务约定本轮不推送（如输出 NO_PUSH），summary 简要说明原因即可。",
+            ]),
       ].join("\n"),
     },
     context: {
