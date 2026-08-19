@@ -625,14 +625,14 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "reviews.save",
-    "Publish an Agent-authored review (daily/weekly/monthly). Preserve the full Markdown as the report, store an independent WeChat push brief, and optionally append Agent-authored decision/source records. Scheduled reviews do not need interactive confirmation; manual durable saves require confirmedByUser=true. For weekly/monthly, pass kind and reportKey. The reply includes an `artifact` descriptor whose `artifactId` should be embedded in the assistant reply metadata so the Portal can render it inline.",
+    "Publish an Agent-authored review (daily/weekly/monthly). Preserve the full Markdown as the report, store an independent WeChat push brief (the brief must be concise WeChat-renderable Markdown: **bold** highlights, clear paragraphs, lists or short headers, no Markdown tables — WeChat renders neither tables nor raw walls of text), and optionally append Agent-authored decision/source records. Scheduled reviews do not need interactive confirmation; manual durable saves require confirmedByUser=true. For weekly/monthly, pass kind and reportKey. The reply includes an `artifact` descriptor whose `artifactId` should be embedded in the assistant reply metadata so the Portal can render it inline.",
     {
       confirmedByUser: z.literal(true).optional(),
       date: z.string().optional(),
       kind: z.enum(["daily", "weekly", "monthly"]).optional(),
       reportKey: z.string().optional(),
       content: z.string(),
-      pushBrief: z.string().optional(),
+      pushBrief: z.string().optional().describe("Sent to the user as a WeChat message. Concise WeChat-renderable Markdown only: **bold** highlights, clear paragraphs, lists or short headers; no Markdown tables; never one unformatted wall of text."),
       summary: z.string().optional(),
       decisionRecords: z.array(z.record(z.string(), z.unknown())).max(100).optional(),
       sourceEvents: z.array(z.record(z.string(), z.unknown())).max(100).optional(),
