@@ -602,6 +602,24 @@ export async function getUserAsset(input: AssetScope & { assetId: string }): Pro
   return hydrate(row, scope);
 }
 
+/** T-317 monthly rollover: resolve the active asset whose current version
+ * carries the exact fileName, if any. The automation runner uses this to roll
+ * an update-target binding to the current monthly file without guessing. */
+export async function findActiveAssetByFileName(input: AssetScope & { fileName: string }): Promise<UserAssetDescriptor | null> {
+  const scope = normalizeScope(input);
+  const fileName = input.fileName.trim();
+  if (!fileName) return null;
+  const row = sqlite.prepare(
+    "SELECT a.asset_id AS assetId, a.user_id AS userId, a.project_id AS projectId, a.instance_id AS instanceId, a.folder_id AS folderId, " +
+    "a.name AS name, a.status AS status, a.current_version_id AS currentVersionId, a.archived_at AS archivedAt, a.created_at AS createdAt, a.updated_at AS updatedAt " +
+    "FROM user_assets a JOIN user_asset_versions v ON v.version_id = a.current_version_id " +
+    "WHERE a.user_id = ? AND a.project_id = ? AND a.instance_id = ? AND a.status = 'active' AND v.file_name = ? " +
+    "ORDER BY a.updated_at DESC LIMIT 1",
+  ).get(scope.userId, scope.projectId, scope.instanceId, fileName) as AssetRow | undefined;
+  if (!row) return null;
+  return hydrate(row, scope);
+}
+
 export async function listUserAssetVersions(input: AssetScope & { assetId: string }): Promise<UserAssetVersionDescriptor[]> {
   const scope = normalizeScope(input);
   const asset = requireAsset({ ...scope, assetId: input.assetId });

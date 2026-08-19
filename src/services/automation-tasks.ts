@@ -60,7 +60,35 @@ export type AutomationTaskOutputPolicy =
   /** The Agent may update a latest-version input or create one related asset. */
   | { mode: "agent" }
   | { mode: "create"; format: AssetFormat; fileName: string; titleTemplate?: string }
-  | { mode: "update"; assetId: string; versionPolicy: "latest"; expectedVersionId?: string };
+  | {
+      mode: "update";
+      assetId: string;
+      versionPolicy: "latest";
+      expectedVersionId?: string;
+      /** Monthly file rollover (T-317): when the month changes the run may
+       * create the next monthly file and the task binding rolls to it. */
+      rollover?: { kind: "monthly"; fileNamePattern: string };
+    };
+
+/** Instantiate a monthly rollover fileNamePattern for a date, e.g.
+ * "{YYYY}年{MM}行业复盘表.xlsx" -> "2026年09月行业复盘表.xlsx". */
+export function instantiateMonthlyFileName(pattern: string, now = new Date()): string {
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  return pattern.replaceAll("{YYYY}", year).replaceAll("{MM}", month);
+}
+
+function normalizeRolloverPolicy(value: unknown): { kind: "monthly"; fileNamePattern: string } | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "rollover must be an object");
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "monthly") throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "rollover kind must be monthly");
+  const fileNamePattern = String(record.fileNamePattern || "");
+  if (!fileNamePattern || fileNamePattern.length > 160) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "rollover fileNamePattern is invalid");
+  if (!fileNamePattern.includes("{YYYY}") || !fileNamePattern.includes("{MM}")) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "rollover fileNamePattern requires {YYYY} and {MM}");
+  if (/[/\\]|\.\./.test(fileNamePattern)) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "rollover fileNamePattern must not contain path separators");
+  return { kind: "monthly", fileNamePattern };
+}
 
 export type AutomationTaskDeliveryPolicy =
   | { mode: "none" }
@@ -1041,7 +1069,8 @@ function normalizeOutputPolicy(raw: AutomationTaskOutputPolicy | Record<string, 
     const assetId = normalizeOpaqueId(String(value.assetId || ""), "assetId");
     if (value.versionPolicy !== "latest") throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "update requires latest versionPolicy");
     const expectedVersionId = value.expectedVersionId === undefined ? undefined : normalizeOpaqueId(String(value.expectedVersionId), "expectedVersionId");
-    return { mode: "update", assetId, versionPolicy: "latest", ...(expectedVersionId ? { expectedVersionId } : {}) };
+    const rollover = normalizeRolloverPolicy(value.rollover);
+    return { mode: "update", assetId, versionPolicy: "latest", ...(expectedVersionId ? { expectedVersionId } : {}), ...(rollover ? { rollover } : {}) };
   }
   throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "unsupported output mode");
 }

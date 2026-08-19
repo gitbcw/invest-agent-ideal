@@ -83,6 +83,13 @@ test("delivery-enabled generic tasks must produce a WeChat-renderable Markdown s
   assert.match(runnerSource, /禁止输出 Markdown 表格/);
 });
 
+test("mode=none prompts forbid stagedOutput in the final envelope (2026-08-19 T-324)", async () => {
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.match(runnerSource, /output\.mode === "none"[\s\S]*?禁止出现 stagedOutput/);
+  assert.match(runnerSource, /ignored stagedOutput under output\.mode=none/);
+});
+
 test("assistant and generic automation prompts require XLSX for user-facing tables", async () => {
   const source = await import("node:fs/promises");
   const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
@@ -380,6 +387,41 @@ test("generic runner pushes idempotently and does not commit malformed output", 
   assert.equal((await (await import("../src/services/user-assets.js")).listUserAssets({ ...scope, search: "坏输出" })).length, 0);
 });
 
+test("mode=none runs ignore an unexpected stagedOutput instead of failing (daily-review 2026-08-19 regression)", async () => {
+  const { automation } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  // Daily-review tasks are output.mode=none; the agent may still echo a
+  // stagedOutput after persisting its report through domain tools. The run
+  // itself must succeed — the domain output is already durable.
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-none-with-staged",
+    name: "无输出任务带回显",
+    instruction: "生成日复盘并通过领域工具保存。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "none" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-none-with-staged-once",
+    executor: async () => ({
+      content: { type: "text" as const, text: "done" },
+      finished: true,
+      data: {
+        summary: "日复盘已通过 reviews.save 保存。",
+        shouldNotify: false,
+        stagedOutput: { operation: "create", fileName: "review.md", mimeType: "text/markdown", base64: Buffer.from("# review\n").toString("base64") },
+      },
+    }),
+  });
+  assert.equal(result.run.status, "succeeded", "unexpected stagedOutput under mode=none must not fail the run");
+  assert.equal(result.run.outputAssetId, null, "the ignored stagedOutput must not be committed as an asset");
+});
+
 test("generic latest update uses the head read at run start and advances it once", async () => {
   const { automation, assets } = await fixture;
   const target = await assets.createUserAsset({ ...scope, name: "generic-update-target", fileName: "generic-update.csv", mimeType: "text/csv", bytes: Buffer.from("code,price\n600519,1500\n") });
@@ -467,4 +509,130 @@ test("generic runner preserves a retryable ACP capacity failure", async () => {
   assert.equal(result.run.errorCategory, "transient");
   assert.equal(result.run.retryable, true);
   assert.match(result.run.errorMessage || "", /模型服务暂时繁忙/);
+});
+
+test("monthly rollover creates the current-month workbook, switches the binding, and self-heals (T-317)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const { instantiateMonthlyFileName } = await import("../src/services/automation-tasks.js");
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const pattern = "{YYYY}年{MM}行业复盘表.xlsx";
+  const monthlyFile = instantiateMonthlyFileName(pattern);
+
+  const boundBytes = await convertCsvBytesToXlsx(Buffer.from("日期,行业\n2026-08-01,示例\n"));
+  const bound = await assets.createUserAsset({
+    ...scope, name: "行业复盘绑定", fileName: "2020年01月行业复盘表.xlsx",
+    mimeType: XLSX_MIME, bytes: boundBytes,
+  });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-monthly-rollover",
+    name: "行业复盘",
+    instruction: "追加当日行业复盘。",
+    schedule: schedule(),
+    output: { mode: "update", assetId: bound.assetId, versionPolicy: "latest", rollover: { kind: "monthly", fileNamePattern: pattern } },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+
+  let sawRollover = false;
+  const newBytes = await convertCsvBytesToXlsx(Buffer.from("日期,行业\n2026-08-19,煤炭\n"));
+  const first = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-monthly-rollover-once",
+    executor: async (input) => {
+      assert.ok(input.monthlyRollover, "a stale bound file must expose the monthly rollover target to the executor");
+      assert.equal(input.monthlyRollover!.targetFileName, monthlyFile);
+      sawRollover = true;
+      return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "已创建本月文件并追加。", stagedOutput: { operation: "create", fileName: monthlyFile, mimeType: XLSX_MIME, base64: newBytes.toString("base64") } } };
+    },
+  });
+  assert.equal(first.run.status, "succeeded");
+  assert.ok(first.run.outputAssetId);
+  assert.ok(sawRollover);
+
+  const { findActiveAssetByFileName } = await import("../src/services/user-assets.js");
+  const created = await findActiveAssetByFileName({ ...scope, fileName: monthlyFile });
+  assert.ok(created, "the monthly file must exist as an active asset");
+  assert.equal(created!.assetId, first.run.outputAssetId);
+
+  const after = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
+  assert.ok(after);
+  assert.equal(after.status, "active", "the binding switch must leave the schedule active");
+  const afterOutput = after.revision.output as { mode: string; assetId?: string };
+  assert.equal(afterOutput.mode, "update");
+  assert.equal(afterOutput.assetId, created!.assetId, "the task binding must roll to the monthly asset");
+
+  const second = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-monthly-rollover-twice",
+    executor: async (input) => {
+      assert.equal(input.monthlyRollover, null, "with the current-month file present no rollover is requested");
+      assert.equal(input.writableTargets[0]?.fileName, monthlyFile);
+      return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "已追加。", stagedOutput: { operation: "update", assetId: input.writableTargets[0]!.assetId, fileName: monthlyFile, mimeType: XLSX_MIME, base64: newBytes.toString("base64") } } };
+    },
+  });
+  assert.equal(second.run.status, "succeeded");
+  assert.equal(second.run.outputAssetId, created!.assetId, "the self-healed run must commit onto the monthly asset");
+});
+
+test("monthly rollover rejects a create whose fileName is not the monthly target (T-317)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const boundBytes = await convertCsvBytesToXlsx(Buffer.from("日期,行业\n"));
+  const bound = await assets.createUserAsset({
+    ...scope, name: "行业复盘护栏", fileName: "2020年02月行业复盘表.xlsx",
+    mimeType: XLSX_MIME, bytes: boundBytes,
+  });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-monthly-rollover-guard",
+    name: "行业复盘护栏",
+    instruction: "追加当日行业复盘。",
+    schedule: schedule(),
+    output: { mode: "update", assetId: bound.assetId, versionPolicy: "latest", rollover: { kind: "monthly", fileNamePattern: "{YYYY}年{MM}复盘.xlsx" } },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const result = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-monthly-rollover-guard-once",
+    executor: async () => ({
+      content: { type: "text" as const, text: "done" }, finished: true,
+      data: { summary: "创建了文件。", stagedOutput: { operation: "create", fileName: "随便什么文件.xlsx", mimeType: XLSX_MIME, base64: boundBytes.toString("base64") } },
+    }),
+  });
+  assert.equal(result.run.status, "failed");
+  assert.match(result.run.errorMessage || "", /monthly target/);
+});
+
+test("monthly rollover policy validates the fileNamePattern (T-317)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const boundBytes = await convertCsvBytesToXlsx(Buffer.from("日期\n"));
+  const bound = await assets.createUserAsset({
+    ...scope, name: "行业复盘模式", fileName: "2020年03月行业复盘表.xlsx",
+    mimeType: XLSX_MIME, bytes: boundBytes,
+  });
+  await assert.rejects(
+    () => automation.createAutomationTask({
+      ...scope,
+      taskId: "generic-monthly-rollover-bad-pattern",
+      name: "坏模式",
+      instruction: "追加。",
+      schedule: schedule(),
+      output: { mode: "update", assetId: bound.assetId, versionPolicy: "latest", rollover: { kind: "monthly", fileNamePattern: "行业复盘.xlsx" } },
+    }),
+    /fileNamePattern/,
+  );
+  await assert.rejects(
+    () => automation.createAutomationTask({
+      ...scope,
+      taskId: "generic-monthly-rollover-path-pattern",
+      name: "路径模式",
+      instruction: "追加。",
+      schedule: schedule(),
+      output: { mode: "update", assetId: bound.assetId, versionPolicy: "latest", rollover: { kind: "monthly", fileNamePattern: "../{YYYY}年{MM}.xlsx" } },
+    }),
+    /path separators/,
+  );
 });
