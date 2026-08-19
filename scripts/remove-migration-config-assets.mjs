@@ -14,7 +14,11 @@
  *   - date yamls   -> mastra_review_memory_records (daily_plan rows carry the
  *                     full content — verified before running this cleanup)
  *
- * Targets ONLY assets whose version format is yaml/jsonl with source=system.
+ * Targets ONLY assets whose version format is yaml/jsonl with an internal
+ * migration source. Two source generations exist: the beta migration wrote
+ * source='system' (2026-08-15); the go-live six-domain importers write
+ * source='workspace_migration' (mastra-*-target-import.mjs). Both are
+ * internal state, both are cleanup targets.
  * Idempotent: re-running matches nothing after the first pass.
  *
  * Usage:
@@ -23,6 +27,7 @@
  *     [--projects-root /home/claude/invest-agent-mastra/data/projects] [--dry-run]
  */
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -38,10 +43,10 @@ const projectsRoot = flag("projects-root", "/home/claude/invest-agent-mastra/dat
 
 const db = new Database(dbPath);
 const assets = db.prepare(`
-  SELECT DISTINCT a.asset_id, a.user_id, v.storage_path
+  SELECT DISTINCT a.asset_id, a.user_id, a.project_id, a.instance_id, v.storage_path
   FROM user_assets a
   JOIN user_asset_versions v ON v.asset_id = a.asset_id
-  WHERE v.format IN ('yaml', 'jsonl') AND v.source = 'system'
+  WHERE v.format IN ('yaml', 'jsonl') AND v.source IN ('system', 'workspace_migration')
 `).all();
 console.log(`匹配 ${assets.length} 个迁移内部资产${dryRun ? "（dry-run，不删除）" : ""}`);
 for (const asset of assets) {
@@ -55,7 +60,11 @@ const remove = db.transaction(() => {
   for (const asset of assets) {
     versions += db.prepare("DELETE FROM user_asset_versions WHERE asset_id = ?").run(asset.asset_id).changes;
     heads += db.prepare("DELETE FROM user_assets WHERE asset_id = ?").run(asset.asset_id).changes;
-    const digest = asset.storage_path.split("/")[1];
+    // storage_path is relative to the project digest root (assets/<asset_id>/...).
+    // Digest mirrors src/mastra/workspace-registry.ts scopeDigest: sha256(user\0project\0instance)[:24].
+    const digest = createHash("sha256")
+      .update(`${asset.user_id}\u0000${asset.project_id}\u0000${asset.instance_id}`)
+      .digest("hex").slice(0, 24);
     const storageDir = path.join(projectsRoot, digest, "assets", asset.asset_id);
     fs.rmSync(storageDir, { recursive: true, force: true });
   }
