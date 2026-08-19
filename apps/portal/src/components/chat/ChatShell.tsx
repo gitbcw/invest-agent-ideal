@@ -33,6 +33,7 @@ import {
   publishLegacyArtifact,
   recordArtifactEvent,
   sendMessage,
+  subscribeConversationProgress,
   saveArtifactToAssets,
   updateConversation,
   PortalApiError,
@@ -46,7 +47,7 @@ import {
   resolveConversationProcessing,
   resolveConversationNavigation
 } from "./conversation-navigation";
-import { toView, type ArtifactCardView, type ChatMessageView, type ConversationListItem } from "./types";
+import { toView, type ArtifactCardView, type ChatMessageView, type ConversationListItem, type WorkStepView } from "./types";
 import type { WorkspaceFileItem } from "@/lib/protocol";
 import { ModelPicker } from "@/components/chat/ModelPicker";
 
@@ -88,6 +89,8 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   // read-only Portal never mutates it.
   const deletedArtifactIds = useMemo(() => new Set<string>(), []);
   const cursorRef = useRef<string | null>(null);
+  // T-199：当前等待轮的实时工作过程事件（按 conversationId 分组，尽力而为）。
+  const [liveSteps, setLiveSteps] = useState<Record<string, WorkStepView[]>>({});
   const activeIdRef = useRef<string | null>(null);
   const processingConversationsRef = useRef<Record<string, boolean>>({});
   const navigationInitializedRef = useRef(false);
@@ -598,6 +601,12 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       setConversationProcessing(conversationId, true);
       writeProcessingStartedAt(conversationId, processingStartedAt);
 
+      const stopProgress = subscribeConversationProgress(conversationId, (step) => {
+        setLiveSteps((current) => {
+          const existing = current[conversationId] ?? [];
+          return { ...current, [conversationId]: [...existing, step].slice(-200) };
+        });
+      });
       try {
         const result = await sendMessage(
           conversationId,
@@ -700,6 +709,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         }));
         setFatalError((err as Error).message);
       } finally {
+        stopProgress();
         setStoppingConversations((current) => {
           if (!current[conversationId]) return current;
           const next = { ...current };
@@ -711,6 +721,14 @@ export function ChatShell({ initialUser }: ChatShellProps) {
           waiting: false,
           waitingStartedAt: null
         }));
+        window.setTimeout(() => {
+          setLiveSteps((current) => {
+            if (!(conversationId in current)) return current;
+            const next = { ...current };
+            delete next[conversationId];
+            return next;
+          });
+        }, 1200);
       }
     },
     [activeId, selectedModel, setConversationProcessing, status, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]
@@ -978,6 +996,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
                       attachmentGetEnabled={capabilities.attachmentGet}
                       onAttachmentImageOpen={handleAttachmentImageOpen}
                       deletedArtifactIds={deletedArtifactIds}
+                      liveSteps={isWaiting && message.role === "assistant" && message.status === "pending" ? liveSteps[message.conversationId] : undefined}
                     />
                   );
                 })}

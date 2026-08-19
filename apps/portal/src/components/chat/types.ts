@@ -209,3 +209,46 @@ export function normalizeArtifacts(
 }
 
 export type { ArtifactDescriptor };
+
+/** T-199 工作过程：单条时间线项（历史 trace 与实时事件统一形态）。 */
+export interface WorkStepView {
+  at: string;
+  kind: "turn_start" | "first_token" | "tool_call" | "tool_result" | "model_fallback" | "turn_end";
+  toolName?: string;
+  status?: string;
+  elapsedMs?: number;
+  inputChars?: number;
+  outputChars?: number;
+  errorExcerpt?: string;
+  message?: string;
+}
+
+/** T-199 历史回看：trace.get 返回的摘要。 */
+export interface TraceDetailView {
+  traceId: string;
+  createdAt: string;
+  model: string | null;
+  status: string;
+  elapsedMs: number | null;
+  firstTokenMs: number | null;
+  totalTokens: number | null;
+  cost: number | null;
+  errorMessage: string | null;
+  toolCalls: Array<{
+    toolCallId?: string;
+    toolName?: string;
+    status?: string;
+    startedAt?: string;
+    elapsedMs?: number;
+    inputChars?: number;
+    outputChars?: number;
+    errorExcerpt?: string;
+  }>;
+}
+
+/** T-199 实时进度事件（SSE）。 */
+export interface ProgressEventView {
+  kind: "subscribed" | "progress";
+  conversationId?: string;
+  event?: WorkStepView;
+}

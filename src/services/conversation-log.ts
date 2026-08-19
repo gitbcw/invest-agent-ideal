@@ -613,6 +613,8 @@ export async function chatViaConversationLog(input: {
   model?: string;
   /** Internal/test injection point; Portal routes never accept an agent body field. */
   agent?: RuntimeAgent;
+  /** T-199 工作过程事件回调（尽力而为）；connector 用它向 relay 转发进度。 */
+  onProgress?: import("../runtime/protocol.js").AgentTurnProgressCallback;
 }): Promise<ConversationChatResult> {
   if (input.idempotencyKey) {
     const pending = pendingPortalChats.get(input.idempotencyKey);
@@ -907,6 +909,7 @@ async function chatViaConversationLogOnce(input: {
   clientSentAt?: string;
   model?: string;
   agent?: RuntimeAgent;
+  onProgress?: import("../runtime/protocol.js").AgentTurnProgressCallback;
 }, control: ActiveConversationChat): Promise<ConversationChatResult> {
   const scope = normalizeConversationScope(input);
   if (input.idempotencyKey) {
@@ -1021,6 +1024,7 @@ async function chatViaConversationLogOnce(input: {
       attachments: storedAttachments,
       ...(input.model ? { model: input.model } : {}),
       _cancelSignal: control.abortController.signal,
+      ...(input.onProgress ? { _onProgress: input.onProgress } : {}),
     },
   };
   // Mark the active turn so any MCP `artifacts.publish` / `reviews.save`

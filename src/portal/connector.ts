@@ -82,6 +82,8 @@ const TYPES = {
   CONVERSATION_GET: "conversation.get",
   CONVERSATION_CHAT: "conversation.chat",
   CONVERSATION_CANCEL: "conversation.cancel",
+  TRACE_GET: "trace.get",
+  CONVERSATION_CHAT_PROGRESS: "conversation.chat.progress",
   REPORT_ASSET_GET: "report.asset.get",
   REPORT_MAPPING_GET: "report.mapping.get",
   ARTIFACT_GET: "artifact.get",
@@ -255,6 +257,30 @@ function send(socket: AnyWebSocket, message: PortalEnvelope | PortalResponse) {
   return true;
 }
 
+/**
+ * T-199：已注册 relay socket 的轮内进度转发通道。尽力而为——socket 未开或
+ * 断连时事件直接丢弃，聊天轮结果本身不受影响。
+ */
+let progressForwarder: ((payload: Record<string, unknown>) => void) | null = null;
+
+function makeProgressForwarder(socketRef: () => AnyWebSocket | null): (payload: Record<string, unknown>) => void {
+  return (payload) => {
+    const socket = socketRef();
+    if (!socket) return;
+    try {
+      send(socket, {
+        protocolVersion: PROTOCOL_VERSION,
+        requestId: `prog_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        type: TYPES.CONVERSATION_CHAT_PROGRESS,
+        sentAt: new Date().toISOString(),
+        payload,
+      });
+    } catch {
+      // 进度事件失败不影响轮次。
+    }
+  };
+}
+
 type ConnectorScope = {
   userId: string;
   assistantId: string;
@@ -422,10 +448,17 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         cursor: message.payload?.cursor,
         limit: message.payload?.limit,
       })));
-    case TYPES.CONVERSATION_CHAT:
+    case TYPES.CONVERSATION_CHAT: {
       if (!String(message.payload?.text || "").trim() && (!Array.isArray(message.payload?.attachments) || message.payload.attachments.length === 0)) {
         return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "text or attachments is required"));
       }
+      // T-199：把轮内过程事件尽力而为转发给 relay（断连/未注册时静默丢弃）。
+      const progressConversationId = String(message.payload?.conversationId || "");
+      const forwardProgress = progressConversationId
+        ? (event: import("../runtime/protocol.js").AgentTurnProgressEvent) => {
+            progressForwarder?.({ conversationId: progressConversationId, requestId: message.requestId, event });
+          }
+        : undefined;
       return finish(ok(message.type, message.requestId, await chatViaConversationLog({
         ...commandScope,
         conversationId: String(message.payload?.conversationId || ""),
@@ -435,7 +468,32 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         idempotencyKey: message.payload?.idempotencyKey,
         clientSentAt: message.payload?.clientSentAt,
         model: typeof message.payload?.model === "string" && message.payload.model.trim() ? message.payload.model.trim() : undefined,
+        ...(forwardProgress ? { onProgress: forwardProgress } : {}),
       })));
+    }
+    case TYPES.TRACE_GET: {
+      const traceId = String(message.payload?.traceId || "").trim();
+      const messageId = String(message.payload?.messageId || "").trim();
+      if (!traceId && !messageId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "traceId or messageId is required"));
+      const row = sqlite.prepare(`
+        SELECT trace_id AS traceId, message_id AS messageId, conversation_id AS conversationId, created_at AS createdAt,
+               channel, mode, agent_model AS model, status, elapsed_ms AS elapsedMs, first_token_ms AS firstTokenMs,
+               input_tokens AS inputTokens, output_tokens AS outputTokens, total_tokens AS totalTokens,
+               cost_amount AS cost, cost_currency AS costCurrency, error_message AS errorMessage, tool_calls AS toolCalls
+        FROM agent_traces
+        WHERE user_id = ? AND instance_id = ? AND (trace_id = ? OR message_id = ?)
+        ORDER BY id DESC LIMIT 1
+      `).get(commandScope.userId, commandScope.instanceId, traceId || messageId, messageId || traceId) as Record<string, unknown> | undefined;
+      if (!row) return finish(ok(message.type, message.requestId, { trace: null }));
+      // 摘要级回放：只含工具时间线与计量，不含 prompt/reply 正文。
+      let toolCalls: unknown[] = [];
+      try {
+        const parsed = JSON.parse(String(row.toolCalls ?? "[]"));
+        if (Array.isArray(parsed)) toolCalls = parsed;
+      } catch { toolCalls = []; }
+      delete row.toolCalls;
+      return finish(ok(message.type, message.requestId, { trace: { ...row, toolCalls } }));
+    }
     case TYPES.CONVERSATION_CANCEL: {
       const conversationId = String(message.payload?.conversationId || "").trim();
       if (!conversationId) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "conversationId is required"));
@@ -1264,6 +1322,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
       clearInterval(livenessTimer);
       livenessTimer = null;
     }
+    progressForwarder = null;
     socket = null;
   };
 
@@ -1309,13 +1368,15 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.cancel", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
+        capabilities: ["conversation.chat", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {
         forceReconnect("register send failed");
         return;
       }
+      // T-199：socket 打开即挂进度转发；断连由 cleanupSocket 清空。
+      progressForwarder = makeProgressForwarder(() => socket);
       heartbeatTimer = setInterval(() => {
         if (!socket) return;
         try {

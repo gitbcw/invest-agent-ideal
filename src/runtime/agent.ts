@@ -270,6 +270,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             toolsets: observedToolsets,
             signal: cancelSignal,
             maxSteps: 20,
+            ...(message.context?._onProgress ? { onProgress: message.context._onProgress as import("./protocol.js").AgentTurnProgressCallback } : {}),
           } as Parameters<typeof runMastraTurn>[0];
           const turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
           // W1-P3 自动路由轮内兜底：首字超时（45s）或可重试的上游错误时，沿自动链换下一顺位模型重试。
@@ -312,6 +313,14 @@ export function createRuntimeAgent(): RuntimeAgent {
                 if (!canRetry) throw error;
                 attempt += 1;
                 logger.warn(`自动路由轮内兜底（第 ${attempt}/${AUTO_FALLBACK_MAX} 跳）：${attemptModel} 失败（${errorText.slice(0, 120)}），换用 ${next.model} 重试`);
+                const progressCallback = message.context?._onProgress as import("./protocol.js").AgentTurnProgressCallback | undefined;
+                progressCallback?.({
+                  kind: "model_fallback",
+                  at: new Date().toISOString(),
+                  seq: 0,
+                  conversationId,
+                  message: `${attemptModel} 失败（${errorText.slice(0, 80)}），换用 ${next.model} 重试`,
+                });
                 attemptModel = next.model;
                 selectedModel = attemptModel;
               }

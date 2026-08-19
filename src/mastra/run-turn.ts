@@ -93,6 +93,8 @@ export interface MastraTurnParams {
    * see the image instead of a text-encoded byte dump.
    */
   images?: ReadonlyArray<{ mimeType: string; base64: string }>;
+  /** T-199 工作过程事件回调；缺省时零开销，事件为尽力而为投递。 */
+  onProgress?: import("../runtime/protocol.js").AgentTurnProgressCallback;
 }
 
 export interface MastraTurnDependencies {
@@ -383,11 +385,12 @@ function textFromChunk(chunk: unknown): string {
   return candidates.find((candidate): candidate is string => typeof candidate === "string") ?? "";
 }
 
-async function collectStream(value: unknown, onFirstText?: () => void): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
+async function collectStream(value: unknown, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
   const iterable = asAsyncIterable(value);
   if (!iterable) return { text: "", toolCalls: [] };
   const chunks: string[] = [];
   const toolCalls: unknown[] = [];
+  const emittedToolCalls = new Set<string>();
   let usage: unknown;
   let firstTextAtMs: number | undefined;
   for await (const chunk of iterable) {
@@ -409,6 +412,24 @@ async function collectStream(value: unknown, onFirstText?: () => void): Promise<
         || type === "tool-result" || type.startsWith("tool-input") || type.startsWith("tool-output")) {
         const payload = isRecord(chunk.payload) ? chunk.payload : chunk;
         toolCalls.push(payload);
+        if (onChunk) {
+          const summary = mapOneToolCall({ ...payload, ...(type === "tool-result" ? { status: payload.status ?? "success" } : {}) }, new Date().toISOString());
+          // 参数流式分片会对同一 toolCallId 产生多条 tool-input chunk；只发首条。
+          if (summary?.toolCallId && !emittedToolCalls.has(summary.toolCallId)) {
+            emittedToolCalls.add(summary.toolCallId);
+            onChunk({
+              kind: type === "tool-result" || type.startsWith("tool-output") ? "tool_result" : "tool_call",
+              at: summary.startedAt,
+              seq: 0,
+              toolCallId: summary.toolCallId,
+              toolName: summary.toolName,
+              status: summary.status,
+              ...(summary.inputChars !== undefined ? { inputChars: summary.inputChars } : {}),
+              ...(summary.outputChars !== undefined ? { outputChars: summary.outputChars } : {}),
+              ...(summary.errorExcerpt ? { errorExcerpt: summary.errorExcerpt } : {}),
+            });
+          }
+        }
       }
       if (type === "finish" || type.includes("usage")) {
         usage = chunk.usage ?? (isRecord(chunk.payload) ? chunk.payload.usage : undefined) ?? usage;
@@ -418,7 +439,7 @@ async function collectStream(value: unknown, onFirstText?: () => void): Promise<
   return { text: chunks.join(""), usage, toolCalls, ...(firstTextAtMs !== undefined ? { firstTextAtMs } : {}) };
 }
 
-async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string, onFirstText?: () => void): Promise<{
+async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback): Promise<{
   text: string;
   usage?: unknown;
   toolCalls?: unknown;
@@ -429,8 +450,10 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
   const output = await outputValue;
   if (typeof output === "string") return { text: output };
   const directRecord = isRecord(output) ? output : undefined;
-  const stream = directRecord?.textStream ?? directRecord?.fullStream;
-  const collected = stream === undefined ? { text: "", toolCalls: [] as unknown[] } : await collectStream(stream, onFirstText);
+  // fullStream 优先：它携带 tool-call/tool-result/usage 事件，textStream 只有文本增量
+  // （T-199 实时过程事件依赖 fullStream；聚合 toolCalls 字段要等轮结束才可用）。
+  const stream = directRecord?.fullStream ?? directRecord?.textStream;
+  const collected = stream === undefined ? { text: "", toolCalls: [] as unknown[] } : await collectStream(stream, onFirstText, onChunk);
   const directText = directRecord ? await awaitValue(directRecord.text as string | PromiseLike<string> | undefined) : undefined;
   const text = typeof directText === "string" ? directText : collected.text;
   const usage = directRecord ? await awaitValue(directRecord.usage) : undefined;
@@ -498,6 +521,18 @@ export async function runMastraTurn(
   const active = dependencies.activeConversations ?? activeConversations;
   if (active.has(conversationId)) throw new MastraTurnBusyError(conversationId);
   active.add(conversationId);
+  // T-199 工作过程事件：seq 严格递增，尽力而为投递，回调异常不得影响轮次。
+  let progressSeq = 0;
+  const emitProgress = params.onProgress
+    ? (event: Omit<import("../runtime/protocol.js").AgentTurnProgressEvent, "seq">) => {
+        try {
+          params.onProgress?.({ ...event, seq: ++progressSeq, conversationId });
+        } catch {
+          // 进度回调失败静默——轮次结果才是权威。
+        }
+      }
+    : undefined;
+  emitProgress?.({ kind: "turn_start", at: new Date().toISOString() });
   let timer: NodeJS.Timeout | undefined;
   let abortFromExternal: (() => void) | undefined;
   let firstTokenTimedOut = false;
@@ -598,7 +633,16 @@ export async function runMastraTurn(
     const output = await Promise.race([streamPromise, timeoutPromise]);
     const outputStartedAtMs = Date.now();
     const mapped = await Promise.race([
-      resolveOutput(output, params.text, startedAt, clearFirstTokenWatchdog),
+      resolveOutput(output, params.text, startedAt,
+        () => {
+          clearFirstTokenWatchdog();
+          emitProgress?.({ kind: "first_token", at: new Date().toISOString() });
+        },
+        emitProgress
+          ? (event) => {
+              if (event.kind === "tool_call" || event.kind === "tool_result") emitProgress(event);
+            }
+          : undefined),
       timeoutPromise,
     ]);
     outputCollectMs = Math.max(0, Date.now() - outputStartedAtMs);
@@ -608,6 +652,7 @@ export async function runMastraTurn(
       ?? mapMastraToolCalls(mapped.toolCalls, new Date(startedAtMs));
     const model = mapped.model ?? params.model ?? gateway?.defaultModel;
     const firstTokenMs = mapped.firstTextAtMs !== undefined ? Math.max(0, mapped.firstTextAtMs - startedAtMs) : undefined;
+    emitProgress?.({ kind: "turn_end", at: new Date().toISOString(), elapsedMs: Date.now() - startedAtMs, ...(model ? { message: model } : {}) });
     return {
       text,
       ...(firstTokenMs !== undefined ? { firstTokenMs } : {}),

@@ -38,6 +38,28 @@ export interface AgentResponse {
   data?: Record<string, unknown>;
 }
 
+/**
+ * T-199 AI 工作过程事件：聊天轮内按发生顺序发出，供 Portal 实时展示。
+ * 尽力而为投递——事件丢失不影响正确性，最终响应才是权威结果。
+ * AgentMessage.context._onProgress 携带回调，通道与调用方自行决定转发方式。
+ */
+export interface AgentTurnProgressEvent {
+  kind: "turn_start" | "first_token" | "tool_call" | "tool_result" | "model_fallback" | "turn_end";
+  at: string;
+  seq: number;
+  conversationId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  status?: string;
+  elapsedMs?: number;
+  inputChars?: number;
+  outputChars?: number;
+  errorExcerpt?: string;
+  message?: string;
+}
+
+export type AgentTurnProgressCallback = (event: AgentTurnProgressEvent) => void;
+
 /** 创建文本响应 */
 export function textResponse(text: string, finished = true, data?: Record<string, unknown>): AgentResponse {
   return {

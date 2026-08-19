@@ -8,7 +8,7 @@ import type {
   WorkspaceFileGetResult,
   WorkspaceFileListResult
 } from "@/lib/protocol";
-import type { ChatMessageView, ConversationListItem } from "./types";
+import type { ChatMessageView, ConversationListItem, TraceDetailView, WorkStepView } from "./types";
 import type { WorkbookPreviewData } from "@/lib/workbook-preview";
 
 export interface PortalAttachmentPayload {
@@ -493,3 +493,38 @@ export async function confirmArtifactDelete(artifactId: string, tokenId: string)
 export type { ArtifactLibraryItem };
 
 export type { ChatMessageView };
+
+/** T-199 历史回看：拉取一轮的工具调用时间线与计量摘要。 */
+export async function fetchTrace(traceId: string): Promise<TraceDetailView | null> {
+  const res = await fetch(`/api/trace/${encodeURIComponent(traceId)}`, { credentials: "same-origin" });
+  const json = await jsonOrThrow<{ ok: boolean; data?: { trace: TraceDetailView | null }; error?: { message: string } }>(res);
+  if (!json.ok) throw new Error(json.error?.message ?? "过程记录获取失败");
+  return json.data?.trace ?? null;
+}
+
+/**
+ * T-199 实时进度订阅（SSE）。返回取消函数；事件尽力而为，连接失败静默
+ * （聊天结果走原有 POST，不依赖本订阅）。
+ */
+export function subscribeConversationProgress(
+  conversationId: string,
+  onStep: (step: WorkStepView) => void
+): () => void {
+  try {
+    const source = new EventSource(`/api/conversations/${encodeURIComponent(conversationId)}/progress`);
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as { kind?: string; event?: WorkStepView };
+        if (payload.kind === "progress" && payload.event) onStep(payload.event);
+      } catch {
+        // 忽略无法解析的事件。
+      }
+    };
+    source.onerror = () => {
+      // EventSource 会自动重连；轮次结束后由调用方关闭。
+    };
+    return () => source.close();
+  } catch {
+    return () => undefined;
+  }
+}

@@ -136,6 +136,8 @@ export const PORTAL_TYPES = {
   CONVERSATION_GET: "conversation.get",
   CONVERSATION_CHAT: "conversation.chat",
   CONVERSATION_CANCEL: "conversation.cancel",
+  TRACE_GET: "trace.get",
+  CONVERSATION_CHAT_PROGRESS: "conversation.chat.progress",
   REPORT_ASSET_GET: "report.asset.get",
   REPORT_MAPPING_GET: "report.mapping.get",
   ARTIFACT_GET: "artifact.get",

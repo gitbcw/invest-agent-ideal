@@ -9,6 +9,7 @@ import {
   ConversationScopeMismatchError
 } from "@/lib/db/conversations";
 import { reconcilePendingConversations } from "@/lib/conversation-detail-sync";
+import { publishChatProgress, type ChatProgressPayload } from "@/lib/relay/progress-bus";
 import {
   buildErrorResponse,
   buildOkResponse,
@@ -207,6 +208,15 @@ function attachConnectorHandlers(
 
     if (envelope.type === PORTAL_TYPES.CONVERSATION_SYNC) {
       handleSync(envelope as PortalEnvelope<ConversationSyncPayload>);
+      return;
+    }
+
+    // T-199：connector 推来的轮内进度事件（尽力而为，无需响应）。
+    if (envelope.type === PORTAL_TYPES.CONVERSATION_CHAT_PROGRESS) {
+      const payload = envelope.payload as { conversationId?: string; event?: unknown };
+      if (typeof payload.conversationId === "string" && payload.event && typeof payload.event === "object") {
+        publishChatProgress(registered.assistantId, envelope.payload as ChatProgressPayload);
+      }
       return;
     }
 
