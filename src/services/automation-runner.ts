@@ -107,7 +107,9 @@ async function executeAgent(
       timestamp: Date.now(),
       content: { type: "text", text: taskPrompt(task) },
       context: {
-        channel: "web",
+        // Automation runs are not conversations: a distinct channel keeps them
+        // out of the conversation audit scope and any channel-based stats.
+        channel: "automation",
         conversationId: conversationId || `automation-run:${run.runId}`,
         userId: scope.userId,
         projectId: scope.projectId,

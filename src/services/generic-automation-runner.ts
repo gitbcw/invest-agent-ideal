@@ -246,7 +246,9 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       ].join("\n"),
     },
     context: {
-      channel: "web",
+      // Automation runs are not conversations: a distinct channel keeps them
+      // out of the conversation audit scope and any channel-based stats.
+      channel: "automation",
       conversationId: `automation-run:${input.run.runId}`,
       userId: input.scope.userId,
       projectId: input.scope.projectId,

@@ -185,8 +185,23 @@ async function loadAutomationRunAudit(input: { userId?: string; instanceId?: str
     conversationId: automationTaskRuns.conversationId,
     createdAt: automationTaskRuns.createdAt,
     updatedAt: automationTaskRuns.updatedAt,
+    // Automation runs are their own audit surface now (channel='automation'):
+    // pull the linked trace so the tab shows the actual prompt/reply bodies.
+    agentModel: agentTraces.agentModel,
+    traceUserText: agentTraces.userText,
+    traceReplyText: agentTraces.replyTextSanitized,
+    traceRawReplyText: agentTraces.replyTextRaw,
+    tracePromptText: agentTraces.promptText,
+    elapsedMs: agentTraces.elapsedMs,
+    totalTokens: agentTraces.totalTokens,
+    inputTokens: agentTraces.inputTokens,
+    outputTokens: agentTraces.outputTokens,
+    thoughtTokens: agentTraces.thoughtTokens,
+    costAmount: agentTraces.costAmount,
+    usageSource: agentTraces.usageSource,
   }).from(automationTaskRuns)
     .innerJoin(automationTaskRevisions, eq(automationTaskRevisions.revisionId, automationTaskRuns.revisionId))
+    .leftJoin(agentTraces, eq(agentTraces.traceId, automationTaskRuns.traceId))
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(automationTaskRuns.createdAt))
     .limit(limit);
