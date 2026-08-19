@@ -1,6 +1,8 @@
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { logger } from "../lib/logger.js";
+
 import { createRuntimeAgent } from "../runtime/agent.js";
 import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
 import { OUTPUT_VOLUME_POLICY } from "../runtime/spreadsheet-output-policy.js";
@@ -9,12 +11,15 @@ import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
 import { enqueuePushJob } from "./push-queue.js";
 import {
+  activateAutomationTask,
   assertAutomationTaskRunLease,
   bindAutomationTaskRunAssets,
   claimAutomationTaskRun,
   finalizeAutomationTaskRunInTransaction,
   finishAutomationTaskRun,
   getAutomationTask,
+  instantiateMonthlyFileName,
+  updateAutomationTask,
   updateAutomationTaskRunDelivery,
   AutomationTaskError,
   type AutomationScope,
@@ -25,6 +30,7 @@ import { classifyTaskError, executionResponseError, type TaskErrorInfo } from ".
 import { writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
 import {
   createUserAsset,
+  findActiveAssetByFileName,
   getUserAsset,
   readUserAssetVersion,
   uploadUserAssetVersion,
@@ -40,6 +46,7 @@ export type GenericAutomationExecutor = (input: {
   inputs: UserAssetBytes[];
   writableTargets: Array<NonNullable<ResolvedOutput>>;
   spreadsheetHelper?: string;
+  monthlyRollover?: MonthlyRollover | null;
 }) => Promise<AgentResponse>;
 
 export type GenericAutomationRunResult = {
@@ -49,11 +56,15 @@ export type GenericAutomationRunResult = {
 };
 
 type ResolvedOutput = { assetId: string; versionId: string; fileName: string; mimeType: string } | null;
+type MonthlyRollover = { targetFileName: string; boundFileName: string };
 type ResolvedBindings = {
   inputs: UserAssetBytes[];
   output: ResolvedOutput;
   agentUpdateTargets: Map<string, NonNullable<ResolvedOutput>>;
   writableTargets: Array<NonNullable<ResolvedOutput>>;
+  /** T-317: set when an update-mode task declares a monthly rollover and the
+   * bound target is not this month's file; the agent must create the target. */
+  monthlyRollover: MonthlyRollover | null;
 };
 
 class AutomationExecutionFailure extends Error {
@@ -117,11 +128,15 @@ export async function runGenericAutomationTaskNow(input: {
         inputs: resolved.inputs,
         writableTargets: resolved.writableTargets,
         spreadsheetHelper,
+        monthlyRollover: resolved.monthlyRollover,
       });
       assertAgentSucceeded(response);
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
       const result = await normalizeStructuredResult(response, task, resolved, stagingPath);
       const output = await commitOutput(input.scope, task, run, result, resolved);
+      if (resolved.monthlyRollover && output && result.stagedOutput?.operation === "create") {
+        await rollTaskBindingToMonthlyFile(input.scope, task, resolved.monthlyRollover, output.assetId);
+      }
       const finished = await finishAutomationTaskRun({
         ...input.scope,
         runId: run.runId,
@@ -173,7 +188,7 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
   const agentUpdateTargets = new Map<string, NonNullable<ResolvedOutput>>();
   for (const binding of task.revision.inputs) {
     const asset = await getUserAsset({ ...scope, assetId: binding.assetId });
-    if (!asset || asset.status !== "active" || !asset.currentVersionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", binding.assetId);
+    if (!asset || asset.status !== "active" || !asset.currentVersionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", `${binding.assetId}: ASSET_INACTIVE`);
     const versionId = binding.versionPolicy === "fixed" ? binding.versionId! : asset.currentVersionId;
     try {
       const input = await readUserAssetVersion({ ...scope, assetId: asset.assetId, versionId });
@@ -191,7 +206,9 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
         });
       }
     } catch (error) {
-      if (error instanceof UserAssetError) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", binding.assetId);
+      // Keep the underlying cause (e.g. ASSET_INVALID_CONTENT) visible for
+      // diagnosis instead of flattening every read failure to a binding error.
+      if (error instanceof UserAssetError) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", `${binding.assetId}: ${error.code}: ${error.message.slice(0, 120)}`);
       throw error;
     }
   }
@@ -201,17 +218,45 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
       output: null,
       agentUpdateTargets,
       writableTargets: [...agentUpdateTargets.values()],
+      monthlyRollover: null,
     };
   }
-  const asset = await getUserAsset({ ...scope, assetId: task.revision.output.assetId });
-  if (!asset || asset.status !== "active" || !asset.currentVersion) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", task.revision.output.assetId);
+  const outputPolicy = task.revision.output;
+  const boundAsset = await getUserAsset({ ...scope, assetId: outputPolicy.assetId });
+  if (!boundAsset || boundAsset.status !== "active" || !boundAsset.currentVersion) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", `${outputPolicy.assetId}: ASSET_INACTIVE`);
   // `latest` means every run takes the head it actually read as its CAS
   // baseline. A revision's creation-time expectedVersionId must not pin all
   // future runs to an obsolete head after the first successful commit.
-  const versionId = asset.currentVersionId;
-  if (!versionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", asset.assetId);
-  const output = { assetId: asset.assetId, versionId, fileName: asset.currentVersion.fileName, mimeType: asset.currentVersion.mimeType };
-  return { inputs, output, agentUpdateTargets, writableTargets: [output] };
+  const versionId = boundAsset.currentVersionId;
+  if (!versionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", boundAsset.assetId);
+  let output: NonNullable<ResolvedOutput> = {
+    assetId: boundAsset.assetId,
+    versionId,
+    fileName: boundAsset.currentVersion.fileName,
+    mimeType: boundAsset.currentVersion.mimeType,
+  };
+  let monthlyRollover: MonthlyRollover | null = null;
+  if (outputPolicy.rollover) {
+    // T-317 monthly rollover: prefer the current month's file when it already
+    // exists (self-healing even if a previous binding switch failed), and
+    // otherwise ask the agent to create it.
+    const targetFileName = instantiateMonthlyFileName(outputPolicy.rollover.fileNamePattern);
+    if (output.fileName !== targetFileName) {
+      const currentMonthAsset = await findActiveAssetByFileName({ ...scope, fileName: targetFileName });
+      if (currentMonthAsset?.currentVersionId && currentMonthAsset.status === "active") {
+        output = {
+          assetId: currentMonthAsset.assetId,
+          versionId: currentMonthAsset.currentVersionId,
+          fileName: currentMonthAsset.currentVersion!.fileName,
+          mimeType: currentMonthAsset.currentVersion!.mimeType,
+        };
+        logger.info(`automation monthly rollover resolved task=${task.taskId} asset=${currentMonthAsset.assetId} file=${targetFileName}`);
+      } else {
+        monthlyRollover = { targetFileName, boundFileName: output.fileName };
+      }
+    }
+  }
+  return { inputs, output, agentUpdateTargets, writableTargets: [output], monthlyRollover };
 }
 
 async function createStagingPath(scope: AutomationScope): Promise<string> {
@@ -236,13 +281,18 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
         `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item, index) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, stagedPath: `inputs/${index + 1}-${item.descriptor.fileName}`, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
         `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
+        input.monthlyRollover
+          ? `本任务按月滚动工作簿：当前绑定《${input.monthlyRollover.boundFileName}》不是本月目标《${input.monthlyRollover.targetFileName}》。本次运行必须：先用 assets.version.read 读取当前绑定文件，沿用其工作表、表头与字段口径生成本月目标文件（只含表头与口径、不含历史行），把本次结果追加进新文件，并在 stagedOutput 返回 operation='create'、fileName='${input.monthlyRollover.targetFileName}' 与完整新文件内容；不得继续向旧月份文件追加，也不得使用其他文件名。服务层会把任务绑定切换到本月文件。`
+          : "",
         "需要读取绑定文件时，直接使用上述 assetId 调用 assets.version.read；不要用 assets.list 猜测或替换任务对象。其他“我的文件”仅可作为参考，绝不能作为本次更新输出目标。",
         input.spreadsheetHelper
           ? `本次包含 XLSX 绑定文件。更新它时：先用 spreadsheet.transform 工具生成更新后的工作簿（inputPath 必须用上面 stagedPath 字段的精确值，outputPath 为暂存目录内的新文件名，changes 按结构化变更执行追加/单元格修改，sheet 名以 transform 报错或绑定文件说明为准）；然后在 stagedOutput 里返回 {operation:'update', assetId: 可更新目标的 assetId, fileName: 可更新目标的原文件名（不得改名）, filePath: transform 的 outputPath}。执行环境不能运行本地脚本，暂存目录中的 automation-sheet.mjs 仅供参考、无法执行；不要把 XLSX 当文本编辑，也不要声称没有电子表格处理能力。transform 失败时按返回的 error 信息修正参数后重试，不要放弃更新。`
           : "本次没有 XLSX 文件，不需要电子表格处理。",
         `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
-        "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64?:string,filePath?:string}, shouldNotify?:boolean}。优先把生成的 XLSX/CSV 写入当前暂存目录并返回相对 filePath（不得使用绝对路径、不得越出暂存目录）；只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。",
+        input.task.revision.output.mode === "none"
+          ? "最终回复必须是一个 JSON 对象：{summary:string, shouldNotify?:boolean}。本任务不产出文件资产：最终 JSON 里禁止出现 stagedOutput 字段（出现会导致运行被判无效）；一切结果都写入 summary。若任务过程中确需留档，用任务说明允许的领域工具（如 reviews.save）完成，不要用 stagedOutput。"
+          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64?:string,filePath?:string}, shouldNotify?:boolean}。优先把生成的 XLSX/CSV 写入当前暂存目录并返回相对 filePath（不得使用绝对路径、不得越出暂存目录）；只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。",
         ...(input.task.revision.delivery.mode === "none"
           ? []
           : [
@@ -311,7 +361,11 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
   }
   const stagedRaw = data.stagedOutput;
   if (task.revision.output.mode === "none") {
-    if (stagedRaw !== undefined) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "none output cannot include stagedOutput");
+    // The domain output (e.g. a saved review) may already be persisted by the
+    // agent; an unexpected stagedOutput must not fail the whole run (T-324).
+    if (stagedRaw !== undefined) {
+      logger.warn(`automation run ignored stagedOutput under output.mode=none task=${task.taskId} keys=${Object.keys(stagedRaw as object).join(",")}`);
+    }
     return { summary: summary || "自动化运行完成。", shouldNotify };
   }
   if (!stagedRaw || typeof stagedRaw !== "object") {
@@ -336,15 +390,27 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
     base64 = (await readFile(candidate)).toString("base64");
   }
   if (!fileName || !isStrictBase64(base64)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput fileName/base64 is invalid");
-  const operation = task.revision.output.mode === "agent"
+  const outputPolicy = task.revision.output;
+  // T-317 monthly rollover: when the bound target is not this month's file,
+  // the agent may create exactly the monthly target instead of updating.
+  const rolloverCreate = outputPolicy.mode === "update"
+    && outputPolicy.rollover !== undefined
+    && resolved.monthlyRollover !== null
+    && staged.operation === "create";
+  if (rolloverCreate && fileName !== resolved.monthlyRollover!.targetFileName) {
+    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `stagedOutput fileName must be the monthly target ${resolved.monthlyRollover!.targetFileName}`);
+  }
+  const operation = outputPolicy.mode === "agent"
     ? staged.operation
-    : task.revision.output.mode;
+    : rolloverCreate
+      ? "create"
+      : outputPolicy.mode;
   if (operation !== "create" && operation !== "update") {
     throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput operation is invalid");
   }
   const assetId = typeof staged.assetId === "string" ? staged.assetId : undefined;
-  if (task.revision.output.mode === "create" && fileName !== task.revision.output.fileName) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput fileName does not match output policy");
-  if (task.revision.output.mode === "update" && (!resolved.output || assetId !== resolved.output.assetId || !matchesCurrentSpreadsheetName(fileName, resolved.output.fileName))) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
+  if (outputPolicy.mode === "create" && fileName !== outputPolicy.fileName) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput fileName does not match output policy");
+  if (outputPolicy.mode === "update" && !rolloverCreate && (!resolved.output || assetId !== resolved.output.assetId || !matchesCurrentSpreadsheetName(fileName, resolved.output.fileName))) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
   if (task.revision.output.mode === "agent" && operation === "update") {
     const target = assetId ? resolved.agentUpdateTargets.get(assetId) : undefined;
     if (!target || !matchesCurrentSpreadsheetName(fileName, target.fileName)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
@@ -403,6 +469,32 @@ async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, 
     return { assetId: descriptor.assetId, versionId: descriptor.currentVersion.versionId, checksum: descriptor.currentVersion.checksum };
   } catch (error) {
     throw error;
+  }
+}
+
+/** After a rollover create commits, switch the task's output binding to the
+ * new monthly asset. updateAutomationTask parks the task at paused (revision
+ * semantics), so the switch immediately re-activates the schedule; if either
+ * step fails we only log — the next run's resolveBindings self-heals onto the
+ * new file by fileName, so a failed switch never breaks the schedule. */
+async function rollTaskBindingToMonthlyFile(scope: AutomationScope, task: AutomationTaskRecord, rollover: MonthlyRollover, newAssetId: string): Promise<void> {
+  if (task.revision.output.mode !== "update" || !task.revision.output.rollover) return;
+  try {
+    const updated = await updateAutomationTask({
+      ...scope,
+      taskId: task.taskId,
+      expectedRevision: task.currentRevision,
+      output: {
+        mode: "update",
+        assetId: newAssetId,
+        versionPolicy: "latest",
+        rollover: task.revision.output.rollover,
+      },
+    });
+    await activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: updated.currentRevision });
+    logger.info(`automation monthly rollover binding switched task=${task.taskId} asset=${newAssetId} file=${rollover.targetFileName}`);
+  } catch (error) {
+    logger.warn(`automation monthly rollover binding switch deferred task=${task.taskId}: ${(error as Error).message}`);
   }
 }
 

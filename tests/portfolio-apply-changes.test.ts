@@ -517,3 +517,86 @@ test("portfolio.apply_changes confirmation survives schema-noise between draft a
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("portfolio revision equality compares instants, not timezone spellings (dyk 2026-08-19 regression)", async () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-portfolio-tz-"));
+  process.env.NODE_ENV = "test";
+  process.env.DB_PATH = path.join(tempRoot, "test.db");
+  process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
+  process.env.INVEST_AGENT_SANDBOX_SECRET_FILE = path.join(tempRoot, ".sandbox-secret");
+
+  try {
+    const { db, initDb } = await import("../src/db/index.js");
+    const { conversationMessages, conversationSessions } = await import("../src/db/schema.js");
+    const { ensureWorkspace, resolveWorkspacePath } = await import("../src/lib/workspace.js");
+    const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+
+    const userId = "portfolio-tz-user";
+    const instanceId = "invest-agent-portfolio-tz-user";
+    const conversationId = "portfolio-tz-conversation";
+    const context = { userId, instanceId, projectId: "invest-agent", conversationId, workspacePath: resolveWorkspacePath(userId) };
+    // Stored revision as migrated from the user's portfolio.yaml: +08:00 spelling.
+    const storedRevision = "2026-07-22T19:48:03+08:00";
+    // The agent echoes the same instant after UTC normalization: Z spelling.
+    const agentRevision = "2026-07-22T11:48:03.000Z";
+
+    initDb();
+    await ensureWorkspace({ userId, tenantId: userId, projectId: "invest-agent" });
+    const seedPortfolio = {
+      cash: { ratio_percent: 65, notes: "现金仓位约 65%" },
+      holdings: [
+        { code: "002648", name: "卫星化学", weight: 2.4, notes: "仓位2.4%" },
+      ],
+      watchlist: [],
+      accounts: [],
+      last_confirmed_at: storedRevision,
+      last_confirmed_by: "user",
+    };
+    (await import("../src/db/index.js")).sqlite.prepare(
+      `INSERT INTO mastra_portfolio_states (user_id,project_id,instance_id,portfolio_json,source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    ).run(userId, "invest-agent", instanceId, JSON.stringify(seedPortfolio), "service-owned://portfolio", "test:seed", storedRevision, "test-seed", storedRevision, storedRevision);
+    const now = new Date().toISOString();
+    await db.insert(conversationSessions).values({
+      conversationId, userId, projectId: "invest-agent", instanceId, assistantId: instanceId,
+      channel: "web", title: "Timezone spelling regression", createdAt: now, updatedAt: now,
+    });
+
+    const payload = {
+      expectedLastConfirmedAt: agentRevision,
+      upsertHoldings: [{ code: "002648", name: "卫星化学", shares: 500, cost: 9.7, weight: 2.4, notes: "卖出400股后剩余500股" }],
+      cashRatioPercent: 97.6,
+    };
+    const requested = await callServiceTool("confirmations.request", {
+      operation: "portfolio.apply_changes",
+      payload,
+      summary: "请确认卫星化学减仓",
+    }, context) as { confirmationId: string };
+    assert.ok(requested.confirmationId, "drafting with a timezone-equivalent revision must not be rejected as state changed");
+
+    await db.insert(conversationMessages).values({
+      messageId: "portfolio-tz-confirmation-message",
+      conversationId, userId, projectId: "invest-agent", instanceId, assistantId: instanceId,
+      channel: "web", role: "user", content: "确认修改",
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+    });
+
+    const applied = await callServiceTool("portfolio.apply_changes", {
+      confirmedByUser: true,
+      confirmationId: requested.confirmationId,
+      ...payload,
+    }, context) as { ok: boolean };
+    assert.equal(applied.ok, true, "apply with a timezone-equivalent revision must succeed");
+
+    // A genuinely different instant must still be rejected: instant equality
+    // must not loosen concurrent-write protection.
+    await assert.rejects(
+      () => callServiceTool("confirmations.request", {
+        operation: "portfolio.apply_changes",
+        payload: { ...payload, expectedLastConfirmedAt: "2026-07-22T11:48:04.000Z" },
+      }, context),
+      /portfolio state changed/
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

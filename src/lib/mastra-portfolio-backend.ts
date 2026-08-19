@@ -29,12 +29,22 @@ export function readMastraPortfolioProjection(userId: string, instanceId: string
   return readProjection({ userId, instanceId });
 }
 
+/** Revisions are stored with mixed timezone spellings (Z vs +08:00) for the
+ * same instant, so equality must compare parsed instants, never raw strings. */
+export function isSameRevisionInstant(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a === b;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return a === b;
+  return ta === tb;
+}
+
 export function replaceMastraPortfolioProjection(userId: string, instanceId: string, next: Projection, expectedRevision: string | null): string {
   const now = new Date().toISOString();
   sqlite.transaction(() => {
     const row = sqlite.prepare("SELECT source_revision AS sourceRevision FROM mastra_portfolio_states WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1").get(userId, projectId(), instanceId) as { sourceRevision?: string | null } | undefined;
     const currentRevision = row?.sourceRevision ?? null;
-    if (currentRevision !== expectedRevision) throw new MastraProjectionError("MASTRA_REVISION_CONFLICT", `MASTRA_REVISION_CONFLICT: expected ${expectedRevision ?? "null"}, current ${currentRevision ?? "null"}`);
+    if (!isSameRevisionInstant(currentRevision, expectedRevision)) throw new MastraProjectionError("MASTRA_REVISION_CONFLICT", `MASTRA_REVISION_CONFLICT: expected ${expectedRevision ?? "null"}, current ${currentRevision ?? "null"}`);
     if (row) {
       sqlite.prepare("UPDATE mastra_portfolio_states SET portfolio_json = ?, source_path = ?, source_checksum = ?, source_revision = ?, updated_at = ? WHERE user_id = ? AND project_id = ? AND instance_id = ?").run(JSON.stringify(next), "service-owned://portfolio", `service:${now}`, now, now, userId, projectId(), instanceId);
     } else {
@@ -97,7 +107,7 @@ function mutateProjection(scope: Scope, mutate: (projection: Projection) => void
       "SELECT portfolio_json AS portfolioJson, source_revision AS sourceRevision FROM mastra_portfolio_states WHERE user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
     ).get(scope.userId, projectId(), scope.instanceId) as { portfolioJson?: string; sourceRevision?: string | null } | undefined;
     const currentRevision = row?.sourceRevision ?? null;
-    if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+    if (expectedRevision !== undefined && !isSameRevisionInstant(expectedRevision, currentRevision)) {
       throw new MastraProjectionError("MASTRA_REVISION_CONFLICT", `MASTRA_REVISION_CONFLICT: expected ${expectedRevision ?? "null"}, current ${currentRevision ?? "null"}`);
     }
     let projection: Projection;

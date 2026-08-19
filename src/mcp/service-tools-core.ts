@@ -38,7 +38,7 @@ import {
   updateAutomationTask,
 } from "../services/automation-tasks.js";
 import { ACTIVE_BACKEND, isWorkspaceBackend, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
-import { getMastraPortfolioRevision, readMastraPortfolioProjection, replaceMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
+import { getMastraPortfolioRevision, isSameRevisionInstant, readMastraPortfolioProjection, replaceMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
@@ -1784,6 +1784,7 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
     const reportPath = kind === "daily"
       ? `reports/daily/${saved.date}.md`
       : `reports/${kind}/${saved.reportKey}.md`;
+    await mirrorReviewIntoWorkspace(context, reportPath, saved.filePath);
     const published = await publishConversationArtifact({
       userId: context.userId,
       instanceId: context.instanceId,
@@ -2114,22 +2115,23 @@ async function planPortfolioChanges(
   context: ServiceToolContext
 ): Promise<PlannedPortfolioChanges> {
   if (!Object.prototype.hasOwnProperty.call(input, "expectedLastConfirmedAt")) {
-    throw new Error("expectedLastConfirmedAt is required; read the current portfolio before drafting changes");
+    throw new Error("expectedLastConfirmedAt is required; read the current portfolio first and copy its revision value verbatim into expectedLastConfirmedAt");
   }
-  const expectedLastConfirmedAt = input.expectedLastConfirmedAt === null
+  const rawExpected = input.expectedLastConfirmedAt === null
     ? null
     : stringInput(input.expectedLastConfirmedAt);
-  if (input.expectedLastConfirmedAt !== null && !expectedLastConfirmedAt) {
+  if (input.expectedLastConfirmedAt !== null && !rawExpected) {
     throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
   }
+  const expectedLastConfirmedAt: string | null = rawExpected ?? null;
   if (expectedLastConfirmedAt && Number.isNaN(Date.parse(expectedLastConfirmedAt))) {
     throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
   }
 
   const current = readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml;
   const currentRevision = getMastraPortfolioRevision(context.userId, context.instanceId);
-  if (currentRevision !== expectedLastConfirmedAt) {
-    throw new Error(`portfolio state changed; expected revision ${expectedLastConfirmedAt ?? "null"}, current revision ${currentRevision ?? "null"}`);
+  if (!isSameRevisionInstant(currentRevision, expectedLastConfirmedAt)) {
+    throw new Error(`portfolio state changed; expected revision ${expectedLastConfirmedAt ?? "null"}, current revision ${currentRevision ?? "null"}; copy the current revision verbatim from portfolio.read into expectedLastConfirmedAt`);
   }
 
   const removeHoldingCodes = [...new Set(normalizeCodes(input.removeHoldingCodes))];
@@ -2723,6 +2725,28 @@ function stripPortfolioConfirmationMetadata(payload: Record<string, unknown>) {
 function stripMethodChangeConfirmationMetadata(payload: Record<string, unknown>) {
   const { summary: _summary, decisionNote: _decisionNote, ...boundPayload } = payload;
   return boundPayload;
+}
+
+/** Daily skill reviews persist server-side (data/reviews/...), while weekly and
+ * monthly reviews already live in the workspace; artifacts are publishable
+ * only from the workspace. Mirror a saved review into its report path without
+ * ever overwriting an existing workspace file (T-325). */
+async function mirrorReviewIntoWorkspace(
+  context: ServiceToolContext,
+  reportPath: string,
+  reviewFilePath: string
+): Promise<void> {
+  const workspaceRoot = await resolveProjectStorageRoot({
+    userId: context.userId,
+    projectId: context.projectId || DEFAULT_PROJECT_ID,
+    instanceId: context.instanceId,
+  });
+  const targetPath = path.resolve(workspaceRoot, reportPath);
+  if (await readFile(targetPath).catch(() => null) !== null) return;
+  const reviewRaw = await readFile(reviewFilePath).catch(() => null);
+  if (reviewRaw === null) return;
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, reviewRaw);
 }
 
 function stripPreferencesConfirmationMetadata(payload: Record<string, unknown>) {
