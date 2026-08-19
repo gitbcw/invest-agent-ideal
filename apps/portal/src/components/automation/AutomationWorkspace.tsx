@@ -62,6 +62,7 @@ import {
   type AutomationTemplate,
 } from "@/lib/automation-templates";
 import { PortalSidebar } from "@/components/navigation/PortalSidebar";
+import { PatrolShell } from "@/components/patrol/PatrolShell";
 import { useFilePanel } from "@/components/file-panel/FilePanelProvider";
 import {
   activateAutomation,
@@ -91,8 +92,8 @@ const WEEKDAYS = [
   [7, "周日"],
 ] as const;
 
-type View = "tasks" | "runs" | "templates" | "new" | "task" | "run";
-type WorkspaceView = Extract<View, "tasks" | "runs" | "templates">;
+type View = "tasks" | "runs" | "templates" | "patrol" | "new" | "task" | "run";
+type WorkspaceView = Extract<View, "tasks" | "runs" | "templates" | "patrol">;
 type TaskFilter = "all" | AutomationTaskStatus;
 type AttachmentFileCategory = "all" | "document" | "spreadsheet" | "image";
 
@@ -204,6 +205,11 @@ export function AutomationWorkspace() {
             <TemplatesView />
           </div>
         ) : null}
+        {visitedWorkspaceViews.has("patrol") ? (
+          <div hidden={view !== "patrol"} className="bg-[#f4f7f4]">
+            <PatrolShell />
+          </div>
+        ) : null}
         {view === "new" ? <EditorView onError={setError} /> : null}
         {view === "task" && taskId ? (
           <TaskDetailView taskId={taskId} onError={setError} />
@@ -267,6 +273,13 @@ function AutomationHeader({
             className={`rounded-md px-3 py-2 ${view === "runs" || view === "run" ? "bg-white font-medium text-[#304936] shadow-sm" : "text-[#718078] hover:text-[#304936]"}`}
           >
             运行记录
+          </Link>
+          <Link
+            href="/automations?view=patrol"
+            aria-current={view === "patrol" ? "page" : undefined}
+            className={`rounded-md px-3 py-2 ${view === "patrol" ? "bg-white font-medium text-[#304936] shadow-sm" : "text-[#718078] hover:text-[#304936]"}`}
+          >
+            规则巡检
           </Link>
           </nav>
         )}
@@ -3086,6 +3099,8 @@ function getView(pathname: string | null, workspaceView?: string | null): View {
   if (path === "/automations" && workspaceView === "runs") return "runs";
   if (path === "/automations" && workspaceView === "templates")
     return "templates";
+  if (path === "/automations" && workspaceView === "patrol")
+    return "patrol";
   if (path.endsWith("/templates")) return "templates";
   if (path.endsWith("/new")) return "new";
   if (path.includes("/runs/") && path !== "/automations/runs") return "run";
@@ -3095,7 +3110,7 @@ function getView(pathname: string | null, workspaceView?: string | null): View {
   return "tasks";
 }
 function isWorkspaceView(view: View): view is WorkspaceView {
-  return view === "tasks" || view === "runs" || view === "templates";
+  return view === "tasks" || view === "runs" || view === "templates" || view === "patrol";
 }
 function getId(pathname: string | null, prefix: string) {
   if (!pathname?.startsWith(prefix)) return null;

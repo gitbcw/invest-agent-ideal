@@ -2,14 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Pencil, Play, Plus, Radar, Trash2 } from "lucide-react";
-import { PortalSidebar } from "@/components/navigation/PortalSidebar";
-
-/**
- * E9 v2 / G21: dedicated rule-patrol page. Rule inspection is a system
- * schedule (not an automation task), so it gets its own small surface:
- * status card, rule management (create/edit/enable/delete/dry-run),
- * manual patrol (never pushes), run history.
- */
 
 type PatrolRun = {
   runId: string;
@@ -83,6 +75,13 @@ async function patrolFetch<T>(input: string, init?: RequestInit): Promise<T> {
   return body.data;
 }
 
+/**
+ * E9 v2 / G21: rule-patrol surface. Rule inspection is a system schedule
+ * (not an automation task), but usage is rare — it lives as a view inside
+ * the automation workspace instead of a standalone destination.
+ * Status card, rule management (create/edit/enable/delete/dry-run),
+ * manual patrol (never pushes), run history.
+ */
 export function PatrolShell() {
   const [data, setData] = useState<PatrolData | null>(null);
   const [rules, setRules] = useState<PatrolRule[]>([]);
@@ -221,8 +220,7 @@ export function PatrolShell() {
   }, []);
 
   return (
-    <div className="flex min-h-screen bg-[#f4f7f4] text-[#263129]">
-      <PortalSidebar active="patrol" />
+    <div className="text-[#263129]">
       <div className="min-w-0 flex-1 px-4 py-6 sm:px-8">
       <div className="mx-auto max-w-4xl">
         <div className="rounded-2xl border border-[#e0e7e1] bg-white p-5 shadow-[0_2px_6px_rgba(41,61,45,0.03)] sm:p-8">

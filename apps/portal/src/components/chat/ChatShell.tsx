@@ -893,7 +893,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         onDropConversationOrder={(conversation, target) => void handleDropConversationOrder(conversation, target)}
         username={initialUser.username}
         onOpenAutomations={() => window.location.assign("/automations")}
-        onOpenPatrol={() => window.location.assign("/patrol")}
         onOpenAssets={() => window.location.assign("/assets")}
         onOpenManual={() => window.location.assign("/manual")}
         onOpenUsage={() => window.location.assign("/usage")}
