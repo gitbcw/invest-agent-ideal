@@ -90,6 +90,36 @@ test("mode=none prompts forbid stagedOutput in the final envelope (2026-08-19 T-
   assert.match(runnerSource, /ignored stagedOutput under output\.mode=none/);
 });
 
+test("runner prompts steer XLSX appends to declarative appendRows and require explicit outputSkipped (mg 2026-08-19)", async () => {
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.match(runnerSource, /不要调用 spreadsheet\.transform，直接在最终 stagedOutput 返回 \{operation:'appendRows'/);
+  assert.match(runnerSource, /skipIfCellMatches/);
+  assert.match(runnerSource, /缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败/);
+  assert.match(runnerSource, /显式返回 outputSkipped:true 并在 summary 说明原因/);
+});
+
+test("spreadsheet validation errors teach the expected shapes instead of bare 'invalid item'", async () => {
+  const source = await import("node:fs/promises");
+  const { applyAutomationSheetChanges } = await import("../src/services/automation-spreadsheet.js");
+  const ExcelJS = (await import("exceljs")).default;
+  const workbook = new ExcelJS.Workbook();
+  workbook.addWorksheet("行业复盘");
+  assert.throws(
+    () => applyAutomationSheetChanges(workbook, { appendRows: [{ sheet: "行业复盘", values: "not-an-array" } as never] }),
+    /invalid appendRows item: expected item #1: \{sheet:"工作表名", values:\[\["a",1\]/,
+  );
+  const { TOOL_SPECS } = await import("../src/mastra/tools/registry.js");
+  const transform = TOOL_SPECS.find((tool) => tool.id === "spreadsheet.transform");
+  assert.ok(transform, "spreadsheet.transform must stay registered");
+  const changesField = (transform.inputSchema as Record<string, unknown>).changes as { shape?: Record<string, unknown> };
+  assert.ok(changesField?.shape, "changes must be a structured object schema, not an opaque record");
+  for (const key of ["appendRows", "setCells", "freezePanes", "autoFilters"]) {
+    assert.ok(changesField.shape![key], `the changes schema must expose ${key} to the model`);
+  }
+  void source;
+});
+
 test("assistant and generic automation prompts require XLSX for user-facing tables", async () => {
   const source = await import("node:fs/promises");
   const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
@@ -449,7 +479,7 @@ test("generic latest update uses the head read at run start and advances it once
   assert.equal(current.descriptor.format, "xlsx");
 });
 
-test("bound update task may finish without changing its file and exposes its exact target to the executor", async () => {
+test("bound update task may finish without changing its file via explicit outputSkipped and exposes its exact target to the executor", async () => {
   const { automation, assets } = await fixture;
   const target = await assets.createUserAsset({ ...scope, name: "海运模板", fileName: "shipping.csv", mimeType: "text/csv", bytes: Buffer.from("date,index\n") });
   const task = await automation.createAutomationTask({
@@ -469,13 +499,140 @@ test("bound update task may finish without changing its file and exposes its exa
     idempotencyKey: "generic-run-update-unchanged-once",
     executor: async (input) => {
       assert.deepEqual(input.writableTargets, [{ assetId: target.assetId, versionId: target.currentVersionId, fileName: "shipping.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }]);
-      return { content: { type: "text" as const, text: "暂无可核验报价。" }, finished: true, data: { summary: "暂无可核验报价，未更新文件。" } };
+      return { content: { type: "text" as const, text: "暂无可核验报价。" }, finished: true, data: { summary: "暂无可核验报价，未更新文件。", outputSkipped: true } };
     },
   });
   assert.equal(result.run.status, "succeeded");
   assert.equal(result.run.outputAssetId, null);
   const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
   assert.equal(current.descriptor.versionId, target.currentVersionId);
+});
+
+test("declarative stagedOutput appendRows commits rows without spreadsheet.transform (mg 2026-08-19 regression)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const bytes = await convertCsvBytesToXlsx(Buffer.from("日期,序号,行业\n2026-08-18,1,通信\n"));
+  const target = await assets.createUserAsset({ ...scope, name: "行业复盘", fileName: "2026年08月行业复盘表.xlsx", mimeType: XLSX_MIME, bytes });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-appendrows",
+    name: "每天行业复盘",
+    instruction: "追加当日行业复盘。",
+    schedule: schedule(),
+    inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }],
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const result = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-appendrows-once",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: {
+      summary: "已追加 2026-08-19 行。",
+      stagedOutput: { operation: "appendRows", rows: [["2026-08-19", 2, "煤炭"]], skipIfCellMatches: { column: 1, value: "2026-08-19" } },
+    } }),
+  });
+  assert.equal(result.run.status, "succeeded");
+  assert.equal(result.run.outputAssetId, target.assetId);
+  assert.notEqual(result.run.outputVersionId, target.currentVersionId);
+  const ExcelJS = (await import("exceljs")).default;
+  const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
+  const workbook = new ExcelJS.Workbook();
+  const buf = Buffer.from(current.bytes);
+  await workbook.xlsx.load(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer);
+  const sheet = workbook.getWorksheet("数据")!;
+  assert.deepEqual((sheet.getRow(sheet.rowCount).values as unknown[]).slice(1), ["2026-08-19", 2, "煤炭"]);
+
+  // 重跑同一判重值：确定性跳过，不产生新版本（防同日重复追加）。
+  const skipped = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-appendrows-twice",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: {
+      summary: "当日行已存在。",
+      stagedOutput: { operation: "appendRows", rows: [["2026-08-19", 3, "重复"]], skipIfCellMatches: { column: 1, value: "2026-08-19" } },
+    } }),
+  });
+  assert.equal(skipped.run.status, "succeeded");
+  assert.equal(skipped.run.outputAssetId, null);
+  assert.match(skipped.run.resultSummary || "", /已存在匹配行/);
+  const afterSkip = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
+  assert.equal(afterSkip.descriptor.versionId, result.run.outputVersionId, "skip must not commit a new version");
+});
+
+test("update run without stagedOutput fails unless outputSkipped is explicit (silent-success fix)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const bytes = await convertCsvBytesToXlsx(Buffer.from("日期\n"));
+  const target = await assets.createUserAsset({ ...scope, name: "静默失败护栏", fileName: "silent-guard.xlsx", mimeType: XLSX_MIME, bytes });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-silent-no-output",
+    name: "护栏任务",
+    instruction: "追加数据；追加失败时不得静默成功。",
+    schedule: schedule(),
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const silent = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-silent-no-output-once",
+    executor: async () => ({ content: { type: "text" as const, text: "看起来完成了" }, finished: true, data: { summary: "追加参数没写对，未更新文件。" } }),
+  });
+  assert.equal(silent.run.status, "failed", "an update task that modified nothing must not report success");
+  assert.match(silent.run.errorMessage || "", /stagedOutput is required for update tasks/);
+  assert.equal(silent.run.outputAssetId, null);
+  const taskAfter = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
+  assert.equal(taskAfter!.consecutiveFailures, 1);
+
+  const explicit = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-silent-no-output-skipped",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "非交易日，未修改。", outputSkipped: true } }),
+  });
+  assert.equal(explicit.run.status, "succeeded", "an explicit outputSkipped decision stays a success");
+  assert.equal(explicit.run.outputAssetId, null);
+});
+
+test("appendRows guards: stale monthly rollover and malformed rows fail with teaching messages", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const { instantiateMonthlyFileName } = await import("../src/services/automation-tasks.js");
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+  const staleBytes = await convertCsvBytesToXlsx(Buffer.from("日期,行业\n2026-08-01,示例\n"));
+  const stale = await assets.createUserAsset({ ...scope, name: "旧月绑定", fileName: "2020年01月行业复盘表.xlsx", mimeType: XLSX_MIME, bytes: staleBytes });
+  const rolloverTask = await automation.createAutomationTask({
+    ...scope, taskId: "generic-appendrows-rollover", name: "行业复盘滚动", instruction: "追加当日行业复盘。",
+    schedule: schedule(),
+    output: { mode: "update", assetId: stale.assetId, versionPolicy: "latest", rollover: { kind: "monthly", fileNamePattern: "{YYYY}年{MM}行业复盘表.xlsx" } },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: rolloverTask.taskId, expectedRevision: 1 });
+  const rolloverRun = await runner.runGenericAutomationTaskNow({
+    scope, taskId: rolloverTask.taskId, origin: "scheduled", idempotencyKey: "generic-appendrows-rollover-once",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: {
+      summary: "追加。", stagedOutput: { operation: "appendRows", rows: [["2026-08-19", "煤炭"]] },
+    } }),
+  });
+  assert.equal(rolloverRun.run.status, "failed");
+  assert.match(rolloverRun.run.errorMessage || "", /operation 'create'/);
+
+  const bytes = await convertCsvBytesToXlsx(Buffer.from("日期,行业\n"));
+  const target = await assets.createUserAsset({ ...scope, name: "形状护栏", fileName: "shape-guard.xlsx", mimeType: XLSX_MIME, bytes });
+  const task = await automation.createAutomationTask({
+    ...scope, taskId: "generic-appendrows-bad-shape", name: "形状护栏", instruction: "追加。",
+    schedule: schedule(),
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const bad = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-appendrows-bad-shape-once",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: {
+      summary: "追加。", stagedOutput: { operation: "appendRows", rows: ["2026-08-19", "煤炭"] },
+    } }),
+  });
+  assert.equal(bad.run.status, "failed");
+  assert.match(bad.run.errorMessage || "", /2D array/);
+  assert.equal(bad.run.outputAssetId, null);
 });
 
 test("generic runner preserves a retryable ACP capacity failure", async () => {

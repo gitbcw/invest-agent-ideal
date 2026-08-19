@@ -1873,7 +1873,7 @@ async function transformSpreadsheetTool(input: Record<string, unknown> | undefin
     // 结构化错误返回（而非抛出）：执行代理依赖 error 文本自纠参数，
     // 裸异常会让它误判工具不可用并放弃更新绑定工作簿。
     const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, error: "spreadsheet_transform_failed", message, hint: "修正 inputPath（用任务说明中 stagedPath 的精确值）、outputPath 或 changes 后重试；sheet 名必须与工作簿一致。" };
+    return { ok: false, error: "spreadsheet_transform_failed", message, hint: "按 message 中的期望形状修正参数后重试：inputPath 用任务说明中 stagedPath 的精确值，outputPath 为新文件名；changes 的操作项形状见 message（appendRows 项为 {sheet, values:二维数组}）；sheet 名必须与工作簿一致。" };
   }
 }
 
@@ -1895,19 +1895,20 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
   if (outputAbsolute === inputAbsolute) throw new Error("outputPath must differ from inputPath; keep the staged input untouched");
 
   const SHEET_OPERATION_KEYS = ["createSheets", "renameSheets", "setCells", "appendRows", "setColumnWidths", "setRowHeights", "mergeCells", "freezePanes", "autoFilters"] as const;
-  const changes = (value.changes ?? {}) as Record<string, unknown>;
+  const changesValue = value.changes;
+  if (!changesValue || typeof changesValue !== "object" || Array.isArray(changesValue)) {
+    throw new Error(`changes must be an object with at least one operation among ${SHEET_OPERATION_KEYS.join(", ")}; e.g. {"appendRows":[{"sheet":"行业复盘","values":[["2026-08-19",1,"…"]]}]}`);
+  }
+  const changes = changesValue as Record<string, unknown>;
   const ignoredChangeKeys = Object.keys(changes).filter((key) => !(SHEET_OPERATION_KEYS as readonly string[]).includes(key));
   const hasOperation = SHEET_OPERATION_KEYS.some((key) => Array.isArray(changes[key]) && (changes[key] as unknown[]).length > 0);
-  if (!hasOperation) throw new Error("changes is empty: provide at least one non-empty operation (e.g. appendRows); refusing to produce a no-op copy of the input");
+  if (!hasOperation) throw new Error(`changes is empty or only contains unrecognized keys: provide at least one non-empty operation among ${SHEET_OPERATION_KEYS.join(", ")}; e.g. {"appendRows":[{"sheet":"行业复盘","values":[["2026-08-19",1,"…"]]}]}; refusing to produce a no-op copy of the input`);
 
-  const bytes = Buffer.from(await readFile(inputAbsolute));
-  const workbook = new ExcelJS.Workbook();
-  const workbookBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  await (workbook.xlsx.load as unknown as (input: ArrayBuffer) => Promise<unknown>)(workbookBytes);
-  const { applyAutomationSheetChanges, validateAutomationSpreadsheet } = await import("../services/automation-spreadsheet.js");
-  applyAutomationSheetChanges(workbook, (value.changes ?? {}) as Parameters<typeof applyAutomationSheetChanges>[1]);
-  const output = Buffer.from(await workbook.xlsx.writeBuffer());
-  await validateAutomationSpreadsheet({ extension: ".xlsx", bytes: output });
+  const { transformXlsxBytes } = await import("../services/automation-spreadsheet.js");
+  const output = await transformXlsxBytes(
+    await readFile(inputAbsolute),
+    changes as Parameters<typeof transformXlsxBytes>[1],
+  );
   await mkdir(path.dirname(outputAbsolute), { recursive: true });
   await writeFile(outputAbsolute, output, { mode: 0o600 });
   await audit(context, {

@@ -27,7 +27,7 @@ import {
   type AutomationTaskRunRecord,
 } from "./automation-tasks.js";
 import { classifyTaskError, executionResponseError, type TaskErrorInfo } from "./task-execution.js";
-import { writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
+import { appendRowsToXlsxBytes, writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
 import {
   createUserAsset,
   findActiveAssetByFileName,
@@ -132,7 +132,7 @@ export async function runGenericAutomationTaskNow(input: {
       });
       assertAgentSucceeded(response);
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
-      const result = await normalizeStructuredResult(response, task, resolved, stagingPath);
+      const result = await normalizeStructuredResult(response, task, resolved, input.scope, stagingPath);
       const output = await commitOutput(input.scope, task, run, result, resolved);
       if (resolved.monthlyRollover && output && result.stagedOutput?.operation === "create") {
         await rollTaskBindingToMonthlyFile(input.scope, task, resolved.monthlyRollover, output.assetId);
@@ -286,13 +286,13 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
           : "",
         "需要读取绑定文件时，直接使用上述 assetId 调用 assets.version.read；不要用 assets.list 猜测或替换任务对象。其他“我的文件”仅可作为参考，绝不能作为本次更新输出目标。",
         input.spreadsheetHelper
-          ? `本次包含 XLSX 绑定文件。更新它时：先用 spreadsheet.transform 工具生成更新后的工作簿（inputPath 必须用上面 stagedPath 字段的精确值，outputPath 为暂存目录内的新文件名，changes 按结构化变更执行追加/单元格修改，sheet 名以 transform 报错或绑定文件说明为准）；然后在 stagedOutput 里返回 {operation:'update', assetId: 可更新目标的 assetId, fileName: 可更新目标的原文件名（不得改名）, filePath: transform 的 outputPath}。执行环境不能运行本地脚本，暂存目录中的 automation-sheet.mjs 仅供参考、无法执行；不要把 XLSX 当文本编辑，也不要声称没有电子表格处理能力。transform 失败时按返回的 error 信息修正参数后重试，不要放弃更新。`
+          ? `本次包含 XLSX 绑定文件。若本次变更是向绑定工作簿的某个工作表表尾追加数据行（最常见情形），不要调用 spreadsheet.transform，直接在最终 stagedOutput 返回 {operation:'appendRows', sheet:'工作表名'（工作簿只有一个工作表时可省略）, rows:[[每行各列的值],…]（必须是二维数组：外层=行，内层=单元格，列序与表头一致）, skipIfCellMatches:{column:判重列号(从1起), value:'判重值'}（用于避免同一交易日重复追加；先读取绑定文件确认当日行是否已存在）}，服务层会确定性地追加到表尾并提交新版本，不需要你生成或搬运文件。只有需要修改表头、格式或既有单元格等非追加变更时，才使用 spreadsheet.transform 工具生成更新后的工作簿（inputPath 必须用上面 stagedPath 字段的精确值，outputPath 为暂存目录内的新文件名，changes 的合法操作与期望形状见工具 schema 及其报错提示），然后在 stagedOutput 返回 {operation:'update', assetId: 可更新目标的 assetId, fileName: 可更新目标的原文件名（不得改名）, filePath: transform 的 outputPath}。执行环境不能运行本地脚本，暂存目录中的 automation-sheet.mjs 仅供参考、无法执行；不要把 XLSX 当文本编辑，也不要声称没有电子表格处理能力。transform 失败时按返回的 error 信息修正参数后重试，不要放弃更新。`
           : "本次没有 XLSX 文件，不需要电子表格处理。",
         `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
-        "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
+        "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变、显式返回 outputSkipped:true 并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         input.task.revision.output.mode === "none"
           ? "最终回复必须是一个 JSON 对象：{summary:string, shouldNotify?:boolean}。本任务不产出文件资产：最终 JSON 里禁止出现 stagedOutput 字段（出现会导致运行被判无效）；一切结果都写入 summary。若任务过程中确需留档，用任务说明允许的领域工具（如 reviews.save）完成，不要用 stagedOutput。"
-          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'update'|'create',assetId?:string,fileName,mimeType,base64?:string,filePath?:string}, shouldNotify?:boolean}。优先把生成的 XLSX/CSV 写入当前暂存目录并返回相对 filePath（不得使用绝对路径、不得越出暂存目录）；只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。",
+          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'appendRows'|'update'|'create', …}, shouldNotify?:boolean, outputSkipped?:boolean}。向绑定工作簿表尾追加数据行时优先用 operation:'appendRows'（只带 sheet/rows/skipIfCellMatches，不携带文件内容）；生成完整新文件时优先把 XLSX/CSV 写入当前暂存目录并返回相对 filePath（不得使用绝对路径、不得越出暂存目录），只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。若本次运行确定无需修改绑定文件（如数据缺失、当日行已存在），必须显式返回 outputSkipped:true 并在 summary 说明原因；缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败。",
         ...(input.task.revision.delivery.mode === "none"
           ? []
           : [
@@ -345,9 +345,10 @@ function assertAgentSucceeded(response: AgentResponse): void {
   if (error) throw new AutomationExecutionFailure(error);
 }
 
-async function normalizeStructuredResult(response: AgentResponse, task: AutomationTaskRecord, resolved: ResolvedBindings, stagingPath: string): Promise<{
+async function normalizeStructuredResult(response: AgentResponse, task: AutomationTaskRecord, resolved: ResolvedBindings, scope: AutomationScope, stagingPath: string): Promise<{
   summary: string;
   shouldNotify: boolean;
+  outputSkipped?: boolean;
   stagedOutput?: { operation: "create" | "update"; assetId?: string; fileName: string; mimeType?: string; base64: string };
 }> {
   const data = response.data && typeof response.data === "object" ? response.data : {};
@@ -372,9 +373,18 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
     if (task.revision.output.mode === "create") {
       throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput is required for a required file");
     }
-    return { summary: summary || "自动化运行完成，未修改文件。", shouldNotify };
+    // A bound update target with no new version must be an explicit decision,
+    // never a silent success: the 2026-08-19 industry-review loss was a run
+    // marked succeeded while the workbook stayed untouched.
+    if (task.revision.output.mode === "update" && data.outputSkipped !== true) {
+      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput is required for update tasks unless the run explicitly reports outputSkipped:true with the reason in summary");
+    }
+    return { summary: summary || "自动化运行完成，未修改文件。", shouldNotify, ...(data.outputSkipped === true ? { outputSkipped: true } : {}) };
   }
   const staged = stagedRaw as Record<string, unknown>;
+  if (staged.operation === "appendRows") {
+    return await normalizeAppendRowsResult(staged, task, resolved, scope, { summary, shouldNotify });
+  }
   const fileName = String(staged.fileName || "").trim();
   let base64 = typeof staged.base64 === "string" ? staged.base64 : typeof staged.bytesBase64 === "string" ? staged.bytesBase64 : "";
   const filePath = typeof staged.filePath === "string" ? staged.filePath.trim() : "";
@@ -416,6 +426,62 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
     if (!target || !matchesCurrentSpreadsheetName(fileName, target.fileName)) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput update target is invalid");
   }
   return { summary: summary || "自动化运行完成。", shouldNotify, stagedOutput: { operation, ...(assetId ? { assetId } : {}), fileName, mimeType: typeof staged.mimeType === "string" ? staged.mimeType : undefined, base64 } };
+}
+
+/**
+ * Declarative append path (2026-08-19 industry-review fix): the agent returns
+ * only the row data — {operation:'appendRows', sheet?, rows, skipIfCellMatches?}
+ * — and the service deterministically appends to the bound workbook's current
+ * version. This removes the spreadsheet.transform parameter envelope that
+ * agents guessed wrong on ~5-7 calls per run.
+ */
+async function normalizeAppendRowsResult(
+  staged: Record<string, unknown>,
+  task: AutomationTaskRecord,
+  resolved: ResolvedBindings,
+  scope: AutomationScope,
+  current: { summary: string; shouldNotify: boolean },
+): Promise<Awaited<ReturnType<typeof normalizeStructuredResult>>> {
+  const outputPolicy = task.revision.output;
+  if (outputPolicy.mode !== "update" || !resolved.output) {
+    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput appendRows is only valid for update tasks with a bound workbook; use operation 'update' or 'create'");
+  }
+  if (resolved.monthlyRollover) {
+    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `appendRows cannot target the stale monthly file 《${resolved.monthlyRollover.boundFileName}》; create this month's 《${resolved.monthlyRollover.targetFileName}》 with operation 'create' instead`);
+  }
+  if (!resolved.output.fileName.toLowerCase().endsWith(".xlsx")) {
+    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput appendRows requires an XLSX workbook target; use spreadsheet.transform for other formats");
+  }
+  const sheet = typeof staged.sheet === "string" && staged.sheet.trim() ? staged.sheet.trim() : undefined;
+  const rows = staged.rows;
+  const skipIfCellMatches = staged.skipIfCellMatches && typeof staged.skipIfCellMatches === "object"
+    ? staged.skipIfCellMatches as { column?: unknown; value?: unknown }
+    : undefined;
+  const skip = skipIfCellMatches
+    ? { column: Number(skipIfCellMatches.column), value: String(skipIfCellMatches.value ?? "") }
+    : undefined;
+  let outcome: Awaited<ReturnType<typeof appendRowsToXlsxBytes>>;
+  try {
+    const currentBytes = await readUserAssetVersion({ ...scope, assetId: resolved.output.assetId, versionId: resolved.output.versionId });
+    outcome = await appendRowsToXlsxBytes({ bytes: currentBytes.bytes, sheet, rows: rows as unknown[][], skipIfCellMatches: skip });
+  } catch (error) {
+    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `appendRows failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (outcome.kind === "skipped") {
+    const note = `已存在匹配行（${outcome.sheetName} 第 ${outcome.matchedRow} 行），未重复追加。`;
+    return { summary: current.summary ? `${current.summary}（${note}）` : note, shouldNotify: current.shouldNotify, outputSkipped: true };
+  }
+  return {
+    summary: current.summary || "自动化运行完成。",
+    shouldNotify: current.shouldNotify,
+    stagedOutput: {
+      operation: "update" as const,
+      assetId: resolved.output.assetId,
+      fileName: resolved.output.fileName,
+      mimeType: resolved.output.mimeType,
+      base64: outcome.bytes.toString("base64"),
+    },
+  };
 }
 
 async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: Awaited<ReturnType<typeof normalizeStructuredResult>>, resolved: ResolvedBindings): Promise<{ assetId: string; versionId: string; checksum: string } | null> {
