@@ -183,6 +183,8 @@ export function createRuntimeAgent(): RuntimeAgent {
         : undefined;
       let selectedModel = requestedModel && requestedModel !== "auto" ? requestedModel : autoRoute?.model;
       const modelSource = requestedModel && requestedModel !== "auto" ? "user-selection" : "auto";
+      // T-327 取证：catch 里拿不到 try 内的 const，提前挂一个可写的引用。
+      let promptTextForTrace: string | undefined;
 
       try {
         if (cancelSignal?.aborted) throw new Error("TASK_CANCELLED");
@@ -222,6 +224,7 @@ export function createRuntimeAgent(): RuntimeAgent {
           userContext,
           includeContextPacket: false,
         });
+        promptTextForTrace = promptContext.promptText;
         // Multi-turn context: the authoritative conversation_messages rows for
         // this conversation, minus the already-persisted current turn. The
         // adapter appends the live user message itself.
@@ -370,13 +373,18 @@ export function createRuntimeAgent(): RuntimeAgent {
           messageId: message.id,
           channel,
           userText: text,
+          promptText: promptTextForTrace,
           mode,
           reviewContextSummary: undefined,
           status: errorMessage.includes("超时") ? "timeout" : "error",
           errorMessage,
           elapsedMs: Date.now() - startedAt,
           agentBackend: "mastra",
-          modelSource: "runtime-config",
+          // T-327 取证：失败轮次也要留下实际模型与已发生的工具调用
+          //（2026-08-19 mg 复盘事故排查时 error trace 全空是最大盲区）。
+          agentModel: selectedModel || (error as { model?: string }).model,
+          toolCalls: (error as { toolCalls?: unknown[] }).toolCalls,
+          modelSource,
         });
         if (isBusy) {
           return textResponse(

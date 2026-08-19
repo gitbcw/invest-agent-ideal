@@ -296,6 +296,29 @@ test("runMastraTurn preserves provider stream error chunks instead of misclassif
   );
 });
 
+test("failed turns carry the attempt model and tool calls observed before the error (T-327 forensics)", async () => {
+  const runner = createMastraTurnRunner();
+  await assert.rejects(
+    runner({ conversationId: "forensics-turn", text: "复盘今日持仓", model: "gpt-5.6-sol" }, {
+      agent: {
+        stream: async () => ({
+          fullStream: (async function* () {
+            yield { type: "tool-call", payload: { toolCallId: "call-1", toolName: "get_fund_flows", args: { start: "20260812" } } };
+            yield { type: "error", error: "stream died mid-turn" };
+          })(),
+        }),
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof MastraTurnError);
+      assert.equal(error.model, "gpt-5.6-sol");
+      assert.ok(Array.isArray(error.toolCalls), "tool calls observed before the error must survive on the error");
+      assert.ok((error.toolCalls as Array<{ toolName?: string }>).some((call) => call.toolName === "get_fund_flows"));
+      return true;
+    },
+  );
+});
+
 test("runMastraTurn rejects an empty text response", async () => {
   const agent: MastraAgentLike = {
     stream: async () => ({ text: " \n\t" }),

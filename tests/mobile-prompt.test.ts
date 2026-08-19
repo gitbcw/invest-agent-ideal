@@ -36,3 +36,19 @@ describe("daily review prompt tool boundary", () => {
     assert.match(prompt, /不要再调用 curl、服务 API 或任何工具/);
   });
 });
+
+describe("current server date anchor (mg 2026-08-19 stale-scope incident)", () => {
+  it("anchors 'today' to Asia/Shanghai server time and forbids stale history scopes in every prompt variant", async () => {
+    const { currentServerDateAnchor } = await import("../src/runtime/mobile-prompt.js");
+    for (const prompt of [
+      buildMobilePrompt({ userText: "帮我看看持仓" }),
+      buildMobilePrompt({ userText: "复盘", reviewContext, allowReviewPublication: true }),
+    ]) {
+      assert.match(prompt, /【当前日期锚】服务器当前时间：/);
+      assert.match(prompt, /Asia\/Shanghai/);
+      assert.match(prompt, /一律以该日期为准/);
+      assert.match(prompt, /不得用于本轮取数参数/);
+    }
+    assert.match(currentServerDateAnchor(new Date("2026-08-19T14:00:00Z")), /2026/);
+  });
+});

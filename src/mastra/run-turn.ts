@@ -22,6 +22,9 @@ export type MastraTurnErrorCode =
   | "MASTRA_TURN_ERROR";
 
 export class MastraTurnError extends Error {
+  /** T-327 取证字段：失败轮次实际使用的模型与已发生的工具调用摘要。 */
+  model?: string;
+  toolCalls?: unknown[];
   constructor(
     message: string,
     readonly code: MastraTurnErrorCode,
@@ -385,7 +388,7 @@ function textFromChunk(chunk: unknown): string {
   return candidates.find((candidate): candidate is string => typeof candidate === "string") ?? "";
 }
 
-async function collectStream(value: unknown, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
+async function collectStream(value: unknown, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback, toolCallsSink?: unknown[]): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
   const iterable = asAsyncIterable(value);
   if (!iterable) return { text: "", toolCalls: [] };
   const chunks: string[] = [];
@@ -412,6 +415,8 @@ async function collectStream(value: unknown, onFirstText?: () => void, onChunk?:
         || type === "tool-result" || type.startsWith("tool-input") || type.startsWith("tool-output")) {
         const payload = isRecord(chunk.payload) ? chunk.payload : chunk;
         toolCalls.push(payload);
+        // T-327 取证 sink：流中途抛错时局部数组会丢，sink 让失败轮次也能留下已发生的调用。
+        toolCallsSink?.push(payload);
         if (onChunk) {
           const summary = mapOneToolCall({ ...payload, ...(type === "tool-result" ? { status: payload.status ?? "success" } : {}) }, new Date().toISOString());
           // 参数流式分片会对同一 toolCallId 产生多条 tool-input chunk；只发首条。
@@ -439,7 +444,7 @@ async function collectStream(value: unknown, onFirstText?: () => void, onChunk?:
   return { text: chunks.join(""), usage, toolCalls, ...(firstTextAtMs !== undefined ? { firstTextAtMs } : {}) };
 }
 
-async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback): Promise<{
+async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback, toolCallsSink?: unknown[]): Promise<{
   text: string;
   usage?: unknown;
   toolCalls?: unknown;
@@ -453,7 +458,7 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
   // fullStream 优先：它携带 tool-call/tool-result/usage 事件，textStream 只有文本增量
   // （T-199 实时过程事件依赖 fullStream；聚合 toolCalls 字段要等轮结束才可用）。
   const stream = directRecord?.fullStream ?? directRecord?.textStream;
-  const collected = stream === undefined ? { text: "", toolCalls: [] as unknown[] } : await collectStream(stream, onFirstText, onChunk);
+  const collected = stream === undefined ? { text: "", toolCalls: [] as unknown[] } : await collectStream(stream, onFirstText, onChunk, toolCallsSink);
   const directText = directRecord ? await awaitValue(directRecord.text as string | PromiseLike<string> | undefined) : undefined;
   const text = typeof directText === "string" ? directText : collected.text;
   const usage = directRecord ? await awaitValue(directRecord.usage) : undefined;
@@ -544,6 +549,8 @@ export async function runMastraTurn(
     }
   };
   const firstTokenWindow = Number(params.firstTokenTimeoutMs);
+  // T-327 取证：失败轮次也保留已发生的工具调用，随异常抛给调用方落 trace。
+  const observedToolCalls: unknown[] = [];
   try {
     const startedAtMs = (dependencies.now ?? Date.now)();
     const timingStartedAtMs = Date.now();
@@ -642,7 +649,8 @@ export async function runMastraTurn(
           ? (event) => {
               if (event.kind === "tool_call" || event.kind === "tool_result") emitProgress(event);
             }
-          : undefined),
+          : undefined,
+        observedToolCalls),
       timeoutPromise,
     ]);
     outputCollectMs = Math.max(0, Date.now() - outputStartedAtMs);
@@ -674,14 +682,17 @@ export async function runMastraTurn(
       ...(toolCalls ? { toolCalls } : {}),
     };
   } catch (error) {
-    if (firstTokenTimedOut) {
-      throw new MastraTurnError(
-        `MASTRA_FIRST_TOKEN_TIMEOUT: 首字超时（${firstTokenWindow}ms）：conversationId=${conversationId}`,
-        "MASTRA_FIRST_TOKEN_TIMEOUT",
-        conversationId,
-      );
-    }
-    throw mapError(error, conversationId);
+    const mapped = firstTokenTimedOut
+      ? new MastraTurnError(
+          `MASTRA_FIRST_TOKEN_TIMEOUT: 首字超时（${firstTokenWindow}ms）：conversationId=${conversationId}`,
+          "MASTRA_FIRST_TOKEN_TIMEOUT",
+          conversationId,
+        )
+      : mapError(error, conversationId);
+    // T-327 取证：失败轮次带上实际模型与已观测到的工具调用（此前 error trace 全空）。
+    mapped.model = params.model;
+    if (observedToolCalls.length > 0) mapped.toolCalls = observedToolCalls;
+    throw mapped;
   } finally {
     clearFirstTokenWatchdog();
     if (timer) clearTimeout(timer);

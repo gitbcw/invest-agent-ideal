@@ -97,6 +97,7 @@ test("runner prompts steer XLSX appends to declarative appendRows and require ex
   assert.match(runnerSource, /skipIfCellMatches/);
   assert.match(runnerSource, /缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败/);
   assert.match(runnerSource, /显式返回 outputSkipped:true 并在 summary 说明原因/);
+  assert.match(runnerSource, /currentServerDateAnchor/, "automation prompts must carry the same current-date anchor as chat turns (mg 8-12 scope incident)");
 });
 
 test("spreadsheet validation errors teach the expected shapes instead of bare 'invalid item'", async () => {
