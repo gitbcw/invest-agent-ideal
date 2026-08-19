@@ -319,7 +319,8 @@ function rowToMessage(row: any): ConversationMessageRecord {
     role: row.role,
     content: row.content,
     status: row.status,
-    traceId: row.traceId ?? undefined,
+    // T-199：存量 assistant 消息 trace_id 为空，但 request_id 就是 trace.get 的键。
+    traceId: row.traceId ?? (row.role === "assistant" ? row.requestId ?? undefined : undefined),
     requestId: row.requestId ?? undefined,
     createdAt: row.createdAt,
     metadata: parseMetadata(row.metadata),
@@ -1048,6 +1049,8 @@ async function chatViaConversationLogOnce(input: {
       content: assistantText,
       ...(automationFailure ? { status: "failed" as const } : {}),
       ...(messageId ? { messageId } : {}),
+      // T-199 历史回看：assistant 消息的 trace_id 就是本轮 requestId（trace.get 的键）。
+      traceId: requestId,
       requestId,
     metadata: (() => {
       const responseError = executionResponseError(response);

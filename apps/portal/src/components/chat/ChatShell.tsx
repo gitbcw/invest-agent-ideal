@@ -618,7 +618,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
           localUserMessage.messageId
         );
         const assistantView = result.ok && result.assistantMessage
-          ? { ...toView(result.assistantMessage), processedDurationMs: Date.now() - Date.parse(clientSentAt) }
+          ? { ...toView(result.assistantMessage), traceId: result.traceId ?? undefined, processedDurationMs: Date.now() - Date.parse(clientSentAt) }
           : null;
         // 替换 user 消息为后端持久化版本
         updateConversationView(conversationId, (current) => {
