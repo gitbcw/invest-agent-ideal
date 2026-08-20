@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -119,10 +119,12 @@ test("publishes and reads a valid XLSX conversation delivery", async () => {
   const original = await readFile(target);
   const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
   markTurnStart({ userId: "user-a", instanceId: "user-a", conversationId: "conv-xlsx", turnId: "turn-xlsx" });
+  // T-328：文件写于轮开始之前——轮内发布已有文件需显式 existingFileRequest 声明。
   const record = await mod.publishConversationArtifact({
     userId: "user-a",
     instanceId: "user-a",
     relativePath,
+    existingFileRequest: true,
     scope: { projectId: "invest-agent", assistantId: "user-a", conversationId: "conv-xlsx" },
   });
   markTurnEnd({ userId: "user-a", instanceId: "user-a", conversationId: "conv-xlsx", turnId: "turn-xlsx" });
@@ -684,11 +686,13 @@ test("artifacts bind to the exact turn that published them, not to whichever rep
   const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
 
   // Turn A starts, publishes its artifact, then "ends".
+  // T-328：文件先于轮开始写入，轮内发布需 existingFileRequest 声明。
   markTurnStart({ userId, instanceId, conversationId, turnId: turnA });
   const recordA = await mod.publishConversationArtifact({
     userId,
     instanceId,
     relativePath: "reports/daily/turn-a.md",
+    existingFileRequest: true,
     scope: { projectId: "invest-agent", assistantId: userId, conversationId },
   });
   markTurnEnd({ userId, instanceId, conversationId, turnId: turnA });
@@ -701,6 +705,7 @@ test("artifacts bind to the exact turn that published them, not to whichever rep
     userId,
     instanceId,
     relativePath: "reports/daily/turn-b.md",
+    existingFileRequest: true,
     scope: { projectId: "invest-agent", assistantId: userId, conversationId },
   });
   markTurnEnd({ userId, instanceId, conversationId, turnId: turnB });
@@ -769,6 +774,79 @@ test("artifact published outside of any active turn stays unbound to a message",
   assert.equal(record.turnId, null);
 });
 
+test("in-turn artifacts.publish rejects leftover files from an earlier dead turn (T-328)", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const userId = "user-a";
+  const instanceId = "user-a";
+  const conversationId = "conv-leftover-retry";
+  const target = path.join(workspaceUserA, "reports", "daily", "leftover.md");
+  // 模拟 turn 1 死前写出的遗产文件：mtime 明确早于 turn 2 开始。
+  await writeFile(target, "written by the turn that died");
+  const stale = new Date(Date.now() - 60_000);
+  await utimes(target, stale, stale);
+
+  const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
+  markTurnStart({ userId, instanceId, conversationId, turnId: "turn-retry" });
+  try {
+    await assert.rejects(
+      () => mod.publishConversationArtifact({
+        userId,
+        instanceId,
+        relativePath: "reports/daily/leftover.md",
+        scope: { projectId: "invest-agent", assistantId: userId, conversationId, source: "artifacts.publish" },
+      }),
+      (error: unknown) => expectErrorCode(error, "ARTIFACT_NOT_FROM_CURRENT_TURN"),
+    );
+    // 用户明确要求交付已有文件（如「把上周的报告发我」）：显式声明后放行。
+    const attested = await mod.publishConversationArtifact({
+      userId,
+      instanceId,
+      relativePath: "reports/daily/leftover.md",
+      existingFileRequest: true,
+      scope: { projectId: "invest-agent", assistantId: userId, conversationId, source: "artifacts.publish" },
+    });
+    assert.equal(attested.mimeType, "text/markdown");
+  } finally {
+    markTurnEnd({ userId, instanceId, conversationId, turnId: "turn-retry" });
+  }
+});
+
+test("in-turn artifacts.publish accepts files written during the turn and non-publish sources (T-328)", async () => {
+  const { workspaceUserA, mod } = await getCtx();
+  const userId = "user-a";
+  const instanceId = "user-a";
+  const conversationId = "conv-in-turn-write";
+  const target = path.join(workspaceUserA, "reports", "daily", "in-turn.md");
+  // 初始内容来自旧轮（mtime 置旧）：reviews.save 的镜像发布不受轮内写入判定约束。
+  await writeFile(target, "old content");
+  const stale = new Date(Date.now() - 60_000);
+  await utimes(target, stale, stale);
+
+  const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
+  markTurnStart({ userId, instanceId, conversationId, turnId: "turn-in-turn" });
+  try {
+    const reviewMirror = await mod.publishConversationArtifact({
+      userId,
+      instanceId,
+      relativePath: "reports/daily/in-turn.md",
+      scope: { projectId: "invest-agent", assistantId: userId, conversationId, source: "reviews.save" },
+    });
+    assert.ok(reviewMirror.artifactId);
+
+    // 本轮真实重写文件（mtime 更新进轮内）后，无需声明即可作为本轮产物发布。
+    await writeFile(target, "rewritten during this turn");
+    const record = await mod.publishConversationArtifact({
+      userId,
+      instanceId,
+      relativePath: "reports/daily/in-turn.md",
+      scope: { projectId: "invest-agent", assistantId: userId, conversationId, source: "artifacts.publish" },
+    });
+    assert.ok(record.artifactId);
+  } finally {
+    markTurnEnd({ userId, instanceId, conversationId, turnId: "turn-in-turn" });
+  }
+});
+
 test("overlapping conversation turns are serialized before active-turn markers are set", async () => {
   const { workspaceUserA, mod } = await getCtx();
   const conversationId = "conv-serialized-overlap";
@@ -789,6 +867,7 @@ test("overlapping conversation turns are serialized before active-turn markers a
       userId,
       instanceId,
       relativePath: "reports/daily/serialized-a.md",
+      existingFileRequest: true,
       scope: { projectId: "invest-agent", assistantId: userId, conversationId },
     });
     firstPublished = true;
@@ -803,6 +882,7 @@ test("overlapping conversation turns are serialized before active-turn markers a
       userId,
       instanceId,
       relativePath: "reports/daily/serialized-b.md",
+      existingFileRequest: true,
       scope: { projectId: "invest-agent", assistantId: userId, conversationId },
     });
     markTurnEnd({ ...scope, turnId: "serialized-turn-b" });
@@ -1009,6 +1089,7 @@ test("SVG artifact published inside a turn binds to the assistant message artifa
     userId,
     instanceId,
     relativePath: "reports/metrics/bind-flow.svg",
+    existingFileRequest: true,
     scope: { projectId: "invest-agent", assistantId: userId, conversationId },
   });
   markTurnEnd({ userId, instanceId, conversationId, turnId });

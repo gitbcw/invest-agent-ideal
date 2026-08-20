@@ -346,6 +346,19 @@ export function mergeMastraToolCallsAndResults(calls: unknown, results: unknown,
 /** Compatibility alias for the application-level mapper name. */
 export const mapToolCalls = mapMastraToolCalls;
 
+/** tool-error 流块里的 error 可能是 Error 实例；转成字符串后才可安全进入 JSON 取证。 */
+function toolErrorText(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`;
+  if (typeof error === "string") return error;
+  try {
+    const serialized = JSON.stringify(error);
+    if (typeof serialized === "string" && serialized.length > 0) return serialized;
+  } catch {
+    // 序列化失败时退回 String()。
+  }
+  return String(error);
+}
+
 function asAsyncIterable(value: unknown): AsyncIterable<unknown> | undefined {
   if (isRecord(value) && typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function") {
     return value as unknown as AsyncIterable<unknown>;
@@ -405,25 +418,39 @@ async function collectStream(value: unknown, onFirstText?: () => void, onChunk?:
     chunks.push(chunkText);
     if (isRecord(chunk)) {
       const type = typeof chunk.type === "string" ? chunk.type : "";
-      if (type === "error" || type.includes("error")) {
+      // tool-error 是可恢复的工具执行失败：模型读到错误文本后可以自纠并继续。
+      // 只有非工具类 error 块才是流级失败。8-19 的 ENOENT/429 硬崩死点就在
+      // 这里——把 tool-error 误判为流级错误，单次工具失败就杀掉了整轮。
+      if ((type === "error" || type.includes("error")) && !type.includes("tool")) {
         const errorValue = chunk.error ?? (isRecord(chunk.payload) ? chunk.payload.error : undefined);
         throw errorValue instanceof Error
           ? errorValue
           : new Error(typeof errorValue === "string" ? errorValue : "Mastra provider stream error");
       }
       if (type.includes("tool-call") || type.includes("tool_call")
-        || type === "tool-result" || type.startsWith("tool-input") || type.startsWith("tool-output")) {
+        || type === "tool-result" || type === "tool-error"
+        || type.startsWith("tool-input") || type.startsWith("tool-output")) {
         const payload = isRecord(chunk.payload) ? chunk.payload : chunk;
-        toolCalls.push(payload);
+        // tool-error 的 error 可能是 Error 实例：转字符串后落 sink（JSON 取证不再是
+        // {}），并同步映射为 output——错误摘录（errorExcerpt）从 output 提取。
+        const errorText = payload.error !== undefined ? toolErrorText(payload.error) : undefined;
+        const observed = type === "tool-error"
+          ? { ...payload, isError: true, ...(errorText !== undefined ? { error: errorText, output: errorText } : {}) }
+          : payload;
+        toolCalls.push(observed);
         // T-327 取证 sink：流中途抛错时局部数组会丢，sink 让失败轮次也能留下已发生的调用。
-        toolCallsSink?.push(payload);
+        toolCallsSink?.push(observed);
         if (onChunk) {
-          const summary = mapOneToolCall({ ...payload, ...(type === "tool-result" ? { status: payload.status ?? "success" } : {}) }, new Date().toISOString());
+          const summary = mapOneToolCall({
+            ...observed,
+            ...(type === "tool-result" ? { status: payload.status ?? "success" } : {}),
+            ...(type === "tool-error" ? { status: "error" } : {}),
+          }, new Date().toISOString());
           // 参数流式分片会对同一 toolCallId 产生多条 tool-input chunk；只发首条。
           if (summary?.toolCallId && !emittedToolCalls.has(summary.toolCallId)) {
             emittedToolCalls.add(summary.toolCallId);
             onChunk({
-              kind: type === "tool-result" || type.startsWith("tool-output") ? "tool_result" : "tool_call",
+              kind: type === "tool-result" || type === "tool-error" || type.startsWith("tool-output") ? "tool_result" : "tool_call",
               at: summary.startedAt,
               seq: 0,
               toolCallId: summary.toolCallId,

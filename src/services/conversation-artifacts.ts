@@ -6,7 +6,7 @@ import { sqlite } from "../db/index.js";
 import { scanForUnsafeContent } from "./svg-sanitizer.js";
 import { recordArtifactEvent, recordArtifactLibraryListEvent } from "./artifact-events.js";
 import { withArtifactPathLock } from "./artifact-path-lock.js";
-import { getCurrentTurnId } from "./conversation-turns.js";
+import { getCurrentTurnId, getCurrentTurnStart } from "./conversation-turns.js";
 import { recordFileLifecycleEvent } from "./file-lifecycle-audit.js";
 import { registerReportAssetMappingUnderScopeLock } from "./report-asset-mappings.js";
 import { withResourceMutationLock } from "./resource-mutation-lock.js";
@@ -91,6 +91,8 @@ const TEXT_MIME_TYPES = new Set([
 ]);
 
 const MAX_PUBLISH_BYTES = 15 * 1024 * 1024;
+/** T-328 轮内写入判定的时钟余量：同机 mtime 与轮开始时间戳的毫秒级抖动。 */
+const ARTIFACT_TURN_MTIME_GRACE_MS = 1_000;
 const MAX_INLINE_BYTES = 15 * 1024 * 1024;
 // HTML renders inside a sandboxed Portal iframe, so it gets a much tighter
 // cap than binary media: it is meant for static document previews, not for
@@ -301,7 +303,8 @@ export class ConversationArtifactError extends Error {
       | "ARTIFACT_DELETE_CONFIRMATION_REQUIRED"
       | "ARTIFACT_DELETE_CONFIRMATION_EXPIRED"
       | "ARTIFACT_DELETE_CONFLICT"
-      | "ARTIFACT_IDEMPOTENCY_CONFLICT",
+      | "ARTIFACT_IDEMPOTENCY_CONFLICT"
+      | "ARTIFACT_NOT_FROM_CURRENT_TURN",
     message: string,
   ) {
     super(`${code}:${message}`);
@@ -317,6 +320,12 @@ export interface PublishArtifactInput {
   title?: string;
   /** Explicit user-requested promotion into My Files. Normal chat deliverables stay transient. */
   saveToMyFiles?: boolean;
+  /**
+   * T-328：调用方声明「这是用户明确要求交付的已有文件」。轮内 artifacts.publish
+   * 默认要求目标文件本轮真实写入过（mtime ≥ 轮开始），该声明是旧文件交付的
+   * 唯一放行通道。
+   */
+  existingFileRequest?: boolean;
   idempotencyKey?: string;
   assetId?: string | null;
   versionId?: string | null;
@@ -454,6 +463,22 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
   const fileStat = await stat(realTargetPath);
   if (!fileStat.isFile()) {
     throw new ConversationArtifactError("ARTIFACT_NOT_FOUND", relativePath);
+  }
+  // T-328 轮内写入不变量：artifacts.publish 在活动轮里发布的文件必须本轮真实
+  // 写入过（mtime ≥ 轮开始）。服务是事实源——conversation_turn_active.started_at
+  // 与文件 mtime 都可判定。拦下重试轮把上一轮死前生成的遗产文件当本轮产物发布
+  // （8-19 21:57 事件）。仅约束 agent 面向的 artifacts.publish：reviews.save /
+  // legacy_path / workspace_backfill 有各自的写入语义，不在本判定范围。用户明确
+  // 要求交付已有文件时，调用方传 existingFileRequest 显式声明后放行。
+  if (source === "artifacts.publish" && !input.existingFileRequest && input.scope.conversationId) {
+    const activeTurn = getCurrentTurnStart({
+      userId: input.userId,
+      instanceId: input.instanceId,
+      conversationId: input.scope.conversationId,
+    });
+    if (activeTurn && fileStat.mtimeMs + ARTIFACT_TURN_MTIME_GRACE_MS < Date.parse(activeTurn.startedAt)) {
+      throw new ConversationArtifactError("ARTIFACT_NOT_FROM_CURRENT_TURN", relativePath);
+    }
   }
   const maxPublishBytes = inferredMime === "text/html" ? MAX_HTML_BYTES : MAX_PUBLISH_BYTES;
   if (fileStat.size > maxPublishBytes) {

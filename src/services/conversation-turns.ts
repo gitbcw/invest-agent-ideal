@@ -67,3 +67,22 @@ export function getCurrentTurnId(input: {
     .get(input.userId, input.instanceId, input.conversationId) as { turnId?: string } | undefined;
   return row?.turnId ?? null;
 }
+
+/**
+ * T-328：活动轮的开始时间。artifacts.publish 用它判定「文件是否本轮真实写入」
+ * （文件 mtime 早于轮开始 = 上一轮遗产文件）。无活动轮时返回 null，调用方跳过判定。
+ */
+export function getCurrentTurnStart(input: {
+  userId: string;
+  instanceId: string;
+  conversationId: string;
+}): { turnId: string; startedAt: string } | null {
+  const row = sqlite
+    .prepare(
+      `SELECT turn_id AS turnId, started_at AS startedAt FROM conversation_turn_active
+       WHERE user_id = ? AND instance_id = ? AND conversation_id = ?`
+    )
+    .get(input.userId, input.instanceId, input.conversationId) as { turnId?: string; startedAt?: string } | undefined;
+  if (!row?.turnId || !row.startedAt) return null;
+  return { turnId: row.turnId, startedAt: row.startedAt };
+}

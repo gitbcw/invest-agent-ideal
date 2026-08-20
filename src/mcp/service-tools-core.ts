@@ -6,6 +6,7 @@ import { db, sqlite } from "../db/index.js";
 import { alertRules, conversationArtifacts, conversationMessages, mastraProjectProfiles, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
 import { resolveProjectStorageRoot } from "../services/project-storage-root.js";
 import {
+  ConversationArtifactError,
   publishConversationArtifact,
   readConversationArtifactPayload,
   type ConversationArtifact,
@@ -1828,34 +1829,55 @@ async function publishArtifact(input: Record<string, unknown> | undefined, conte
   const kindRaw = stringInput(input?.kind);
   const kind = isArtifactKind(kindRaw) ? kindRaw : undefined;
   const saveToMyFiles = input?.saveToMyFiles === true;
-  const published = await publishConversationArtifact({
-    userId: context.userId,
-    instanceId: context.instanceId,
-    relativePath,
-    kind,
-    title,
-    saveToMyFiles,
-    scope: {
-      projectId: context.projectId || DEFAULT_PROJECT_ID,
-      assistantId: context.instanceId,
-      conversationId: context.conversationId ?? null,
-      source: "artifacts.publish",
-    },
-  });
-  const available = await attachPublishedArtifactToUserFiles(published, context);
-  await audit(context, {
-    operation: "artifacts.publish",
-    resourceType: "conversation_artifact",
-    resourceId: available.artifactId,
-    requestBody: { relativePath, kind, title, saveToMyFiles },
-    resultSummary: `published ${available.kind}/${available.previewMode} ${available.fileName}; assetId=${available.assetId ?? "none"}`,
-  });
-  return {
-    ok: true,
-    userId: context.userId,
-    instanceId: context.instanceId,
-    artifact: available,
-  };
+  // T-328：用户明确要求交付某个已有文件时的显式声明——服务层默认拒绝轮内发布
+  // 非本轮写入的文件（重试轮遗产文件），这是旧文件交付的唯一放行通道。
+  const existingFileRequest = input?.existingFileRequest === true;
+  try {
+    const published = await publishConversationArtifact({
+      userId: context.userId,
+      instanceId: context.instanceId,
+      relativePath,
+      kind,
+      title,
+      saveToMyFiles,
+      existingFileRequest,
+      scope: {
+        projectId: context.projectId || DEFAULT_PROJECT_ID,
+        assistantId: context.instanceId,
+        conversationId: context.conversationId ?? null,
+        source: "artifacts.publish",
+      },
+    });
+    const available = await attachPublishedArtifactToUserFiles(published, context);
+    await audit(context, {
+      operation: "artifacts.publish",
+      resourceType: "conversation_artifact",
+      resourceId: available.artifactId,
+      requestBody: { relativePath, kind, title, saveToMyFiles, existingFileRequest },
+      resultSummary: `published ${available.kind}/${available.previewMode} ${available.fileName}; assetId=${available.assetId ?? "none"}`,
+    });
+    return {
+      ok: true,
+      userId: context.userId,
+      instanceId: context.instanceId,
+      artifact: available,
+    };
+  } catch (error) {
+    // 结构化拒绝（而非抛出）：执行代理依赖错误文本自纠——参照 spreadsheet.transform
+    // 的 catch 范式，裸异常会让它误判工具不可用并放弃本轮交付。
+    if (error instanceof ConversationArtifactError && error.code === "ARTIFACT_NOT_FROM_CURRENT_TURN") {
+      return {
+        ok: false,
+        error: "artifact_not_from_current_turn",
+        userId: context.userId,
+        instanceId: context.instanceId,
+        relativePath,
+        message: `${relativePath} 的最后写入时间早于本轮开始：它不是本轮产物（可能是上一轮失败前留下的文件），已拒绝作为本轮成果发布。`,
+        hint: "若这是用户明确要求交付的已有文件，带 existingFileRequest:true 重试；否则先用工具在本轮真实生成或更新该文件，再发布。",
+      };
+    }
+    throw error;
+  }
 }
 
 /**

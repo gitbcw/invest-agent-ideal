@@ -319,6 +319,64 @@ test("failed turns carry the attempt model and tool calls observed before the er
   );
 });
 
+test("tool-error chunks are recoverable tool events and no longer kill the turn (T-328)", async () => {
+  const runner = createMastraTurnRunner();
+  const result = await runner(
+    { conversationId: "tool-error-recoverable", text: "读一下昨天的报告" },
+    {
+      agent: {
+        stream: async () => ({
+          fullStream: (async function* () {
+            yield { type: "tool-call", payload: { toolCallId: "call-enoent", toolName: "mastra_workspace_read_file", args: { path: "migrated/reports/2026-08-19.md" } } };
+            // 8-19 实锤形态：幻觉路径 ENOENT → 工具异常以 tool-error 流块回流。
+            yield {
+              type: "tool-error",
+              payload: {
+                toolCallId: "call-enoent",
+                toolName: "mastra_workspace_read_file",
+                args: { path: "migrated/reports/2026-08-19.md" },
+                error: new Error("TOOL_EXECUTION_FAILED: ENOENT: no such file or directory"),
+              },
+            };
+            // 模型读到错误后自纠并继续输出——整轮必须活下来。
+            yield { type: "text-delta", text: "该路径不存在，我改用 list 定位实际报告目录后继续。" };
+          })(),
+        }),
+      },
+    },
+  );
+  assert.equal(result.text, "该路径不存在，我改用 list 定位实际报告目录后继续。");
+  const errored = result.toolCalls?.find((call) => call.status === "error");
+  assert.ok(errored, "end-of-turn tool call summary must include the errored call");
+  assert.equal(errored?.toolName, "mastra_workspace_read_file");
+  assert.match(errored?.errorExcerpt ?? "", /ENOENT/, "error excerpt must carry the real tool error text");
+});
+
+test("tool-error events survive verbatim on the forensics sink (T-328)", async () => {
+  const runner = createMastraTurnRunner();
+  await assert.rejects(
+    runner({ conversationId: "tool-error-then-stream-death", text: "复盘" }, {
+      agent: {
+        stream: async () => ({
+          fullStream: (async function* () {
+            yield { type: "tool-error", payload: { toolCallId: "call-429", toolName: "get_stock_profile", args: { symbol: "600519" }, error: new Error("HTTP 429") } };
+            yield { type: "error", error: "gateway gave up" };
+          })(),
+        }),
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof MastraTurnError);
+      const observed = (error as { toolCalls?: Array<Record<string, unknown>> }).toolCalls ?? [];
+      const errored = observed.find((call) => call.toolName === "get_stock_profile");
+      assert.ok(errored, "tool-error before a stream death must survive on the forensics sink");
+      assert.equal(typeof errored?.error, "string", "Error instances must be stringified for JSON forensics");
+      assert.match(String(errored?.error), /429/);
+      return true;
+    },
+  );
+});
+
 test("runMastraTurn rejects an empty text response", async () => {
   const agent: MastraAgentLike = {
     stream: async () => ({ text: " \n\t" }),
