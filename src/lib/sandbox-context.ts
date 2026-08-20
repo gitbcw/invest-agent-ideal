@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./load-env.js";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import path from "node:path";

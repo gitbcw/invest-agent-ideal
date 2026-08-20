@@ -6,10 +6,16 @@ import path from "node:path";
 import { test } from "node:test";
 
 process.env.WORKSPACE_BACKEND = "mastra";
+// 本文件拉起完整 runtime agent，必须先于任何动态 import 封闭外部服务，
+// 否则裸跑单文件时 .env 的真实网关/本地 MCP 会泄入：真实网关触发模型轮
+// 30 分钟降级冷却，本地 MDT (127.0.0.1:8000) 的 keep-alive MCP socket
+// 让测试进程永不退出（2026-08-20 套件挂起根因）。拒连端口号使轮内快速失败。
+process.env.NODE_ENV = "test";
+process.env.MASTRA_GATEWAY_BASE_URL ||= "http://127.0.0.1:9";
+process.env.MARKET_DATA_MCP_URL ||= "http://127.0.0.1:9/mcp";
 
 test("weixin light guidance gates uninitialized users and passes configured ones", async () => {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-mastra-weixin-gate-"));
-  process.env.NODE_ENV = "test";
   process.env.DB_PATH = path.join(tempRoot, "test.db");
   process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
   process.env.INVEST_AGENT_SANDBOX_SECRET_FILE = path.join(tempRoot, ".sandbox-secret");

@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./load-env.js";
 import path from "node:path";
 
 const repoRoot = process.cwd();
