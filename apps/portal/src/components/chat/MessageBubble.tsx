@@ -12,6 +12,7 @@ import { fetchAttachment, fetchTrace } from "./api";
 import { base64ToBytes, formatBytes, formatExpiry, sha256Hex, svgToDataUrl, svgToPngBytes, triggerBrowserDownload } from "./media-helpers";
 import type { ArtifactCardView, AttachmentView, ChatMessageView, InlineSvgVisual, TraceDetailView, WorkStepView } from "./types";
 import type { AttachmentGetResult } from "@/lib/protocol";
+import { toolDisplayName } from "./tool-display";
 
 interface MessageBubbleProps {
   message: ChatMessageView;
@@ -148,13 +149,16 @@ export function MessageBubble({
       <div className="min-w-0">
         <div className="chatgpt-prose text-[15px] text-[#202123]">
           {!isWaiting && message.status === "sent" && message.processedDurationMs !== undefined ? (
-            <div className="mb-3 text-xs text-[#8a918d]">已处理 {formatProcessedDuration(message.processedDurationMs)}</div>
+            <div className="mb-3 inline-flex items-center gap-1.5 text-xs text-[#8a918d]">
+              <Check size={13} className="text-emerald-500" aria-hidden="true" />
+              <span>处理完成 · 用时 {formatProcessedDuration(message.processedDurationMs)}</span>
+            </div>
           ) : null}
             {isWaiting && waitingStartedAt ? (
               <>
-                <WaitingBlock label={waiting.label} seconds={waiting.seconds} />
+                <WaitingBlock label={waiting.label} seconds={waiting.seconds} liveSteps={liveSteps} />
                 {liveSteps && liveSteps.length > 0 ? (
-                  <ToolCallTimeline steps={liveSteps} live defaultOpen />
+                  <ToolCallTimeline steps={liveSteps} live />
                 ) : null}
               </>
             ) : (
@@ -572,16 +576,18 @@ function extensionLabel(fileName: string) {
   return ext || "FILE";
 }
 
-function WaitingBlock({ label, seconds }: { label: string; seconds: number }) {
+function WaitingBlock({ label, seconds, liveSteps }: { label: string; seconds: number; liveSteps?: WorkStepView[] }) {
+  const latestTool = [...(liveSteps ?? [])].reverse().find((step) => step.toolName);
+  const status = latestTool ? toolDisplayName(latestTool.toolName) : label;
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex max-w-xl items-center gap-2 text-sm">
       <span className="relative flex h-2 w-2">
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent-500/60" />
         <span className="relative inline-flex h-2 w-2 rounded-full bg-accent-500" />
       </span>
-      <span className="text-[#5f6368]">{label}</span>
+      <span className="truncate text-[#5f6368]">{status}</span>
       {seconds >= 1 ? (
-        <span className="text-xs text-[#8e8ea0]">已等待 {seconds}s</span>
+        <span className="shrink-0 text-xs tabular-nums text-[#a0a4aa]">{seconds}s{seconds >= 30 ? " · 仍在处理" : ""}</span>
       ) : null}
     </div>
   );

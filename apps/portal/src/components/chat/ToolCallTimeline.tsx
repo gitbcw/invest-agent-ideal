@@ -1,9 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, CircleDot, Loader2, Wrench } from "lucide-react";
+import { Activity, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Loader2, RefreshCw, Sparkles } from "lucide-react";
 
 import type { TraceDetailView, WorkStepView } from "./types";
+import { toolDisplayName } from "./tool-display";
 
 /**
  * T-199 AI 工作过程时间线。历史回看（trace.get 摘要）与实时轮内事件共用：
@@ -13,8 +14,8 @@ import type { TraceDetailView, WorkStepView } from "./types";
 const KIND_LABEL: Record<WorkStepView["kind"], string> = {
   turn_start: "开始处理",
   first_token: "开始生成回复",
-  tool_call: "调用工具",
-  tool_result: "工具返回",
+  tool_call: "正在处理",
+  tool_result: "已完成",
   model_fallback: "切换模型",
   turn_end: "处理完成"
 };
@@ -31,11 +32,21 @@ function formatDuration(ms?: number): string {
   return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
 
-function StepRow({ step }: { step: WorkStepView }) {
-  const isTool = step.kind === "tool_call" || step.kind === "tool_result";
+function StepIcon({ step }: { step: WorkStepView }) {
   const isError = step.status === "error";
+  if (isError) return <CircleAlert className="h-3.5 w-3.5 text-red-500" />;
+  if (step.kind === "tool_call") return <Loader2 className="h-3.5 w-3.5 animate-spin text-accent-500" />;
+  if (step.kind === "tool_result" || step.kind === "turn_end") return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />;
+  if (step.kind === "model_fallback") return <RefreshCw className="h-3.5 w-3.5 text-amber-500" />;
+  if (step.kind === "first_token") return <Sparkles className="h-3.5 w-3.5 text-accent-500" />;
+  return <Activity className="h-3.5 w-3.5 text-slate-400" />;
+}
+
+function StepRow({ step }: { step: WorkStepView }) {
+  const isError = step.status === "error";
+  const displayTool = toolDisplayName(step.toolName);
   const label = step.toolName
-    ? `${KIND_LABEL[step.kind]}：${step.toolName}`
+    ? `${KIND_LABEL[step.kind]}：${displayTool}`
     : step.message
       ? `${KIND_LABEL[step.kind]} — ${step.message}`
       : KIND_LABEL[step.kind];
@@ -46,15 +57,9 @@ function StepRow({ step }: { step: WorkStepView }) {
   ].filter(Boolean).join(" · ");
   return (
     <li className="flex items-start gap-2 py-1 text-xs leading-5">
-      <span className="mt-0.5 shrink-0">
-        {isTool ? (
-          <Wrench className={`h-3.5 w-3.5 ${isError ? "text-red-500" : "text-slate-400"}`} />
-        ) : (
-          <CircleDot className={`h-3.5 w-3.5 ${step.kind === "turn_end" ? "text-emerald-500" : "text-slate-300"}`} />
-        )}
-      </span>
+      <span className="mt-0.5 shrink-0"><StepIcon step={step} /></span>
       <span className="min-w-0 flex-1">
-        <span className={`break-words ${isError ? "text-red-600" : "text-slate-600"}`}>{label}</span>
+        <span className={`break-words ${isError ? "text-red-600" : "text-slate-600"}`} title={step.toolName}>{label}</span>
         {meta ? <span className="ml-1.5 text-slate-400">{meta}</span> : null}
         {step.errorExcerpt ? (
           <span className="mt-0.5 block truncate rounded bg-red-50 px-1.5 py-0.5 text-[11px] text-red-500" title={step.errorExcerpt}>
@@ -80,7 +85,7 @@ export function ToolCallTimeline({
   live?: boolean;
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen || live);
+  const [open, setOpen] = useState(defaultOpen);
   const toolCount = useMemo(() => steps.filter((step) => step.kind === "tool_call").length, [steps]);
   // 实时模式是「跟最近动作」的尾巴窗口：固定条数、无滚动条，旧事件
   // 自然滚出视野；完整链路在轮次结束后由历史回看（带滚动）承载。
@@ -99,18 +104,18 @@ export function ToolCallTimeline({
       : `${toolCount} 次工具`;
 
   return (
-    <div className="mt-1 w-full">
+    <div className="mt-1 w-full max-w-xl">
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="flex w-full items-center gap-1 rounded-lg px-1.5 py-1 text-left text-xs text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600"
+        className="flex w-fit max-w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-xs text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600"
       >
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        <span>{live ? "正在工作" : "处理过程"}</span>
+        <span>{live ? "查看详细过程" : "处理过程"}</span>
         <span className="truncate text-slate-300">{headerMeta}</span>
       </button>
       {open ? (
-        <div className="mt-0.5 rounded-xl border border-slate-100 bg-slate-50/60 px-2.5 py-1.5">
+        <div className="mt-0.5 rounded-lg border border-slate-100 bg-slate-50/60 px-2.5 py-1.5">
           {steps.length === 0 ? (
             <div className="flex items-center gap-1.5 py-1 text-xs text-slate-400">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
