@@ -135,6 +135,73 @@ test("expired leases become terminal attempts and a retry gets a new fenced atte
   assert.equal(lock.activeRunId, null);
 });
 
+test("scheduler recovery terminalizes an expired run without a later claimant", async () => {
+  const { automation, db } = await fixture();
+  const task = await createActiveTask();
+  const claimed = await automation.claimAutomationTaskRun({
+    ...scope,
+    taskId: task.taskId,
+    origin: "manual",
+    idempotencyKey: `manual-stale-${task.taskId}`,
+  });
+  const stale = "2020-01-01T00:00:00.000Z";
+  db.sqlite.prepare(`
+    UPDATE automation_task_runs SET claimed_at = ?, lease_expires_at = ?, updated_at = ? WHERE run_id = ?
+  `).run(stale, stale, stale, claimed.run.runId);
+  db.sqlite.prepare(`
+    UPDATE automation_tasks SET active_run_lease_expires_at = ?, updated_at = ? WHERE task_id = ?
+  `).run(stale, stale, task.taskId);
+
+  assert.equal(await automation.recoverExpiredAutomationTaskRuns(new Date("2026-08-20T13:42:30.000Z")), 1);
+  const recovered = await automation.getAutomationTaskRun({ ...scope, runId: claimed.run.runId });
+  assert.equal(recovered?.status, "failed");
+  assert.equal(recovered?.errorCategory, "expired");
+  const lock = db.sqlite.prepare(`SELECT active_run_id AS activeRunId FROM automation_tasks WHERE task_id = ?`).get(task.taskId) as { activeRunId: string | null };
+  assert.equal(lock.activeRunId, null);
+});
+
+test("manual run outcomes do not change the scheduled cadence or failure circuit breaker", async () => {
+  const { automation } = await fixture();
+  const task = await createActiveTask();
+  const initialNextRunAt = task.nextRunAt;
+
+  for (let index = 0; index < 3; index += 1) {
+    const claimed = await automation.claimAutomationTaskRun({
+      ...scope,
+      taskId: task.taskId,
+      origin: "manual",
+      idempotencyKey: `manual-failure-${task.taskId}-${index}`,
+    });
+    await automation.finishAutomationTaskRun({
+      ...scope,
+      runId: claimed.run.runId,
+      leaseToken: claimed.run.leaseToken,
+      status: "failed",
+      errorMessage: `manual failure ${index}`,
+    });
+  }
+
+  const afterFailures = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
+  assert.equal(afterFailures?.status, "active");
+  assert.equal(afterFailures?.consecutiveFailures, 0);
+  assert.equal(afterFailures?.nextRunAt, initialNextRunAt);
+
+  const successful = await automation.claimAutomationTaskRun({
+    ...scope,
+    taskId: task.taskId,
+    origin: "manual",
+    idempotencyKey: `manual-success-${task.taskId}`,
+  });
+  await automation.finishAutomationTaskRun({
+    ...scope,
+    runId: successful.run.runId,
+    leaseToken: successful.run.leaseToken,
+    status: "succeeded",
+  });
+  const afterSuccess = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
+  assert.equal(afterSuccess?.nextRunAt, initialNextRunAt);
+});
+
 test("concurrent claim callers serialize through the SQLite task mutex", async () => {
   const { automation } = await fixture();
   const task = await createActiveTask();
@@ -162,6 +229,7 @@ test("scheduler tick suppresses same-process duplicate dispatch while a run is i
   let calls = 0;
   const dependencies = {
     listDueAutomationTasks: async () => [dueTask],
+    recoverExpiredAutomationTaskRuns: async () => 0,
     runAutomationTaskNow: async () => {
       calls += 1;
       await runGate;

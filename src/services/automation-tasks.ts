@@ -1586,6 +1586,13 @@ function recoverExpiredRun(row: DbRunRow, scope: AutomationScope, now: string): 
     scope.instanceId,
   );
   if (updated.changes === 0) return;
+  sqlite.prepare(`
+    UPDATE automation_tasks
+    SET active_run_id = NULL, active_run_lease_token = NULL,
+        active_run_lease_expires_at = NULL, updated_at = ?
+    WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+      AND active_run_id = ?
+  `).run(now, row.taskId, scope.userId, scope.projectId, scope.instanceId, row.runId);
   insertAuditRow({
     taskId: row.taskId,
     revisionId: row.revisionId,
@@ -1600,6 +1607,37 @@ function recoverExpiredRun(row: DbRunRow, scope: AutomationScope, now: string): 
     },
     createdAt: now,
   });
+}
+
+/**
+ * Reap expired runs even when no later claimant arrives. Manual runs on a
+ * needs-attention task otherwise remain visibly running forever because that
+ * task is no longer eligible for the normal scheduler claim path.
+ */
+export async function recoverExpiredAutomationTaskRuns(at = new Date(), limit = 100): Promise<number> {
+  const now = at.toISOString();
+  const nowMs = at.getTime();
+  const rows = sqlite.prepare(`
+    SELECT ${RUN_SELECT}
+    FROM automation_task_runs
+    WHERE status = 'running'
+    ORDER BY claimed_at ASC, run_id ASC
+    LIMIT ?
+  `).all(Math.min(Math.max(Math.trunc(limit), 1), 500)) as DbRunRow[];
+  let recovered = 0;
+  const transaction = sqlite.transaction(() => {
+    for (const row of rows) {
+      const scope = { userId: row.userId, projectId: row.projectId, instanceId: row.instanceId };
+      const lock = readTaskLock(row.taskId, scope);
+      if (!isLeaseExpired(lock?.activeRunLeaseExpiresAt, row.leaseExpiresAt, row.claimedAt, nowMs)) continue;
+      const before = selectRunById(row.runId, scope);
+      recoverExpiredRun(row, scope, now);
+      const after = selectRunById(row.runId, scope);
+      if (before?.status === "running" && after?.status === "failed") recovered += 1;
+    }
+  });
+  transaction();
+  return recovered;
 }
 
 function assertAutomationTaskRunLeaseSync(
@@ -1700,6 +1738,12 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
     createdAt: now,
   });
   const schedule = parseScheduleJson(revision.scheduleJson);
+  // Manual verification/recovery runs are observational with respect to the
+  // scheduled cadence. They must not advance next_run_at or trip the
+  // consecutive-failure circuit breaker for future scheduled executions.
+  if (existing.origin !== "scheduled") {
+    return runRecordFromRow(requireRunRow(runId, scope));
+  }
   if (input.status === "succeeded" || input.status === "skipped" || input.status === "cancelled") {
     const nextRunAt = task.status === "active" ? nextAutomationRunAt(schedule, new Date(now)) : task.nextRunAt;
     sqlite.prepare(`

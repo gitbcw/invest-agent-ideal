@@ -31,6 +31,7 @@ test("P4b: automation scheduler dispatches due tasks regardless of schedulerActi
   const calls: unknown[] = [];
   const dependencies = {
     listDueAutomationTasks: async () => [dueTask],
+    recoverExpiredAutomationTaskRuns: async () => 0,
     runAutomationTaskNow: async (input: unknown) => { calls.push(input); return { run: { runId: "run-1", status: "succeeded" }, task: dueTask } as never; },
   } as scheduler.AutomationSchedulerDependencies;
 

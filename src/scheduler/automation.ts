@@ -1,5 +1,5 @@
 import { logger } from "../lib/logger.js";
-import { listDueAutomationTasks } from "../services/automation-tasks.js";
+import { listDueAutomationTasks, recoverExpiredAutomationTaskRuns } from "../services/automation-tasks.js";
 import { runAutomationTaskNow } from "../services/automation-runner.js";
 
 let automationIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -7,16 +7,23 @@ const runningAutomationTasks = new Set<string>();
 
 export interface AutomationSchedulerDependencies {
   listDueAutomationTasks: typeof listDueAutomationTasks;
+  recoverExpiredAutomationTaskRuns: typeof recoverExpiredAutomationTaskRuns;
   runAutomationTaskNow: typeof runAutomationTaskNow;
 }
 
-const defaultDependencies: AutomationSchedulerDependencies = { listDueAutomationTasks, runAutomationTaskNow };
+const defaultDependencies: AutomationSchedulerDependencies = {
+  listDueAutomationTasks,
+  recoverExpiredAutomationTaskRuns,
+  runAutomationTaskNow,
+};
 
 /**
  * Scan and dispatch due tasks. Dependencies are injectable for deterministic
  * node:test coverage; production callers keep the same one-argument API.
  */
 export async function runAutomationSchedulerTick(now = new Date(), dependencies: AutomationSchedulerDependencies = defaultDependencies) {
+  const recovered = await dependencies.recoverExpiredAutomationTaskRuns(now, 100);
+  if (recovered > 0) logger.warn(`automation scheduler recovered expired runs count=${recovered}`);
   const due = await dependencies.listDueAutomationTasks(now, 100);
   let started = 0;
   for (const task of due) {
