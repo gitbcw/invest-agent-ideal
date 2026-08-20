@@ -261,7 +261,9 @@ function send(socket: AnyWebSocket, message: PortalEnvelope | PortalResponse) {
  * T-199：已注册 relay socket 的轮内进度转发通道。尽力而为——socket 未开或
  * 断连时事件直接丢弃，聊天轮结果本身不受影响。
  */
-let progressForwarder: ((payload: Record<string, unknown>) => void) | null = null;
+// 每个生产助手都有独立的 relay socket；不能用单一全局转发器，否则最后注册的
+// connector 会覆盖其他用户的进度通道。
+const progressForwarders = new Map<string, (payload: Record<string, unknown>) => void>();
 
 function makeProgressForwarder(socketRef: () => AnyWebSocket | null): (payload: Record<string, unknown>) => void {
   return (payload) => {
@@ -511,7 +513,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       const progressConversationId = String(message.payload?.conversationId || "");
       const forwardProgress = progressConversationId
         ? (event: import("../runtime/protocol.js").AgentTurnProgressEvent) => {
-            progressForwarder?.({ conversationId: progressConversationId, requestId: message.requestId, event });
+            progressForwarders.get(scope.assistantId)?.({ conversationId: progressConversationId, requestId: message.requestId, event });
           }
         : undefined;
       return finish(ok(message.type, message.requestId, await chatViaConversationLog({
@@ -1379,7 +1381,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
       clearInterval(livenessTimer);
       livenessTimer = null;
     }
-    progressForwarder = null;
+    progressForwarders.delete(scope.assistantId);
     socket = null;
   };
 
@@ -1433,7 +1435,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         return;
       }
       // T-199：socket 打开即挂进度转发；断连由 cleanupSocket 清空。
-      progressForwarder = makeProgressForwarder(() => socket);
+      progressForwarders.set(scope.assistantId, makeProgressForwarder(() => socket));
       heartbeatTimer = setInterval(() => {
         if (!socket) return;
         try {
