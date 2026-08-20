@@ -37,18 +37,19 @@ describe("daily review prompt tool boundary", () => {
   });
 });
 
-describe("current server date anchor (mg 2026-08-19 stale-scope incident)", () => {
-  it("anchors 'today' to Asia/Shanghai server time and forbids stale history scopes in every prompt variant", async () => {
-    const { currentServerDateAnchor } = await import("../src/runtime/mobile-prompt.js");
+describe("server time fact (mg 2026-08-19 stale-scope incident)", () => {
+  it("states the server date as a bare fact in every prompt variant, with no behavior rules", async () => {
+    const { serverTimeFact } = await import("../src/runtime/mobile-prompt.js");
     for (const prompt of [
       buildMobilePrompt({ userText: "帮我看看持仓" }),
       buildMobilePrompt({ userText: "复盘", reviewContext, allowReviewPublication: true }),
     ]) {
-      assert.match(prompt, /【当前日期锚】服务器当前时间：/);
-      assert.match(prompt, /Asia\/Shanghai/);
-      assert.match(prompt, /一律以该日期为准/);
-      assert.match(prompt, /不得用于本轮取数参数/);
+      assert.match(prompt, /【系统时间】\d{4}\/\d{2}\/\d{2}周. \d{2}:\d{2}（Asia\/Shanghai）/);
+      // 设计决定（2026-08-20）：提示词只给事实，规则上工具层。
+      // 「最新交易日=今天」的规则在周末是错的，禁令式规则易与其他场景冲突。
+      assert.doesNotMatch(prompt, /一律以该日期为准/);
+      assert.doesNotMatch(prompt, /不得用于本轮取数参数/);
     }
-    assert.match(currentServerDateAnchor(new Date("2026-08-19T14:00:00Z")), /2026/);
+    assert.match(serverTimeFact(new Date("2026-08-19T14:00:00Z")), /周三/);
   });
 });

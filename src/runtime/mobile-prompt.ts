@@ -40,15 +40,14 @@ export function compactDailyReviewContext(context: DailyReviewContext) {
 
 export type CompactDailyReviewContext = ReturnType<typeof compactDailyReviewContext>;
 
-/** 服务器当前时间（Asia/Shanghai）。模型没有任何内置“今天”概念；没有这个权威
- * 锚点时，长会话历史里的旧日期范围（如“截止到8/12日的复盘”）会成为上下文里
- * 最强的日期信号并被沿用为取数参数（2026-08-19 mg 复盘旧数据事故根因之一）。 */
-export function currentServerDateAnchor(now: Date = new Date()): string {
-  const formatted = new Intl.DateTimeFormat("zh-CN", {
+/** 服务器当前时间事实（Asia/Shanghai）。模型没有时钟，缺的只是这个事实；
+ * 只提供事实、不附加规则——周末/节假日的「最新交易日」推断交给模型，
+ * 护栏放工具层（2026-08-19 事故复盘后的设计决定：提示词给事实，规则上工具）。 */
+export function serverTimeFact(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hour12: false,
+    weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
   }).format(now);
-  return `【当前日期锚】服务器当前时间：${formatted}（Asia/Shanghai）。凡“今日/当日/最新交易日/最新数据”一律以该日期为准；会话历史消息中出现的旧日期或日期范围（如“截止到X日”）不得用于本轮取数参数，除非当前用户消息明确重申。`;
 }
 
 export function buildMobilePrompt(params: {
@@ -79,7 +78,7 @@ export function buildMobilePrompt(params: {
   if (!compactReviewContext) {
     return [
       params.userText,
-      currentServerDateAnchor(),
+      `【系统时间】${serverTimeFact()}（Asia/Shanghai）`,
       `【结果数量与表格规则】${OUTPUT_VOLUME_POLICY}`,
       internalRuntimeContext ? `【内部执行上下文】\n${internalRuntimeContext}` : "",
     ].filter(Boolean).join("\n");
@@ -87,7 +86,7 @@ export function buildMobilePrompt(params: {
 
   return [
     params.userText,
-    currentServerDateAnchor(),
+    `【系统时间】${serverTimeFact()}（Asia/Shanghai）`,
     [
       params.allowReviewPublication
         ? "下面已经提供复盘所需的数据。不要再调用 curl、服务 API 或研究工具；定时日复盘的发布例外是必须调用 reviews.save。"

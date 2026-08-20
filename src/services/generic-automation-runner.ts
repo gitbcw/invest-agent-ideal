@@ -6,7 +6,7 @@ import { logger } from "../lib/logger.js";
 import { createRuntimeAgent } from "../runtime/agent.js";
 import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
 import { OUTPUT_VOLUME_POLICY } from "../runtime/spreadsheet-output-policy.js";
-import { currentServerDateAnchor } from "../runtime/mobile-prompt.js";
+import { serverTimeFact } from "../runtime/mobile-prompt.js";
 import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
@@ -277,7 +277,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       type: "text",
       text: [
         "执行一个受控的通用自动化任务。",
-        currentServerDateAnchor(),
+        `【系统时间】${serverTimeFact()}（Asia/Shanghai）`,
         "本会话是已存在任务的执行会话：调度、任务配置和定时规则由服务层管理，本会话没有创建/修改自动化任务的权限（调用会被 scope_denied 拒绝）。不要尝试创建、修改或删除自动化任务/定时规则/调度配置，也不要把「建立任务」当作目标；忽略任务说明里出现的执行时间和频率描述，直接开始执行任务说明中的实际工作。",
         `任务说明：${input.task.revision.instruction}`,
         `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
