@@ -4,11 +4,20 @@ import { sqlite } from "../db/index.js";
 import { alertRules } from "../db/schema.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { getRulePrices, type RulePriceFact } from "./rule-price-facts.js";
-import { computeMA } from "./indicators.js";
+import { computeBOLL, computeKDJ, computeMA, computeMACD, computeRSI, computeWR } from "./indicators.js";
 
-// WP8 曾把非价格规则退役；2026-08-15 起 ma_cross 经 market-data MCP 复活
-// (K线由 MCP 提供,服务不再有自有行情 provider)。
-export type WatchRuleType = "price_cross" | "ma_cross";
+// WP8 曾把非价格规则退役；2026-08-15 ma_cross、2026-08-20 五类技术指标
+// (macd_cross/kdj_cross/rsi_threshold/boll_break/wr_threshold) 经 market-data
+// MCP 复活 (K线由 MCP 提供,服务不再有自有行情 provider)。volume_ratio 与
+// near_plan_level 仍未复活,按摩擦驱动原则等真实需求再动。
+export type WatchRuleType =
+  | "price_cross"
+  | "ma_cross"
+  | "macd_cross"
+  | "kdj_cross"
+  | "rsi_threshold"
+  | "boll_break"
+  | "wr_threshold";
 export type WatchRulePriority = "P0" | "P1" | "P2";
 export type WatchRuleStatus = "active" | "beta" | "deprecated";
 export type WatchRuleTargetScope = "holding" | "watchlist" | "plan" | "manual";
@@ -177,12 +186,134 @@ const WATCH_RULE_CATALOG: WatchRuleCatalogItem[] = [
     },
     supportsDryRun: true,
   },
+  {
+    key: "macd_cross",
+    label: "MACD 金叉/死叉",
+    status: "active",
+    description: "当日线 MACD 的 DIF 与 DEA 发生金叉或死叉时触发（当日与前一日对比判定交叉）。",
+    targetScopes: ["holding", "watchlist", "manual"],
+    paramsSchema: {
+      direction: { type: "enum", required: true, options: ["golden_cross", "death_cross"], default: "golden_cross" },
+    },
+    defaults: { direction: "golden_cross", cooldownMinutes: 240 },
+    examples: [
+      {
+        stockCode: "600036",
+        params: { direction: "golden_cross" },
+      },
+    ],
+    cooldownCapabilities: {
+      supportedModes: ["cooldown", "state"],
+      defaultMinutes: 240,
+    },
+    supportsDryRun: true,
+  },
+  {
+    key: "kdj_cross",
+    label: "KDJ 金叉/死叉",
+    status: "active",
+    description: "当日线 KDJ 的 K 与 D 发生金叉或死叉时触发，可配合超卖/超买阈值过滤（金叉看 D≤阈值，死叉看 D≥阈值）。",
+    targetScopes: ["holding", "watchlist", "manual"],
+    paramsSchema: {
+      direction: { type: "enum", required: true, options: ["golden_cross", "death_cross"], default: "golden_cross" },
+      threshold: { type: "number", required: false, default: 20, min: 0, max: 100 },
+    },
+    defaults: { direction: "golden_cross", threshold: 20, cooldownMinutes: 240 },
+    examples: [
+      {
+        stockCode: "600036",
+        params: { direction: "golden_cross", threshold: 20 },
+      },
+    ],
+    cooldownCapabilities: {
+      supportedModes: ["cooldown", "state"],
+      defaultMinutes: 240,
+    },
+    supportsDryRun: true,
+  },
+  {
+    key: "rsi_threshold",
+    label: "RSI 阈值",
+    status: "active",
+    description: "当日线 RSI 高于或低于指定阈值时触发（如 RSI6 低于 30 视为超卖）。",
+    targetScopes: ["holding", "watchlist", "manual"],
+    paramsSchema: {
+      period: { type: "number", required: false, default: 6, min: 2, max: 60 },
+      direction: { type: "enum", required: true, options: ["above", "below"], default: "below" },
+      threshold: { type: "number", required: true, default: 30, min: 0, max: 100 },
+    },
+    defaults: { period: 6, direction: "below", threshold: 30, cooldownMinutes: 240 },
+    examples: [
+      {
+        stockCode: "600036",
+        params: { period: 6, direction: "below", threshold: 30 },
+      },
+    ],
+    cooldownCapabilities: {
+      supportedModes: ["cooldown", "state"],
+      defaultMinutes: 240,
+    },
+    supportsDryRun: true,
+  },
+  {
+    key: "boll_break",
+    label: "布林带突破",
+    status: "active",
+    description: "当日线收盘价突破布林带上轨或跌破下轨时触发。",
+    targetScopes: ["holding", "watchlist", "manual"],
+    paramsSchema: {
+      period: { type: "number", required: false, default: 20, min: 5, max: 120 },
+      multiplier: { type: "number", required: false, default: 2, min: 0.5, max: 5 },
+      direction: { type: "enum", required: true, options: ["break_upper", "break_lower"], default: "break_upper" },
+    },
+    defaults: { period: 20, multiplier: 2, direction: "break_upper", cooldownMinutes: 240 },
+    examples: [
+      {
+        stockCode: "600036",
+        params: { period: 20, multiplier: 2, direction: "break_upper" },
+      },
+    ],
+    cooldownCapabilities: {
+      supportedModes: ["cooldown", "state"],
+      defaultMinutes: 240,
+    },
+    supportsDryRun: true,
+  },
+  {
+    key: "wr_threshold",
+    label: "WR 威廉指标阈值",
+    status: "active",
+    description: "当日线 WR 高于或低于指定阈值时触发（WR 越高越接近区间低点，如 WR14 高于 80 视为超卖）。",
+    targetScopes: ["holding", "watchlist", "manual"],
+    paramsSchema: {
+      period: { type: "number", required: false, default: 14, min: 2, max: 120 },
+      direction: { type: "enum", required: true, options: ["above", "below"], default: "above" },
+      threshold: { type: "number", required: true, default: 80, min: 0, max: 100 },
+    },
+    defaults: { period: 14, direction: "above", threshold: 80, cooldownMinutes: 240 },
+    examples: [
+      {
+        stockCode: "600036",
+        params: { period: 14, direction: "above", threshold: 80 },
+      },
+    ],
+    cooldownCapabilities: {
+      supportedModes: ["cooldown", "state"],
+      defaultMinutes: 240,
+    },
+    supportsDryRun: true,
+  },
 ];
 
 const WATCH_RULE_RELATION = "stage2_watch_rule";
 const RULE_TYPE_TO_INDICATOR_KEY: Record<WatchRuleType, string> = {
   price_cross: "watch_rule_price_cross",
   ma_cross: "watch_rule_ma_cross",
+  macd_cross: "watch_rule_macd_cross",
+  kdj_cross: "watch_rule_kdj_cross",
+  rsi_threshold: "watch_rule_rsi_threshold",
+  boll_break: "watch_rule_boll_break",
+  wr_threshold: "watch_rule_wr_threshold",
 };
 
 export function listWatchRuleCatalog(): WatchRuleCatalogItem[] {
@@ -453,9 +584,45 @@ export function setDailyKlineFetcherForTests(fetcher: DailyKlineFetcher | null):
   fetchDailyKlines = fetcher
     ? fetcher
     : async (code, count) => {
-      const { mcpDailyKlines } = await import("./market-data-mcp.js");
-      return mcpDailyKlines(code, count);
+        const { mcpDailyKlines } = await import("./market-data-mcp.js");
+        return mcpDailyKlines(code, count);
+      };
+}
+
+type DailyKlines = Awaited<ReturnType<DailyKlineFetcher>>;
+
+type KlineFetchOutcome = { ok: true; klines: DailyKlines } | { ok: false; result: DryRunWatchRuleResult };
+
+/** K线类规则共用取数：失败以软结果返回，不向巡检循环抛错。 */
+async function fetchKlinesForRule(rule: WatchRuleRecord, count: number): Promise<KlineFetchOutcome> {
+  try {
+    return { ok: true, klines: await fetchDailyKlines(rule.stockCode, count) };
+  } catch (error) {
+    return {
+      ok: false,
+      result: {
+        ok: true,
+        triggered: false,
+        rule,
+        facts: { failureCode: (error as { code?: string })?.code ?? "kline_fetch_failed" },
+        reason: `K线获取失败：${(error as Error).message.slice(0, 120)}`,
+      },
     };
+  }
+}
+
+function klinesInsufficient(rule: WatchRuleRecord, klines: DailyKlines, required: number, label: string): DryRunWatchRuleResult {
+  return {
+    ok: true,
+    triggered: false,
+    rule,
+    facts: { klineCount: klines.items.length, required },
+    reason: label,
+  };
+}
+
+function klineMetaFacts(klines: DailyKlines): Record<string, unknown> {
+  return { marketTime: klines.fetchedAt, sourceProvider: klines.provider };
 }
 
 export async function dryRunWatchRule(rule: WatchRuleRecord, priceFact?: RulePriceFact | null): Promise<DryRunWatchRuleResult> {
@@ -475,26 +642,11 @@ export async function dryRunWatchRule(rule: WatchRuleRecord, priceFact?: RulePri
     if (!Number.isInteger(period) || period < 2 || period > 250) {
       return { ok: true, triggered: false, rule, facts: {}, reason: "ma_cross.period 参数无效" };
     }
-    let klines: Awaited<ReturnType<DailyKlineFetcher>>;
-    try {
-      klines = await fetchDailyKlines(rule.stockCode, Math.max(80, period + 5));
-    } catch (error) {
-      return {
-        ok: true,
-        triggered: false,
-        rule,
-        facts: { failureCode: (error as { code?: string })?.code ?? "kline_fetch_failed" },
-        reason: `K线获取失败：${(error as Error).message.slice(0, 120)}`,
-      };
-    }
+    const fetched = await fetchKlinesForRule(rule, Math.max(80, period + 5));
+    if (!fetched.ok) return fetched.result;
+    const klines = fetched.klines;
     if (klines.items.length < period + 2) {
-      return {
-        ok: true,
-        triggered: false,
-        rule,
-        facts: { klineCount: klines.items.length, required: period + 2 },
-        reason: "K线数量不足，无法判断均线突破",
-      };
+      return klinesInsufficient(rule, klines, period + 2, "K线数量不足，无法判断均线突破");
     }
     const closes = klines.items.map((item) => item.close);
     const maValues = computeMA(closes, period).values;
@@ -522,12 +674,224 @@ export async function dryRunWatchRule(rule: WatchRuleRecord, priceFact?: RulePri
         maPrev,
         period,
         direction,
-        marketTime: klines.fetchedAt,
-        sourceProvider: klines.provider,
+        ...klineMetaFacts(klines),
       },
       reason: triggered
         ? `${rule.stockName}(${rule.stockCode}) 触发均线规则：${verb} ${period} 日均线，现价 ${closeToday.toFixed(2)}，MA${period} ${maToday.toFixed(2)}`
         : `${rule.stockName}(${rule.stockCode}) 未${verb} ${period} 日均线，现价 ${closeToday.toFixed(2)}，MA${period} ${maToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "macd_cross") {
+    // DIF/DEA 交叉事件（当日 vs 前一日），参数沿用通达信默认 12/26/9。
+    // K线取 120 根（EMA 收敛余量，最少 35 根 = 26+9）。
+    const direction = rule.params.direction === "death_cross" ? "death_cross" : "golden_cross";
+    const fetched = await fetchKlinesForRule(rule, 120);
+    if (!fetched.ok) return fetched.result;
+    const klines = fetched.klines;
+    if (klines.items.length < 35) {
+      return klinesInsufficient(rule, klines, 35, "K线数量不足，无法判断 MACD 金叉/死叉");
+    }
+    const closes = klines.items.map((item) => item.close);
+    const { dif, dea } = computeMACD(closes);
+    const lastIdx = closes.length - 1;
+    const prevIdx = lastIdx - 1;
+    const difToday = dif[lastIdx];
+    const deaToday = dea[lastIdx];
+    const difPrev = dif[prevIdx];
+    const deaPrev = dea[prevIdx];
+    if (difToday == null || deaToday == null || difPrev == null || deaPrev == null) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "MACD 结果为空" };
+    }
+    const triggered = direction === "golden_cross"
+      ? difPrev <= deaPrev && difToday > deaToday
+      : difPrev >= deaPrev && difToday < deaToday;
+    const noun = direction === "golden_cross" ? "金叉" : "死叉";
+    return {
+      ok: true,
+      triggered,
+      rule,
+      facts: {
+        closeToday: closes[lastIdx],
+        difToday,
+        deaToday,
+        difPrev,
+        deaPrev,
+        direction,
+        ...klineMetaFacts(klines),
+      },
+      reason: triggered
+        ? `${rule.stockName}(${rule.stockCode}) 触发MACD规则：${noun}，DIF ${difToday.toFixed(3)} ${direction === "golden_cross" ? "上穿" : "下穿"} DEA ${deaToday.toFixed(3)}`
+        : `${rule.stockName}(${rule.stockCode}) 当前未发生 MACD ${noun}，DIF ${difToday.toFixed(3)}，DEA ${deaToday.toFixed(3)}`,
+    };
+  }
+
+  if (rule.ruleType === "kdj_cross") {
+    // K/D 交叉事件 + 阈值过滤：金叉要求当日 D ≤ 阈值（超卖区金叉），
+    // 死叉要求当日 D ≥ 阈值（超买区死叉）。默认 9/3/3 参数。
+    const direction = rule.params.direction === "death_cross" ? "death_cross" : "golden_cross";
+    const threshold = Number(rule.params.threshold ?? (direction === "golden_cross" ? 20 : 80));
+    const fetched = await fetchKlinesForRule(rule, 80);
+    if (!fetched.ok) return fetched.result;
+    const klines = fetched.klines;
+    if (klines.items.length < 15) {
+      return klinesInsufficient(rule, klines, 15, "K线数量不足，无法判断 KDJ 金叉/死叉");
+    }
+    const { k, d, j } = computeKDJ(klines.items);
+    const lastIdx = klines.items.length - 1;
+    const prevIdx = lastIdx - 1;
+    const kToday = k[lastIdx];
+    const dToday = d[lastIdx];
+    const jToday = j[lastIdx];
+    const kPrev = k[prevIdx];
+    const dPrev = d[prevIdx];
+    const crossed = direction === "golden_cross"
+      ? kPrev <= dPrev && kToday > dToday
+      : kPrev >= dPrev && kToday < dToday;
+    const thresholdOk = direction === "golden_cross" ? dToday <= threshold : dToday >= threshold;
+    const triggered = crossed && thresholdOk;
+    const noun = direction === "golden_cross" ? "金叉" : "死叉";
+    return {
+      ok: true,
+      triggered,
+      rule,
+      facts: {
+        closeToday: klines.items[lastIdx].close,
+        kToday,
+        dToday,
+        jToday,
+        kPrev,
+        dPrev,
+        threshold,
+        direction,
+        ...klineMetaFacts(klines),
+      },
+      reason: triggered
+        ? `${rule.stockName}(${rule.stockCode}) 触发KDJ规则：${noun}，K ${kToday.toFixed(2)} / D ${dToday.toFixed(2)}（阈值 ${threshold}）`
+        : `${rule.stockName}(${rule.stockCode}) 当前未发生符合阈值的 KDJ ${noun}，K ${kToday.toFixed(2)} / D ${dToday.toFixed(2)}（阈值 ${threshold}）`,
+    };
+  }
+
+  if (rule.ruleType === "rsi_threshold") {
+    // RSI 阈值状态（非交叉）：当日 RSI ≥ 或 ≤ 阈值即触发。
+    const period = Math.trunc(Number(rule.params.period ?? 6));
+    const direction = rule.params.direction === "above" ? "above" : "below";
+    const threshold = Number(rule.params.threshold);
+    if (!Number.isInteger(period) || period < 2 || period > 60 || !Number.isFinite(threshold)) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "rsi_threshold 参数无效" };
+    }
+    const fetched = await fetchKlinesForRule(rule, Math.max(80, period + 5));
+    if (!fetched.ok) return fetched.result;
+    const klines = fetched.klines;
+    if (klines.items.length < period + 2) {
+      return klinesInsufficient(rule, klines, period + 2, "K线数量不足，无法判断 RSI 阈值");
+    }
+    const closes = klines.items.map((item) => item.close);
+    const rsiToday = computeRSI(closes, period).last;
+    if (rsiToday == null) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "RSI 结果为空" };
+    }
+    const triggered = direction === "above" ? rsiToday >= threshold : rsiToday <= threshold;
+    const verb = direction === "above" ? "高于" : "低于";
+    return {
+      ok: true,
+      triggered,
+      rule,
+      facts: {
+        closeToday: closes[closes.length - 1],
+        rsiToday,
+        period,
+        direction,
+        threshold,
+        ...klineMetaFacts(klines),
+      },
+      reason: triggered
+        ? `${rule.stockName}(${rule.stockCode}) 触发RSI规则：RSI${period} ${rsiToday.toFixed(2)} 已${verb} ${threshold}`
+        : `${rule.stockName}(${rule.stockCode}) RSI${period} ${rsiToday.toFixed(2)} 未${verb} ${threshold}`,
+    };
+  }
+
+  if (rule.ruleType === "boll_break") {
+    // 布林带轨道突破状态：当日收盘 ≥ 上轨 或 ≤ 下轨即触发。
+    const period = Math.trunc(Number(rule.params.period ?? 20));
+    const multiplier = Number(rule.params.multiplier ?? 2);
+    const direction = rule.params.direction === "break_lower" ? "break_lower" : "break_upper";
+    if (!Number.isInteger(period) || period < 5 || period > 120 || !Number.isFinite(multiplier) || multiplier < 0.5 || multiplier > 5) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "boll_break 参数无效" };
+    }
+    const fetched = await fetchKlinesForRule(rule, Math.max(80, period + 5));
+    if (!fetched.ok) return fetched.result;
+    const klines = fetched.klines;
+    if (klines.items.length < period + 2) {
+      return klinesInsufficient(rule, klines, period + 2, "K线数量不足，无法判断布林带突破");
+    }
+    const boll = computeBOLL(klines.items, period, multiplier);
+    const lastIdx = klines.items.length - 1;
+    const closeToday = klines.items[lastIdx].close;
+    const upper = boll.up[lastIdx];
+    const mid = boll.mid[lastIdx];
+    const lower = boll.down[lastIdx];
+    if (upper == null || mid == null || lower == null) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "布林带结果为空" };
+    }
+    const triggered = direction === "break_upper" ? closeToday >= upper : closeToday <= lower;
+    const verb = direction === "break_upper" ? "突破布林上轨" : "跌破布林下轨";
+    const band = direction === "break_upper" ? upper : lower;
+    return {
+      ok: true,
+      triggered,
+      rule,
+      facts: {
+        closeToday,
+        upper,
+        mid,
+        lower,
+        period,
+        multiplier,
+        direction,
+        ...klineMetaFacts(klines),
+      },
+      reason: triggered
+        ? `${rule.stockName}(${rule.stockCode}) 触发布林带规则：现价 ${closeToday.toFixed(2)} ${verb} ${band.toFixed(2)}`
+        : `${rule.stockName}(${rule.stockCode}) 当前未${verb}（${band.toFixed(2)}），现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "wr_threshold") {
+    // WR 阈值状态：当日 WR ≥ 或 ≤ 阈值即触发（WR 越高越接近区间低点）。
+    const period = Math.trunc(Number(rule.params.period ?? 14));
+    const direction = rule.params.direction === "below" ? "below" : "above";
+    const threshold = Number(rule.params.threshold);
+    if (!Number.isInteger(period) || period < 2 || period > 120 || !Number.isFinite(threshold)) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "wr_threshold 参数无效" };
+    }
+    const fetched = await fetchKlinesForRule(rule, Math.max(80, period + 5));
+    if (!fetched.ok) return fetched.result;
+    const klines = fetched.klines;
+    if (klines.items.length < period + 1) {
+      return klinesInsufficient(rule, klines, period + 1, "K线数量不足，无法判断 WR 阈值");
+    }
+    const wrToday = computeWR(klines.items, period).last;
+    if (wrToday == null) {
+      return { ok: true, triggered: false, rule, facts: {}, reason: "WR 结果为空" };
+    }
+    const triggered = direction === "above" ? wrToday >= threshold : wrToday <= threshold;
+    const verb = direction === "above" ? "高于" : "低于";
+    return {
+      ok: true,
+      triggered,
+      rule,
+      facts: {
+        closeToday: klines.items[klines.items.length - 1].close,
+        wrToday,
+        period,
+        direction,
+        threshold,
+        ...klineMetaFacts(klines),
+      },
+      reason: triggered
+        ? `${rule.stockName}(${rule.stockCode}) 触发威廉指标规则：WR${period} ${wrToday.toFixed(2)} 已${verb} ${threshold}`
+        : `${rule.stockName}(${rule.stockCode}) WR${period} ${wrToday.toFixed(2)} 未${verb} ${threshold}`,
     };
   }
 
@@ -588,9 +952,10 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
 }
 
 function normalizeRuleType(value: string): WatchRuleType {
-  if (value === RULE_TYPE_TO_INDICATOR_KEY.price_cross || value === "price_cross") return "price_cross";
-  if (value === RULE_TYPE_TO_INDICATOR_KEY.ma_cross || value === "ma_cross") return "ma_cross";
-  // WP8: 8 类非价格规则已退役,反序列化时归一为 price_cross 避免 DB 残留行报错
+  for (const [ruleType, indicatorKey] of Object.entries(RULE_TYPE_TO_INDICATOR_KEY)) {
+    if (value === indicatorKey || value === ruleType) return ruleType as WatchRuleType;
+  }
+  // WP8: volume_ratio/near_plan_level 已退役,反序列化时归一为 price_cross 避免 DB 残留行报错
   return "price_cross";
 }
 
@@ -637,6 +1002,49 @@ function normalizeRuleParams(ruleType: WatchRuleType, params: Record<string, unk
     if (!direction) errors.push("ma_cross.direction 必须是 break_above 或 break_below");
     return { period: Number.isInteger(period) ? period : 25, direction: direction ?? "break_above" };
   }
+  if (ruleType === "macd_cross") {
+    const direction = params.direction === "death_cross" ? "death_cross" : params.direction === "golden_cross" ? "golden_cross" : null;
+    if (!direction) errors.push("macd_cross.direction 必须是 golden_cross 或 death_cross");
+    return { direction: direction ?? "golden_cross" };
+  }
+  if (ruleType === "kdj_cross") {
+    const direction = params.direction === "death_cross" ? "death_cross" : params.direction === "golden_cross" ? "golden_cross" : null;
+    const threshold = params.threshold === undefined ? 20 : Number(params.threshold);
+    if (!direction) errors.push("kdj_cross.direction 必须是 golden_cross 或 death_cross");
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) errors.push("kdj_cross.threshold 必须是 0 到 100 之间的数");
+    return { direction: direction ?? "golden_cross", threshold: Number.isFinite(threshold) ? threshold : 20 };
+  }
+  if (ruleType === "rsi_threshold") {
+    const period = Math.trunc(Number(params.period ?? 6));
+    const direction = params.direction === "above" ? "above" : params.direction === "below" ? "below" : null;
+    const threshold = Number(params.threshold);
+    if (!Number.isInteger(period) || period < 2 || period > 60) errors.push("rsi_threshold.period 必须是 2 到 60 之间的整数");
+    if (!direction) errors.push("rsi_threshold.direction 必须是 above 或 below");
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) errors.push("rsi_threshold.threshold 必须是 0 到 100 之间的数");
+    return { period: Number.isInteger(period) ? period : 6, direction: direction ?? "below", threshold: Number.isFinite(threshold) ? threshold : 30 };
+  }
+  if (ruleType === "boll_break") {
+    const period = Math.trunc(Number(params.period ?? 20));
+    const multiplier = Number(params.multiplier ?? 2);
+    const direction = params.direction === "break_lower" ? "break_lower" : params.direction === "break_upper" ? "break_upper" : null;
+    if (!Number.isInteger(period) || period < 5 || period > 120) errors.push("boll_break.period 必须是 5 到 120 之间的整数");
+    if (!Number.isFinite(multiplier) || multiplier < 0.5 || multiplier > 5) errors.push("boll_break.multiplier 必须是 0.5 到 5 之间的数");
+    if (!direction) errors.push("boll_break.direction 必须是 break_upper 或 break_lower");
+    return {
+      period: Number.isInteger(period) ? period : 20,
+      multiplier: Number.isFinite(multiplier) ? multiplier : 2,
+      direction: direction ?? "break_upper",
+    };
+  }
+  if (ruleType === "wr_threshold") {
+    const period = Math.trunc(Number(params.period ?? 14));
+    const direction = params.direction === "above" ? "above" : params.direction === "below" ? "below" : null;
+    const threshold = Number(params.threshold);
+    if (!Number.isInteger(period) || period < 2 || period > 120) errors.push("wr_threshold.period 必须是 2 到 120 之间的整数");
+    if (!direction) errors.push("wr_threshold.direction 必须是 above 或 below");
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) errors.push("wr_threshold.threshold 必须是 0 到 100 之间的数");
+    return { period: Number.isInteger(period) ? period : 14, direction: direction ?? "above", threshold: Number.isFinite(threshold) ? threshold : 80 };
+  }
   errors.push(`不支持的规则类型：${ruleType}`);
   return {};
 }
@@ -662,5 +1070,10 @@ function scheduleForRule(_ruleType: WatchRuleType) {
 function ruleTypeCondition(ruleType: WatchRuleType) {
   if (ruleType === "price_cross") return "watch_rule.price_cross";
   if (ruleType === "ma_cross") return "watch_rule.ma_cross";
+  if (ruleType === "macd_cross") return "watch_rule.macd_cross";
+  if (ruleType === "kdj_cross") return "watch_rule.kdj_cross";
+  if (ruleType === "rsi_threshold") return "watch_rule.rsi_threshold";
+  if (ruleType === "boll_break") return "watch_rule.boll_break";
+  if (ruleType === "wr_threshold") return "watch_rule.wr_threshold";
   return "watch_rule.unknown";
 }

@@ -187,3 +187,103 @@ test("ma_cross rules pass catalog validation and normalize params", async () => 
   assert.ok(catalog, "ma_cross 出现在规则目录");
   assert.deepEqual(catalog.paramsSchema.direction && "options" in catalog.paramsSchema.direction ? catalog.paramsSchema.direction.options : [], ["break_above", "break_below"]);
 });
+
+/**
+ * 2026-08-20 复活的 5 类技术指标规则求值（合成K线，数值经
+ * computeMACD/KDJ/RSI/BOLL/WR 实算核对后固化）。方向取反或数据不足
+ * 均不应触发。
+ */
+function makeKlines(bars: Array<{ close: number; high?: number; low?: number }>) {
+  return {
+    items: bars.map((bar, i) => ({
+      date: `d${i}`, open: bar.close, close: bar.close,
+      high: bar.high ?? bar.close, low: bar.low ?? bar.close, volume: 1000,
+    })),
+    provider: "tencent",
+    fetchedAt: "2026-08-20T08:00:00",
+  };
+}
+
+test("revived indicator rules evaluate with production semantics", async () => {
+  const rules = await import("../src/services/watch-rules.js");
+
+  const baseRule = {
+    id: 1, userId: "mg", instanceId: "invest-agent-mg", stockCode: "000629", stockName: "钒钛股份",
+    targetScope: "holding" as const,
+    cooldown: { mode: "state", minutes: 240 },
+    notification: { priority: "P1" as const, push: true },
+    enabled: true, createdAt: "", updatedAt: "",
+  };
+
+  // MACD：110 天缓跌（100→67.3）+ 末日反弹到 75 → DIF(-1.461) 上穿 DEA(-1.971)
+  const macdBars: Array<{ close: number }> = [];
+  for (let i = 0; i < 110; i += 1) macdBars.push({ close: 100 - i * 0.3 });
+  macdBars.push({ close: 75 });
+  // KDJ：50 天 0.955 阴跌 + 1 根 1.03 阳线 → 末日金叉（K 2.62 上穿 D 0.87，D≤20 超卖区）
+  const kdjBars: Array<{ close: number }> = [];
+  let kdjPrice = 100;
+  for (let i = 0; i < 50; i += 1) { kdjPrice *= 0.955; kdjBars.push({ close: Number(kdjPrice.toFixed(2)) }); }
+  kdjPrice *= 1.03;
+  kdjBars.push({ close: Number(kdjPrice.toFixed(2)) });
+  // RSI6：30 天 0.96 连跌 → RSI=0（深度超卖）
+  const rsiBars: Array<{ close: number }> = [];
+  let rsiPrice = 100;
+  for (let i = 0; i < 30; i += 1) { rsiPrice *= 0.96; rsiBars.push({ close: Number(rsiPrice.toFixed(2)) }); }
+  // BOLL：40 天 10±0.05 横盘 + 末日 11 → 突破上轨 10.495
+  const bollBars: Array<{ close: number }> = [];
+  for (let i = 0; i < 40; i += 1) bollBars.push({ close: 10 + (i % 2 === 0 ? 0.05 : -0.05) });
+  bollBars.push({ close: 11 });
+  // WR：30 天 0.95 阴跌 → WR14=99.02（贴区间低点，超卖）
+  const wrBars: Array<{ close: number }> = [];
+  let wrPrice = 100;
+  for (let i = 0; i < 30; i += 1) { wrPrice *= 0.95; wrBars.push({ close: Number(wrPrice.toFixed(2)) }); }
+
+  rules.setDailyKlineFetcherForTests(async (code) => {
+    if (code === "macd-test") return makeKlines(macdBars);
+    if (code === "kdj-test") return makeKlines(kdjBars);
+    if (code === "rsi-test") return makeKlines(rsiBars);
+    if (code === "boll-test") return makeKlines(bollBars);
+    if (code === "wr-test") return makeKlines(wrBars);
+    throw new Error(`unexpected code ${code}`);
+  });
+  try {
+    // macd_cross：金叉触发，死叉不触发
+    const macdGolden = await rules.dryRunWatchRule({ ...baseRule, stockCode: "macd-test", ruleType: "macd_cross" as const, params: { direction: "golden_cross" } });
+    assert.equal(macdGolden.triggered, true, "MACD 金叉应触发");
+    assert.ok(String(macdGolden.reason).includes("金叉"));
+    const macdDeath = await rules.dryRunWatchRule({ ...baseRule, stockCode: "macd-test", ruleType: "macd_cross" as const, params: { direction: "death_cross" } });
+    assert.equal(macdDeath.triggered, false, "MACD 死叉方向不应触发");
+
+    // kdj_cross：超卖区金叉触发（阈值 20）；阈值收紧到 2 则不触发
+    const kdjGolden = await rules.dryRunWatchRule({ ...baseRule, stockCode: "kdj-test", ruleType: "kdj_cross" as const, params: { direction: "golden_cross", threshold: 20 } });
+    assert.equal(kdjGolden.triggered, true, "KDJ 超卖金叉应触发");
+    const kdjTight = await rules.dryRunWatchRule({ ...baseRule, stockCode: "kdj-test", ruleType: "kdj_cross" as const, params: { direction: "golden_cross", threshold: 0.5 } });
+    assert.equal(kdjTight.triggered, false, "KDJ D 值超出收紧阈值不应触发");
+
+    // rsi_threshold：below 30 触发（RSI=0）；above 30 不触发
+    const rsiBelow = await rules.dryRunWatchRule({ ...baseRule, stockCode: "rsi-test", ruleType: "rsi_threshold" as const, params: { period: 6, direction: "below", threshold: 30 } });
+    assert.equal(rsiBelow.triggered, true, "RSI 超卖应触发");
+    const rsiAbove = await rules.dryRunWatchRule({ ...baseRule, stockCode: "rsi-test", ruleType: "rsi_threshold" as const, params: { period: 6, direction: "above", threshold: 30 } });
+    assert.equal(rsiAbove.triggered, false, "RSI 高于方向不应触发");
+
+    // boll_break：突破上轨触发；跌破下轨方向不触发
+    const bollUpper = await rules.dryRunWatchRule({ ...baseRule, stockCode: "boll-test", ruleType: "boll_break" as const, params: { period: 20, multiplier: 2, direction: "break_upper" } });
+    assert.equal(bollUpper.triggered, true, "突破布林上轨应触发");
+    const bollLower = await rules.dryRunWatchRule({ ...baseRule, stockCode: "boll-test", ruleType: "boll_break" as const, params: { period: 20, multiplier: 2, direction: "break_lower" } });
+    assert.equal(bollLower.triggered, false, "下轨方向不应触发");
+
+    // wr_threshold：above 80 触发（WR=99.02）
+    const wrAbove = await rules.dryRunWatchRule({ ...baseRule, stockCode: "wr-test", ruleType: "wr_threshold" as const, params: { period: 14, direction: "above", threshold: 80 } });
+    assert.equal(wrAbove.triggered, true, "WR 超卖应触发");
+    assert.ok(String(wrAbove.reason).includes("WR14"));
+
+    // K线不足：软返回不触发，reason 说明数量缺口
+    const shortKlines = makeKlines(macdBars.slice(0, 20));
+    rules.setDailyKlineFetcherForTests(async () => shortKlines);
+    const macdShort = await rules.dryRunWatchRule({ ...baseRule, stockCode: "macd-test", ruleType: "macd_cross" as const, params: { direction: "golden_cross" } });
+    assert.equal(macdShort.triggered, false, "K线不足不应触发");
+    assert.equal(macdShort.reason, "K线数量不足，无法判断 MACD 金叉/死叉");
+  } finally {
+    rules.setDailyKlineFetcherForTests(null);
+  }
+});

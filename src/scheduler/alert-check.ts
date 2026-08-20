@@ -215,7 +215,115 @@ function buildStage2AlertItem(
     };
   }
 
-  // 其余 8 类非价格规则保持退役 (WP8)；求值代码已删除,此处不会到达。
+  if (rule.ruleType === "macd_cross") {
+    const direction = String(rule.params.direction);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const difToday = Number(evaluated.facts.difToday);
+    const deaToday = Number(evaluated.facts.deaToday);
+    const golden = direction === "golden_cross";
+    const signalKey = `${rule.stockCode}:watch-rule:macd-cross:${direction}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      dedupe,
+      message: `${rule.stockName}(${rule.stockCode}) 触发MACD规则：${golden ? "金叉" : "死叉"}，DIF ${difToday.toFixed(3)} ${golden ? "上穿" : "下穿"} DEA ${deaToday.toFixed(3)}，现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "kdj_cross") {
+    const direction = String(rule.params.direction);
+    const threshold = Number(rule.params.threshold);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const kToday = Number(evaluated.facts.kToday);
+    const dToday = Number(evaluated.facts.dToday);
+    const signalKey = `${rule.stockCode}:watch-rule:kdj-cross:${direction}:${threshold}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      dedupe,
+      message: `${rule.stockName}(${rule.stockCode}) 触发KDJ规则：${direction === "golden_cross" ? "金叉" : "死叉"}，K ${kToday.toFixed(2)} / D ${dToday.toFixed(2)}（阈值 ${threshold}），现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "rsi_threshold") {
+    const period = Number(rule.params.period);
+    const direction = String(rule.params.direction);
+    const threshold = Number(rule.params.threshold);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const rsiToday = Number(evaluated.facts.rsiToday);
+    const signalKey = `${rule.stockCode}:watch-rule:rsi-threshold:${direction}:${period}:${threshold}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      dedupe,
+      message: `${rule.stockName}(${rule.stockCode}) 触发RSI规则：RSI${period} ${rsiToday.toFixed(2)} 已${direction === "above" ? "高于" : "低于"} ${threshold}，现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  if (rule.ruleType === "boll_break") {
+    const period = Number(rule.params.period);
+    const multiplier = Number(rule.params.multiplier);
+    const direction = String(rule.params.direction);
+    const upper = Number(evaluated.facts.upper);
+    const lower = Number(evaluated.facts.lower);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const breakUpper = direction === "break_upper";
+    const band = breakUpper ? upper : lower;
+    const signalKey = `${rule.stockCode}:watch-rule:boll-break:${direction}:${period}:${multiplier}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      dedupe,
+      message: `${rule.stockName}(${rule.stockCode}) 触发布林带规则：现价 ${closeToday.toFixed(2)} ${breakUpper ? "突破上轨" : "跌破下轨"} ${band.toFixed(2)}（${period}/${multiplier}）`,
+    };
+  }
+
+  if (rule.ruleType === "wr_threshold") {
+    const period = Number(rule.params.period);
+    const direction = String(rule.params.direction);
+    const threshold = Number(rule.params.threshold);
+    const closeToday = Number(evaluated.facts.closeToday);
+    const wrToday = Number(evaluated.facts.wrToday);
+    const signalKey = `${rule.stockCode}:watch-rule:wr-threshold:${direction}:${period}:${threshold}`;
+    return {
+      stockCode: rule.stockCode,
+      stockName: rule.stockName,
+      type: "indicator",
+      signalKey,
+      relationToPlan,
+      price: closeToday,
+      priority,
+      severity,
+      dedupe,
+      message: `${rule.stockName}(${rule.stockCode}) 触发威廉指标规则：WR${period} ${wrToday.toFixed(2)} 已${direction === "above" ? "高于" : "低于"} ${threshold}，现价 ${closeToday.toFixed(2)}`,
+    };
+  }
+
+  // volume_ratio / near_plan_level 保持退役 (WP6/WP8)；求值代码已删除,此处不会到达。
   return null;
 }
 

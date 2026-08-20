@@ -5,7 +5,7 @@ import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { cancelConversationChat, chatViaConversationLog, ConversationScopeError, getConversation, listConversations } from "../services/conversation-log.js";
 import { getRulePatrolStatus, listRulePatrolRuns, runRulePatrolNow } from "../services/rule-patrol.js";
-import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
+import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule, type WatchRuleType } from "../services/watch-rules.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { AttachmentStoreError } from "../lib/attachment-store.js";
@@ -327,6 +327,61 @@ function automationScope(scope: ConnectorScope) {
   return { userId: scope.userId, instanceId: scope.instanceId, projectId: scope.projectId };
 }
 
+/** 巡检页消息的 ruleType 白名单：只接受服务目录里 active 的规则类型。 */
+function normalizePatrolRuleType(value: unknown): WatchRuleType | null {
+  if (typeof value !== "string") return null;
+  return listWatchRuleCatalog().some((item) => item.key === value && item.status === "active")
+    ? (value as WatchRuleType)
+    : null;
+}
+
+/** 按规则类型从消息 payload 构造参数（逐字段白名单，越界值回退默认，最终由服务层校验）。 */
+function buildPatrolRuleParams(ruleType: WatchRuleType, payload: any): Record<string, unknown> {
+  const periodOf = (): number | undefined => (payload?.period === undefined ? undefined : Math.trunc(Number(payload.period)));
+  switch (ruleType) {
+    case "price_cross":
+      return { operator: payload?.operator === "<=" ? "<=" : ">=", value: Number(payload?.value) };
+    case "ma_cross":
+      return { period: periodOf(), direction: payload?.direction === "break_below" ? "break_below" : "break_above" };
+    case "macd_cross":
+      return { direction: payload?.direction === "death_cross" ? "death_cross" : "golden_cross" };
+    case "kdj_cross": {
+      const params: Record<string, unknown> = {
+        direction: payload?.direction === "death_cross" ? "death_cross" : "golden_cross",
+      };
+      if (payload?.threshold !== undefined) params.threshold = Number(payload.threshold);
+      return params;
+    }
+    case "rsi_threshold": {
+      const params: Record<string, unknown> = {
+        direction: payload?.direction === "above" ? "above" : "below",
+        threshold: Number(payload?.threshold),
+      };
+      const period = periodOf();
+      if (period !== undefined) params.period = period;
+      return params;
+    }
+    case "boll_break": {
+      const params: Record<string, unknown> = {
+        direction: payload?.direction === "break_lower" ? "break_lower" : "break_upper",
+      };
+      const period = periodOf();
+      if (period !== undefined) params.period = period;
+      if (payload?.multiplier !== undefined) params.multiplier = Number(payload.multiplier);
+      return params;
+    }
+    case "wr_threshold": {
+      const params: Record<string, unknown> = {
+        direction: payload?.direction === "below" ? "below" : "above",
+        threshold: Number(payload?.threshold),
+      };
+      const period = periodOf();
+      if (period !== undefined) params.period = period;
+      return params;
+    }
+  }
+}
+
 function declaredScopeField(payload: unknown): string | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   for (const field of ["userId", "assistantId", "instanceId", "projectId", "workspacePath", "relativePath"]) {
@@ -589,16 +644,11 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
     }
     case TYPES.RULE_PATROL_RULES_CREATE: {
       const patrolScope = automationScope(scope);
-      const ruleType: "price_cross" | "ma_cross" = message.payload?.ruleType === "ma_cross" ? "ma_cross" : "price_cross";
-      const params: Record<string, unknown> = ruleType === "ma_cross"
-        ? {
-          period: Math.trunc(Number(message.payload?.period)),
-          direction: message.payload?.direction === "break_below" ? "break_below" : "break_above",
-        }
-        : {
-          operator: message.payload?.operator === "<=" ? "<=" : ">=",
-          value: Number(message.payload?.value),
-        };
+      const ruleType = normalizePatrolRuleType(message.payload?.ruleType);
+      if (!ruleType) {
+        return finish(fail(message.type, message.requestId, "RULE_PATROL_RULE_INVALID", "不支持的 ruleType（仅支持规则目录中的 active 类型）"));
+      }
+      const params = buildPatrolRuleParams(ruleType, message.payload);
       const input = {
         userId: patrolScope.userId,
         instanceId: patrolScope.instanceId,
@@ -635,14 +685,21 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       if (!Number.isInteger(id) || id <= 0) return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "id is required"));
       const update: Record<string, unknown> = {};
       if (typeof message.payload?.stockName === "string" && message.payload.stockName.trim()) update.stockName = message.payload.stockName.trim();
-      if (message.payload?.operator === ">=" || message.payload?.operator === "<=") {
-        update.params = { operator: message.payload.operator, value: Number(message.payload?.value) };
-      }
-      if (message.payload?.period !== undefined || message.payload?.direction !== undefined) {
-        update.params = {
-          period: Math.trunc(Number(message.payload?.period)),
-          direction: message.payload?.direction === "break_below" ? "break_below" : "break_above",
-        };
+      // 显式带 ruleType 时按类型构造参数（新规则类型通道）；不带时保留
+      // 旧版巡检页按参数形状推断 price_cross/ma_cross 的行为。
+      const explicitType = normalizePatrolRuleType(message.payload?.ruleType);
+      if (explicitType && explicitType !== "price_cross" && explicitType !== "ma_cross") {
+        update.params = buildPatrolRuleParams(explicitType, message.payload);
+      } else {
+        if (message.payload?.operator === ">=" || message.payload?.operator === "<=") {
+          update.params = { operator: message.payload.operator, value: Number(message.payload?.value) };
+        }
+        if (message.payload?.period !== undefined || message.payload?.direction !== undefined) {
+          update.params = {
+            period: Math.trunc(Number(message.payload?.period)),
+            direction: message.payload?.direction === "break_below" ? "break_below" : "break_above",
+          };
+        }
       }
       if (message.payload?.enabled === true || message.payload?.enabled === false) update.enabled = message.payload.enabled;
       if (message.payload?.priority === "P0" || message.payload?.priority === "P1" || message.payload?.priority === "P2") {
