@@ -85,7 +85,7 @@ export function ToolCallTimeline({
   live?: boolean;
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(defaultOpen || live);
   const toolCount = useMemo(() => steps.filter((step) => step.kind === "tool_call").length, [steps]);
   // 实时模式是「跟最近动作」的尾巴窗口：固定条数、无滚动条，旧事件
   // 自然滚出视野；完整链路在轮次结束后由历史回看（带滚动）承载。
@@ -111,7 +111,7 @@ export function ToolCallTimeline({
         className="flex w-fit max-w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-xs text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600"
       >
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        <span>{live ? "查看详细过程" : "处理过程"}</span>
+        <span>{live ? "正在工作" : "处理过程"}</span>
         <span className="truncate text-slate-300">{headerMeta}</span>
       </button>
       {open ? (
