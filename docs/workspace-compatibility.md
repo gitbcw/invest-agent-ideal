@@ -109,7 +109,7 @@ npm run smoke:workspace-compatibility -- <user> <instance>
 
 ## 生产迁移历史基线（2026-07-23）
 
-- `9a253e7` 是首次 Workspace 兼容收敛发布，后续生产版本继续从 `main` 的干净 worktree 通过普通代码发布路径部署；服务器 `.env`、SQLite、reviews、`.state`、根 `.codex` 和真实 Workspace 均受同步排除规则保护。
+- `9a253e7` 是首次 Workspace 兼容收敛发布；当前生产版本从 `feat/mastra-migration` 的已审阅提交通过普通代码发布路径部署；服务器 `.env`、SQLite、reviews、`.state`、根 `.codex` 和真实 Workspace 均受同步排除规则保护。
 - 发布前在线安全快照位于 `/home/claude/invest-agent-data/compatibility-backups/20260723-013655`，SQLite 副本 `quick_check=ok`，目录权限为 `700`。
 - `111`、`dyk`、`mg` 的隔离迁移副本均通过持仓、`market_watch.snapshot` 和只开放 `reviews.save` 的日复盘发布单点验收；探针没有创建 push job、连接微信或输出持仓内容。
 - 所列迁移发生在兼容模型 v1，当时部分标准 Skill 仍被视为受管资产。兼容模型 v2 已取消 Skill 自动替换；这些备份继续保留用于历史审计和回滚：

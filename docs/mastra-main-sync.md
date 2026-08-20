@@ -1,6 +1,6 @@
 # Mastra 分支与 main 同步规约
 
-迁移分支 `feat/mastra-migration` 与 `main` 长期并存。`main` 是业务上游和生产基线；本分支是独立的 Mastra-native 服务候选，当前隔离拓扑为 runtime `23656`、Portal `23657`、Relay `23658`，状态根为 `data/mastra-portal-local/`。这些端口不构成生产发布授权。
+迁移分支 `feat/mastra-migration` 与 `main` 长期并存。`main` 仍可作为历史业务上游参考，但当前生产已切换到本分支：PM2 `invest-agent-mastra`、runtime `23655`、Portal/Relay `23657/23658`。本文后续的 `23656` 隔离拓扑描述的是历史验证环境，不是当前生产目标。
 
 ## 当前同步基线
 
@@ -23,6 +23,6 @@
 
 ## 禁止事项
 
-- 不直接 merge `main`，不操作主服务 23655/22655 或生产数据。
+- 不直接 merge `main`，不操作旧 `main` runtime；生产数据和真实 Workspace 仍须通过明确授权的生产运维流程操作。
 - 不恢复 `src/acp` 执行器、ACP session/cancel 语义或 Claude CLI 调用。
 - 不把 `test-projects/` 或迁移工作树作为正式 Portal 发布源。

@@ -14,16 +14,19 @@ WeChat or web message
 
 Workspace Agents do not call local HTTP routes, handle service tokens, or edit service-owned state directly. HTTP remains an adapter for Platform, Portal, operations, and compatibility callers; MCP and HTTP adapters share the same service logic.
 
-## Mastra Candidate Branch
+## Current Production Runtime
 
-This branch (`feat/mastra-migration`) is an isolated Mastra-native candidate,
-not the production baseline. It runs independently of the main service with
-runtime `23656`, Portal `23657`, Relay `23658`, and state under
-`data/mastra-portal-local/`. It does not enable real WeChat, push, scheduler,
-production SQLite, or production Workspaces. The current candidate status,
-remaining H1 acceptance gate, and local startup boundary are documented in
-[docs/mastra-workspace-exit-mapping.md](./docs/mastra-workspace-exit-mapping.md)
-and [docs/mastra-workspace-exit-mapping_acceptance_review.md](./docs/mastra-workspace-exit-mapping_acceptance_review.md).
+The active production codebase is this branch (`feat/mastra-migration`). The
+legacy `main` runtime is stopped and must not be treated as the live release
+target. Production runs PM2 `invest-agent-mastra` from
+`/home/claude/invest-agent-mastra` on runtime port `23655`; `mastra-portal`
+serves the Portal/relay on `23657/23658`. Production `.env`, SQLite, real
+Workspaces, reviews, state, and WeChat bindings are server-owned assets and
+must be preserved during code-only releases.
+
+The historical isolated-candidate documents below describe the pre-cutover
+state and are retained for audit context; they are not current deployment
+instructions.
 
 ## Local Development
 
@@ -35,7 +38,7 @@ cp .env.example .env
 npm run dev
 ```
 
-The local service defaults to port `22655`:
+The local development service defaults to port `22655`:
 
 - Platform: `http://localhost:22655/platform`
 - Health: `http://localhost:22655/health`

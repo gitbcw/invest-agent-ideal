@@ -4,7 +4,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 
 ## Read By Domain
 
-### Mastra Candidate Branch
+### Mastra Production Branch
 
 | Document | Use It For |
 | --- | --- |
@@ -24,10 +24,12 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [mastra-real-data-migration-validation-2026-08-15.md](./mastra-real-data-migration-validation-2026-08-15.md) | Executed real-data migration validation: phases, evidence, findings F1-F3, E4/E8 gate unlock |
 | [mastra-main-sync.md](./mastra-main-sync.md) | Rules for selectively porting `main` behavior without restoring ACP runtime code |
 
-The Mastra candidate is deliberately not a production release: runtime `23656`,
-Portal `23657`, Relay `23658`, and `data/mastra-portal-local/` are isolated from
-the production baseline. Do not use these documents to authorize deployment,
-production data writes, real WeChat reconnects, or a branch merge.
+The pre-cutover candidate description in the Mastra documents is historical.
+The active production branch is `feat/mastra-migration`: PM2
+`invest-agent-mastra`, runtime `/home/claude/invest-agent-mastra`, port `23655`,
+with `mastra-portal` on `23657/23658`. The old `main` runtime is stopped. Use
+the current production facts above for deployment and diagnosis; preserve
+production `.env`, SQLite, Workspaces, reviews, state, and WeChat bindings.
 
 ### Product And Investment Method
 
@@ -41,6 +43,15 @@ production data writes, real WeChat reconnects, or a branch merge.
 | [trading-strategy-design.md](./trading-strategy-design.md) | Implemented strategy entity and plan linkage, two-gate confirmation, and explicit unimplemented workflow boundary |
 | [personas/README.md](./personas/README.md) | Persona index |
 | [personas/lao-zhang.md](./personas/lao-zhang.md) | User empathy and product judgment aid |
+
+### P-17 Convergence Decisions (2026-08)
+
+| Document | Use It For |
+| --- | --- |
+| [p17-convergence-positioning-2026-08.md](./p17-convergence-positioning-2026-08.md) | 收敛决策①（T-303，定稿）：下一阶段定位=明光哥流水线车间、双渠道排序、唯一指标、10 月外推门槛、三用户使用证据 |
+| [p17-convergence-mg-core-loop-2026-08.md](./p17-convergence-mg-core-loop-2026-08.md) | 收敛决策②（T-305，定稿）：mg 四个时刻、策略资产盘点、复盘流水线规格、痛点证据→T-315/317/318 映射、承接路径 |
+| [p17-convergence-execution-draft-2026-08.md](./p17-convergence-execution-draft-2026-08.md) | 收敛决策③（T-304/306/307，定稿；人岗对应 08-21 周五补）：功能取舍裁决尺与三堆初分、分工归口三问、M1-M4 里程碑与 go/no-go |
+| [p17-weekly-meeting-2026-08-22-slides.html](./p17-weekly-meeting-2026-08-22-slides.html) | 08-22 周会团队内部场幻灯片（T-308 产物）：架构、项目情况、使用数据、定位与里程碑 |
 
 ### Runtime, Workspace, And Security
 

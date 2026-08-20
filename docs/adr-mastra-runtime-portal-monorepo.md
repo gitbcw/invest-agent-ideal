@@ -1,6 +1,6 @@
 # ADR: Mastra Runtime 与 Portal 同仓
 
-状态：Accepted for isolated candidate；生产发布源切换仍未批准
+状态：Accepted；当前生产发布源为 `feat/mastra-migration`
 
 ## 决策
 

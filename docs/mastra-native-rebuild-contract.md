@@ -2,15 +2,15 @@
 
 ## Decision
 
-This worktree is a replacement runtime, not a dual-kernel migration. Its
-production candidate must run solely on the open-source Mastra Agent runtime.
+This worktree is the active replacement runtime, not a dual-kernel migration.
+Production runs solely on the open-source Mastra Agent runtime from
+`feat/mastra-migration`.
 Codex ACP, Hermes, their subprocess lifecycle, their session protocol, and
 their compatibility configuration are not part of the target runtime.
 
-The canonical `main` worktree and its production runtime remain unchanged
-until this worktree is independently accepted and deployed. At cutover, real
-data is migrated through a separate, reviewed migration procedure; legacy
-runtime code is not kept as an in-process fallback in this worktree.
+The legacy `main` runtime is stopped. Real production data and Workspaces are
+server-owned and are preserved during code-only releases; legacy runtime code
+is not kept as an in-process fallback in this worktree.
 
 ## Target Runtime
 

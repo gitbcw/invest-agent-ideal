@@ -1,6 +1,6 @@
 # 火山云生产操作手册
 
-> 当前基线：2026-07-23。本文是火山云日常发布、健康检查和回滚的当前操作手册。首次迁移阶段、旧端口方案和历史接管记录见 `volcano-runtime-migration-plan.md`，不得用历史步骤替代本手册。
+> 当前基线：2026-08-20。本文是火山云日常发布、健康检查和回滚的当前操作手册。首次迁移阶段、旧端口方案和历史接管记录见 `volcano-runtime-migration-plan.md`，不得用历史步骤替代本手册。
 
 ## 1. 当前拓扑
 
@@ -12,34 +12,34 @@
   -> SQLite / Workspace / scheduler / push
 
 用户浏览器
-  -> 火山云 portal :22649
-  -> 火山云 relay :22650
+  -> 火山云 mastra-portal :23657
+  -> 火山云 relay :23658
   -> 火山云 invest-agent connector
 
 管理员
   -> SSH tunnel 本机 :22648
-  -> 火山云 runtime 127.0.0.1:22655/platform
+  -> 火山云 runtime 127.0.0.1:23655/platform
 ```
 
 固定位置：
 
 - 主机：`claude@118.145.115.197`
-- runtime：`/home/claude/invest-agent`
-- runtime data：`/home/claude/invest-agent-data`
-- Workspace：`/home/claude/invest-agent-data/workspaces`
+- runtime：`/home/claude/invest-agent-mastra`
+- runtime data：`/home/claude/invest-agent-mastra/data`
+- Workspace：由生产 `.env` 指定，属于服务器运行资产
 - Portal：`/home/claude/invest-agent-portal`
-- PM2 进程：`invest-agent`
-- runtime 内部端口：`127.0.0.1:22655`
-- Portal：`http://118.145.115.197:22649`
+- PM2 进程：`invest-agent-mastra`（旧 `invest-agent` 已停止）
+- runtime 内部端口：`127.0.0.1:23655`
+- Portal：由 `mastra-portal` 提供（内部 `23657/23658`，以 PM2/env 的当前绑定为准）
 - 生产 Portal 必须支持固定公网 IP + HTTP。当前火山云未配置域名备案，不能把 HTTPS 作为运行前提；Portal 前端不得依赖 secure-context-only API（例如 `crypto.subtle`），HTTP 下的预览、下载和附件校验必须可用。
-- Relay：`ws://127.0.0.1:22650/`
+- Relay：由 `mastra-portal` 提供，内部端口 `23658`
 - Platform tunnel：
 
 ```bash
-ssh -L 22648:127.0.0.1:22655 claude@118.145.115.197
+ssh -L 23648:127.0.0.1:23655 claude@118.145.115.197
 ```
 
-浏览器随后访问 `http://127.0.0.1:22648/platform`。不要把 `22655` 直接开放公网。
+浏览器随后访问 `http://127.0.0.1:23648/platform`。不要把 `23655` 直接开放公网。
 
 ### macOS 持久 tunnel
 
@@ -58,7 +58,7 @@ autossh -M 0 -N \
   -o ServerAliveInterval=15 \
   -o ServerAliveCountMax=3 \
   -o ExitOnForwardFailure=yes \
-  -L 127.0.0.1:22648:127.0.0.1:22655 \
+  -L 127.0.0.1:23648:127.0.0.1:23655 \
   claude@118.145.115.197
 ```
 
@@ -66,7 +66,7 @@ autossh -M 0 -N \
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.invest-agent.volcano-platform-tunnel
-curl http://127.0.0.1:22648/health
+curl http://127.0.0.1:23648/health
 ```
 
 登录项和日志属于管理员本机配置，不提交到仓库。不要用 `-g` 或 `0.0.0.0` 监听本地转发端口。
@@ -81,24 +81,24 @@ curl http://127.0.0.1:22648/health
 
 ## 2. 版本基线
 
-- `main` 是唯一维护与生产发布基线。
+  - `feat/mastra-migration` 是当前维护与生产发布基线；旧 `main` runtime 已停止。
 - `codex/volcano-snapshot-*`、冻结标签和历史 reconciliation 分支只用于审计、比较和回滚，不继续修复、不整体 merge 回 `main`。
-- 普通发布只能从规范仓库 `/Users/combo/MyFile/projects/invest-agent-ideal` 的干净 `main` 执行，且 `HEAD` 必须解析为已提交的 Git 对象。
-- 火山云运行代码始终以最近一次从 `main` 干净 worktree 完成的发布为准；`111`、`dyk`、`mg` 的历史 Workspace 备份与迁移证据见 `docs/workspace-compatibility.md`。兼容模型 v2 起，`ready` 允许存在尚未采用的 `template_updates`。
+- 普通发布从 `/Users/combo/MyFile/projects/invest-agent-ideal-mastra` 的已审阅、已提交 `feat/mastra-migration` 执行，且 `HEAD` 必须解析为已提交的 Git 对象。
+- 火山云运行代码始终以最近一次从该分支已提交 worktree 完成的发布为准；`111`、`dyk`、`mg` 的历史 Workspace 备份与迁移证据见 `docs/workspace-compatibility.md`。兼容模型 v2 起，`ready` 允许存在尚未采用的 `template_updates`。
 - GitHub push、PR、生产部署是三个独立授权动作。生产快照不要求提交已进入 `origin/main`；脚本仅尽力刷新远端，并把本地相对 `origin/main` 的 `equal`、`ahead`、`behind`、`diverged` 或 `unavailable` 关系记录为非阻塞审计证据。
 
 ## 3. 两种发布模式
 
 ### 3.0 发布快照与标准入口
 
-T-194 阶段 2 起，正式发布不再直接从调用者当前目录运行底层部署脚本。先从干净 `main` 创建包含 Git 系统版本和 `111`、`dyk`、`mg` 脱敏 Workspace 副本的发布快照，再从快照的临时干净目录发布：
+正式发布不再直接从调用者当前目录运行底层部署脚本。先从已提交的 `feat/mastra-migration` 创建代码发布快照，再从快照的临时干净目录发布：
 
 ```bash
 npm run release:snapshot -- create
 npm run release:deploy -- <release-id>
 ```
 
-快照 manifest 以 `committed-local-main` 记录发布基线，同时记录远端刷新结果和关系。GitHub 不可达、本地领先、落后或分叉不会阻塞发布；规范仓库路径、干净工作树、`main` 分支、已提交 `HEAD` 和完整验证仍是硬门禁。
+快照 manifest 以 `committed-local-feat/mastra-migration` 记录发布基线，同时记录远端刷新结果和关系。GitHub 不可达、本地领先、落后或分叉不会阻塞发布；规范仓库路径、干净工作树、目标分支、已提交 `HEAD` 和完整验证仍是硬门禁。
 
 完成本手册第 8 节验收并保存证据后，才允许把版本标为 known-good：
 
@@ -142,7 +142,7 @@ npm run release:snapshot -- accept <release-id> --confirm=mark-known-good-v1
 
 ## 4. 发布前检查
 
-1. 在规范仓库记录目标 `main` 提交，确认发布 worktree 干净；尽力刷新 `origin/main` 并记录关系，不以远端状态阻塞发布。
+1. 在规范仓库记录目标 `feat/mastra-migration` 提交，确认发布 worktree 干净；尽力刷新远端并记录关系，不以远端状态阻塞发布。
 2. 本地运行：
 
 ```bash
@@ -154,8 +154,8 @@ npm run verify
 
 ```bash
 npm run workspace:preflight -- \
-  --workspace-root=/home/claude/invest-agent-data/workspaces \
-  --template-root=/home/claude/invest-agent/templates/workspace \
+  --workspace-root=/home/claude/invest-agent-mastra/data/workspaces \
+  --template-root=/home/claude/invest-agent-mastra/templates/workspace \
   --user=<user>
 ```
 
@@ -199,7 +199,7 @@ PM2 会保留历史进程环境。仅执行 `restart --update-env` 不保证删�
 如果发现旧值，使用干净 shell 重建进程：
 
 ```bash
-cd /home/claude/invest-agent
+cd /home/claude/invest-agent-mastra
 pm2 delete invest-agent
 pm2 start ecosystem.config.js
 pm2 save
@@ -215,8 +215,8 @@ pm2 save
 
 ```bash
 npm run workspace:adopt-template -- \
-  --workspace-root=/home/claude/invest-agent-data/workspaces \
-  --template-root=/home/claude/invest-agent/templates/workspace \
+  --workspace-root=/home/claude/invest-agent-mastra/data/workspaces \
+  --template-root=/home/claude/invest-agent-mastra/templates/workspace \
   --user=<user> \
   --assets=<exact-relative-path> \
   --backup-root=/home/claude/invest-agent-data/workspace-compatibility-backups \
@@ -229,7 +229,7 @@ npm run workspace:adopt-template -- \
 
 依次验证：
 
-1. `curl http://127.0.0.1:22655/health` 返回正常。
+1. `curl http://127.0.0.1:23655/health` 返回正常。
 2. `pm2 list` 中 `invest-agent` 为 `online`。
 3. Portal `/api/health` 正常，生产 connector/relay 没有冲突。
 4. `npm run smoke:mcp-service-tools` 通过。

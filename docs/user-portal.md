@@ -6,7 +6,7 @@
 
 The user Portal is the separate `invest-agent-portal` Next.js application. It owns authentication, the cloud conversation mirror, browser UI and Relay. This repository owns the local canonical conversation log, workspace-scoped ACP execution, connector, SQLite and the user workspace.
 
-The production Portal is `http://118.145.115.197:22649`. Fixed public IP plus HTTP is a required compatibility baseline because no filed domain is available. Preview, download, attachment reads and checksum verification must work without secure-context-only APIs such as `crypto.subtle`.
+The active production Portal is served by `mastra-portal` on the 23657/23658 deployment. The legacy `22649` Portal endpoint is no longer the production target. Fixed public IP plus HTTP remains the compatibility baseline because no filed domain is available. Preview, download, attachment reads and checksum verification must work without secure-context-only APIs such as `crypto.subtle`.
 
 ## Workspace Browser
 

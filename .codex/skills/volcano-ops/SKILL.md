@@ -14,8 +14,8 @@ Use this skill from the repo root for production or staging work on the Volcano 
 - Never print secrets, sandbox tokens, portal tokens, QR login state, or `.env` values.
 - Prefer read-only inspection before deployment or rollback.
 - Keep local/dev and production ports separate. Local Platform is usually `localhost:22655`; production may use SSH tunnel or cloud-side process ports.
-- Treat `main` as the sole maintained release baseline. Snapshot/freeze/reconciliation branches are evidence and rollback references, not long-lived production development branches.
-- Create production snapshots only from the canonical repository root and require a clean local `main` whose `HEAD` resolves to a commit. A GitHub push is not a release prerequisite: refresh `origin/main` on a best-effort basis and record whether local `main` is equal, ahead, behind, diverged, or unavailable as non-blocking audit evidence.
+- Treat `feat/mastra-migration` as the active maintained and production release baseline. The legacy `main` runtime is stopped; do not target it for production unless the user explicitly changes the cutover decision.
+- Production runtime facts: PM2 `invest-agent-mastra`, `/home/claude/invest-agent-mastra`, port `23655`; `mastra-portal` on `23657/23658`. Create release snapshots from this branch's committed HEAD and record the branch/commit in the audit evidence.
 - Production ACP paths, models, and credentials belong to the server `.env`, not PM2's retained process environment. If PM2 still carries old `CODEX_*` overrides, delete and recreate the process from a clean shell before acceptance.
 
 ## Mandatory Deployment Mode Rule
