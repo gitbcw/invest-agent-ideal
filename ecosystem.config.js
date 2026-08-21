@@ -1,11 +1,11 @@
 module.exports = {
   apps: [
     {
-      name: "invest-agent",
+      name: "invest-agent-mastra",
       script: "dist/index.js",
       env: {
         NODE_ENV: "production",
-        PORT: 22655,
+        PORT: 23655,
         HOST: "127.0.0.1",
       },
       autorestart: true,

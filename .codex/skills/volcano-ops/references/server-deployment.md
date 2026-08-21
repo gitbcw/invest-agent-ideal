@@ -27,7 +27,7 @@
 - runtime：`/home/claude/invest-agent-mastra`
 - runtime data：`/home/claude/invest-agent-mastra/data`
 - Workspace：由生产 `.env` 指定，属于服务器运行资产
-- Portal：`/home/claude/invest-agent-portal`
+- Portal：`/home/claude/invest-agent-mastra/apps/portal`（旧 `/home/claude/invest-agent-portal` 的 PM2 进程已停止，目录仅留存）
 - PM2 进程：`invest-agent-mastra`（旧 `invest-agent` 已停止）
 - runtime 内部端口：`127.0.0.1:23655`
 - Portal：由 `mastra-portal` 提供（内部 `23657/23658`，以 PM2/env 的当前绑定为准）

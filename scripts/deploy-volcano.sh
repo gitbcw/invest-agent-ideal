@@ -3,9 +3,9 @@ set -euo pipefail
 
 HOST="${HOST:-118.145.115.197}"
 DEPLOY_USER="${DEPLOY_USER:-claude}"
-REMOTE_DIR="${REMOTE_DIR:-~/invest-agent}"
-PORT="${PORT:-22655}"
-LOCAL_TUNNEL_PORT="${LOCAL_TUNNEL_PORT:-22648}"
+REMOTE_DIR="${REMOTE_DIR:-/home/claude/invest-agent-mastra}"
+PORT="${PORT:-23655}"
+LOCAL_TUNNEL_PORT="${LOCAL_TUNNEL_PORT:-23648}"
 RUN_SMOKE="${RUN_SMOKE:-false}"
 RELEASE_ID="${RELEASE_ID:-}"
 RELEASE_COMMIT="${RELEASE_COMMIT:-}"
@@ -86,7 +86,7 @@ fi
 
 mkdir -p logs data reviews .state
 
-if pm2 describe invest-agent >/dev/null 2>&1; then
+if pm2 describe invest-agent-mastra >/dev/null 2>&1; then
   pm2 restart ecosystem.config.js --update-env
 else
   pm2 start ecosystem.config.js
@@ -113,7 +113,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   fi
   sleep 2
 done
-pm2 logs invest-agent --err --lines 60 --nostream
+pm2 logs invest-agent-mastra --err --lines 60 --nostream
 exit 1
 EOF
 echo

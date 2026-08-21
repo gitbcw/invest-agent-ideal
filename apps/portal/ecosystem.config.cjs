@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: "invest-agent-portal",
+      name: "mastra-portal",
       script: "server.ts",
       interpreter: "node_modules/.bin/tsx",
       env: {

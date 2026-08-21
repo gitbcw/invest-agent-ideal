@@ -3,8 +3,8 @@ set -euo pipefail
 
 HOST="${HOST:-118.145.115.197}"
 DEPLOY_USER="${DEPLOY_USER:-claude}"
-REMOTE_DIR="${REMOTE_DIR:-/home/claude/invest-agent-portal}"
-PORTAL_BASE="${PORTAL_BASE:-http://118.145.115.197:22649}"
+REMOTE_DIR="${REMOTE_DIR:-/home/claude/invest-agent-mastra/apps/portal}"
+PORTAL_BASE="${PORTAL_BASE:-http://127.0.0.1:23657}"
 
 echo "[portal-volcano] sync to ${DEPLOY_USER}@${HOST}:${REMOTE_DIR}"
 ssh "${DEPLOY_USER}@${HOST}" "mkdir -p '${REMOTE_DIR}'"
@@ -41,7 +41,7 @@ fi
 npm install
 npm run build
 mkdir -p logs data
-if pm2 describe invest-agent-portal >/dev/null 2>&1; then
+if pm2 describe mastra-portal >/dev/null 2>&1; then
   pm2 restart ecosystem.config.cjs --update-env
 else
   pm2 start ecosystem.config.cjs
@@ -59,9 +59,10 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   sleep 2
 done
 if [ "${portal_ready:-false}" != "true" ]; then
-  ssh "${DEPLOY_USER}@${HOST}" "pm2 logs invest-agent-portal --lines 60 --nostream"
+  ssh "${DEPLOY_USER}@${HOST}" "pm2 logs mastra-portal --lines 60 --nostream"
   exit 1
 fi
 echo "[portal-volcano] done."
-echo "[portal-volcano] public web: ${PORTAL_BASE}/login"
-echo "[portal-volcano] if local web tunnel is needed, use a non-platform port, e.g. ssh -L 22659:127.0.0.1:22649 ${DEPLOY_USER}@${HOST}"
+echo "[portal-volcano] portal health (on server): ${PORTAL_BASE}/login"
+echo "[portal-volcano] public web: http://118.145.115.197:23657/login"
+echo "[portal-volcano] if local web tunnel is needed, use a non-platform port, e.g. ssh -L 23659:127.0.0.1:23657 ${DEPLOY_USER}@${HOST}"
