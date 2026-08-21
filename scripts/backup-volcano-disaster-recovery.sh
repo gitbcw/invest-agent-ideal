@@ -5,8 +5,10 @@ umask 077
 
 MODE="${1:-full}"
 REMOTE_HOST="${VOLCANO_DR_REMOTE_HOST:-claude@118.145.115.197}"
-REMOTE_RUNTIME_DIR="${VOLCANO_DR_RUNTIME_DIR:-/home/claude/invest-agent}"
-REMOTE_PORTAL_DIR="${VOLCANO_DR_PORTAL_DIR:-/home/claude/invest-agent-portal}"
+REMOTE_RUNTIME_DIR="${VOLCANO_DR_RUNTIME_DIR:-/home/claude/invest-agent-mastra}"
+REMOTE_PORTAL_DIR="${VOLCANO_DR_PORTAL_DIR:-/home/claude/invest-agent-mastra/apps/portal}"
+# 真实用户工作区（111/dyk/mg）仍在旧独立数据根；mastra .env 的 WORKSPACE_ROOT
+# 指向 data/workspaces 但该目录截至 2026-08-21 不存在（见 docs 巡查记录）。
 REMOTE_WORKSPACE_ROOT="${VOLCANO_DR_WORKSPACE_ROOT:-/home/claude/invest-agent-data/workspaces}"
 BACKUP_ROOT="${VOLCANO_DR_BACKUP_ROOT:-/Users/combo/MyFile/my-data/backups/invest-agent/disaster-recovery}"
 KEY_ROOT="${VOLCANO_DR_KEY_ROOT:-${HOME}/.config/invest-agent-dr}"
@@ -78,8 +80,9 @@ ensure_encryption_key() {
 }
 
 remote_preflight() {
+  # 新门户共用 runtime.db（PORTAL_DB_PATH 同库），不再有独立 portal.db。
   "${SSH_BIN}" -o BatchMode=yes -o ConnectTimeout=15 "${REMOTE_HOST}" \
-    "test -r '${REMOTE_RUNTIME_DIR}/data/invest-agent.db' && test -r '${REMOTE_PORTAL_DIR}/data/portal.db' && test -d '${REMOTE_WORKSPACE_ROOT}' && command -v node >/dev/null && command -v rsync >/dev/null && command -v openssl >/dev/null && mkdir -p '${REMOTE_STAGE}'"
+    "test -r '${REMOTE_RUNTIME_DIR}/data/runtime.db' && test -d '${REMOTE_WORKSPACE_ROOT}' && command -v node >/dev/null && command -v rsync >/dev/null && command -v openssl >/dev/null && mkdir -p '${REMOTE_STAGE}'"
 }
 
 backup_remote_sqlite() {
@@ -199,8 +202,11 @@ main() {
   initialize
   ensure_encryption_key
   remote_preflight
-  backup_remote_sqlite "${REMOTE_RUNTIME_DIR}" "${REMOTE_RUNTIME_DIR}/data/invest-agent.db" "${REMOTE_STAGE}/runtime.db" "runtime.db"
-  backup_remote_sqlite "${REMOTE_PORTAL_DIR}" "${REMOTE_PORTAL_DIR}/data/portal.db" "${REMOTE_STAGE}/portal.db" "portal.db"
+  backup_remote_sqlite "${REMOTE_RUNTIME_DIR}" "${REMOTE_RUNTIME_DIR}/data/runtime.db" "${REMOTE_STAGE}/runtime.db" "runtime.db"
+  # 遗留独立门户库（切换前旧门户的 data/portal.db）：存在才备份。
+  if "${SSH_BIN}" -o BatchMode=yes "${REMOTE_HOST}" "test -f '${REMOTE_RUNTIME_DIR}/data/portal.db'"; then
+    backup_remote_sqlite "${REMOTE_RUNTIME_DIR}" "${REMOTE_RUNTIME_DIR}/data/portal.db" "${REMOTE_STAGE}/legacy-portal.db" "legacy-portal.db"
+  fi
   if [[ "${MODE}" = "full" ]]; then
     backup_full_data
     backup_encrypted_sensitive_state

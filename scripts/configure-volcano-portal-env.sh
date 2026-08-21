@@ -3,9 +3,9 @@ set -euo pipefail
 
 HOST="${HOST:-118.145.115.197}"
 DEPLOY_USER="${DEPLOY_USER:-claude}"
-REMOTE_DIR="${REMOTE_DIR:-/home/claude/invest-agent}"
-PORTAL_PUBLIC_URL="${PORTAL_PUBLIC_URL:-http://118.145.115.197:22649}"
-PORTAL_RELAY_URL="${PORTAL_RELAY_URL:-ws://127.0.0.1:22650/}"
+REMOTE_DIR="${REMOTE_DIR:-/home/claude/invest-agent-mastra}"
+PORTAL_PUBLIC_URL="${PORTAL_PUBLIC_URL:-http://118.145.115.197:23657}"
+PORTAL_RELAY_URL="${PORTAL_RELAY_URL:-ws://127.0.0.1:23658/}"
 PORTAL_CONNECTOR_ID_PREFIX="${PORTAL_CONNECTOR_ID_PREFIX:-volcano-prod}"
 PORTAL_CONNECTOR_RUNTIME_LABEL="${PORTAL_CONNECTOR_RUNTIME_LABEL:-火山云生产}"
 PORTAL_CONNECTOR_AUTO_START="${PORTAL_CONNECTOR_AUTO_START:-false}"
@@ -100,4 +100,4 @@ grep -E '^(PORTAL_PUBLIC_URL|PORTAL_DISTRIBUTION_URL|PORTAL_DISTRIBUTION_TOKEN|P
 EOF
 
 echo "[portal-env] done. Restart when ready:"
-echo "  ssh ${DEPLOY_USER}@${HOST} 'cd ${REMOTE_DIR} && pm2 restart invest-agent --update-env'"
+echo "  ssh ${DEPLOY_USER}@${HOST} 'cd ${REMOTE_DIR} && pm2 restart invest-agent-mastra --update-env'"

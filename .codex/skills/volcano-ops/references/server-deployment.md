@@ -16,9 +16,8 @@
   -> 火山云 relay :23658
   -> 火山云 invest-agent connector
 
-管理员
-  -> SSH tunnel 本机 :22648
-  -> 火山云 runtime 127.0.0.1:23655/platform
+管理员（密码验证直连）
+  -> http://118.145.115.197:23655/platform
 ```
 
 固定位置：
@@ -29,27 +28,15 @@
 - Workspace：由生产 `.env` 指定，属于服务器运行资产
 - Portal：`/home/claude/invest-agent-mastra/apps/portal`（旧 `/home/claude/invest-agent-portal` 的 PM2 进程已停止，目录仅留存）
 - PM2 进程：`invest-agent-mastra`（旧 `invest-agent` 已停止）
-- runtime 内部端口：`127.0.0.1:23655`
+- runtime 端口：`0.0.0.0:23655`（公网可达；平台自身有密码验证。SSH 隧道方案已弃用——不稳定且繁琐，2026-08-21 owner 确认直连为正式访问方式）
 - Portal：由 `mastra-portal` 提供（内部 `23657/23658`，以 PM2/env 的当前绑定为准）
 - 生产 Portal 必须支持固定公网 IP + HTTP。当前火山云未配置域名备案，不能把 HTTPS 作为运行前提；Portal 前端不得依赖 secure-context-only API（例如 `crypto.subtle`），HTTP 下的预览、下载和附件校验必须可用。
 - Relay：由 `mastra-portal` 提供，内部端口 `23658`
-- Platform tunnel：
+- 平台管理端：直接公网访问 `http://118.145.115.197:23655/platform`，凭平台密码登录
 
-```bash
-ssh -L 23648:127.0.0.1:23655 claude@118.145.115.197
-```
+### （已弃用）macOS 持久 tunnel
 
-浏览器随后访问 `http://127.0.0.1:23648/platform`。不要把 `23655` 直接开放公网。
-
-### macOS 持久 tunnel
-
-手动 `ssh -L` 会在网络切换、睡眠或空闲回收后退出。管理员 Mac 上应使用 `autossh` 加 launchd 保活，并且只绑定 `127.0.0.1`。当前本机使用的登录项是：
-
-```text
-~/Library/LaunchAgents/com.invest-agent.volcano-platform-tunnel.plist
-```
-
-它以 `ServerAliveInterval=15`、`ServerAliveCountMax=3` 和 `ExitOnForwardFailure=yes` 启动：
+隧道访问方案已弃用（autossh 在网络切换/睡眠后频繁掉线，维护成本高；2026-08-21 owner 确认直连 + 密码验证为正式方式）。以下仅为历史参考；本机如仍有 `~/Library/LaunchAgents/com.invest-agent.volcano-platform-tunnel.plist` 登录项属于遗留，确认直连正常后可移除：
 
 ```text
 autossh -M 0 -N \
@@ -62,14 +49,7 @@ autossh -M 0 -N \
   claude@118.145.115.197
 ```
 
-检查或手动重建本机连接：
-
-```bash
-launchctl kickstart -k gui/$(id -u)/com.invest-agent.volcano-platform-tunnel
-curl http://127.0.0.1:23648/health
-```
-
-登录项和日志属于管理员本机配置，不提交到仓库。不要用 `-g` 或 `0.0.0.0` 监听本地转发端口。
+历史检查方式（已不需要）：`launchctl kickstart -k gui/$(id -u)/com.invest-agent.volcano-platform-tunnel` 后访问 `http://127.0.0.1:23648/health`。
 
 ## 1.5 服务器资源基线（2026-08-15 死机加固）
 
@@ -167,7 +147,7 @@ npm run workspace:preflight -- \
 生产 `.env` 至少必须显式提供：
 
 - `NODE_ENV=production`
-- `HOST=127.0.0.1`
+- `HOST=0.0.0.0`（平台公网直连 + 密码验证，隧道方案已弃用）
 - `DB_PATH`
 - `RUNTIME_DATA_ROOT`
 - `WORKSPACE_ROOT`

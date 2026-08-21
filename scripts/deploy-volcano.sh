@@ -118,5 +118,5 @@ exit 1
 EOF
 echo
 echo "[deploy] done."
-echo "[deploy] admin tunnel: ssh -L ${LOCAL_TUNNEL_PORT}:127.0.0.1:${PORT} ${DEPLOY_USER}@${HOST}"
-echo "[deploy] admin ui after tunnel: http://127.0.0.1:${LOCAL_TUNNEL_PORT}/platform"
+echo "[deploy] admin ui: http://118.145.115.197:${PORT}/platform（密码验证直连）"
+echo "[deploy] legacy tunnel alternative: ssh -L ${LOCAL_TUNNEL_PORT}:127.0.0.1:${PORT} ${DEPLOY_USER}@${HOST} -> http://127.0.0.1:${LOCAL_TUNNEL_PORT}/platform"

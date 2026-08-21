@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DB_PATH="${DB_PATH:-data/invest-agent.db}"
+DB_PATH="${DB_PATH:-data/runtime.db}"
 RUNTIME_DATA_ROOT="${RUNTIME_DATA_ROOT:-data}"
 REVIEWS_DIR="${REVIEWS_DIR:-reviews}"
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-/Users/combo/MyFile/my-data/projects/invest-agent-ideal/workspaces}"

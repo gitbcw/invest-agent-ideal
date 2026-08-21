@@ -6,7 +6,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         PORT: 23655,
-        HOST: "127.0.0.1",
+        HOST: "0.0.0.0",
       },
       autorestart: true,
       max_memory_restart: "500M",

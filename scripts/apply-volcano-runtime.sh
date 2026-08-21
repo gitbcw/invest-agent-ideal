@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PACKAGE_PATH="${1:-}"
-REMOTE_APP_DIR="${REMOTE_APP_DIR:-/home/claude/invest-agent}"
-REMOTE_DATA_ROOT="${REMOTE_DATA_ROOT:-/home/claude/invest-agent-data}"
+REMOTE_APP_DIR="${REMOTE_APP_DIR:-/home/claude/invest-agent-mastra}"
+REMOTE_DATA_ROOT="${REMOTE_DATA_ROOT:-/home/claude/invest-agent-mastra/data}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-${REMOTE_DATA_ROOT}/workspaces}"
 BACKUP_DIR="${BACKUP_DIR:-${REMOTE_DATA_ROOT}/migration-backups}"
 
@@ -79,7 +79,7 @@ NODE
 STAMP="$(date +%Y%m%d-%H%M%S)"
 echo "[apply] backup current server runtime to ${BACKUP_DIR}/${STAMP}"
 mkdir -p "${BACKUP_DIR}/${STAMP}"
-for path in "${REMOTE_APP_DIR}/data/invest-agent.db" "${REMOTE_APP_DIR}/reviews" "${WORKSPACE_DIR}"; do
+for path in "${REMOTE_APP_DIR}/data/runtime.db" "${REMOTE_APP_DIR}/reviews" "${WORKSPACE_DIR}"; do
   if [ -e "${path}" ]; then
     cp -a "${path}" "${BACKUP_DIR}/${STAMP}/"
   fi
@@ -91,30 +91,30 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 echo "[apply] unpack ${PACKAGE_PATH}"
 tar xzf "${PACKAGE_PATH}" -C "${TMP_DIR}"
 
-if [ ! -f "${TMP_DIR}/invest-agent.db" ]; then
-  echo "[apply] package missing invest-agent.db" >&2
+if [ ! -f "${TMP_DIR}/runtime.db" ]; then
+  echo "[apply] package missing runtime.db" >&2
   exit 1
 fi
 
-if [ "$(sqlite_quick_check "${TMP_DIR}/invest-agent.db")" != "ok" ]; then
+if [ "$(sqlite_quick_check "${TMP_DIR}/runtime.db")" != "ok" ]; then
   echo "[apply] package database failed PRAGMA quick_check" >&2
   exit 1
 fi
 
-if [ -f "${REMOTE_APP_DIR}/data/invest-agent.db" ]; then
-  BACKUP_DB="${BACKUP_DIR}/${STAMP}/invest-agent.db"
+if [ -f "${REMOTE_APP_DIR}/data/runtime.db" ]; then
+  BACKUP_DB="${BACKUP_DIR}/${STAMP}/runtime.db"
   if [ ! -f "${BACKUP_DB}" ] || [ "$(sqlite_quick_check "${BACKUP_DB}")" != "ok" ]; then
     echo "[apply] database backup missing or invalid" >&2
     exit 1
   fi
 fi
 
-install -m 0644 "${TMP_DIR}/invest-agent.db" "${REMOTE_APP_DIR}/data/invest-agent.db"
+install -m 0644 "${TMP_DIR}/runtime.db" "${REMOTE_APP_DIR}/data/runtime.db"
 for suffix in wal shm; do
-  if [ -f "${TMP_DIR}/invest-agent.db-${suffix}" ]; then
-    install -m 0644 "${TMP_DIR}/invest-agent.db-${suffix}" "${REMOTE_APP_DIR}/data/invest-agent.db-${suffix}"
+  if [ -f "${TMP_DIR}/runtime.db-${suffix}" ]; then
+    install -m 0644 "${TMP_DIR}/runtime.db-${suffix}" "${REMOTE_APP_DIR}/data/runtime.db-${suffix}"
   else
-    rm -f "${REMOTE_APP_DIR}/data/invest-agent.db-${suffix}"
+    rm -f "${REMOTE_APP_DIR}/data/runtime.db-${suffix}"
   fi
 done
 
@@ -157,10 +157,10 @@ for dir in source-quality source-telemetry; do
 done
 
 echo "[apply] sqlite tables:"
-sqlite_tables "${REMOTE_APP_DIR}/data/invest-agent.db"
+sqlite_tables "${REMOTE_APP_DIR}/data/runtime.db"
 
 echo "[apply] sqlite quick_check:"
-sqlite_quick_check "${REMOTE_APP_DIR}/data/invest-agent.db"
+sqlite_quick_check "${REMOTE_APP_DIR}/data/runtime.db"
 
 echo "[apply] workspace AGENTS:"
 find "${WORKSPACE_DIR}" -maxdepth 2 -name AGENTS.md -print | sed -n '1,40p'
@@ -168,4 +168,4 @@ find "${WORKSPACE_DIR}" -maxdepth 2 -name AGENTS.md -print | sed -n '1,40p'
 echo "[apply] workspace Codex config links:"
 find "${WORKSPACE_DIR}" -mindepth 2 -maxdepth 2 -path "*/.codex/config.toml" -exec ls -l {} \; | sed -n '1,40p'
 
-echo "[apply] done. restart with: pm2 restart invest-agent --update-env"
+echo "[apply] done. restart with: pm2 restart invest-agent-mastra --update-env"
