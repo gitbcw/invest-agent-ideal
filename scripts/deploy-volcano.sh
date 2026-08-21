@@ -84,7 +84,7 @@ if [ "${RUN_SMOKE:-false}" = "true" ]; then
   npm test
 fi
 
-mkdir -p logs data reviews .state
+mkdir -p logs data .state
 
 if pm2 describe invest-agent-mastra >/dev/null 2>&1; then
   pm2 restart ecosystem.config.js --update-env

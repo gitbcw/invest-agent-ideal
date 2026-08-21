@@ -42,7 +42,7 @@ if [ "${ACTUAL_PACKAGE_SHA256}" != "${EXPECTED_PACKAGE_SHA256}" ]; then
   exit 2
 fi
 
-mkdir -p "${REMOTE_APP_DIR}/data" "${REMOTE_APP_DIR}/reviews" "${WORKSPACE_DIR}" "${BACKUP_DIR}"
+mkdir -p "${REMOTE_APP_DIR}/data" "${REMOTE_APP_DIR}/data/reviews" "${WORKSPACE_DIR}" "${BACKUP_DIR}"
 
 sqlite_tables() {
   local db_path="$1"
@@ -79,7 +79,7 @@ NODE
 STAMP="$(date +%Y%m%d-%H%M%S)"
 echo "[apply] backup current server runtime to ${BACKUP_DIR}/${STAMP}"
 mkdir -p "${BACKUP_DIR}/${STAMP}"
-for path in "${REMOTE_APP_DIR}/data/runtime.db" "${REMOTE_APP_DIR}/reviews" "${WORKSPACE_DIR}"; do
+for path in "${REMOTE_APP_DIR}/data/runtime.db" "${REMOTE_APP_DIR}/data/reviews" "${WORKSPACE_DIR}"; do
   if [ -e "${path}" ]; then
     cp -a "${path}" "${BACKUP_DIR}/${STAMP}/"
   fi
@@ -119,8 +119,8 @@ for suffix in wal shm; do
 done
 
 if [ -d "${TMP_DIR}/reviews" ]; then
-  rm -rf "${REMOTE_APP_DIR}/reviews"
-  cp -a "${TMP_DIR}/reviews" "${REMOTE_APP_DIR}/reviews"
+  rm -rf "${REMOTE_APP_DIR}/data/reviews"
+  cp -a "${TMP_DIR}/reviews" "${REMOTE_APP_DIR}/data/reviews"
 fi
 
 if [ -d "${TMP_DIR}/workspaces" ]; then

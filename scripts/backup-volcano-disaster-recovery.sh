@@ -128,8 +128,9 @@ backup_full_data() {
   VOLCANO_BACKUP_LABEL="${BACKUP_LABEL}" \
     "${WORKSPACE_BACKUP}"
 
-  sync_tree "${REMOTE_RUNTIME_DIR}/reviews" "${STAGING_DIR}/reviews" '._*'
-  sync_tree "${REMOTE_RUNTIME_DIR}/data" "${STAGING_DIR}/runtime-data" '*.db' '*.db-*' 'test-*' 'cache/' 'backups/' '.sandbox-secret' '._*'
+  # 新布局 reviews 在 data/reviews（顶级无 reviews）；runtime-data 同步排除以免重复。
+  sync_tree "${REMOTE_RUNTIME_DIR}/data/reviews" "${STAGING_DIR}/reviews" '._*'
+  sync_tree "${REMOTE_RUNTIME_DIR}/data" "${STAGING_DIR}/runtime-data" '*.db' '*.db-*' 'test-*' 'cache/' 'backups/' '/reviews/' '.sandbox-secret' '._*'
   sync_tree "${REMOTE_RUNTIME_DIR}" "${STAGING_DIR}/runtime-code" '.git/' '.env*' '.state/' '.codex/' '.backup/' 'node_modules/' 'data/' 'workspaces/' 'reviews/' 'logs/' 'tmp/'
   sync_tree "${REMOTE_PORTAL_DIR}" "${STAGING_DIR}/portal-code" '.git/' '.env*' 'node_modules/' '.next/' 'data/' 'logs/' 'backups/'
 }
