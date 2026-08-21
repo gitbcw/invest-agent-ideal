@@ -355,7 +355,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   },
   {
     id: "spreadsheet.create",
-    description: "Create a real Excel .xlsx workbook from structured columns and rows and deliver it as a conversation artifact card in the current turn. Use this tool whenever a web user asks for a spreadsheet, table file, Excel file, or download. Do not claim Excel binary writing is unavailable. The file is NOT saved to My Files automatically — the user saves it from the artifact card's save button; only mention My Files storage after the user actually saves or explicitly asks to keep it. Pass typed numeric values as numbers; keep source notes in a final column. The service applies a frozen header, filter, readable widths, and validates the workbook before delivery.",
+    description: "Create a real Excel .xlsx workbook from structured columns and rows. In a normal conversation it is delivered as an artifact card and is not saved to My Files automatically. In a scheduled automation run it is written only to that run's staging workspace and the result includes stagedOutput/fileName/outputPath for the final structured response; the automation runner remains responsible for committing the durable asset. Use this tool whenever an Excel workbook must be created. Pass typed numeric values as numbers; keep source notes in a final column. The service applies a frozen header, filter, readable widths, and validates the workbook before delivery.",
     inputSchema: {
       fileName: z.string().regex(/^[^/\\]+\.xlsx$/i).max(180),
       title: z.string().max(200).optional(),

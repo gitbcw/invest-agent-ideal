@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -72,6 +72,29 @@ test("spreadsheet.create delivers via the canonical artifact-card pipeline (G22)
     const webInstruction = buildChannelContextInstruction("web", {});
     assert.ok(webInstruction!.includes("附件卡片"));
     assert.ok(webInstruction!.includes("不要放置任何下载链接"));
+
+    const stagingPath = path.join(tempRoot, "automation-staging");
+    await mkdir(stagingPath, { recursive: true });
+    const staged = await callServiceTool("spreadsheet.create", {
+      fileName: "自动化复盘.xlsx",
+      columns: ["日期", "结论"],
+      rows: [["2026-08-21", "完成"]],
+    }, {
+      userId,
+      instanceId,
+      projectId,
+      conversationId: "automation-run:test",
+      runId: "test-run",
+      taskType: "scheduled-automation",
+      workspacePath: stagingPath,
+    });
+    assert.deepEqual(staged.stagedOutput, {
+      operation: "create",
+      fileName: "自动化复盘.xlsx",
+      filePath: "自动化复盘.xlsx",
+    });
+    assert.ok((await readFile(path.join(stagingPath, "自动化复盘.xlsx"))).length > 0);
+    assert.equal(staged.artifact, undefined, "automation staging must not publish a conversation artifact");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;

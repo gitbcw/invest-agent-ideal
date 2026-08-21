@@ -108,7 +108,10 @@ const SCHEDULED_FINAL_ACTIONS: Record<string, string[]> = {
   // The runner, not ACP, owns version submission. ACP may read its declared
   // inputs; write tools would allow a direct commit before structured output
   // validation and break the output/run atomicity boundary.
-  "scheduled-automation": ["assets.version.read"],
+  // spreadsheet.create is exceptional here: its implementation detects this
+  // task type and writes only inside the fenced staging workspace. The runner
+  // remains the sole owner of durable asset commits.
+  "scheduled-automation": ["assets.version.read", "spreadsheet.create"],
 };
 
 /**

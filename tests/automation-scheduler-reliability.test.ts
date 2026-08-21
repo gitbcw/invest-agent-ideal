@@ -160,6 +160,62 @@ test("scheduler recovery terminalizes an expired run without a later claimant", 
   assert.equal(lock.activeRunId, null);
 });
 
+test("scheduler recovery advances a scheduled task so the expired slot is not dispatched every minute", async () => {
+  const { automation, db } = await fixture();
+  const task = await createActiveTask();
+  const dueAt = "2026-08-20T23:30:00.000Z";
+  db.sqlite.prepare(`UPDATE automation_tasks SET next_run_at = ? WHERE task_id = ?`).run(dueAt, task.taskId);
+  const claimed = await automation.claimAutomationTaskRun({
+    ...scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    scheduledFor: dueAt,
+    idempotencyKey: `scheduled-stale-${task.taskId}`,
+  });
+  const stale = "2020-01-01T00:00:00.000Z";
+  db.sqlite.prepare(`UPDATE automation_task_runs SET claimed_at = ?, lease_expires_at = ?, updated_at = ? WHERE run_id = ?`)
+    .run(stale, stale, stale, claimed.run.runId);
+  db.sqlite.prepare(`UPDATE automation_tasks SET active_run_lease_expires_at = ?, updated_at = ? WHERE task_id = ?`)
+    .run(stale, stale, task.taskId);
+
+  const recoveredAt = new Date("2026-08-21T00:00:00.000Z");
+  assert.equal(await automation.recoverExpiredAutomationTaskRuns(recoveredAt), 1);
+  const current = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
+  assert.equal(current?.consecutiveFailures, 1);
+  assert.ok(current?.nextRunAt && current.nextRunAt > recoveredAt.toISOString());
+  assert.deepEqual(await automation.listDueAutomationTasks(new Date("2026-08-21T00:01:00.000Z")), []);
+});
+
+test("a scheduled run completed after its execution deadline advances failure state, not success state", async () => {
+  const { automation, db } = await fixture();
+  const task = await createActiveTask();
+  const claimed = await automation.claimAutomationTaskRun({
+    ...scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    scheduledFor: "2026-08-21T00:00:00.000Z",
+    idempotencyKey: `scheduled-expired-finish-${task.taskId}`,
+    executionDeadlineAt: "2020-01-01T00:00:00.000Z",
+  });
+  const futureLease = new Date(Date.now() + 60_000).toISOString();
+  db.sqlite.prepare(`UPDATE automation_task_runs SET lease_expires_at = ? WHERE run_id = ?`)
+    .run(futureLease, claimed.run.runId);
+  db.sqlite.prepare(`UPDATE automation_tasks SET active_run_lease_expires_at = ? WHERE task_id = ?`)
+    .run(futureLease, task.taskId);
+
+  const finished = await automation.finishAutomationTaskRun({
+    ...scope,
+    runId: claimed.run.runId,
+    leaseToken: claimed.run.leaseToken,
+    status: "succeeded",
+    resultSummary: "late result",
+  });
+  assert.equal(finished.status, "failed");
+  assert.equal(finished.errorCategory, "expired");
+  const current = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
+  assert.equal(current?.consecutiveFailures, 1);
+});
+
 test("manual run outcomes do not change the scheduled cadence or failure circuit breaker", async () => {
   const { automation } = await fixture();
   const task = await createActiveTask();

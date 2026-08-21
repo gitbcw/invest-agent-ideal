@@ -48,6 +48,8 @@ export type GenericAutomationExecutor = (input: {
   writableTargets: Array<NonNullable<ResolvedOutput>>;
   spreadsheetHelper?: string;
   monthlyRollover?: MonthlyRollover | null;
+  executionDeadlineAt: string | null;
+  signal: AbortSignal;
 }) => Promise<AgentResponse>;
 
 export type GenericAutomationRunResult = {
@@ -81,6 +83,7 @@ export async function runGenericAutomationTaskNow(input: {
   origin: "manual" | "scheduled";
   idempotencyKey: string;
   scheduledFor?: string;
+  executionDeadlineAt?: string;
   executor?: GenericAutomationExecutor;
 }): Promise<GenericAutomationRunResult> {
   const task = await getAutomationTask({ ...input.scope, taskId: input.taskId });
@@ -91,6 +94,7 @@ export async function runGenericAutomationTaskNow(input: {
     origin: input.origin,
     idempotencyKey: input.idempotencyKey,
     scheduledFor: input.scheduledFor,
+    executionDeadlineAt: input.executionDeadlineAt,
   });
   const run = claimed.run;
   if (!claimed.claimed) {
@@ -112,6 +116,14 @@ export async function runGenericAutomationTaskNow(input: {
       outputVersionId: resolved.output?.versionId ?? null,
     });
     const stagingPath = await createStagingPath(input.scope);
+    const deadlineController = new AbortController();
+    const executionDeadlineAt = boundRun.executionDeadlineAt ?? null;
+    const deadlineMs = executionDeadlineAt ? Date.parse(executionDeadlineAt) : Number.NaN;
+    const remainingMs = Number.isFinite(deadlineMs) ? deadlineMs - Date.now() : Number.POSITIVE_INFINITY;
+    if (remainingMs <= 0) deadlineController.abort(new Error("AUTOMATION_RUN_EXECUTION_DEADLINE_EXCEEDED"));
+    const deadlineTimer = Number.isFinite(remainingMs)
+      ? setTimeout(() => deadlineController.abort(new Error("AUTOMATION_RUN_EXECUTION_DEADLINE_EXCEEDED")), remainingMs)
+      : undefined;
     try {
       for (const [index, item] of resolved.inputs.entries()) {
         await writeFile(path.join(stagingPath, "inputs", `${index + 1}-${item.descriptor.fileName}`), item.bytes, { flag: "wx", mode: 0o600 });
@@ -130,6 +142,8 @@ export async function runGenericAutomationTaskNow(input: {
         writableTargets: resolved.writableTargets,
         spreadsheetHelper,
         monthlyRollover: resolved.monthlyRollover,
+        executionDeadlineAt,
+        signal: deadlineController.signal,
       });
       assertAgentSucceeded(response);
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
@@ -157,6 +171,7 @@ export async function runGenericAutomationTaskNow(input: {
         task,
       };
     } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
       await rm(stagingPath, { recursive: true, force: true });
     }
   } catch (error) {
@@ -294,7 +309,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变、显式返回 outputSkipped:true 并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         input.task.revision.output.mode === "none"
           ? "最终回复必须是一个 JSON 对象：{summary:string, shouldNotify?:boolean}。本任务不产出文件资产：最终 JSON 里禁止出现 stagedOutput 字段（出现会导致运行被判无效）；一切结果都写入 summary。若任务过程中确需留档，用任务说明允许的领域工具（如 reviews.save）完成，不要用 stagedOutput。"
-          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'appendRows'|'update'|'create', …}, shouldNotify?:boolean, outputSkipped?:boolean}。向绑定工作簿表尾追加数据行时优先用 operation:'appendRows'（只带 sheet/rows/skipIfCellMatches，不携带文件内容）；生成完整新文件时优先把 XLSX/CSV 写入当前暂存目录并返回相对 filePath（不得使用绝对路径、不得越出暂存目录），只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。若本次运行确定无需修改绑定文件（如数据缺失、当日行已存在），必须显式返回 outputSkipped:true 并在 summary 说明原因；缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败。",
+          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'appendRows'|'update'|'create', …}, shouldNotify?:boolean, outputSkipped?:boolean}。向绑定工作簿表尾追加数据行时优先用 operation:'appendRows'（只带 sheet/rows/skipIfCellMatches，不携带文件内容）；生成完整新文件时优先调用 spreadsheet.create 在当前暂存目录生成 XLSX，并原样返回工具结果里的 stagedOutput；自行生成 XLSX/CSV 时必须返回 {operation:'create', fileName:'带扩展名的文件名', filePath:'暂存目录内的相对路径'}，fileName 和 filePath 缺一不可，不得使用绝对路径或越出暂存目录。只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。若本次运行确定无需修改绑定文件（如数据缺失、当日行已存在），必须显式返回 outputSkipped:true 并在 summary 说明原因；缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败。",
         ...(input.task.revision.delivery.mode === "none"
           ? []
           : [
@@ -314,6 +329,8 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       instanceId: input.scope.instanceId,
       workspacePath: input.stagingPath,
       taskType: input.task.taskType ?? "scheduled-automation",
+      _executionDeadlineAt: input.executionDeadlineAt,
+      _cancelSignal: input.signal,
     },
   };
   const response = await createRuntimeAgent().handleMessage(message);

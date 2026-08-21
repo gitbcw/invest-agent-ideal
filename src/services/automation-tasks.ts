@@ -1593,6 +1593,21 @@ function recoverExpiredRun(row: DbRunRow, scope: AutomationScope, now: string): 
     WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
       AND active_run_id = ?
   `).run(now, row.taskId, scope.userId, scope.projectId, scope.instanceId, row.runId);
+  if (row.origin === "scheduled") {
+    const task = requireTaskRow(row.taskId, scope);
+    const revision = requireRevisionById(row.revisionId, scope, row.taskId);
+    const failures = Number(task.consecutiveFailures || 0) + 1;
+    const needsAttention = failures >= 3;
+    const nextRunAt = task.status === "active" && !needsAttention
+      ? nextAutomationRunAt(parseScheduleJson(revision.scheduleJson), new Date(now))
+      : null;
+    sqlite.prepare(`
+      UPDATE automation_tasks
+      SET consecutive_failures = ?, status = CASE WHEN ? = 1 THEN 'needs_attention' ELSE status END,
+          next_run_at = ?, updated_at = ?
+      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+    `).run(failures, needsAttention ? 1 : 0, nextRunAt, now, row.taskId, scope.userId, scope.projectId, scope.instanceId);
+  }
   insertAuditRow({
     taskId: row.taskId,
     revisionId: row.revisionId,
@@ -1744,13 +1759,13 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
   if (existing.origin !== "scheduled") {
     return runRecordFromRow(requireRunRow(runId, scope));
   }
-  if (input.status === "succeeded" || input.status === "skipped" || input.status === "cancelled") {
+  if (finalStatus === "succeeded" || finalStatus === "skipped" || finalStatus === "cancelled") {
     const nextRunAt = task.status === "active" ? nextAutomationRunAt(schedule, new Date(now)) : task.nextRunAt;
     sqlite.prepare(`
       UPDATE automation_tasks SET next_run_at = ?, consecutive_failures = 0, updated_at = ?
       WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
     `).run(nextRunAt ?? null, now, existing.taskId, scope.userId, scope.projectId, scope.instanceId);
-  } else if (input.status === "failed") {
+  } else if (finalStatus === "failed") {
     const failures = Number(task.consecutiveFailures || 0) + 1;
     const needsAttention = failures >= 3;
     const nextRunAt = task.status === "active" && !needsAttention ? nextAutomationRunAt(schedule, new Date(now)) : null;

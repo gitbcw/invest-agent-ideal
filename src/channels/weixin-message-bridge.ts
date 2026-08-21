@@ -17,6 +17,7 @@ import { storeWeixinAttachment, type IncomingMediaAttachment, type StoredAttachm
 import { registerAttachment } from "../services/file-retention.js";
 import { resumeAwaitingWeixinDeliveries } from "../services/weixin-delivery.js";
 import { classifyTaskError, executeWithRetryPolicy, executionResponseError, terminalTaskError } from "../services/task-execution.js";
+import { scheduleConversationWorkingStateRefresh } from "../services/conversation-working-state-reducer.js";
 
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
@@ -408,6 +409,16 @@ export class InvestAgentMobileBridge {
         ? { executionStatus: "failed", executionErrorCode: input.response.data.executionErrorCode, executionErrorCategory: input.response.data.executionErrorCategory }
         : { executionStatus: "succeeded" },
     });
+    if (input.response.data?.executionStatus !== "failed") {
+      scheduleConversationWorkingStateRefresh({
+        conversationId: input.conversationId,
+        scope: {
+          userId: input.scope.userId,
+          projectId: input.scope.projectId,
+          instanceId: input.scope.instanceId,
+        },
+      });
+    }
     return splitWeixinText(text);
   }
 

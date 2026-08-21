@@ -35,6 +35,8 @@ import {
 } from "./automation-tasks.js";
 import { writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
 import { classifyTaskError, executeWithRetryPolicy, executionResponseError, terminalTaskError } from "./task-execution.js";
+import { CONVERSATION_WORKING_STATE_METADATA_KEY } from "./conversation-working-state-store.js";
+import { scheduleConversationWorkingStateRefresh } from "./conversation-working-state-reducer.js";
 
 export type ConversationChannel = "web" | "weixin-mobile";
 export type ConversationRole = "user" | "assistant" | "system";
@@ -309,6 +311,8 @@ function refreshSession(input: {
 }
 
 function rowToMessage(row: any): ConversationMessageRecord {
+  const metadata = parseMetadata(row.metadata);
+  if (metadata) delete metadata[CONVERSATION_WORKING_STATE_METADATA_KEY];
   return {
     messageId: row.messageId,
     conversationId: row.conversationId,
@@ -323,7 +327,7 @@ function rowToMessage(row: any): ConversationMessageRecord {
     traceId: row.traceId ?? (row.role === "assistant" ? row.requestId ?? undefined : undefined),
     requestId: row.requestId ?? undefined,
     createdAt: row.createdAt,
-    metadata: parseMetadata(row.metadata),
+    metadata,
   };
 }
 
@@ -1075,6 +1079,16 @@ async function chatViaConversationLogOnce(input: {
         instanceId: runtime?.instanceId || scope.instanceId,
         turnId: requestId,
       });
+    if (!responseError) {
+      scheduleConversationWorkingStateRefresh({
+        conversationId: input.conversationId,
+        scope: {
+          userId: persistenceScope.userId,
+          projectId: persistenceScope.projectId,
+          instanceId: persistenceScope.instanceId,
+        },
+      });
+    }
     await rememberConversationTurn({
       userId: scope.userId,
       projectId: runtime?.projectId || scope.projectId,

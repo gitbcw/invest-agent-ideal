@@ -3,11 +3,12 @@ import { logger } from "../lib/logger.js";
 
 /**
  * W1 自动模型路由（docs/open-work-items.md）。P1 范围：
- * - 候选链按质量优先级 + 能力过滤（图片轮多一层 qwen flash 兜底，链尾 Flash Vision 双轮次兜底）。
+ * - 文本链按 GPT 探针门禁后进入国产模型；图片链优先国产全模态模型。
  * - 健康状态来自真实调用反馈（trace 写入时的成败 + 首字延迟）。
  * - 降级防抖：连续 2 个坏证据才降级；P1 回升 = 30 分钟冷却后乐观重试
  *   （重试失败只需 1 个新坏证据即再次降级）。P2 引入小时探针后替换回升语义。
- * - 全链不健康时按优先级硬选第 1 位。
+ * - GPT 自动路由有独立探针门禁：该模型自己的最新探针必须在有效期内且 <= 10 秒。
+ * - 全链不健康时只在通过家族门禁的候选中按优先级硬选第 1 位。
  */
 
 export interface AutoChainEntry {
@@ -22,8 +23,19 @@ export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "gpt-5.6-sol" },
   { model: "gpt-5.6-terra" },
   { model: "gpt-5.5" },
-  { model: "qwen3.7-flash", imageTier: true },
   { model: "deepseek-v4-flash-vision-exp" },
+  { model: "qwen3.7-flash" },
+  { model: "doubao-seed-2-1-turbo-260628" },
+];
+
+/** 图片优先使用国产全模态模型；GPT 仅作为通过探针门禁后的后备。 */
+export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
+  { model: "deepseek-v4-flash-vision-exp" },
+  { model: "qwen3.7-flash" },
+  { model: "doubao-seed-2-1-turbo-260628" },
+  { model: "gpt-5.6-sol" },
+  { model: "gpt-5.6-terra" },
+  { model: "gpt-5.5" },
 ];
 
 /** UI 展示用的一句话定位说明（W2）。不在此列的模型不进入选择器。 */
@@ -31,15 +43,16 @@ export const MODEL_DESCRIPTIONS: Record<string, string> = {
   "gpt-5.6-sol": "旗舰质量，复杂分析与长推理首选",
   "gpt-5.6-terra": "高质量均衡档，日常深度分析推荐",
   "gpt-5.5": "上代旗舰，质量稳定，速度通常更快",
-  "deepseek-v4-pro": "深度思考档，中文与工具调用强，仅手动可选",
-  "deepseek-v4-flash": "极速性价比档，仅手动可选",
-  "deepseek-v4-flash-vision-exp": "多模态兜底档，支持图片理解与工具调用，链尾兜底",
-  "qwen3.7-flash": "极速多模态档，支持图片理解，图片轮兜底",
-  "doubao-seed-2-1-turbo-260628": "多模态档，支持图片理解，仅手动可选",
+  "deepseek-v4-flash-vision-exp": "全模态档，支持图片理解与工具调用，国产优先",
+  "qwen3.7-flash": "全模态极速档，支持图片理解与工具调用",
+  "doubao-seed-2-1-turbo-260628": "全模态档，支持图片理解与工具调用",
 };
 
 const WINDOW_MS = 30 * 60 * 1000;
 const SLOW_FIRST_TOKEN_MS = 30_000;
+const GPT_PROBE_MAX_LATENCY_MS = 10_000;
+// 探针每小时运行；两小时有效期允许一次短暂调度延后，但不会长期沿用旧快证据。
+const GPT_PROBE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const MAX_ERROR_RATE = 0.2;
 const DEGRADE_EVIDENCES = 2;
 const RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
@@ -51,6 +64,7 @@ interface FeedbackEvent {
   at: number;
   ok: boolean;
   firstTokenMs?: number;
+  source?: "turn" | "probe";
 }
 
 interface ModelState {
@@ -99,7 +113,7 @@ function persistSnapshot(): void {
     const snapshot: Record<string, Partial<ModelState>> = {};
     for (const [model, state] of states.entries()) {
       // 只保留窗口内事件，避免快照无限增长。
-      const cutoff = nowFn() - WINDOW_MS;
+      const cutoff = nowFn() - Math.max(WINDOW_MS, GPT_PROBE_MAX_AGE_MS);
       const events = state.events.filter((event) => event.at >= cutoff);
       snapshot[model] = { events, consecutiveBad: state.consecutiveBad, ...(state.degradedAt !== undefined ? { degradedAt: state.degradedAt } : {}), ...(state.probation !== undefined ? { probation: state.probation } : {}) };
     }
@@ -126,11 +140,16 @@ function isBadEvidence(ok: boolean, firstTokenMs?: number): boolean {
 }
 
 /** 每轮 trace 写入后的反馈入口：成败 + 首字延迟。 */
-export function recordModelFeedback(model: string | undefined, input: { ok: boolean; firstTokenMs?: number }): void {
+export function recordModelFeedback(model: string | undefined, input: { ok: boolean; firstTokenMs?: number; source?: "turn" | "probe" }): void {
   if (!model) return;
   const state = stateFor(model);
   const now = nowFn();
-  state.events.push({ at: now, ok: input.ok, ...(input.firstTokenMs !== undefined ? { firstTokenMs: Math.round(input.firstTokenMs) } : {}) });
+  state.events.push({
+    at: now,
+    ok: input.ok,
+    ...(input.firstTokenMs !== undefined ? { firstTokenMs: Math.round(input.firstTokenMs) } : {}),
+    source: input.source ?? "turn",
+  });
   if (state.events.length > MAX_EVENTS_PER_MODEL) state.events.splice(0, state.events.length - MAX_EVENTS_PER_MODEL);
   if (isBadEvidence(input.ok, input.firstTokenMs)) {
     state.consecutiveBad += 1;
@@ -167,7 +186,7 @@ export function getModelHealth(model: string): ModelHealthView {
   const now = nowFn();
   const cutoff = now - WINDOW_MS;
   const events = state.events.filter((event) => event.at >= cutoff);
-  const inChain = AUTO_MODEL_CHAIN.some((entry) => entry.model === model);
+  const inChain = [...AUTO_MODEL_CHAIN, ...IMAGE_AUTO_MODEL_CHAIN].some((entry) => entry.model === model);
   const base = {
     model,
     inChain,
@@ -209,23 +228,65 @@ function p50(events: FeedbackEvent[]): number | null {
 
 export interface AutoRouteResult {
   model: string;
-  skipped: Array<{ model: string; reason: ModelHealthView["reason"] }>;
+  skipped: Array<{ model: string; reason: ModelHealthView["reason"] | "gpt-probe-required" }>;
 }
 
-/** 候选链解析：图片轮多一层 qwen flash 兜底，链尾 Flash Vision 两种轮次都可兜底。 */
+export interface GptProbeEligibility {
+  eligible: boolean;
+  latestProbeAt: number | null;
+  latestProbeLatencyMs: number | null;
+  reason: "not-gpt" | "missing" | "stale" | "failed" | "slow" | "fast";
+}
+
+function isGptModel(model: string): boolean {
+  return model.toLowerCase().startsWith("gpt-");
+}
+
+function autoChainFor(input: { hasImage: boolean }): AutoChainEntry[] {
+  return input.hasImage ? IMAGE_AUTO_MODEL_CHAIN : AUTO_MODEL_CHAIN;
+}
+
+/** GPT models are never auto-routed without a recent <=10s probe for that exact model. */
+export function getGptProbeEligibility(model: string): GptProbeEligibility {
+  if (!isGptModel(model)) {
+    return { eligible: true, latestProbeAt: null, latestProbeLatencyMs: null, reason: "not-gpt" };
+  }
+  const latest = [...stateFor(model).events].reverse().find((event) => event.source === "probe");
+  if (!latest) return { eligible: false, latestProbeAt: null, latestProbeLatencyMs: null, reason: "missing" };
+  const latency = typeof latest.firstTokenMs === "number" ? latest.firstTokenMs : null;
+  const base = { latestProbeAt: latest.at, latestProbeLatencyMs: latency };
+  if (nowFn() - latest.at > GPT_PROBE_MAX_AGE_MS) return { eligible: false, ...base, reason: "stale" };
+  if (!latest.ok) return { eligible: false, ...base, reason: "failed" };
+  if (latency === null || latency > GPT_PROBE_MAX_LATENCY_MS) return { eligible: false, ...base, reason: "slow" };
+  return { eligible: true, ...base, reason: "fast" };
+}
+
+/** 候选链解析：图片优先国产全模态，文本保留 GPT 探针门禁后的质量优先链。 */
 export function resolveAutoModel(input: { hasImage: boolean; exclude?: string[] }): AutoRouteResult {
-  // 图片轮：GPT 三档 + qwen flash + vision；纯文本轮：GPT 三档 + vision（qwen 仅图片轮）。
+  const chain = autoChainFor(input);
   const excluded = new Set(input.exclude ?? []);
-  const usable = AUTO_MODEL_CHAIN
+  const capable = chain
     .filter((entry) => (input.hasImage ? entry.textOnly !== true : entry.imageTier !== true))
     .filter((entry) => !excluded.has(entry.model));
   const skipped: AutoRouteResult["skipped"] = [];
+  const usable = capable.filter((entry) => {
+    if (getGptProbeEligibility(entry.model).eligible) return true;
+    skipped.push({ model: entry.model, reason: "gpt-probe-required" });
+    return false;
+  });
   for (const entry of usable) {
     const health = getModelHealth(entry.model);
     if (health.healthy) return { model: entry.model, skipped };
     skipped.push({ model: entry.model, reason: health.reason });
   }
-  return { model: usable[0]?.model ?? AUTO_MODEL_CHAIN[0].model, skipped };
+  return {
+    model: usable[0]?.model
+      ?? capable.find((entry) => !isGptModel(entry.model))?.model
+      ?? chain.find((entry) => !isGptModel(entry.model))?.model
+      ?? chain[0]?.model
+      ?? AUTO_MODEL_CHAIN[0].model,
+    skipped,
+  };
 }
 
 /** W1-P2 小时探针：对候选链模型发最小补全，测响应时延（近似首字）。
@@ -238,13 +299,15 @@ export async function runModelProbes(env: NodeJS.ProcessEnv = process.env): Prom
     logger.warn("模型探针未运行：网关地址或密钥未配置");
     return results;
   }
-  for (const entry of AUTO_MODEL_CHAIN) {
+  const probeChain = [...new Map([...AUTO_MODEL_CHAIN, ...IMAGE_AUTO_MODEL_CHAIN].map((entry) => [entry.model, entry])).values()];
+  for (const entry of probeChain) {
     const startedAt = Date.now();
     let ok = false;
     let latencyMs: number | undefined;
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 20_000);
+      const probeTimeoutMs = isGptModel(entry.model) ? GPT_PROBE_MAX_LATENCY_MS : 20_000;
+      const timer = setTimeout(() => controller.abort(), probeTimeoutMs);
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -258,7 +321,7 @@ export async function runModelProbes(env: NodeJS.ProcessEnv = process.env): Prom
     } catch (error) {
       logger.warn(`模型探针异常 model=${entry.model}: ${(error as Error).message}`);
     }
-    recordModelFeedback(entry.model, { ok, ...(latencyMs !== undefined ? { firstTokenMs: latencyMs } : {}) });
+    recordModelFeedback(entry.model, { ok, ...(latencyMs !== undefined ? { firstTokenMs: latencyMs } : {}), source: "probe" });
     results.push({ model: entry.model, ok, ...(latencyMs !== undefined ? { latencyMs } : {}) });
   }
   return results;
@@ -266,11 +329,18 @@ export async function runModelProbes(env: NodeJS.ProcessEnv = process.env): Prom
 
 /** models.state 展示视图（connector 命令 / 平台管理端用）。 */
 export function modelRoutingSnapshot() {
+  const catalog = [...new Map([...AUTO_MODEL_CHAIN, ...IMAGE_AUTO_MODEL_CHAIN].map((entry) => [entry.model, entry])).values()];
   return {
-    chain: AUTO_MODEL_CHAIN.map((entry) => ({ ...entry, health: getModelHealth(entry.model) })),
+    chain: catalog.map((entry) => ({
+      ...entry,
+      health: getModelHealth(entry.model),
+      gptProbeEligibility: getGptProbeEligibility(entry.model),
+    })),
     descriptions: MODEL_DESCRIPTIONS,
     thresholds: {
       slowFirstTokenMs: SLOW_FIRST_TOKEN_MS,
+      gptProbeMaxLatencyMs: GPT_PROBE_MAX_LATENCY_MS,
+      gptProbeMaxAgeMs: GPT_PROBE_MAX_AGE_MS,
       windowMs: WINDOW_MS,
       maxErrorRate: MAX_ERROR_RATE,
       degradeEvidences: DEGRADE_EVIDENCES,

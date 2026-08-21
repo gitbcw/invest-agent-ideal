@@ -19,7 +19,10 @@ import { recordModelFeedback, resolveAutoModel } from "../services/model-health.
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../mastra/external-mcp.js";
 import { loadConversationHistory } from "../services/conversation-history.js";
+import { isConversationWorkingStateEnabled } from "../services/conversation-working-state.js";
+import { buildConversationCoherenceContext } from "../services/conversation-working-state-store.js";
 import { buildAgentInstructions } from "./agent-instructions.js";
+import { hasExecutionBudgetForFallback, resolveTurnExecutionBudget } from "./execution-budget.js";
 import { MastraUserPreferenceStore } from "../services/user-preferences.js";
 import { readMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { readMastraTradingStrategies } from "../lib/mastra-strategy-library.js";
@@ -229,11 +232,33 @@ export function createRuntimeAgent(): RuntimeAgent {
         // this conversation, minus the already-persisted current turn. The
         // adapter appends the live user message itself.
         const turnRequestId = typeof message.context?.requestId === "string" ? message.context.requestId : undefined;
-        const history = loadConversationHistory({
+        const recentHistory = loadConversationHistory({
           conversationId,
           excludeRequestId: turnRequestId ?? message.id,
           excludeCurrentText: text,
         });
+        const coherenceInstanceId = userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId);
+        const coherenceContext: {
+          status: string;
+          text?: string;
+          checkpointMessageId?: string;
+        } = isConversationWorkingStateEnabled(coherenceInstanceId)
+          ? buildConversationCoherenceContext({
+              conversationId,
+              scope: {
+                userId: userContext.userId,
+                projectId: userContext.projectId ?? "invest-agent",
+                instanceId: coherenceInstanceId,
+              },
+              userText: text,
+              excludeRequestId: turnRequestId ?? message.id,
+            })
+          : { status: "disabled" as const };
+        const history = coherenceContext.text
+          // This context is derived from user-controlled conversation text. It
+          // must stay at user priority and never be promoted into system instructions.
+          ? [{ role: "user" as const, content: coherenceContext.text }, ...recentHistory]
+          : recentHistory;
         const mastraTools = await createMastraToolMap({ ...userContext, instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId) });
         const workspaceScope = {
           userId: userContext.userId,
@@ -256,6 +281,20 @@ export function createRuntimeAgent(): RuntimeAgent {
         });
         try {
           const inlineImages = await loadImageAttachmentParts(message.context?.attachments, userContext.workspacePath);
+          const executionDeadlineMs = typeof message.context?._executionDeadlineAt === "string"
+            ? Date.parse(message.context._executionDeadlineAt)
+            : Number.NaN;
+          const channelTimeoutMs = userChannel === "weixin-mobile"
+            ? WEIXIN_DIRECT_AGENT_TIMEOUT_MS
+            : userChannel === "web"
+              ? PORTAL_DIRECT_AGENT_TIMEOUT_MS
+              : AGENT_EVALUATION_CASE_TIMEOUT_MS > 0 ? AGENT_EVALUATION_CASE_TIMEOUT_MS : undefined;
+          const initialBudget = resolveTurnExecutionBudget({
+            executionDeadlineMs,
+            configuredTimeoutMs: channelTimeoutMs,
+            firstTokenTimeoutMs: Number(process.env.MASTRA_AUTO_FIRST_TOKEN_TIMEOUT_MS ?? 45_000),
+          });
+          if (initialBudget.expired) throw new Error("TASK_CANCELLED: execution deadline exceeded");
           const turnParams = {
             conversationId,
             text: promptContext.promptText,
@@ -263,11 +302,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             history,
             ...(selectedModel ? { model: selectedModel } : {}),
             ...(inlineImages.length > 0 ? { images: inlineImages } : {}),
-            timeoutMs: userChannel === "weixin-mobile"
-              ? WEIXIN_DIRECT_AGENT_TIMEOUT_MS
-              : userChannel === "web"
-                ? PORTAL_DIRECT_AGENT_TIMEOUT_MS
-                : AGENT_EVALUATION_CASE_TIMEOUT_MS > 0 ? AGENT_EVALUATION_CASE_TIMEOUT_MS : undefined,
+            timeoutMs: initialBudget.timeoutMs,
             userContext,
             requestContext: workspaceScope,
             toolsets: observedToolsets,
@@ -281,6 +316,7 @@ export function createRuntimeAgent(): RuntimeAgent {
           // 并把网关 upstream 错误（如 Upstream error: 400）纳入可重试签名。
           const AUTO_FIRST_TOKEN_TIMEOUT_MS = Number(process.env.MASTRA_AUTO_FIRST_TOKEN_TIMEOUT_MS ?? 45_000);
           const AUTO_FALLBACK_MAX = Math.max(1, Number(process.env.MASTRA_AUTO_FALLBACK_MAX ?? 3));
+          const AUTO_FALLBACK_MIN_REMAINING_MS = Math.max(1, Number(process.env.MASTRA_AUTO_FALLBACK_MIN_REMAINING_MS ?? 120_000));
           const isRetriableTurnError = (text: string) => {
             const normalized = text.toLowerCase();
             return normalized.includes("mastra_first_token_timeout")
@@ -299,8 +335,16 @@ export function createRuntimeAgent(): RuntimeAgent {
             let attempt = 0;
             for (;;) {
               try {
+                const attemptBudget = resolveTurnExecutionBudget({
+                  executionDeadlineMs,
+                  configuredTimeoutMs: turnParams.timeoutMs,
+                  firstTokenTimeoutMs: AUTO_FIRST_TOKEN_TIMEOUT_MS,
+                });
+                if (attemptBudget.expired) {
+                  throw new Error("TASK_CANCELLED: execution deadline exceeded");
+                }
                 mastraResult = await runMastraTurn(
-                  { ...turnParams, model: attemptModel, ...(attempt === 0 ? { firstTokenTimeoutMs: AUTO_FIRST_TOKEN_TIMEOUT_MS } : {}) },
+                  { ...turnParams, model: attemptModel, timeoutMs: attemptBudget.timeoutMs, firstTokenTimeoutMs: attemptBudget.firstTokenTimeoutMs },
                   turnDeps,
                 );
                 break;
@@ -312,7 +356,8 @@ export function createRuntimeAgent(): RuntimeAgent {
                 const canRetry = attempt < AUTO_FALLBACK_MAX
                   && !excluded.includes(next.model)
                   && isRetriableTurnError(errorText)
-                  && !(cancelSignal?.aborted ?? false);
+                  && !(cancelSignal?.aborted ?? false)
+                  && hasExecutionBudgetForFallback({ executionDeadlineMs, minimumRemainingMs: AUTO_FALLBACK_MIN_REMAINING_MS });
                 if (!canRetry) throw error;
                 attempt += 1;
                 logger.warn(`自动路由轮内兜底（第 ${attempt}/${AUTO_FALLBACK_MAX} 跳）：${attemptModel} 失败（${errorText.slice(0, 120)}），换用 ${next.model} 重试`);
@@ -342,10 +387,18 @@ export function createRuntimeAgent(): RuntimeAgent {
             userId, projectId: userContext.projectId, instanceId: userContext.instanceId,
             conversationId, messageId: message.id, channel, userText: text,
             promptText: promptContext.promptText, replyTextRaw: postProcessed.finalReply,
-            replyTextSanitized: cleaned, mode, reviewContextSummary: { budget: mastraResult.budget },
+            replyTextSanitized: cleaned, mode,
             status: "success", elapsedMs: Date.now() - startedAt, usage: mastraResult.usage,
             agentBackend: "mastra", agentModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
             modelSource, firstTokenMs: mastraResult.firstTokenMs,
+            reviewContextSummary: {
+              budget: mastraResult.budget,
+              coherenceState: {
+                status: coherenceContext.status,
+                checkpointMessageId: coherenceContext.checkpointMessageId,
+                injectedChars: coherenceContext.text?.length ?? 0,
+              },
+            },
           });
           return textResponse(cleaned, true, extractedVisuals.visuals.length > 0 ? { inlineVisuals: extractedVisuals.visuals } : undefined);
         } finally {

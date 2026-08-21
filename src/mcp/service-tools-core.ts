@@ -85,6 +85,7 @@ export interface ServiceToolContext {
   userId: string;
   instanceId: string;
   workspacePath?: string;
+  taskType?: string;
   projectId?: string;
   conversationId?: string;
   runId?: string;
@@ -1979,6 +1980,31 @@ async function createSpreadsheetTool(input: Record<string, unknown> | undefined,
     noteRow.alignment = { wrapText: true, vertical: "top" };
   }
   const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
+  if (context.taskType === "scheduled-automation") {
+    if (!context.workspacePath) throw new Error("spreadsheet.create requires the automation staging workspace");
+    const stagingRoot = path.resolve(context.workspacePath);
+    const outputPath = path.resolve(stagingRoot, fileName);
+    if (outputPath !== stagingRoot && !outputPath.startsWith(`${stagingRoot}${path.sep}`)) {
+      throw new Error("spreadsheet.create output must stay inside automation staging");
+    }
+    await writeFile(outputPath, bytes, { mode: 0o600 });
+    await audit(context, {
+      operation: "spreadsheet.create",
+      resourceType: "automation_staged_output",
+      resourceId: context.runId,
+      requestBody: { fileName, columns: columns.length, rows: rows.length },
+      resultSummary: `created staged xlsx; bytes=${bytes.length}`,
+    });
+    return {
+      ok: true,
+      fileName,
+      outputPath: fileName,
+      bytes: bytes.length,
+      rows: rows.length,
+      columns: columns.length,
+      stagedOutput: { operation: "create", fileName, filePath: fileName },
+    };
+  }
   // G22 + 用户文件库治理契约：对话内生成的表格是普通聊天交付物，只走
   // deliveries/ + 会话附件卡片，不自动写入「我的文件」；用户在 Portal 卡片
   // 上点「保存」（asset.conversation.save）才登记为长期资产并占用配额。

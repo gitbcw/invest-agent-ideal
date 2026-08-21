@@ -25,7 +25,6 @@ try {
   const { callServiceTool, serviceToolContextFromEnv } = await import("../dist/mcp/service-tools-core.js");
   const { ensureWorkspace } = await import("../dist/lib/workspace.js");
   const { dailyPlanBackend } = await import("../dist/lib/daily-plan-backend.js");
-  const { WorkspaceStore } = await import("../dist/lib/workspace-store.js");
   const context = serviceToolContextFromEnv({
     ...process.env,
     INVEST_AGENT_MCP_USER_ID: reviewUserId,
@@ -73,9 +72,14 @@ try {
   const savedReview = await dailyPlanBackend.get(context.userId, context.instanceId, reviewDate);
   assert.equal(savedReview?.content, fullReport);
   assert.equal(savedReview?.summary, pushBrief);
-  const store = new WorkspaceStore(context.userId);
-  assert.equal((await store.listDecisions()).some((item) => item.id === "mcp-smoke-decision"), true);
-  assert.equal((await store.listSourceEvents()).some((item) => item.id === "mcp-smoke-source"), true);
+  const memoryRows = sqlite.prepare(`
+    SELECT payload_json AS payloadJson
+    FROM mastra_review_memory_records
+    WHERE user_id = ? AND instance_id = ?
+  `).all(context.userId, context.instanceId);
+  const memoryRecords = memoryRows.map((row) => JSON.parse(row.payloadJson));
+  assert.equal(memoryRecords.some((item) => item.id === "mcp-smoke-decision"), true);
+  assert.equal(memoryRecords.some((item) => item.id === "mcp-smoke-source"), true);
 
   const client = new Client({ name: "invest-agent-mcp-smoke", version: "1.0.0" });
   const transport = new StdioClientTransport({

@@ -75,7 +75,7 @@ try {
   assert.equal(noWsResponse.statusCode, 200);
   const noWsBody = JSON.parse(noWsResponse.body);
   assert.equal(noWsBody.ok, true);
-  assert.equal(noWsBody.workspaceReady, false);
+  assert.equal(noWsBody.workspaceReady, true, "investment-state is served from workspace-free Mastra projections");
   assert.equal(noWsBody.summary.holdingCount, 0);
   assert.equal(noWsBody.summary.watchlistCount, 0);
   assert.equal(noWsBody.summary.planCount, 0);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -289,6 +289,151 @@ test("generic runner commits one Markdown version and keeps run output reference
   });
   assert.equal(replay.run.runId, result.run.runId);
   assert.equal((await (await import("../src/services/user-assets.js")).listUserAssets(scope)).filter((item) => item.assetId === result.run.outputAssetId).length, 1);
+});
+
+test("generic runner aborts the active executor at its absolute execution deadline", async () => {
+  const { automation } = await fixture;
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-deadline-abort",
+    name: "截止时间取消",
+    instruction: "生成结果。",
+    schedule: schedule(),
+    output: { mode: "none" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const runner = await import("../src/services/generic-automation-runner.js");
+  let observedAbort = false;
+  const startedAt = Date.now();
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "manual",
+    idempotencyKey: "generic-run-deadline-abort-once",
+    executionDeadlineAt: new Date(Date.now() + 40).toISOString(),
+    executor: async ({ signal }) => await new Promise((_, reject) => {
+      signal.addEventListener("abort", () => {
+        observedAbort = true;
+        reject(signal.reason instanceof Error ? signal.reason : new Error("deadline aborted"));
+      }, { once: true });
+    }),
+  });
+  assert.equal(observedAbort, true);
+  assert.equal(result.run.status, "failed");
+  assert.ok(Date.now() - startedAt < 1_000, "deadline cancellation must not wait for the normal 15 minute lease");
+});
+
+test("agent create filePath outputs stay in staging and preserve fileName (MG 2026-08-21 regression)", async () => {
+  const { automation, assets } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-agent-create-filepath-contract",
+    name: "暂存文件契约",
+    instruction: "生成 Markdown 文件。",
+    schedule: schedule(),
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+
+  const missing = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-missing",
+    executor: async () => ({
+      content: { type: "text" as const, text: "done" },
+      finished: true,
+      data: {
+        summary: "提交缺失文件。",
+        stagedOutput: { operation: "create", fileName: "missing.md", filePath: "missing.md" },
+      },
+    }),
+  });
+  assert.equal(missing.run.status, "failed", "a missing staged file must fail closed");
+  assert.equal(missing.run.outputAssetId, null);
+
+  const missingName = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-missing-name",
+    executor: async ({ stagingPath }) => {
+      const filePath = path.join(stagingPath, "result.md");
+      writeFileSync(filePath, "# result\n");
+      return {
+        content: { type: "text" as const, text: "done" },
+        finished: true,
+        data: { summary: "缺少文件名。", stagedOutput: { operation: "create", filePath: "result.md" } },
+      };
+    },
+  });
+  assert.equal(missingName.run.status, "failed", "a filePath result must still provide fileName");
+  assert.equal(missingName.run.outputAssetId, null);
+
+  const success = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-success",
+    executor: async ({ stagingPath }) => {
+      mkdirSync(path.join(stagingPath, "outputs"), { recursive: true });
+      writeFileSync(path.join(stagingPath, "outputs", "result.md"), "# result\n");
+      return {
+        content: { type: "text" as const, text: "done" },
+        finished: true,
+        data: {
+          summary: "已生成文件。",
+          stagedOutput: { operation: "create", fileName: "result.md", filePath: "outputs/result.md", mimeType: "text/markdown" },
+        },
+      };
+    },
+  });
+  assert.equal(success.run.status, "succeeded");
+  assert.ok(success.run.outputAssetId);
+  const output = await assets.readCurrentUserAsset({ ...scope, assetId: success.run.outputAssetId! });
+  assert.equal(output.descriptor.fileName, "result.md");
+  assert.equal(output.bytes.toString(), "# result\n");
+});
+
+test("agent create filePath rejects an existing file outside staging (MG 2026-08-21 regression)", async () => {
+  const { automation } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-agent-create-filepath-outside",
+    name: "暂存边界契约",
+    instruction: "生成 Markdown 文件。",
+    schedule: schedule(),
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+
+  let outsidePath = "";
+  try {
+    const result = await runner.runGenericAutomationTaskNow({
+      scope,
+      taskId: task.taskId,
+      origin: "scheduled",
+      idempotencyKey: "generic-agent-create-filepath-outside-once",
+      executor: async ({ stagingPath, run }) => {
+        outsidePath = path.join(path.dirname(stagingPath), `outside-${run.runId}.md`);
+        writeFileSync(outsidePath, "# outside\n");
+        return {
+          content: { type: "text" as const, text: "done" },
+          finished: true,
+          data: {
+            summary: "提交暂存目录外文件。",
+            stagedOutput: { operation: "create", fileName: "outside.md", filePath: `../${path.basename(outsidePath)}`, mimeType: "text/markdown" },
+          },
+        };
+      },
+    });
+    assert.equal(result.run.status, "failed", "an existing file outside staging must fail closed");
+    assert.equal(result.run.outputAssetId, null);
+  } finally {
+    if (outsidePath) rmSync(outsidePath, { force: true });
+  }
 });
 
 test("new automation spreadsheet outputs reject CSV in favor of XLSX", async () => {

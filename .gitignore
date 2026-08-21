@@ -26,3 +26,4 @@ __pycache__/
 *.pyc
 *.pyo
 .sandbox-profiles/
+/apps/deploy-staging-portal-check/

@@ -63,6 +63,7 @@ test("market-watch grant = reads only, no write tools", () => {
   assert.ok(!grant.includes("reviews.save"));
   assert.ok(!grant.includes("portfolio.apply_changes"));
   assert.ok(!grant.includes("watch_rules.create"));
+  assert.ok(!grant.includes("spreadsheet.create"));
 });
 
 test("daily-review grant = reads + reviews.save", () => {
@@ -70,6 +71,7 @@ test("daily-review grant = reads + reviews.save", () => {
   assert.ok(grant.includes("reviews.save"));
   assert.ok(!grant.some((tool) => tool.startsWith("market.")));
   assert.ok(grant.includes("portfolio.read"));
+  assert.ok(!grant.includes("spreadsheet.create"));
   // 不含 other-write
   for (const tool of grant) {
     assert.notEqual(classifyServiceTool(tool), "other-write",
@@ -81,6 +83,8 @@ test("scheduled automation grant permits same-scope asset reads but no asset mut
   const grant = resolveScheduledServiceGrant("scheduled-automation");
   assert.ok(grant.includes("assets.list"));
   assert.ok(grant.includes("assets.version.read"));
+  assert.ok(grant.includes("spreadsheet.create"), "staging-only workbook creation must be available");
+  assert.ok(grant.includes("spreadsheet.transform"));
   for (const tool of ["assets.version.commit", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete"]) {
     assert.ok(!grant.includes(tool), `scheduled automation grant exposes ${tool}`);
   }
