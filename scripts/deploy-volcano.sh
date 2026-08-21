@@ -48,6 +48,7 @@ rsync -avz --delete-delay \
   --exclude='.tmp' \
   --exclude='.state' \
   --exclude='workspaces' \
+  --exclude='apps/deploy-staging-portal-check' \
   --exclude='ppt/images' \
   --exclude='scripts/launchd' \
   --exclude='src/prompts' \
