@@ -60,6 +60,11 @@ test("model pricing registry computes per-model costs with provider-aligned defa
   assert.equal(proPeak.amount, 27);
   // 峰谷模型带时段信息进 summary 供费率徽标展示。
   assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-flash" && entry.timeTiered && entry.timeTiered.peak.input === 3));
+  // vision-exp 2026-08-21 上线即峰谷价，与 flash 同牌价（北京 14:30 = UTC 06:30 高峰输入 ¥3/M）。
+  const visionPeak = computeModelCost("deepseek-v4-flash-vision-exp", { inputTokens: 1_000_000 }, { at: "2026-08-21T06:30:00.000Z" });
+  assert.equal(visionPeak.source, "priced");
+  assert.equal(visionPeak.amount, 3);
+  assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-flash-vision-exp" && entry.timeTiered && entry.timeTiered.peak.input === 3));
 });
 
 test("recordAgentTrace prices usage at write time with costSource envelope (E10 C2)", async () => {

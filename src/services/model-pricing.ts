@@ -15,7 +15,8 @@
  *   - OpenAI pricing: gpt-5.6-sol $5/$30, terra $2/$12, luna $0.2/$1.2
  *   - DeepSeek API 官方: v4-flash 输入1元(缓存命中0.02元)/输出2元;
  *     v4-pro 输入3元(缓存命中0.025元)/输出6元（2026-08-17 起峰谷价未采用，
- *     按当前单一价记账）
+ *     按当前单一价记账）; v4-flash-vision-exp 2026-08-21 上线即峰谷价，
+ *     与 v4-flash 同牌价：输入峰3/闲1.5、输出峰9/闲4.5（检索 2026-08-21）
  *   - 火山方舟: Doubao-Seed 主力档 输入6元/输出30元（lite/turbo 实际更低，
  *     未获官方精确牌价前按主力档保守上界记账，启用后按价格计算器校准）
  *   - 记账汇率 USD→CNY = 6.75（2026-08-16 中间价 6.7878 / 市场价 6.74 区间取整）
@@ -105,6 +106,18 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
       offPeak: { input: 4.5, output: 13.5, cacheRead: 0.15 },
     },
   },
+  {
+    // 2026-08-21 发布即峰谷价，与 v4-flash 同牌价；晚于峰谷切换上线，
+    // 无旧单一价适用期，tier 按空闲价占位（生效期后仅走 timeTiered）。
+    model: "deepseek-v4-flash-vision-exp", currency: "CNY",
+    tier: { input: 1.5, output: 4.5, cacheRead: 0.05 },
+    timeTiered: {
+      effectiveFrom: "2026-08-16T16:00:00.000Z",
+      peakWindowsUtcPlus8: [[9, 12], [14, 18]],
+      peak: { input: 3.0, output: 9.0, cacheRead: 0.10 },
+      offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05 },
+    },
+  },
   // qwen3.7-flash：owner 提供牌价 2026-08-18（输入 0.6 元 / 输出 2.4 元，单一价）。
   { model: "qwen3.7-flash", currency: "CNY", tier: { input: 0.6, output: 2.4 } },
   { model: "doubao-seed-2-0-lite-260428", currency: "CNY", tier: { input: 6, output: 30 } },
@@ -120,6 +133,8 @@ const MODEL_ALIASES: Record<string, string> = {
   "deepseek-v4-flash-max": "deepseek-v4-flash",
   "deepseek-v4-pro-none": "deepseek-v4-pro",
   "deepseek-v4-pro-max": "deepseek-v4-pro",
+  "deepseek-v4-flash-vision-exp-none": "deepseek-v4-flash-vision-exp",
+  "deepseek-v4-flash-vision-exp-max": "deepseek-v4-flash-vision-exp",
 };
 
 /** Fallback for models absent from the registry (flagged, never silent). */

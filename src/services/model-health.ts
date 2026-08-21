@@ -3,7 +3,7 @@ import { logger } from "../lib/logger.js";
 
 /**
  * W1 自动模型路由（docs/open-work-items.md）。P1 范围：
- * - 候选链按质量优先级 + 能力过滤（图片轮走豆包，纯文本走 DeepSeek）。
+ * - 候选链按质量优先级 + 能力过滤（图片轮多一层 qwen flash 兜底，链尾 Flash Vision 双轮次兜底）。
  * - 健康状态来自真实调用反馈（trace 写入时的成败 + 首字延迟）。
  * - 降级防抖：连续 2 个坏证据才降级；P1 回升 = 30 分钟冷却后乐观重试
  *   （重试失败只需 1 个新坏证据即再次降级）。P2 引入小时探针后替换回升语义。
@@ -14,7 +14,7 @@ export interface AutoChainEntry {
   model: string;
   /** 仅作为能力兜底档（true = 仅图片轮可选）。 */
   imageTier?: boolean;
-  /** 纯文本模型（true = 图片轮不可选，如 DeepSeek 系列）。 */
+  /** 纯文本模型（true = 图片轮不可选）。当前链内无纯文本模型。 */
   textOnly?: boolean;
 }
 
@@ -23,7 +23,7 @@ export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "gpt-5.6-terra" },
   { model: "gpt-5.5" },
   { model: "qwen3.7-flash", imageTier: true },
-  { model: "deepseek-v4-pro", textOnly: true },
+  { model: "deepseek-v4-flash-vision-exp" },
 ];
 
 /** UI 展示用的一句话定位说明（W2）。不在此列的模型不进入选择器。 */
@@ -31,8 +31,9 @@ export const MODEL_DESCRIPTIONS: Record<string, string> = {
   "gpt-5.6-sol": "旗舰质量，复杂分析与长推理首选",
   "gpt-5.6-terra": "高质量均衡档，日常深度分析推荐",
   "gpt-5.5": "上代旗舰，质量稳定，速度通常更快",
-  "deepseek-v4-pro": "深度思考档，中文与工具调用强",
+  "deepseek-v4-pro": "深度思考档，中文与工具调用强，仅手动可选",
   "deepseek-v4-flash": "极速性价比档，仅手动可选",
+  "deepseek-v4-flash-vision-exp": "多模态兜底档，支持图片理解与工具调用，链尾兜底",
   "qwen3.7-flash": "极速多模态档，支持图片理解，图片轮兜底",
   "doubao-seed-2-1-turbo-260628": "多模态档，支持图片理解，仅手动可选",
 };
@@ -211,9 +212,9 @@ export interface AutoRouteResult {
   skipped: Array<{ model: string; reason: ModelHealthView["reason"] }>;
 }
 
-/** 候选链解析：图片轮兜底走豆包，纯文本轮兜底走 DeepSeek Flash。 */
+/** 候选链解析：图片轮多一层 qwen flash 兜底，链尾 Flash Vision 两种轮次都可兜底。 */
 export function resolveAutoModel(input: { hasImage: boolean; exclude?: string[] }): AutoRouteResult {
-  // 图片轮：GPT 三档 + 豆包（去掉 flash）；纯文本轮：GPT 三档 + pro（去掉豆包）。
+  // 图片轮：GPT 三档 + qwen flash + vision；纯文本轮：GPT 三档 + vision（qwen 仅图片轮）。
   const excluded = new Set(input.exclude ?? []);
   const usable = AUTO_MODEL_CHAIN
     .filter((entry) => (input.hasImage ? entry.textOnly !== true : entry.imageTier !== true))

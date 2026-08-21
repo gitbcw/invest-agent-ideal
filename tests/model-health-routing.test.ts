@@ -42,15 +42,15 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     recordModelFeedback("gpt-5.5", { ok: false });
     clock += 60_000;
     recordModelFeedback("gpt-5.5", { ok: true, firstTokenMs: 60_000 });
-    // 文本轮兜底走 deepseek；图片轮兜底走 qwen flash。
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-v4-pro");
+    // 文本轮兜底走 Flash Vision；图片轮兜底走 qwen flash。
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-v4-flash-vision-exp");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "qwen3.7-flash");
 
     // 全链降级时按优先级硬选链首。
     clock += 60_000;
-    recordModelFeedback("deepseek-v4-pro", { ok: false });
+    recordModelFeedback("deepseek-v4-flash-vision-exp", { ok: false });
     clock += 60_000;
-    recordModelFeedback("deepseek-v4-pro", { ok: false });
+    recordModelFeedback("deepseek-v4-flash-vision-exp", { ok: false });
     clock += 60_000;
     recordModelFeedback("qwen3.7-flash", { ok: false });
     clock += 60_000;
@@ -96,8 +96,9 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     const { __resetModelHealthForTest, resolveAutoModel } = await import("../src/services/model-health.js");
     __resetModelHealthForTest();
     assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-sol");
-    assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] }).model, "deepseek-v4-pro");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "qwen3.7-flash"] }).model, "gpt-5.6-sol");
+    assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] }).model, "deepseek-v4-flash-vision-exp");
+    // 图片轮轮内兜底耗尽 qwen flash 后还能落到链尾 vision（不再硬选链首）。
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "qwen3.7-flash"] }).model, "deepseek-v4-flash-vision-exp");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;

@@ -20,11 +20,11 @@
 | 1 | gpt-5.6-sol | 健康 |
 | 2 | gpt-5.6-terra | 顺位 1 不健康 |
 | 3 | gpt-5.5 | 顺位 1-2 不健康 |
-| 4a | doubao-seed-2-1-turbo | 兜底，且本轮含图片 |
-| 4b | deepseek-v4-pro | 兜底，无图片（flash 仅手动可选，2026-08-17 owner 修订） |
+| 4 | qwen3.7-flash | 兜底，且本轮含图片 |
+| 5 | deepseek-v4-flash-vision-exp | 链尾兜底，双轮次皆可选（多模态；2026-08-21 owner 修订，v4-pro 退为手动可选） |
 
-- luna、deepseek-v4-pro 不进自动链（手动可选）。
-- 图片判断依据本轮消息附件类型（豆包接图片、DeepSeek 接纯文本）。
+- luna、deepseek-v4-pro、deepseek-v4-flash、豆包不进自动链（手动可选）。
+- 图片判断依据本轮消息附件类型（qwen flash 与 Flash Vision 接图片）。
 
 ### 健康状态（双信号源 + 防抖）
 
