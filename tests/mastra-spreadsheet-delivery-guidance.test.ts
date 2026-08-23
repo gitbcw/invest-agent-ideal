@@ -95,6 +95,29 @@ test("spreadsheet.create delivers via the canonical artifact-card pipeline (G22)
     });
     assert.ok((await readFile(path.join(stagingPath, "自动化复盘.xlsx"))).length > 0);
     assert.equal(staged.artifact, undefined, "automation staging must not publish a conversation artifact");
+
+    const genericAutomationStaging = path.join(tempRoot, "generic-automation-staging");
+    await mkdir(genericAutomationStaging, { recursive: true });
+    const genericAutomation = await callServiceTool("spreadsheet.create", {
+      fileName: "通用自动化复盘.xlsx",
+      columns: ["日期", "结论"],
+      rows: [["2026-08-23", "完成"]],
+    }, {
+      userId,
+      instanceId,
+      projectId,
+      conversationId: "automation-run:generic",
+      runId: "generic-run",
+      taskType: "automation-execution",
+      workspacePath: genericAutomationStaging,
+    });
+    assert.deepEqual(genericAutomation.stagedOutput, {
+      operation: "create",
+      fileName: "通用自动化复盘.xlsx",
+      filePath: "通用自动化复盘.xlsx",
+    });
+    assert.ok((await readFile(path.join(genericAutomationStaging, "通用自动化复盘.xlsx"))).length > 0);
+    assert.equal(genericAutomation.artifact, undefined, "generic automation staging must not publish a conversation artifact");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;

@@ -1985,7 +1985,9 @@ async function createSpreadsheetTool(input: Record<string, unknown> | undefined,
     noteRow.alignment = { wrapText: true, vertical: "top" };
   }
   const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
-  if (context.taskType === "scheduled-automation") {
+  // Generic automation runs use the narrower `automation-execution` task
+  // type; keep the legacy scheduler marker compatible for older callers.
+  if (context.taskType === "scheduled-automation" || context.taskType === "automation-execution") {
     if (!context.workspacePath) throw new Error("spreadsheet.create requires the automation staging workspace");
     const stagingRoot = path.resolve(context.workspacePath);
     const outputPath = path.resolve(stagingRoot, fileName);
