@@ -1,6 +1,6 @@
 # 默认可用数据与显式口径实施简报
 
-> 状态：待执行
+> 状态：历史实施简报；Mastra 当前承接见 `context-and-prompt-architecture.md`，下文旧 ACP/Workspace 路径不再作为执行入口
 > 上位原则：[证据边界内尽力回答设计](./best-effort-answering-design.md)
 > 范围：用户问答、表格与报告生成、自动化任务、结果文件、Portal 呈现
 
@@ -23,8 +23,8 @@
 
 | 层级 | 已具备 | 主要缺口 |
 | --- | --- | --- |
-| 通用 Agent 规则 | `templates/workspace/AGENTS.md` 已要求部分覆盖、替代口径、严格请求和不编造 | 默认可用数据的用户体验尚未在所有交付类型使用一致措辞 |
-| 普通问答 | `templates/workspace/skills/qa/prompt.md` 已要求事实、推断、不确定性分开 | CSV、文件交付和自动化的口径表现未与问答统一 |
+| 通用 Agent 规则 | `src/runtime/agent-instructions.ts` 要求部分覆盖、替代口径、严格请求和不编造 | 文件交付和自动化仍需按真实案例持续核对 |
+| 普通问答 | Mastra L1 指令与当前方法 Skill 要求事实、推断和不确定性分开 | 长尾数据覆盖仍取决于已挂载工具 |
 | 数据政策 | `docs/data-source-policy-decision.md` 已定义服务事实、公开证据与明确缺口的获取顺序 | 缺少将该顺序转化成用户可见方法说明的统一契约 |
 | 定时复盘/简报 | `src/acp/mobile-prompt.ts`、`src/acp/scheduled-tasks.ts` 已要求来源、时效、缺失说明 | 各任务的措辞与输出结构不完全统一 |
 | 通用自动化 | `src/services/generic-automation-runner.ts` 已允许 Agent 更新、新建或不改动文件 | 结构化结果只以 `summary` 表达，尚无稳定的用户可见口径字段 |
@@ -50,7 +50,7 @@
 
 修改目标限于模板和通用行为规则，不新增服务 API。
 
-- 对齐 `templates/workspace/AGENTS.md`、`knowledge/capability_extension_protocol.md`、`skills/qa/prompt.md` 与报告/研究/表格相关 Skill。
+- 对齐 `src/runtime/agent-instructions.ts`、`templates/skills/` 与当前报告、研究、表格任务 prompt。
 - 明确默认模式下应交付的最小方法信息：来源或来源类别、截至时间、覆盖范围、关键替代或缺失。
 - 明确严格模式的识别词和语义：指定来源、对账、审计、正式报送、逐项一致、指定时点/单位/公式等。
 - 明确表格规则：多来源数据必须可区分，不能静默合并；允许在文件首行或字段中给出数据说明。

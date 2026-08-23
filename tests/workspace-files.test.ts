@@ -47,6 +47,7 @@ test("workspace file browser lists user project files but excludes secrets and r
       // Bootstrap seeds system skills; they are regular user-evolvable project
       // files and therefore listable.
       "skills/automation-task-designer/SKILL.md",
+      "skills/candidate-screening/SKILL.md",
       "skills/fundamental-analysis/SKILL.md",
       "skills/macro-analysis/SKILL.md",
       "skills/risk-control/SKILL.md",

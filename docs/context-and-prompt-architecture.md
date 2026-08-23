@@ -36,18 +36,18 @@
 
 定位：**系统播种初始版本，之后是用户的可进化资产**。用户不会手改 SKILL.md 没关系——正常演化路径是用户在对话中表达方法调整，Agent 整理草案、经确认后更新文件并留痕。
 
-- 模板：`templates/skills/`。其中 fundamental-analysis / technical-analysis / macro-analysis / risk-control 承接用户方法论；automation-task-designer 提供任务创建/修改时的对话设计辅助。模板适配新内核，引用当前服务能力与 `methods/strategy-rules.md`，不再引用旧 config yaml。
+- 模板：`templates/skills/`。其中 fundamental-analysis / technical-analysis / macro-analysis / risk-control 承接用户方法论，candidate-screening 承接候选发现、风险扫描和等待条件；automation-task-designer 提供任务创建/修改时的对话设计辅助。模板适配新内核，引用当前服务能力与 `methods/strategy-rules.md`，不再引用旧 config yaml。
 - 播种：`MastraWorkspaceRegistry.bootstrap()` 只在首次创建项目 manifest 时调用 `seedSystemSkills()`；既有项目的普通访问不会采用后来新增的模板。播种只复制不存在的文件，永不覆盖用户演化后的版本；模板根缺失不报错（老部署可没有 templates/）。可用 `SYSTEM_SKILLS_TEMPLATE_ROOT` 覆写。
 - 存量项目：先按用户和精确文件备份并确认，再运行 `node scripts/seed-mastra-skills.mjs [--dry-run] [--root <projects-root>]`；脚本幂等且不覆盖。服务器布局默认读 `data/projects`。
 - Mastra Workspace 以 `skills: ["skills"]` 挂载，SKILL.md 自动进入 agent 的 skills 清单并渐进式披露（search/load）。
-- 旧 `.codex/skills` 的执行流程型 skill（daily-review、market-watch、onboarding 等）**不迁移**：其职责已由 typed automation tasks、调度提示词组装和服务代码接管，迁回等于用文档当安全边界。
+- 旧 `.codex/skills` 的执行流程型 skill（daily-review、market-watch、onboarding 等）**不迁移**：其职责已由 typed automation tasks、调度提示词组装和服务代码接管，迁回等于用文档当安全边界。仓库已停止从 `templates/workspace/.codex/skills` 和旧 `templates/workspace/skills` 播种这类资产；生产旧 Workspace 中的既有副本仍按用户资产保留，逐文件完成承接判定前不得删除。
 - `automation-task-designer` 是创建/修改任务时的对话设计辅助，不参与定时任务执行，也不构成安全边界。它只负责读取当前能力与资产、收敛少量执行关键歧义并起草任务定义；scope、schema、revision、调度和审计仍由 `automation.*` 服务工具强制。
 - workspace 写工具策略（approval + read-before-write + 审计）约束 skill 文件的修改路径。
 
 ## 5. 遗留问题（已留坑）
 
 - **"越用越好用"**：跨会话个性化记忆、方法演化的自动建议（复盘时主动提出 skill 修订建议）、用户偏好沉淀。当前只做了 L3 会话内历史 + L4 手动/半自动演化；跨会话记忆层暂不设计，待产品验证后立项。
-- 旧生产 Workspace 中用户实例的 `AGENTS.md` / `.codex/skills` 属于用户资产，按红线只能报告差异，不能自动迁移或删除。
+- 旧生产 Workspace 中用户实例的 `AGENTS.md` / `.codex/skills` 属于用户资产，按红线只能报告差异，不能自动迁移或删除。模板中不再存在同名标准版本，因此兼容预检也不得把旧 `.codex/skills` 报告为可采用更新。
 
 ## 6. 部署注意
 

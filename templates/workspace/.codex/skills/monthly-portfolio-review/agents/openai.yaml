@@ -1,4 +1,0 @@
-interface:
-  display_name: "月复盘"
-  short_description: "回测本月周复盘质量并提出方法迭代建议"
-  default_prompt: "使用月复盘技能，汇总 reports/weekly、reports/daily 和 memory 记录，生成本月复盘并保存到 reports/monthly。"

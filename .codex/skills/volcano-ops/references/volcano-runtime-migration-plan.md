@@ -273,14 +273,7 @@ PORTAL_CONNECTOR_TOKEN=<production-token>
 
 这个 MCP server 在服务进程外以子进程方式启动，但直接复用本项目的服务层模块和 workspace backend，不依赖 shell 网络。读取工具包括 `market.snapshot`、`market.quote`、`market.health`、`portfolio.read`、`watchlist.read`、`plans.read`。除 scheduled `reviews.save` 外，写入前必须先用 `confirmations.request` 登记精确草案，用户下一轮确认后再携带一次性 `confirmationId` 和 `confirmedByUser: true` 写入。服务层不再把 `marketSnapshot` 预注入 prompt，避免污染上下文；行情、持仓、预案和规则事实都由 Codex 通过 MCP 按需读取。
 
-如果后续决定让服务进程本身监听 `22648`，必须同步完成一轮端口参数化改造：
-
-- `templates/workspace/AGENTS.md`
-- `templates/workspace/skills/market-watch/*.md`
-- `templates/workspace/skills/wechat-onboarding/prompt.md`
-- 所有写死 `127.0.0.1:22655` 的 sandbox API 调用说明
-
-第一阶段不建议这样做，保持内部 `22655` 更稳。
+这段是旧 ACP 迁移期记录。当前 Mastra 运行时不读取 `templates/workspace` 下的提示词或 Skill；端口变更必须从服务配置、`src/runtime/agent-instructions.ts` 和实际服务调用点审计，不能通过修改旧 Workspace 文本生效。
 
 ## 数据迁移策略
 

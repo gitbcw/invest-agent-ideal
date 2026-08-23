@@ -1,4 +1,0 @@
-interface:
-  display_name: "公司财务分析"
-  short_description: "基于财报、同行对比、行业周期和用户策略分析公司长期投资价值"
-  default_prompt: "使用公司财务分析技能，分析用户指定公司，并将完整报告保存到 reports/company。"

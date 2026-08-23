@@ -1,8 +1,0 @@
-{
-  "name": "observation-pool",
-  "description": "建立可跟踪观察池、候选排雷和买入等待区，不做直接荐股",
-  "triggers": ["观察池", "辅助选股", "候选标的", "帮我筛", "买入等待区"],
-  "inputs": ["config/portfolio.yaml", "config/strategy.yaml", "config/selection.yaml", "config/observation_pool.yaml", "knowledge/selection_protocol.md"],
-  "outputs": ["config/observation_pool.yaml", "reports/company"],
-  "requires_confirmation_for_memory_write": true
-}

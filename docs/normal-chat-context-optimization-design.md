@@ -1,6 +1,6 @@
 # 普通对话上下文优化设计
 
-> 状态：已实现，本文记录当前普通消息直通 workspace ACP 的契约和迁移理由。
+> 状态：历史设计，ACP 路径已由 Mastra 取代；当前契约见 `context-and-prompt-architecture.md`。下文保留迁移理由，不作为当前文件路径或运行时说明。
 
 ## 背景
 
@@ -108,7 +108,7 @@ workspace `AGENTS.md` 增加确定性工作约定：当原生会话不足以唯�
 | `src/acp/prompt-context-builder.ts` | 分离 capability 准备与 prompt 构造；mcp-first 不调用普通 `buildContextPacket()`。 |
 | `src/acp/mobile-prompt.ts` | 普通聊天不再附加服务层固定工作流文本；复盘 prompt 保持专用输入。 |
 | `templates/workspace/AGENTS.md` | 写明 MCP-first 的事实、确认、历史恢复规则。 |
-| `templates/workspace/skills/*` | 在 QA/onboarding/plan 相关 skill 中引用相同的澄清和确认纪律。 |
+| `templates/skills/*` | Mastra 用户方法与任务设计 Skill；安全、确认和历史恢复纪律不放在用户 Skill 中。 |
 | `src/acp/context-packet.ts` | 如保留，仅用于非 prompt 的模型路由/trace；历史读取必须显式按 conversation scope。 |
 | Tests/smoke | 覆盖 native session、MCP 恢复、跨会话隔离、无 packet 普通问答和 review 例外。 |
 

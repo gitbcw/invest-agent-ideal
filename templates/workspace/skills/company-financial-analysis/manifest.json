@@ -1,8 +1,0 @@
-{
-  "name": "company-financial-analysis",
-  "description": "基于财报和用户策略分析公司长期投资价值并输出基本面预警",
-  "triggers": ["公司财务分析", "财报分析", "长期持有价值", "护城河", "同行对比"],
-  "inputs": ["financials/companies", "config/portfolio.yaml", "config/strategy.yaml", "knowledge/methods/fundamental.md"],
-  "outputs": ["reports/company/YYYY-MM-DD-code-name.md"],
-  "requires_confirmation_for_memory_write": false
-}

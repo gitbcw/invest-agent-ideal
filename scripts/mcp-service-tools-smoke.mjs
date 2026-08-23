@@ -13,6 +13,7 @@ const reviewDate = "2026-07-16";
 process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(tempRoot, "test.db");
 process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
+process.env.MASTRA_PROJECTS_ROOT = path.join(tempRoot, "projects");
 process.env.REVIEWS_ROOT = path.join(tempRoot, "reviews");
 process.env.INVEST_AGENT_SANDBOX_SECRET_FILE = path.join(tempRoot, ".sandbox-secret");
 process.env.INVEST_AGENT_API_TOKEN = "mcp-smoke-service-token-at-least-32-characters";
@@ -23,7 +24,7 @@ try {
   sqlite = dbModule.sqlite;
   dbModule.initDb();
   const { callServiceTool, serviceToolContextFromEnv } = await import("../dist/mcp/service-tools-core.js");
-  const { ensureWorkspace } = await import("../dist/lib/workspace.js");
+  const { mastraWorkspaceRegistry } = await import("../dist/mastra/workspace-registry.js");
   const { dailyPlanBackend } = await import("../dist/lib/daily-plan-backend.js");
   const context = serviceToolContextFromEnv({
     ...process.env,
@@ -32,7 +33,11 @@ try {
     INVEST_AGENT_MCP_CONVERSATION_ID: "mcp-smoke-conversation",
   });
 
-  await ensureWorkspace({ userId: context.userId, projectId: "invest-agent" });
+  await mastraWorkspaceRegistry.bootstrap({
+    userId: context.userId,
+    projectId: context.projectId,
+    instanceId: context.instanceId,
+  });
   for (const [name, input] of [
     ["portfolio.read", {}],
     ["watchlist.read", {}],

@@ -3,16 +3,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
-test("daily review template requires a decision-complete WeChat brief", async () => {
-  const skill = await readFile(path.resolve("templates/workspace/.codex/skills/daily-portfolio-review/SKILL.md"), "utf8");
-  const prompt = await readFile(path.resolve("templates/workspace/skills/daily-review/prompt.md"), "utf8");
+test("current daily review prompt requires a decision-complete WeChat brief", async () => {
+  const prompt = await readFile(path.resolve("src/runtime/scheduled-tasks.ts"), "utf8");
 
-  for (const content of [skill, prompt]) {
-    assert.match(content, /decision-complete|决策完整/);
-    assert.match(content, /400-700/);
-    assert.match(content, /700-1000/);
-    assert.match(content, /three decisions|三个决策/);
-    assert.match(content, /验证.*失效|validation.*invalidation/);
-    assert.match(content, /数据.*来源|source-quality/);
-  }
+  assert.match(prompt, /三个决策/);
+  assert.match(prompt, /验证信号与失效信号/);
+  assert.match(prompt, /来源、截至时间和质量边界/);
+  assert.match(prompt, /reviews\.save/);
 });

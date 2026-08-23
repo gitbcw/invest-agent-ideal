@@ -2,7 +2,7 @@
 
 ## 目的
 
-真实用户 Workspace 是长期资产，不随普通代码发布整体覆盖。模板中的 Skills 只负责新建 Workspace 的初始种子，之后可以由用户和 ACP 通过确认后的对话持续演化。模板版本变化只作为可选更新提示，不能被解释为必须迁移。
+真实用户旧 Workspace 是长期兼容资产，不随普通代码发布整体覆盖。当前 Mastra Agent 只挂载注册项目根下的 `skills/`，不读取旧 Workspace 的 `AGENTS.md`、`.codex/skills` 或 `skills/`。Mastra Skill 的模板与播种流程见 `docs/context-and-prompt-architecture.md`；本文件只描述旧 Workspace 数据的兼容预检。
 
 这套流程不替换 SQLite、Workspace 目录、复盘、微信状态或用户配置，也不属于 `volcano:package-runtime` / `volcano:apply-runtime` 数据迁移路径。
 
@@ -13,7 +13,7 @@
 `src/lib/workspace-compatibility.ts` 将文件分成两类：
 
 - `WORKSPACE_MANAGED_ASSETS`：不可由用户定制的系统元数据；当前为空，不包含任何 Skill。
-- `WORKSPACE_OPTIONAL_TEMPLATE_ASSETS`：模板提供的 `AGENTS.md`、标准 Skill 和协议参考；预检只报告更新，不自动应用。
+- `WORKSPACE_OPTIONAL_TEMPLATE_ASSETS`：当前为空。旧 `AGENTS.md`、`.codex/skills` 和其他提示词资产都不再有可采用的模板标准版本。
 
 以下资产始终由用户或实例拥有；其中登记为可选模板资产的文件，也只能在负责人逐文件确认后采用标准版本：
 
@@ -23,7 +23,7 @@
 - `reports/`、`memory/`、`financials/`、预案和历史产物。
 - 投资方法和其他自定义文件。
 
-新建 Workspace 仍从完整的当前模板初始化。现有 Workspace 在普通运行、代码发布和兼容迁移中都不会补齐或覆盖模板 Skill。
+兼容工具仍可为隔离迁移创建旧 Workspace 数据骨架，但该目录不是 Mastra Agent 的运行项目。现有 Workspace 在普通运行、代码发布和兼容迁移中都不会补齐、覆盖或删除旧 Skill。
 
 ## 只读预检
 
@@ -70,21 +70,9 @@ npm run workspace:migrate -- \
 
 迁移后重新运行预检，目标状态应为 `ready`。
 
-## 明确采用模板版本
+## 模板采用入口
 
-只有用户或负责人明确决定用标准版本替换某个具体文件时，才使用 `workspace:adopt-template`。必须逐用户、逐文件点名，不能使用目录或通配符：
-
-```bash
-npm run workspace:adopt-template -- \
-  --workspace-root=/home/claude/invest-agent-data/workspaces \
-  --template-root=/home/claude/invest-agent/templates/workspace \
-  --user=111 \
-  --assets=.codex/skills/market-watch/SKILL.md \
-  --backup-root=/home/claude/invest-agent-data/workspace-compatibility-backups \
-  --confirm=adopt-template-assets-v1
-```
-
-该操作只接受标准模板目录中登记的可选资产，替换前保存原文件，并写入 `.invest-agent/workspace-template-adoption.json`。用户 Skill 存在冲突但未明确选择时，保持用户版本。
+当前没有允许采用的旧 Workspace 提示词资产；`workspace:adopt-template` 对 `AGENTS.md`、`.codex/skills` 和其他路径都会拒绝。生产用户旧文件只能在独立迁移方案中逐文件备份、重写和验收，不能通过兼容模板覆盖。
 
 ## 隔离单点验收
 

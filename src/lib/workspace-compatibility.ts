@@ -19,25 +19,7 @@ export const WORKSPACE_MANAGED_ASSETS = [] as const;
  * These files are seeded into new Workspaces and may evolve there. A version
  * difference is an available update, not a migration requirement.
  */
-export const WORKSPACE_OPTIONAL_TEMPLATE_ASSETS = [
-  "AGENTS.md",
-  ".codex/skills/service-capability-policy/SKILL.md",
-  ".codex/skills/conversation-recovery/SKILL.md",
-  ".codex/skills/capability-extension/SKILL.md",
-  ".codex/skills/capability-extension/agents/openai.yaml",
-  ".codex/skills/core-company-fundamental-review/SKILL.md",
-  ".codex/skills/core-company-fundamental-review/agents/openai.yaml",
-  ".codex/skills/investment-onboarding/SKILL.md",
-  ".codex/skills/market-watch/SKILL.md",
-  ".codex/skills/daily-portfolio-review/SKILL.md",
-  ".codex/skills/daily-portfolio-review/agents/openai.yaml",
-  ".codex/skills/monthly-portfolio-review/SKILL.md",
-  ".codex/skills/monthly-portfolio-review/agents/openai.yaml",
-  ".codex/skills/observation-pool/SKILL.md",
-  ".codex/skills/weekly-portfolio-review/SKILL.md",
-  ".codex/skills/weekly-portfolio-review/agents/openai.yaml",
-  "knowledge/capability_extension_protocol.md",
-] as const;
+export const WORKSPACE_OPTIONAL_TEMPLATE_ASSETS = [] as const;
 
 const REQUIRED_USER_CONFIGS = [
   "config/tenant.yaml",
@@ -48,11 +30,7 @@ const REQUIRED_USER_CONFIGS = [
   "config/notification.yaml",
 ] as const;
 
-const LEGACY_AGENT_MARKERS = [
-  "invest-agent-service-tools",
-  "onboarding.draft.get",
-  "reviews.save",
-] as const;
+const LEGACY_AGENT_MARKERS = [] as const;
 
 export type WorkspaceCompatibilityStatus = "ready" | "migration_required" | "blocked";
 export type ManagedAssetAction = "add" | "replace";

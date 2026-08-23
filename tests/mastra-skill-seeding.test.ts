@@ -121,7 +121,7 @@ test("repo system skill templates are valid SKILL.md assets", async () => {
   const { systemSkillsTemplateRoot } = await import("../src/mastra/workspace-registry.js");
   const templateRoot = systemSkillsTemplateRoot();
   const entries = (await readdir(templateRoot)).sort();
-  assert.deepEqual(entries, ["automation-task-designer", "fundamental-analysis", "macro-analysis", "risk-control", "technical-analysis"]);
+  assert.deepEqual(entries, ["automation-task-designer", "candidate-screening", "fundamental-analysis", "macro-analysis", "risk-control", "technical-analysis"]);
   for (const entry of entries) {
     const body = await readFile(path.join(templateRoot, entry, "SKILL.md"), "utf8");
     assert.match(body, /^---\nname: [a-z-]+\ndescription: \S/, `${entry} must carry skill frontmatter`);

@@ -169,15 +169,12 @@ test("spreadsheet validation errors teach the expected shapes instead of bare 'i
 test("assistant and generic automation prompts require XLSX for user-facing tables", async () => {
   const source = await import("node:fs/promises");
   const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
-  const template = await source.readFile(new URL("../templates/workspace/AGENTS.md", import.meta.url), "utf8");
   const { buildMobilePrompt } = await import("../src/runtime/mobile-prompt.js");
   const prompt = buildMobilePrompt({ userText: "创建一个表格" });
 
-  for (const content of [prompt, template]) {
-    assert.match(content, /统一.*Excel|统一使用 Excel/);
-    assert.match(content, /CSV.*xlsx|CSV.*XLSX/);
-    assert.match(content, /不得提交.*csv|不要创建 CSV/);
-  }
+  assert.match(prompt, /统一.*Excel|统一使用 Excel/);
+  assert.match(prompt, /CSV.*xlsx|CSV.*XLSX/);
+  assert.match(prompt, /不得提交.*csv|不要创建 CSV/);
   assert.match(runnerSource, /本次输出策略（明确格式和文件名必须严格遵守）/);
   assert.match(runnerSource, /OUTPUT_VOLUME_POLICY/);
 });

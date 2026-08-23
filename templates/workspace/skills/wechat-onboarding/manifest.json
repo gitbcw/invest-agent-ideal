@@ -1,8 +1,0 @@
-{
-  "name": "wechat-onboarding",
-  "description": "以自然对话完成最小可用配置，逐项确认草稿并在最后统一提交",
-  "triggers": ["开始使用", "录入持仓", "更新持仓", "调整风格", "设置助手"],
-  "inputs": ["AGENTS.md", "config/onboarding_state.yaml", "当前步骤所需的用户输入"],
-  "outputs": ["onboarding.draft.upsert_step", "onboarding.draft.accept_step", "onboarding.draft.enqueue_commit"],
-  "requires_confirmation_for_memory_write": true
-}

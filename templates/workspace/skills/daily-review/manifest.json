@@ -1,8 +1,0 @@
-{
-  "name": "daily-review",
-  "description": "默认工作日 19:00 自动生成侧重价格和仓位的日复盘",
-  "triggers": ["日复盘", "每日复盘", "今日复盘", "持仓复盘"],
-  "inputs": ["config/portfolio.yaml", "config/strategy.yaml", "config/notification.yaml", "config/decision_policy.yaml", "knowledge/methods", "config/sources.yaml"],
-  "outputs": ["reports/daily/YYYY-MM-DD.md", "memory/decisions.jsonl"],
-  "requires_confirmation_for_memory_write": false
-}

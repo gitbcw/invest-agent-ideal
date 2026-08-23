@@ -1,4 +1,0 @@
-interface:
-  display_name: "能力扩展"
-  short_description: "区分可在 Workspace 内实现的扩展与系统能力申请"
-  default_prompt: "请使用 $capability-extension 评估并起草这个长期能力请求。"

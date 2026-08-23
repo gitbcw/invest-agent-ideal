@@ -1,8 +1,0 @@
-{
-  "name": "weekly-review",
-  "description": "默认周六 09:00 自动回测日复盘并输出风险雷达",
-  "triggers": ["周复盘", "本周总结", "周度复盘"],
-  "inputs": ["reports/daily", "memory/decisions.jsonl", "config/portfolio.yaml", "config/strategy.yaml", "config/decision_policy.yaml", "config/notification.yaml"],
-  "outputs": ["reports/weekly/YYYY-Www.md", "memory/method_changes.jsonl"],
-  "requires_confirmation_for_memory_write": false
-}
