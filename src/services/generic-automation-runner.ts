@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { logger } from "../lib/logger.js";
@@ -499,7 +499,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变、显式返回 outputSkipped:true 并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         input.task.revision.output.mode === "none"
           ? "最终回复必须是一个 JSON 对象：{summary:string, shouldNotify?:boolean}。本任务不产出文件资产：最终 JSON 里禁止出现 stagedOutput 字段（出现会导致运行被判无效）；一切结果都写入 summary。若任务过程中确需留档，用任务说明允许的领域工具（如 reviews.save）完成，不要用 stagedOutput。"
-          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'appendRows'|'update'|'create', …}, shouldNotify?:boolean, outputSkipped?:boolean}。向绑定工作簿表尾追加数据行时优先用 operation:'appendRows'（只带 sheet/rows/skipIfCellMatches，不携带文件内容）；生成完整新文件时优先调用 spreadsheet.create 在当前暂存目录生成 XLSX，并原样返回工具结果里的 stagedOutput；自行生成 XLSX/CSV 时必须返回 {operation:'create', fileName:'带扩展名的文件名', filePath:'暂存目录内的相对路径'}，fileName 和 filePath 缺一不可，不得使用绝对路径或越出暂存目录。只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。若本次运行确定无需修改绑定文件（如数据缺失、当日行已存在），必须显式返回 outputSkipped:true 并在 summary 说明原因；缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败。",
+          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'appendRows'|'update'|'create', …}, shouldNotify?:boolean, outputSkipped?:boolean}。向绑定工作簿表尾追加数据行时优先用 operation:'appendRows'（只带 sheet/rows/skipIfCellMatches，不携带文件内容）；生成完整新文件时优先调用 spreadsheet.create 在当前暂存目录生成 XLSX，并原样返回工具结果里的 stagedOutput；自行生成 XLSX/CSV 时必须返回 {operation:'create', fileName:'带扩展名的文件名', filePath:'暂存目录内的相对路径'}，fileName 和 filePath 缺一不可；filePath 必须原样使用文件写入工具返回的相对路径（通常就是纯文件名），不得自行拼接目录前缀、暂存根路径或绝对路径，也不得越出暂存目录。只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。若本次运行确定无需修改绑定文件（如数据缺失、当日行已存在），必须显式返回 outputSkipped:true 并在 summary 说明原因；缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败。",
         ...(input.task.revision.delivery.mode === "none"
           ? []
           : [
@@ -563,6 +563,56 @@ function assertAgentSucceeded(response: AgentResponse): void {
   if (error) throw new AutomationExecutionFailure(error);
 }
 
+const STAGING_BASENAME_SEARCH_MAX_ENTRIES = 500;
+const STAGING_BASENAME_SEARCH_MAX_DEPTH = 3;
+
+/** T-337 self-heal: when an agent misreferences the staged file (absolute
+ * path, wrong prefix, or an invented subdirectory), find the unique staging
+ * file with the same basename. Returns "" on zero or ambiguous matches and
+ * never resolves outside the staging root (symlinks resolved). */
+async function findUniqueStagingFileByBasename(stagingPath: string, root: string, basename: string): Promise<string> {
+  const wanted = basename.trim().toLowerCase();
+  if (!wanted || wanted === "." || wanted === "..") return "";
+  const matches: string[] = [];
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: stagingPath, depth: 0 }];
+  let visited = 0;
+  while (queue.length > 0 && matches.length < 2 && visited < STAGING_BASENAME_SEARCH_MAX_ENTRIES) {
+    const { dir, depth } = queue.shift()!;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      visited += 1;
+      if (visited > STAGING_BASENAME_SEARCH_MAX_ENTRIES) break;
+      if (entry.isDirectory()) {
+        // `inputs/` is a service-owned copy of bound assets, not an agent
+        // output candidate. Never turn a missing output into a copy of input.
+        if (entry.name === "inputs") continue;
+        if (depth < STAGING_BASENAME_SEARCH_MAX_DEPTH) queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+        continue;
+      }
+      if (!(entry.isFile() || entry.isSymbolicLink()) || entry.name.toLowerCase() !== wanted) continue;
+      const resolved = await realpath(path.join(dir, entry.name)).catch(() => "");
+      if (!resolved || (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))) continue;
+      const relative = path.relative(root, resolved);
+      if (relative === "inputs" || relative.startsWith(`inputs${path.sep}`) || relative === "automation-sheet.mjs") continue;
+      const info = await stat(resolved).catch(() => null);
+      if (!info?.isFile()) continue;
+      matches.push(resolved);
+      if (matches.length >= 2) break;
+    }
+  }
+  if (matches.length !== 1) return "";
+  return matches[0]!;
+}
+
+function clipPathForError(filePath: string): string {
+  return filePath.length > 200 ? `${filePath.slice(0, 197)}...` : filePath;
+}
+
 async function normalizeStructuredResult(response: AgentResponse, task: AutomationTaskRecord, resolved: ResolvedBindings, scope: AutomationScope, stagingPath: string): Promise<{
   summary: string;
   shouldNotify: boolean;
@@ -607,13 +657,49 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
   let base64 = typeof staged.base64 === "string" ? staged.base64 : typeof staged.bytesBase64 === "string" ? staged.bytesBase64 : "";
   const filePath = typeof staged.filePath === "string" ? staged.filePath.trim() : "";
   if (!base64 && filePath) {
-    if (path.posix.isAbsolute(filePath) || path.win32.isAbsolute(filePath) || filePath.includes("\0")) {
-      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput filePath is invalid");
+    if (filePath.includes("\0")) {
+      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `stagedOutput filePath is invalid: ${clipPathForError(filePath)}`);
     }
     const root = await realpath(stagingPath);
-    const candidate = await realpath(path.resolve(stagingPath, filePath)).catch(() => "");
-    if (!candidate || (candidate !== root && !candidate.startsWith(`${root}${path.sep}`))) {
-      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput filePath is outside staging");
+    const absolute = path.posix.isAbsolute(filePath) || path.win32.isAbsolute(filePath);
+    const normalizedPath = filePath.replace(/\\/g, "/");
+    if (normalizedPath.split("/").includes("..")) {
+      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `stagedOutput filePath is outside staging: ${clipPathForError(filePath)}`);
+    }
+    const requestedPath = absolute ? filePath : path.resolve(stagingPath, filePath);
+    const resolvedRequestedPath = await realpath(requestedPath).catch(() => "");
+    const resolvedInside = resolvedRequestedPath !== ""
+      && (resolvedRequestedPath === root || resolvedRequestedPath.startsWith(`${root}${path.sep}`));
+    const resolvedReserved = resolvedInside && (() => {
+      const relative = path.relative(root, resolvedRequestedPath);
+      return relative === "inputs" || relative.startsWith(`inputs${path.sep}`) || relative === "automation-sheet.mjs";
+    })();
+    const requestedInfo = resolvedInside && !resolvedReserved ? await stat(resolvedRequestedPath).catch(() => null) : null;
+    let candidate = requestedInfo?.isFile() ? resolvedRequestedPath : "";
+    const requestedPathExists = resolvedRequestedPath !== "";
+    // Absolute paths are a malformed result even when they happen to resolve
+    // inside staging. They may be normalized only when the task has exactly
+    // one declared writable target; otherwise the target identity is unclear.
+    // Existing paths outside staging are never normalized, so an agent cannot
+    // smuggle an arbitrary workspace file through a matching basename.
+    const rejection = absolute
+      ? resolvedRequestedPath && !resolvedInside ? "is outside staging" : "is invalid"
+      : resolvedRequestedPath && !resolvedInside ? "is outside staging" : candidate ? null : "is outside staging";
+    if (rejection && requestedPathExists && (!resolvedInside || resolvedReserved || !requestedInfo?.isFile())) {
+      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `stagedOutput filePath ${rejection}: ${clipPathForError(filePath)}`);
+    }
+    if (rejection) {
+      if (resolved.writableTargets.length !== 1) {
+        throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `stagedOutput filePath ${rejection}; cannot normalize without exactly one writable target: ${clipPathForError(filePath)}`);
+      }
+      // T-337 (2026-08-21 patrol, mg agent-mode review): agents sometimes
+      // prefix the staging root or an invented subdirectory to the file name.
+      // Recover deterministically when exactly one file in staging carries the
+      // referenced basename; stay failed on zero or ambiguous matches.
+      candidate = await findUniqueStagingFileByBasename(stagingPath, root, path.posix.basename(filePath.replace(/\\/g, "/")));
+      if (!candidate) {
+        throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `stagedOutput filePath ${rejection}: ${clipPathForError(filePath)}`);
+      }
     }
     base64 = (await readFile(candidate)).toString("base64");
   }

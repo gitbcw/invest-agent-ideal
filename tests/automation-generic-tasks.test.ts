@@ -480,6 +480,217 @@ test("agent create filePath rejects an existing file outside staging (MG 2026-08
   }
 });
 
+test("T-337: misprefixed or absolute filePath recovers via the unique staging basename", async () => {
+  const { automation, assets } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const target = await assets.createUserAsset({
+    ...scope,
+    name: "单一可写目标",
+    fileName: "bound.md",
+    mimeType: "text/markdown",
+    bytes: Buffer.from("# bound input\n"),
+  });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-agent-create-filepath-basename-heal",
+    name: "暂存路径自愈契约",
+    instruction: "生成 Markdown 文件。",
+    schedule: schedule(),
+    inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }],
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+
+  // Case 1: the agent prefixed an invented directory to the referenced path.
+  const healed = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-heal-prefix",
+    executor: async ({ stagingPath }) => {
+      writeFileSync(path.join(stagingPath, "result.md"), "# healed\n");
+      return {
+        content: { type: "text" as const, text: "done" },
+        finished: true,
+        data: {
+          summary: "已生成文件。",
+          stagedOutput: { operation: "create", fileName: "result.md", filePath: "staging/result.md", mimeType: "text/markdown" },
+        },
+      };
+    },
+  });
+  assert.equal(healed.run.status, "succeeded", "a wrong prefix over a unique staged basename must self-heal");
+  assert.ok(healed.run.outputAssetId);
+  const healedOutput = await assets.readCurrentUserAsset({ ...scope, assetId: healed.run.outputAssetId! });
+  assert.equal(healedOutput.bytes.toString(), "# healed\n");
+
+  // Case 2: the agent echoed the absolute workspace path of the staged file.
+  const absolute = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-heal-absolute",
+    executor: async ({ stagingPath }) => {
+      const absolutePath = path.join(stagingPath, "absolute.md");
+      writeFileSync(absolutePath, "# absolute\n");
+      return {
+        content: { type: "text" as const, text: "done" },
+        finished: true,
+        data: {
+          summary: "已生成文件。",
+          stagedOutput: { operation: "create", fileName: "absolute.md", filePath: absolutePath, mimeType: "text/markdown" },
+        },
+      };
+    },
+  });
+  assert.equal(absolute.run.status, "succeeded", "an absolute path to a unique staged file must self-heal");
+
+  // Case 3: ambiguous basenames must stay failed instead of guessing.
+  const ambiguous = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-heal-ambiguous",
+    executor: async ({ stagingPath }) => {
+      mkdirSync(path.join(stagingPath, "a"), { recursive: true });
+      mkdirSync(path.join(stagingPath, "b"), { recursive: true });
+      writeFileSync(path.join(stagingPath, "a", "dup.md"), "# a\n");
+      writeFileSync(path.join(stagingPath, "b", "dup.md"), "# b\n");
+      return {
+        content: { type: "text" as const, text: "done" },
+        finished: true,
+        data: {
+          summary: "提交歧义路径。",
+          stagedOutput: { operation: "create", fileName: "dup.md", filePath: "wrong/dup.md", mimeType: "text/markdown" },
+        },
+      };
+    },
+  });
+  assert.equal(ambiguous.run.status, "failed", "two staged files with the same basename must fail closed");
+  assert.match(ambiguous.run.errorMessage || "", /outside staging: wrong\/dup\.md/);
+
+  // Case 4: an existing absolute path outside staging must never be replaced
+  // with a same-basename staged file. This guards against arbitrary path
+  // acceptance, even when the task has one writable target.
+  let outsidePath = "";
+  try {
+    const outside = await runner.runGenericAutomationTaskNow({
+      scope,
+      taskId: task.taskId,
+      origin: "scheduled",
+      idempotencyKey: "generic-agent-create-filepath-heal-outside-existing",
+      executor: async ({ stagingPath, run }) => {
+        const basename = `outside-${run.runId}.md`;
+        outsidePath = path.join(path.dirname(stagingPath), basename);
+        writeFileSync(outsidePath, "# outside\n");
+        writeFileSync(path.join(stagingPath, basename), "# inside\n");
+        return {
+          content: { type: "text" as const, text: "done" },
+          finished: true,
+          data: {
+            summary: "提交暂存目录外文件。",
+            stagedOutput: { operation: "create", fileName: "outside.md", filePath: outsidePath, mimeType: "text/markdown" },
+          },
+        };
+      },
+    });
+    assert.equal(outside.run.status, "failed", "an existing absolute path outside staging must fail closed");
+    assert.equal(outside.run.outputAssetId, null);
+  } finally {
+    if (outsidePath) rmSync(outsidePath, { force: true });
+  }
+
+  // Case 5: service-owned bound inputs are not output candidates.
+  const inputEcho = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-heal-input-echo",
+    executor: async () => ({
+      content: { type: "text" as const, text: "done" },
+      finished: true,
+      data: {
+        summary: "误把输入文件当成产物。",
+        stagedOutput: { operation: "create", fileName: "bound.md", filePath: "inputs/1-bound.md", mimeType: "text/markdown" },
+      },
+    }),
+  });
+  assert.equal(inputEcho.run.status, "failed", "the service-owned inputs directory must not be treated as output");
+
+  // Case 6: no writable target means there is no safe target identity for
+  // basename healing, even if exactly one file exists in staging.
+  const noTargetTask = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-agent-create-filepath-heal-no-target",
+    name: "无可写目标自愈护栏",
+    instruction: "生成 Markdown 文件。",
+    schedule: schedule(),
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: noTargetTask.taskId, expectedRevision: 1 });
+  const noTarget = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: noTargetTask.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-heal-no-target-once",
+    executor: async ({ stagingPath }) => {
+      writeFileSync(path.join(stagingPath, "no-target.md"), "# no target\n");
+      return {
+        content: { type: "text" as const, text: "done" },
+        finished: true,
+        data: {
+          summary: "无目标路径。",
+          stagedOutput: { operation: "create", fileName: "no-target.md", filePath: "wrong/no-target.md", mimeType: "text/markdown" },
+        },
+      };
+    },
+  });
+  assert.equal(noTarget.run.status, "failed", "basename healing without a writable target must fail closed");
+  assert.match(noTarget.run.errorMessage || "", /exactly one writable target/);
+
+  // Case 7: multiple writable targets make the basename non-deterministic;
+  // do not hide that ambiguity behind a unique staged basename.
+  const secondTarget = await assets.createUserAsset({
+    ...scope,
+    name: "第二个可写目标",
+    fileName: "bound-two.md",
+    mimeType: "text/markdown",
+    bytes: Buffer.from("# second bound input\n"),
+  });
+  const multiTargetTask = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-agent-create-filepath-heal-multiple-targets",
+    name: "多可写目标自愈护栏",
+    instruction: "生成 Markdown 文件。",
+    schedule: schedule(),
+    inputs: [
+      { assetId: target.assetId, role: "input", versionPolicy: "latest" },
+      { assetId: secondTarget.assetId, role: "input", versionPolicy: "latest" },
+    ],
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: multiTargetTask.taskId, expectedRevision: 1 });
+  const multiTarget = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: multiTargetTask.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-agent-create-filepath-heal-multiple-targets-once",
+    executor: async ({ stagingPath }) => {
+      writeFileSync(path.join(stagingPath, "multi-target.md"), "# ambiguous target\n");
+      return {
+        content: { type: "text" as const, text: "done" },
+        finished: true,
+        data: {
+          summary: "多目标路径。",
+          stagedOutput: { operation: "create", fileName: "multi-target.md", filePath: "wrong/multi-target.md", mimeType: "text/markdown" },
+        },
+      };
+    },
+  });
+  assert.equal(multiTarget.run.status, "failed", "basename healing with multiple writable targets must fail closed");
+  assert.match(multiTarget.run.errorMessage || "", /exactly one writable target/);
+});
+
 test("new automation spreadsheet outputs reject CSV in favor of XLSX", async () => {
   const { automation, assets } = await fixture;
   const runner = await import("../src/services/generic-automation-runner.js");
