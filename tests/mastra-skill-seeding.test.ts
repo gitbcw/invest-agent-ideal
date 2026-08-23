@@ -79,6 +79,32 @@ test("seeding never overwrites user-evolved skills and re-runs are idempotent", 
   }
 });
 
+test("re-bootstrap does not adopt newly introduced templates into an existing project", async () => {
+  const templateRoot = await makeTemplateRoot();
+  process.env.SYSTEM_SKILLS_TEMPLATE_ROOT = templateRoot;
+  const projectsRoot = await mkdtemp(path.join(os.tmpdir(), "invest-agent-skill-projects-"));
+  try {
+    const { MastraWorkspaceRegistry } = await import("../src/mastra/workspace-registry.js");
+    const registry = new MastraWorkspaceRegistry(projectsRoot);
+    const scope = { userId: "existing-user", projectId: "invest-agent", instanceId: "invest-agent-existing-user" };
+    const project = await registry.bootstrap(scope);
+
+    await mkdir(path.join(templateRoot, "new-system-skill"), { recursive: true });
+    await writeFile(
+      path.join(templateRoot, "new-system-skill", "SKILL.md"),
+      "---\nname: new-system-skill\ndescription: new\n---\n\n# New\n",
+      "utf8",
+    );
+
+    await registry.bootstrap(scope);
+    await assert.rejects(readFile(path.join(project.projectRoot, "skills", "new-system-skill", "SKILL.md"), "utf8"));
+  } finally {
+    delete process.env.SYSTEM_SKILLS_TEMPLATE_ROOT;
+    await rm(projectsRoot, { recursive: true, force: true });
+    await rm(templateRoot, { recursive: true, force: true });
+  }
+});
+
 test("seedSystemSkills tolerates a missing template root", async () => {
   process.env.SYSTEM_SKILLS_TEMPLATE_ROOT = path.join(os.tmpdir(), "definitely-missing-skill-templates");
   try {
@@ -91,14 +117,38 @@ test("seedSystemSkills tolerates a missing template root", async () => {
   }
 });
 
-test("repo methodology skill templates are valid SKILL.md assets", async () => {
+test("repo system skill templates are valid SKILL.md assets", async () => {
   const { systemSkillsTemplateRoot } = await import("../src/mastra/workspace-registry.js");
   const templateRoot = systemSkillsTemplateRoot();
   const entries = (await readdir(templateRoot)).sort();
-  assert.deepEqual(entries, ["fundamental-analysis", "macro-analysis", "risk-control", "technical-analysis"]);
+  assert.deepEqual(entries, ["automation-task-designer", "fundamental-analysis", "macro-analysis", "risk-control", "technical-analysis"]);
   for (const entry of entries) {
     const body = await readFile(path.join(templateRoot, entry, "SKILL.md"), "utf8");
     assert.match(body, /^---\nname: [a-z-]+\ndescription: \S/, `${entry} must carry skill frontmatter`);
     assert.ok(body.includes("系统播种"), `${entry} must frame itself as a seeded, user-evolvable asset`);
   }
+});
+
+test("automation task designer is a confirmation-gated, schema-bound skill", async () => {
+  const { systemSkillsTemplateRoot } = await import("../src/mastra/workspace-registry.js");
+  const body = await readFile(path.join(systemSkillsTemplateRoot(), "automation-task-designer", "SKILL.md"), "utf8");
+
+  for (const trigger of ["创建", "修改", "检查/优化"]) {
+    assert.ok(body.includes(trigger), `skill must route ${trigger} requests`);
+  }
+  for (const tool of ["automation.list", "automation.get", "automation.create", "automation.update", "assets.list", "assets.attachment.save"]) {
+    assert.ok(body.includes(tool), `skill must use the mounted ${tool} schema`);
+  }
+  for (const contract of ["schedule", "instruction", "inputs", "output", "delivery", "去重/幂等", "数据质量", "失败策略", "expectedRevision"]) {
+    assert.ok(body.includes(contract), `skill must cover ${contract}`);
+  }
+  assert.match(body, /每轮最多问 1-2 个问题/);
+  assert.match(body, /完整草案，并等待用户下一轮明确确认/);
+  assert.ok(
+    body.indexOf("用户确认草案后，先用 `assets.attachment.save`") < body.indexOf("创建时调用 `automation.create`"),
+    "attachment promotion must be confirmation-gated and precede task creation",
+  );
+  assert.match(body, /不要把临时附件、文件名或路径直接写进任务定义/);
+  assert.match(body, /不向用户展示工具名/);
+  assert.match(body, /不固化任何特定用户、行业或数据源规则/);
 });

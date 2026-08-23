@@ -78,12 +78,16 @@ export class MastraWorkspaceRegistry {
       createdAt: new Date().toISOString(),
       migrationSource: "none",
     };
+    let createdManifest = false;
     try {
       await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      createdManifest = true;
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
     }
-    await seedSystemSkills(path.join(projectRoot, "skills"));
+    // Templates initialize a new project only. Existing project Skills are
+    // user-owned assets and require an explicit, backed-up adoption flow.
+    if (createdManifest) await seedSystemSkills(path.join(projectRoot, "skills"));
     const project = { ...scope, projectRoot };
     await this.register(project);
     recordFileLifecycleEvent({

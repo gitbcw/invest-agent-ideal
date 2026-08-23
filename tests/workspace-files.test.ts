@@ -44,8 +44,9 @@ test("workspace file browser lists user project files but excludes secrets and r
       "config.yml",
       "preview.html",
       "reports/daily/today.md",
-      // Bootstrap seeds the four system methodology skills; they are regular
-      // user-evolvable project files and therefore listable.
+      // Bootstrap seeds system skills; they are regular user-evolvable project
+      // files and therefore listable.
+      "skills/automation-task-designer/SKILL.md",
       "skills/fundamental-analysis/SKILL.md",
       "skills/macro-analysis/SKILL.md",
       "skills/risk-control/SKILL.md",

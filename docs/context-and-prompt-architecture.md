@@ -36,11 +36,12 @@
 
 定位：**系统播种初始版本，之后是用户的可进化资产**。用户不会手改 SKILL.md 没关系——正常演化路径是用户在对话中表达方法调整，Agent 整理草案、经确认后更新文件并留痕。
 
-- 模板：`templates/skills/`（fundamental-analysis / technical-analysis / macro-analysis / risk-control），内容承接旧 `knowledge/methods/` 默认框架并适配新内核（引用服务工具与 `methods/strategy-rules.md`，不再引用旧 config yaml）。
-- 播种：`MastraWorkspaceRegistry.bootstrap()` 调用 `seedSystemSkills()`——只复制不存在的文件，永不覆盖用户演化后的版本；模板根缺失不报错（老部署可没有 templates/）。可用 `SYSTEM_SKILLS_TEMPLATE_ROOT` 覆写。
-- 存量项目：`node scripts/seed-mastra-skills.mjs [--dry-run] [--root <projects-root>]`，同样幂等、不覆盖。服务器布局默认读 `data/projects`。
+- 模板：`templates/skills/`。其中 fundamental-analysis / technical-analysis / macro-analysis / risk-control 承接用户方法论；automation-task-designer 提供任务创建/修改时的对话设计辅助。模板适配新内核，引用当前服务能力与 `methods/strategy-rules.md`，不再引用旧 config yaml。
+- 播种：`MastraWorkspaceRegistry.bootstrap()` 只在首次创建项目 manifest 时调用 `seedSystemSkills()`；既有项目的普通访问不会采用后来新增的模板。播种只复制不存在的文件，永不覆盖用户演化后的版本；模板根缺失不报错（老部署可没有 templates/）。可用 `SYSTEM_SKILLS_TEMPLATE_ROOT` 覆写。
+- 存量项目：先按用户和精确文件备份并确认，再运行 `node scripts/seed-mastra-skills.mjs [--dry-run] [--root <projects-root>]`；脚本幂等且不覆盖。服务器布局默认读 `data/projects`。
 - Mastra Workspace 以 `skills: ["skills"]` 挂载，SKILL.md 自动进入 agent 的 skills 清单并渐进式披露（search/load）。
-- 旧 `.codex/skills` 的产品流程型 skill（daily-review、market-watch、onboarding 等）**不迁移**：其职责已由 typed automation tasks、调度提示词组装和服务代码接管，迁回等于用文档当安全边界。
+- 旧 `.codex/skills` 的执行流程型 skill（daily-review、market-watch、onboarding 等）**不迁移**：其职责已由 typed automation tasks、调度提示词组装和服务代码接管，迁回等于用文档当安全边界。
+- `automation-task-designer` 是创建/修改任务时的对话设计辅助，不参与定时任务执行，也不构成安全边界。它只负责读取当前能力与资产、收敛少量执行关键歧义并起草任务定义；scope、schema、revision、调度和审计仍由 `automation.*` 服务工具强制。
 - workspace 写工具策略（approval + read-before-write + 审计）约束 skill 文件的修改路径。
 
 ## 5. 遗留问题（已留坑）
