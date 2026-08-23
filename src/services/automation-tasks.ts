@@ -322,6 +322,20 @@ export interface ClaimAutomationTaskRunResult {
   run: AutomationTaskRunRecord;
 }
 
+export interface ExpireStaleScheduledAutomationTaskRunInput extends AutomationScope {
+  taskId: string;
+  revisionId?: string;
+  idempotencyKey: string;
+  scheduledFor: string;
+  queueDelayMs: number;
+  maxQueueDelayMs: number;
+}
+
+export interface ExpireStaleScheduledAutomationTaskRunResult {
+  expired: boolean;
+  run: AutomationTaskRunRecord;
+}
+
 export interface FinishAutomationTaskRunInput extends AutomationScope {
   runId: string;
   /** Optional fence token. Existing callers may omit it; the active DB lease is still required. */
@@ -1273,9 +1287,6 @@ export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput)
   if (origin !== "manual" && origin !== "scheduled") {
     throw new AutomationTaskError("AUTOMATION_RUN_STATUS_INVALID", String(origin));
   }
-  if (origin === "scheduled" && task.status !== "active") {
-    throw new AutomationTaskError("AUTOMATION_TASK_NOT_ACTIVE", taskId);
-  }
   const revision = input.revisionId
     ? requireRevisionById(input.revisionId, scope, taskId)
     : requireRevisionForTask(task, scope);
@@ -1284,6 +1295,17 @@ export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput)
   }
   const idempotencyKey = normalizeIdempotencyKey(input.idempotencyKey);
   const scheduledFor = input.scheduledFor?.trim() || null;
+  if (origin === "scheduled" && task.status !== "active") {
+    // A terminal replay is still idempotent after a task enters
+    // needs_attention/paused. It may reconcile a stale cursor, but it must
+    // never create or activate a new scheduled run for that task.
+    const existing = selectRunByIdempotency(taskId, idempotencyKey);
+    if (!existing || existing.status === "running") {
+      throw new AutomationTaskError("AUTOMATION_TASK_NOT_ACTIVE", taskId);
+    }
+    assertRowScope(existing, scope);
+    assertRunIdempotencyCompatible(existing, revision.revisionId, origin, scheduledFor, input.conversationId);
+  }
   const now = nowIso();
   const nowMs = Date.parse(now);
   const leaseExpiresAt = new Date(nowMs + AUTOMATION_RUN_LEASE_MS).toISOString();
@@ -1387,6 +1409,7 @@ export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput)
     if (existing) {
       assertRowScope(existing, scope);
       assertRunIdempotencyCompatible(existing, revision.revisionId, origin, scheduledFor, input.conversationId);
+      reconcileScheduledAutomationTaskRunInTransaction(existing, now);
       run = runRecordFromRow(existing);
       return;
     }
@@ -1451,6 +1474,149 @@ export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput)
   });
   transaction();
   return { claimed, run: run! };
+}
+
+/**
+ * Terminalize a scheduled slot that waited in the admission queue beyond its
+ * freshness budget. This is a service-owned state transition: no ACP/model
+ * execution is started, and the task cursor/failure circuit breaker advance in
+ * the same SQLite transaction as the terminal run insert.
+ */
+export async function expireStaleScheduledAutomationTaskRun(
+  input: ExpireStaleScheduledAutomationTaskRunInput,
+): Promise<ExpireStaleScheduledAutomationTaskRunResult> {
+  const scope = assertAutomationScope(input);
+  const taskId = normalizeTaskId(input.taskId);
+  const task = requireTaskRow(taskId, scope);
+  if (task.status === "archived") throw new AutomationTaskError("AUTOMATION_TASK_ARCHIVED", taskId);
+  const revision = input.revisionId
+    ? requireRevisionById(input.revisionId, scope, taskId)
+    : requireRevisionForTask(task, scope);
+  if (revision.revision !== task.currentRevision) throw new AutomationTaskError("AUTOMATION_REVISION_CONFLICT", String(revision.revision));
+  const idempotencyKey = normalizeIdempotencyKey(input.idempotencyKey);
+  const scheduledFor = String(input.scheduledFor || "").trim();
+  if (!scheduledFor) throw new AutomationTaskError("AUTOMATION_RUN_STATUS_INVALID", "scheduledFor is required");
+  if (!Number.isFinite(input.queueDelayMs) || input.queueDelayMs < 0 || !Number.isFinite(input.maxQueueDelayMs) || input.maxQueueDelayMs < 0 || input.queueDelayMs <= input.maxQueueDelayMs) {
+    throw new AutomationTaskError("AUTOMATION_RUN_STATUS_INVALID", "scheduled slot is not stale");
+  }
+  if (task.status !== "active") {
+    const existing = selectRunByIdempotency(taskId, idempotencyKey);
+    if (!existing || existing.status === "running") throw new AutomationTaskError("AUTOMATION_TASK_NOT_ACTIVE", taskId);
+    assertRowScope(existing, scope);
+    assertRunIdempotencyCompatible(existing, revision.revisionId, "scheduled", scheduledFor);
+  }
+
+  const now = nowIso();
+  let expired = false;
+  let run: AutomationTaskRunRecord;
+  const transaction = sqlite.transaction(() => {
+    let existing = selectRunByIdempotency(taskId, idempotencyKey);
+    if (existing) {
+      assertRowScope(existing, scope);
+      assertRunIdempotencyCompatible(existing, revision.revisionId, "scheduled", scheduledFor);
+      reconcileScheduledAutomationTaskRunInTransaction(existing, now);
+      run = runRecordFromRow(existing);
+      return;
+    }
+
+    // A run claimed by another scheduler/process has already crossed the
+    // admission boundary. Leave it untouched; the caller will observe it and
+    // the normal lease/finish path owns its outcome.
+    const active = selectActiveRun(taskId, scope);
+    if (active) {
+      run = runRecordFromRow(active);
+      return;
+    }
+    const lock = readTaskLock(taskId, scope);
+    if (lock?.activeRunId) clearTaskLock(taskId, scope, lock.activeRunId);
+
+    const currentTask = requireTaskRow(taskId, scope);
+    if (currentTask.status !== "active") throw new AutomationTaskError("AUTOMATION_TASK_NOT_ACTIVE", taskId);
+    if (currentTask.nextRunAt) {
+      const cursorMs = Date.parse(currentTask.nextRunAt);
+      const scheduledMs = Date.parse(scheduledFor);
+      if (Number.isFinite(cursorMs) && Number.isFinite(scheduledMs) && cursorMs !== scheduledMs) {
+        throw new AutomationTaskError("AUTOMATION_RUN_IDEMPOTENCY_CONFLICT", scheduledFor);
+      }
+    }
+
+    const previousAttempt = sqlite.prepare(`
+      SELECT MAX(attempt) AS attempt
+      FROM automation_task_runs
+      WHERE task_id = ? AND (idempotency_key = ? OR idempotency_base_key = ?)
+    `).get(taskId, idempotencyKey, idempotencyKey) as { attempt?: number | null } | undefined;
+    const attempt = Math.max(Number(previousAttempt?.attempt || 0) + 1, 1);
+    const runId = `atrun_${randomUUID()}`;
+    const errorMessage = "AUTOMATION_RUN_QUEUE_DELAY_EXCEEDED: scheduled slot expired before admission";
+    sqlite.prepare(`
+      INSERT INTO automation_task_runs (
+        run_id, task_id, revision_id, user_id, project_id, instance_id,
+        origin, idempotency_key, idempotency_base_key, attempt, scheduled_for,
+        execution_deadline_at, status, claimed_at, started_at, input_asset_id, conversation_id,
+        output_asset_id, output_version_id, output_checksum, result_summary, error_message,
+        error_category, retryable, lease_token, lease_expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, NULL, 'failed', ?, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, ?, 'expired', 0, NULL, NULL, ?, ?)
+    `).run(
+      runId,
+      taskId,
+      revision.revisionId,
+      scope.userId,
+      scope.projectId,
+      scope.instanceId,
+      idempotencyKey,
+      idempotencyKey,
+      attempt,
+      scheduledFor,
+      now,
+      errorMessage,
+      now,
+      now,
+    );
+
+    const failures = Number(currentTask.consecutiveFailures || 0) + 1;
+    const needsAttention = failures >= 3;
+    const nextRunAt = currentTask.status === "active" && !needsAttention
+      ? nextAutomationRunAt(parseScheduleJson(revision.scheduleJson), new Date(now))
+      : null;
+    sqlite.prepare(`
+      UPDATE automation_tasks
+      SET consecutive_failures = ?, status = CASE WHEN ? = 1 THEN 'needs_attention' ELSE status END,
+          next_run_at = ?, updated_at = ?
+      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'active'
+    `).run(
+      failures,
+      needsAttention ? 1 : 0,
+      nextRunAt,
+      now,
+      taskId,
+      scope.userId,
+      scope.projectId,
+      scope.instanceId,
+    );
+    insertAuditRow({
+      taskId,
+      revisionId: revision.revisionId,
+      runId,
+      scope,
+      action: "run.queue_expired",
+      status: "recovered",
+      details: {
+        idempotencyKey,
+        scheduledFor,
+        queueDelayMs: Math.round(input.queueDelayMs),
+        maxQueueDelayMs: Math.round(input.maxQueueDelayMs),
+        attempt,
+        nextRunAt,
+        needsAttention,
+      },
+      createdAt: now,
+    });
+    expired = true;
+    run = runRecordFromRow(selectRunById(runId, scope)!);
+  });
+  transaction();
+  return { expired, run: run! };
 }
 
 function selectRunByIdempotency(taskId: string, idempotencyKey: string): DbRunRow | undefined {
@@ -1565,7 +1731,109 @@ function isLeaseExpired(
   return !Number.isFinite(claimedMs) || claimedMs + AUTOMATION_RUN_LEASE_MS <= nowMs;
 }
 
+/**
+ * T-336 (2026-08-21 patrol, 111 daily review): reviews.save can complete the
+ * durable publication seconds before a runtime restart kills the runner
+ * before finalize. A reviews.save artifact bound to this run's conversation
+ * is durable proof that the run's completion contract already held, so lease
+ * recovery must finish the run instead of failing it. Restricted to
+ * output.mode=none tasks: file-producing runs still owe a staged output
+ * commit that a restart genuinely interrupted.
+ */
+function durableRunCompletionEvidence(row: DbRunRow, scope: AutomationScope): string | null {
+  try {
+    const revision = requireRevisionById(row.revisionId, scope, row.taskId);
+    // Typed tasks (e.g. scheduled-daily-review) are structurally output:none;
+    // generic tasks carry explicit output JSON where null parses as agent.
+    const isGeneric = revision.instruction !== null || revision.inputsJson !== null
+      || revision.outputJson !== null || revision.deliveryJson !== null;
+    const outputMode = isGeneric ? parseOutputJson(revision.outputJson).mode : "none";
+    if (outputMode !== "none") return null;
+  } catch {
+    return null;
+  }
+  // The automation runners address the agent turn as `automation-run:<runId>`
+  // without persisting it on the run row; a claimed conversation binding (if
+  // any) is also acceptable evidence.
+  const conversationCandidates = row.conversationId
+    ? [row.conversationId, `automation-run:${row.runId}`]
+    : [`automation-run:${row.runId}`];
+  for (const conversationId of conversationCandidates) {
+    const published = sqlite.prepare(`
+      SELECT artifact_id AS artifactId, relative_path AS relativePath
+      FROM conversation_artifacts
+      WHERE user_id = ? AND instance_id = ? AND conversation_id = ? AND source = 'reviews.save'
+        AND deleted_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(scope.userId, scope.instanceId, conversationId) as { artifactId: string; relativePath: string | null } | undefined;
+    if (published) return published.relativePath ?? published.artifactId;
+  }
+  return null;
+}
+
+/** Idempotent cold-start finish for runs whose durable work already landed
+ * (T-336): mirror the succeeded branch of finalizeAutomationTaskRunInTransaction
+ * — terminal status, lock release, cursor advance, failure counter reset —
+ * while keeping the idempotency key intact so replays return this run. */
+function recoverExpiredRunAsCompleted(row: DbRunRow, scope: AutomationScope, now: string, evidence: string): void {
+  const updated = sqlite.prepare(`
+    UPDATE automation_task_runs
+    SET status = 'succeeded', finished_at = ?, retryable = NULL,
+        result_summary = COALESCE(result_summary, ?),
+        lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+    WHERE run_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'running'
+  `).run(
+    now,
+    `运行中重启后按已持久化发布恢复为完成（${evidence}）。`,
+    now,
+    row.runId,
+    scope.userId,
+    scope.projectId,
+    scope.instanceId,
+  );
+  if (updated.changes === 0) return;
+  sqlite.prepare(`
+    UPDATE automation_tasks
+    SET active_run_id = NULL, active_run_lease_token = NULL,
+        active_run_lease_expires_at = NULL, updated_at = ?
+    WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+      AND active_run_id = ?
+  `).run(now, row.taskId, scope.userId, scope.projectId, scope.instanceId, row.runId);
+  if (row.origin === "scheduled") {
+    const task = requireTaskRow(row.taskId, scope);
+    const revision = requireRevisionById(row.revisionId, scope, row.taskId);
+    const nextRunAt = task.status === "active"
+      ? nextAutomationRunAt(parseScheduleJson(revision.scheduleJson), new Date(now))
+      : task.nextRunAt;
+    sqlite.prepare(`
+      UPDATE automation_tasks
+      SET consecutive_failures = 0, next_run_at = ?, updated_at = ?
+      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+    `).run(nextRunAt ?? null, now, row.taskId, scope.userId, scope.projectId, scope.instanceId);
+  }
+  insertAuditRow({
+    taskId: row.taskId,
+    revisionId: row.revisionId,
+    runId: row.runId,
+    scope,
+    action: "run.lease_expired",
+    status: "recovered_completed",
+    details: {
+      idempotencyKey: row.idempotencyKey,
+      attempt: row.attempt,
+      evidence,
+    },
+    createdAt: now,
+  });
+}
+
 function recoverExpiredRun(row: DbRunRow, scope: AutomationScope, now: string): void {
+  const completionEvidence = durableRunCompletionEvidence(row, scope);
+  if (completionEvidence) {
+    recoverExpiredRunAsCompleted(row, scope, now, completionEvidence);
+    return;
+  }
   const physicalKey = row.physicalIdempotencyKey || row.idempotencyKey;
   const suffix = `::stale:${row.runId}`;
   const archiveKey = `${physicalKey.slice(0, Math.max(1, MAX_IDEMPOTENCY_KEY_LENGTH - suffix.length))}${suffix}`;
@@ -1573,6 +1841,7 @@ function recoverExpiredRun(row: DbRunRow, scope: AutomationScope, now: string): 
     UPDATE automation_task_runs
     SET idempotency_key = ?, status = 'failed', finished_at = ?,
         error_message = COALESCE(error_message, ?), error_category = COALESCE(error_category, 'expired'), retryable = 0, lease_token = NULL,
+        output_asset_id = NULL, output_version_id = NULL, output_checksum = NULL,
         lease_expires_at = NULL, updated_at = ?
     WHERE run_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'running'
   `).run(
@@ -1624,6 +1893,105 @@ function recoverExpiredRun(row: DbRunRow, scope: AutomationScope, now: string): 
   });
 }
 
+const TERMINAL_AUTOMATION_RUN_STATUSES = new Set(["succeeded", "failed", "skipped", "cancelled"]);
+
+/**
+ * Consume a terminal scheduled slot when the run is already durable but the
+ * task cursor still points at that same slot. This is deliberately a cursor
+ * repair only: failure counters and task status were decided when the run was
+ * finalized, so replaying a terminal idempotency key must not activate a
+ * needs_attention task or count the failure a second time.
+ */
+function reconcileScheduledAutomationTaskRunInTransaction(row: DbRunRow, now: string): boolean {
+  if (row.origin !== "scheduled" || !TERMINAL_AUTOMATION_RUN_STATUSES.has(row.status) || !row.scheduledFor) return false;
+  const scope = { userId: row.userId, projectId: row.projectId, instanceId: row.instanceId };
+  const task = readTaskRow(row.taskId);
+  if (!task) return false;
+  assertRowScope(task, scope);
+
+  if (task.status === "needs_attention") {
+    if (task.nextRunAt === null) return false;
+    const updated = sqlite.prepare(`
+      UPDATE automation_tasks
+      SET next_run_at = NULL, updated_at = ?
+      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status = 'needs_attention'
+    `).run(now, row.taskId, scope.userId, scope.projectId, scope.instanceId);
+    if (updated.changes === 0) return false;
+    insertAuditRow({
+      taskId: row.taskId,
+      revisionId: row.revisionId,
+      runId: row.runId,
+      scope,
+      action: "scheduler.cursor_reconciled",
+      status: "success",
+      details: { reason: "needs_attention", previousNextRunAt: task.nextRunAt, nextRunAt: null },
+      createdAt: now,
+    });
+    return true;
+  }
+  if (task.status !== "active") return false;
+
+  const scheduledAt = Date.parse(row.scheduledFor);
+  const cursorAt = task.nextRunAt ? Date.parse(task.nextRunAt) : Number.NaN;
+  // Only the exact scheduled slot can be consumed. A cursor that is ahead of
+  // this run has already been reconciled; an earlier cursor is still an
+  // unconsumed slot and must not be skipped by a later terminal run.
+  if (!Number.isFinite(scheduledAt) || (Number.isFinite(cursorAt) && cursorAt !== scheduledAt)) return false;
+  const revision = requireRevisionById(row.revisionId, scope, row.taskId);
+  const nextRunAt = nextAutomationRunAt(parseScheduleJson(revision.scheduleJson), new Date(now));
+  if (task.nextRunAt === nextRunAt) return false;
+  const updated = sqlite.prepare(`
+    UPDATE automation_tasks
+    SET next_run_at = ?, updated_at = ?
+    WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
+      AND status = 'active' AND (next_run_at IS NULL OR next_run_at = ?)
+  `).run(nextRunAt, now, row.taskId, scope.userId, scope.projectId, scope.instanceId, task.nextRunAt);
+  if (updated.changes === 0) return false;
+  insertAuditRow({
+    taskId: row.taskId,
+    revisionId: row.revisionId,
+    runId: row.runId,
+    scope,
+    action: "scheduler.cursor_reconciled",
+    status: "success",
+    details: { reason: "terminal_scheduled_run", previousNextRunAt: task.nextRunAt, nextRunAt, runStatus: row.status },
+    createdAt: now,
+  });
+  return true;
+}
+
+/** Reconcile durable terminal scheduled runs before selecting due work. */
+export async function reconcileScheduledAutomationTaskRuns(at = new Date(), limit = 100): Promise<number> {
+  const now = at.toISOString();
+  const rows = sqlite.prepare(`
+    SELECT ${RUN_SELECT}
+    FROM automation_task_runs
+    JOIN automation_tasks
+      ON automation_tasks.task_id = automation_task_runs.task_id
+     AND automation_tasks.user_id = automation_task_runs.user_id
+     AND automation_tasks.project_id = automation_task_runs.project_id
+     AND automation_tasks.instance_id = automation_task_runs.instance_id
+    WHERE automation_task_runs.origin = 'scheduled'
+      AND automation_task_runs.status IN ('succeeded', 'failed', 'skipped', 'cancelled')
+      AND automation_task_runs.scheduled_for IS NOT NULL
+      AND automation_task_runs.scheduled_for <= ?
+      AND (
+        automation_tasks.status = 'needs_attention'
+        OR automation_tasks.next_run_at = automation_task_runs.scheduled_for
+      )
+    ORDER BY automation_task_runs.scheduled_for ASC, automation_task_runs.finished_at ASC, automation_task_runs.run_id ASC
+    LIMIT ?
+  `).all(now, Math.min(Math.max(Math.trunc(limit), 1), 500)) as DbRunRow[];
+  let reconciled = 0;
+  const transaction = sqlite.transaction(() => {
+    for (const row of rows) {
+      if (reconcileScheduledAutomationTaskRunInTransaction(row, now)) reconciled += 1;
+    }
+  });
+  transaction();
+  return reconciled;
+}
+
 /**
  * Reap expired runs even when no later claimant arrives. Manual runs on a
  * needs-attention task otherwise remain visibly running forever because that
@@ -1648,7 +2016,7 @@ export async function recoverExpiredAutomationTaskRuns(at = new Date(), limit = 
       const before = selectRunById(row.runId, scope);
       recoverExpiredRun(row, scope, now);
       const after = selectRunById(row.runId, scope);
-      if (before?.status === "running" && after?.status === "failed") recovered += 1;
+      if (before?.status === "running" && (after?.status === "failed" || after?.status === "succeeded")) recovered += 1;
     }
   });
   transaction();
@@ -1694,16 +2062,6 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
     if (existing.status === input.status) return runRecordFromRow(existing);
     throw new AutomationTaskError("AUTOMATION_RUN_ALREADY_FINISHED", runId);
   }
-  if (input.outputAssetId) {
-    const revision = requireRevisionById(existing.revisionId, scope, existing.taskId);
-    if (revision.outputJson !== null) {
-      const output = sqlite.prepare(`SELECT asset_id FROM user_assets WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?`).get(input.outputAssetId, scope.userId, scope.projectId, scope.instanceId);
-      if (!output) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", input.outputAssetId);
-    } else {
-      const output = requireAssetRow(input.outputAssetId, scope);
-      if (output.taskId !== existing.taskId) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", input.outputAssetId);
-    }
-  }
   const now = nowIso();
   const resultSummary = clipNullable(input.resultSummary, 4_000);
   const errorMessage = clipNullable(input.errorMessage, 1_200);
@@ -1720,6 +2078,16 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
     : errorMessage;
   const task = requireTaskRow(existing.taskId, scope);
   const revision = requireRevisionById(existing.revisionId, scope, existing.taskId);
+  const committedOutput = finalStatus === "succeeded";
+  if (committedOutput && input.outputAssetId) {
+    if (revision.outputJson !== null) {
+      const output = sqlite.prepare(`SELECT asset_id FROM user_assets WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?`).get(input.outputAssetId, scope.userId, scope.projectId, scope.instanceId);
+      if (!output) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", input.outputAssetId);
+    } else {
+      const output = requireAssetRow(input.outputAssetId, scope);
+      if (output.taskId !== existing.taskId) throw new AutomationTaskError("AUTOMATION_SCOPE_MISMATCH", input.outputAssetId);
+    }
+  }
   const leaseToken = input.leaseToken ?? existing.leaseToken;
   const updated = sqlite.prepare(`
     UPDATE automation_task_runs
@@ -1734,7 +2102,7 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
           AND (? IS NULL OR t.active_run_lease_token = ?)
       )
   `).run(
-    finalStatus, now, expired ? null : (input.outputAssetId ?? null), expired ? null : outputChecksum, expired ? null : (input.outputVersionId ?? null),
+    finalStatus, now, committedOutput ? (input.outputAssetId ?? null) : null, committedOutput ? outputChecksum : null, committedOutput ? (input.outputVersionId ?? null) : null,
     resultSummary, finalErrorMessage, errorCategory, retryable === null ? null : (retryable ? 1 : 0), traceId, now, runId, scope.userId, scope.projectId, scope.instanceId,
     existing.taskId, scope.userId, scope.projectId, scope.instanceId, runId, now, leaseToken, leaseToken,
   );
@@ -2220,6 +2588,7 @@ export function nextAutomationRunAt(schedule: AutomationSchedule | Record<string
 }
 
 export async function listDueAutomationTasks(at = new Date(), limit = 100): Promise<AutomationTaskRecord[]> {
+  await reconcileScheduledAutomationTaskRuns(at, limit);
   const rows = sqlite.prepare(`
     SELECT ${TASK_SELECT}
     FROM automation_tasks

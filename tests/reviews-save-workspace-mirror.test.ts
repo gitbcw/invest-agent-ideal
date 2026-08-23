@@ -61,3 +61,26 @@ test("scheduled daily reviews.save mirrors the server-side report into the regis
   const afterRerun = await readFile(path.join(projectRoot, "reports", "daily", "2026-08-19.md"), "utf8");
   assert.equal(afterRerun, workspaceReport, "the existing workspace mirror must never be overwritten");
 });
+
+test("scheduled weekly reviews.save does not return ok when service-owned publication fails", async () => {
+  const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+  const scope = {
+    userId: "reviews-publish-failure-user",
+    projectId: "invest-agent",
+    instanceId: "reviews-publish-failure-instance",
+  };
+  await assert.rejects(
+    () => callServiceTool("reviews.save", {
+      kind: "weekly",
+      reportKey: "2026-08-23_weekly",
+      content: "# weekly publication failure\n",
+      pushBrief: "weekly failure",
+    }, {
+      ...scope,
+      conversationId: `scheduler:weekly-review:${scope.userId}:${scope.instanceId}`,
+      expectedReviewKind: "weekly",
+      expectedReviewKey: "2026-08-23_weekly",
+    }),
+    /REVIEW_ARTIFACT_PUBLISH_FAILED/,
+  );
+});

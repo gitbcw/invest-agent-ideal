@@ -9,6 +9,7 @@ import { DEFAULT_INSTANCE_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { portfolioBackend, watchlistBackend, planBackend, isWorkspaceBackend, ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { periodicReviewBackend, type PeriodicReviewKind } from "../lib/periodic-review-backend.js";
+import { publishServiceOwnedReviewArtifact, type ConversationArtifactRecord } from "../services/conversation-artifacts.js";
 import { reviewViewpointBackend } from "../lib/review-viewpoint-backend.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
 import { WorkspaceStore } from "../lib/workspace-store.js";
@@ -1250,7 +1251,7 @@ export async function saveSkillPeriodicReview(input: {
   content: string;
   summary?: string;
   context?: unknown;
-}): Promise<{ kind: PeriodicReviewKind; reportKey: string; filePath: string }> {
+}): Promise<{ kind: PeriodicReviewKind; reportKey: string; filePath: string; artifact?: ConversationArtifactRecord }> {
   const userId = input.userId ?? DEFAULT_USER_ID;
   const instanceId = input.instanceId ?? DEFAULT_INSTANCE_ID;
   // R1: reportKey 校验（backend.upsert 会再校验一次，这里提前拦截给出清晰错误）
@@ -1266,7 +1267,25 @@ export async function saveSkillPeriodicReview(input: {
       kind: input.kind, reportKey: input.reportKey, generatedAt, summary: input.summary ?? null, content: input.content,
       data: { source: "skill", savedAt: generatedAt, context: input.context ?? null },
     });
-    return { kind: input.kind, reportKey: input.reportKey, filePath: `service-owned://reviews/${input.kind}/${input.reportKey}` };
+    const artifact = await publishServiceOwnedReviewArtifact({
+      userId,
+      instanceId,
+      projectId: process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent",
+      assistantId: instanceId,
+      conversationId: (input.context && typeof input.context === "object" && "publication" in input.context && input.context.publication && typeof input.context.publication === "object" && "conversationId" in input.context.publication)
+        ? (typeof input.context.publication.conversationId === "string" ? input.context.publication.conversationId : null)
+        : null,
+      kind: input.kind,
+      reportKey: input.reportKey,
+      content: input.content,
+      title: `${input.kind === "weekly" ? "周" : "月"}复盘 ${input.reportKey}`,
+    });
+    return {
+      kind: input.kind,
+      reportKey: input.reportKey,
+      filePath: `reports/${input.kind}/${input.reportKey}.md`,
+      artifact,
+    };
   }
 
   // R1: mirror 写失败不吞错（原 mirrorReviewToWorkspace 吞错，这里显式重写保证失败传播）

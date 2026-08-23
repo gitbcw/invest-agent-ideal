@@ -95,10 +95,54 @@ test("runner prompts steer XLSX appends to declarative appendRows and require ex
   const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
   assert.match(runnerSource, /不要调用 spreadsheet\.transform，直接在最终 stagedOutput 返回 \{operation:'appendRows'/);
   assert.match(runnerSource, /skipIfCellMatches/);
+  assert.match(runnerSource, /绝不能直接使用旧的 lastDedupeValue/);
+  assert.doesNotMatch(runnerSource, /value:lastDedupeValue 或本次待追加日期/);
   assert.match(runnerSource, /缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败/);
   assert.match(runnerSource, /显式返回 outputSkipped:true 并在 summary 说明原因/);
   assert.match(runnerSource, /serverTimeFact/, "automation prompts must state the server date fact like chat turns do (mg 8-12 scope incident)");
   assert.doesNotMatch(runnerSource, /一律以该日期为准|不得用于本轮取数参数/, "date injection stays a bare fact; behavior rules belong to the tool layer");
+});
+
+test("generic scheduled automation uses a narrow per-run tool allowlist and keeps typed review publication", async () => {
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const generic = runner.resolveGenericAutomationToolAllowlist({ taskType: null });
+  for (const forbidden of [
+    "assets.list", "automation.list", "automation.get", "conversation.history",
+    "confirmations.pending", "watch_rules.catalog", "watch_rules.list",
+    "watch_rules.validate", "watch_rules.dry_run",
+  ]) {
+    assert.equal(generic.includes(forbidden), false, `${forbidden} must stay out of generic automation`);
+  }
+  assert.ok(generic.includes("assets.version.read"));
+  assert.ok(generic.includes("spreadsheet.transform"));
+  assert.ok(generic.includes("spreadsheet.create"));
+  assert.ok(!generic.includes("reviews.save"));
+  assert.equal(runner.resolveGenericAutomationToolAllowlist({ taskType: null }, { xlsxAppendOnly: true }).includes("spreadsheet.transform"), false);
+  assert.ok(runner.resolveGenericAutomationToolAllowlist({ taskType: "scheduled-weekly-review" }).includes("reviews.save"));
+  const weeklyTarget = runner.resolveGenericAutomationReviewTarget(
+    { taskType: "scheduled-weekly-review" },
+    { scheduledFor: "2026-08-22T11:00:00.000Z", claimedAt: "2026-08-22T11:00:01.000Z", userId: "mg", instanceId: "invest-agent-mg" },
+  );
+  assert.deepEqual(weeklyTarget, {
+    kind: "weekly",
+    reportKey: "2026-08-22_weekly",
+    conversationId: "scheduler:weekly-review:mg:invest-agent-mg",
+  });
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.match(runnerSource, /mcpAllowedTools: toolAllowlist/);
+  assert.match(runnerSource, /REVIEW_ARTIFACT_NOT_PUBLISHED/);
+  assert.match(runnerSource, /最多 \$\{GENERIC_AUTOMATION_MAX_TOOL_CALLS\} 次/);
+  const agentSource = await source.readFile(new URL("../src/runtime/agent.ts", import.meta.url), "utf8");
+  assert.match(agentSource, /expectedReviewKind: message\.context\?\.expectedReviewKind/);
+  assert.match(agentSource, /expectedReviewKey: message\.context\?\.expectedReviewKey/);
+});
+
+test("generic automation reserves time after the ACP attempt", async () => {
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const deadline = new Date(Date.UTC(2026, 7, 23, 10, 0, 0)).toISOString();
+  const derived = runner.resolveGenericAutomationAgentDeadline(deadline);
+  assert.equal(derived, new Date(Date.parse(deadline) - 30_000).toISOString());
 });
 
 test("spreadsheet validation errors teach the expected shapes instead of bare 'invalid item'", async () => {
@@ -597,6 +641,69 @@ test("mode=none runs ignore an unexpected stagedOutput instead of failing (daily
   });
   assert.equal(result.run.status, "succeeded", "unexpected stagedOutput under mode=none must not fail the run");
   assert.equal(result.run.outputAssetId, null, "the ignored stagedOutput must not be committed as an asset");
+
+  const nullResult = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "manual",
+    idempotencyKey: "generic-run-none-with-null-staged-once",
+    executor: async () => ({
+      content: { type: "text" as const, text: "done" },
+      finished: true,
+      data: { summary: "无文件输出。", stagedOutput: null },
+    }),
+  });
+  assert.equal(nullResult.run.status, "succeeded", "stagedOutput:null must be treated as absent");
+});
+
+test("typed review runs require a service-published artifact for the exact scheduled target", async () => {
+  const { automation } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const { publishServiceOwnedReviewArtifact } = await import("../src/services/conversation-artifacts.js");
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-weekly-review-publication-guard",
+    taskType: "scheduled-weekly-review",
+    name: "周复盘发布门禁",
+    instruction: "生成周复盘并调用 reviews.save。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "none" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const scheduledFor = "2026-08-22T11:00:00.000Z";
+
+  const missing = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "manual",
+    scheduledFor,
+    idempotencyKey: "generic-weekly-review-publication-missing",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "声称已完成。" } }),
+  });
+  assert.equal(missing.run.status, "failed");
+  assert.match(missing.run.errorMessage || "", /REVIEW_ARTIFACT_NOT_PUBLISHED:weekly:2026-08-22_weekly/);
+
+  const published = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "manual",
+    scheduledFor,
+    idempotencyKey: "generic-weekly-review-publication-present",
+    executor: async ({ run }) => {
+      const target = runner.resolveGenericAutomationReviewTarget(task, run)!;
+      await publishServiceOwnedReviewArtifact({
+        ...scope,
+        assistantId: scope.instanceId,
+        conversationId: target.conversationId,
+        kind: "weekly",
+        reportKey: target.reportKey,
+        content: "# Weekly publication guard\n",
+      });
+      return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "周复盘已发布。" } };
+    },
+  });
+  assert.equal(published.run.status, "succeeded");
 });
 
 test("generic latest update uses the head read at run start and advances it once", async () => {
@@ -672,14 +779,30 @@ test("declarative stagedOutput appendRows commits rows without spreadsheet.trans
   });
   await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
   const runner = await import("../src/services/generic-automation-runner.js");
+  let schemaContext: unknown;
+  let appendOnly = false;
   const result = await runner.runGenericAutomationTaskNow({
     scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-appendrows-once",
-    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: {
+    executor: async (input) => {
+      schemaContext = input.spreadsheetContext;
+      appendOnly = input.xlsxAppendOnly === true;
+      return { content: { type: "text" as const, text: "done" }, finished: true, data: {
       summary: "已追加 2026-08-19 行。",
       stagedOutput: { operation: "appendRows", rows: [["2026-08-19", 2, "煤炭"]], skipIfCellMatches: { column: 1, value: "2026-08-19" } },
-    } }),
+      }};
+    },
   });
   assert.equal(result.run.status, "succeeded");
+  assert.equal(appendOnly, true);
+  assert.deepEqual((schemaContext as Array<{ sheets: Array<{ name: string; headers: unknown[]; columnCount: number; dedupeColumn: number; lastDedupeValue?: unknown }> }>)[0]?.sheets[0], {
+    name: "数据",
+    headerRow: 1,
+    headers: ["日期", "序号", "行业"],
+    columnCount: 3,
+    rowCount: 2,
+    dedupeColumn: 1,
+    lastDedupeValue: "2026-08-18",
+  });
   assert.equal(result.run.outputAssetId, target.assetId);
   assert.notEqual(result.run.outputVersionId, target.currentVersionId);
   const ExcelJS = (await import("exceljs")).default;
@@ -703,6 +826,25 @@ test("declarative stagedOutput appendRows commits rows without spreadsheet.trans
   assert.match(skipped.run.resultSummary || "", /已存在匹配行/);
   const afterSkip = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
   assert.equal(afterSkip.descriptor.versionId, result.run.outputVersionId, "skip must not commit a new version");
+
+  const ambiguousUpdate = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-xlsx-ambiguous-update",
+    name: "更新工作簿",
+    instruction: "更新当日数据并汇报。",
+    schedule: schedule(),
+    inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }],
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: ambiguousUpdate.taskId, expectedRevision: 1 });
+  const ambiguousRun = await runner.runGenericAutomationTaskNow({
+    scope, taskId: ambiguousUpdate.taskId, origin: "scheduled", idempotencyKey: "generic-xlsx-ambiguous-update-once",
+    executor: async (input) => {
+      assert.equal(input.xlsxAppendOnly, false, "ambiguous XLSX updates must retain spreadsheet.transform");
+      return { content: { type: "text" as const, text: "无变化" }, finished: true, data: { summary: "无需更新。", outputSkipped: true } };
+    },
+  });
+  assert.equal(ambiguousRun.run.status, "succeeded");
 });
 
 test("update run without stagedOutput fails unless outputSkipped is explicit (silent-success fix)", async () => {

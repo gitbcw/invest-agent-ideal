@@ -8,11 +8,20 @@ import { recordArtifactEvent, recordArtifactLibraryListEvent } from "./artifact-
 import { withArtifactPathLock } from "./artifact-path-lock.js";
 import { getCurrentTurnId, getCurrentTurnStart } from "./conversation-turns.js";
 import { recordFileLifecycleEvent } from "./file-lifecycle-audit.js";
-import { registerReportAssetMappingUnderScopeLock } from "./report-asset-mappings.js";
+import { registerReportAssetMapping, registerReportAssetMappingUnderScopeLock } from "./report-asset-mappings.js";
 import { withResourceMutationLock } from "./resource-mutation-lock.js";
 import { scopeStorageLockKey } from "./user-storage-quota.js";
 import { validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
 import { resolveProjectStorageRoot } from "./project-storage-root.js";
+import { DEFAULT_PROJECT_ID } from "../lib/user-context.js";
+import { validateReportKey } from "../lib/periodic-review-backend.js";
+import {
+  createUserAsset,
+  getUserAsset,
+  readUserAssetVersion,
+  uploadUserAssetVersion,
+  type UserAssetDescriptor,
+} from "./user-assets.js";
 
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -309,6 +318,17 @@ export class ConversationArtifactError extends Error {
   ) {
     super(`${code}:${message}`);
     this.name = "ConversationArtifactError";
+  }
+}
+
+/** Stable service error used when a scheduled review cannot publish its bytes. */
+export class ReviewArtifactPublishError extends Error {
+  readonly code = "REVIEW_ARTIFACT_PUBLISH_FAILED" as const;
+
+  constructor(cause: unknown) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(`REVIEW_ARTIFACT_PUBLISH_FAILED:${message}`);
+    this.name = "ReviewArtifactPublishError";
   }
 }
 
@@ -714,6 +734,272 @@ export async function publishConversationArtifact(input: PublishArtifactInput): 
   return record;
 }
 
+export interface PublishServiceOwnedReviewArtifactInput {
+  userId: string;
+  instanceId: string;
+  projectId: string;
+  assistantId: string;
+  conversationId?: string | null;
+  kind: "weekly" | "monthly";
+  reportKey: string;
+  content: string;
+  title?: string;
+}
+
+export interface ReviewArtifactPublicationLookup {
+  userId: string;
+  instanceId: string;
+  kind: "daily" | "weekly" | "monthly";
+  reportKey: string;
+  conversationId: string;
+  updatedAfter: string;
+}
+
+/** Read-only completion proof for a scheduled review run. */
+export function hasReviewArtifactPublication(input: ReviewArtifactPublicationLookup): boolean {
+  const relativePath = `reports/${input.kind}/${input.reportKey}.md`;
+  const row = sqlite.prepare(`
+    SELECT artifact_id AS artifactId
+    FROM conversation_artifacts
+    WHERE user_id = ? AND instance_id = ? AND source = 'reviews.save'
+      AND conversation_id = ? AND relative_path = ? AND deleted_at IS NULL
+      AND updated_at >= ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(
+    input.userId,
+    input.instanceId,
+    input.conversationId,
+    relativePath,
+    input.updatedAfter,
+  ) as { artifactId: string } | undefined;
+  return Boolean(row);
+}
+
+/**
+ * Publishes a Mastra periodic review from its already validated content.
+ *
+ * Mastra periodic reviews are service-owned records and do not have a
+ * workspace file to read. The bytes are committed to a scoped system asset,
+ * while the artifact keeps the normal reports/<kind>/ display path for the
+ * Portal library. The backing asset is authoritative on reads; the user's
+ * reports directory is never created or overwritten.
+ *
+ * The logical review key is the artifact idempotency key. Re-publishing the
+ * same key updates the same artifact and mapping, appending a new asset
+ * version only when the content changes.
+ */
+export async function publishServiceOwnedReviewArtifact(
+  input: PublishServiceOwnedReviewArtifactInput,
+): Promise<ConversationArtifactRecord> {
+  const relativePath = `reports/${input.kind}/${input.reportKey}.md`;
+  const idempotencyKey = `reviews.save:${input.kind}:${input.reportKey}`;
+  const scope = {
+    userId: input.userId,
+    projectId: input.projectId,
+    instanceId: input.instanceId,
+  };
+
+  try {
+    const keyError = validateReportKey(input.kind, input.reportKey);
+    if (keyError) throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", keyError);
+    const raw = Buffer.from(input.content, "utf8");
+    if (!raw.length) throw new ConversationArtifactError("ARTIFACT_UNSAFE", "review content is empty");
+    if (raw.length > MAX_INLINE_BYTES || raw.length > DURABLE_LIBRARY_MAX_BYTES) {
+      throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(raw.length));
+    }
+    const prepared = await prepareArtifactPayload("text/markdown", raw);
+    const mimeType = prepared.mimeType;
+    const checksum = sha256Hex(raw);
+    const title = (input.title ?? `${input.kind === "weekly" ? "周" : "月"}复盘 ${input.reportKey}`).trim().slice(0, 200);
+    const classification = classifyArtifactRetention({
+      source: "reviews.save",
+      relativePath,
+      sizeBytes: raw.length,
+      mimeType,
+    });
+    const versionKey = `${idempotencyKey}:version:${checksum}`;
+
+    // This logical-key lock is intentionally separate from the storage lock
+    // acquired by user-assets and report mappings. It serializes retries for
+    // one review without blocking unrelated assets for the same user.
+    return await withResourceMutationLock(
+      scope,
+      `service-review-artifact:${input.kind}:${input.reportKey}`,
+      async () => {
+        const existing = sqlite.prepare(
+          `SELECT ${ARTIFACT_SELECT_COLUMNS}
+           FROM conversation_artifacts
+           WHERE user_id = ? AND instance_id = ? AND idempotency_key = ?
+           LIMIT 1`,
+        ).get(input.userId, input.instanceId, idempotencyKey) as ConversationArtifactRecord | undefined;
+
+        if (existing && (
+          existing.projectId !== input.projectId
+          || existing.assistantId !== input.assistantId
+          || existing.source !== "reviews.save"
+          || existing.relativePath !== relativePath
+        )) {
+          throw new ConversationArtifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", idempotencyKey);
+        }
+
+        let asset: UserAssetDescriptor | null = null;
+        if (existing?.assetId) {
+          const candidate = await getUserAsset({ ...scope, assetId: existing.assetId });
+          // Never append service output to an asset whose head is user-owned.
+          // A fresh scoped system asset keeps a user's own asset untouched.
+          if (candidate?.status === "active" && candidate.currentVersion?.source === "system") {
+            asset = candidate;
+          }
+        }
+
+        if (asset && asset.currentVersion?.checksum !== checksum) {
+          asset = await uploadUserAssetVersion({
+            ...scope,
+            assetId: asset.assetId,
+            fileName: `${input.reportKey}.md`,
+            mimeType,
+            bytes: raw,
+            expectedVersionId: asset.currentVersionId,
+            source: "system",
+            conversationId: input.conversationId ?? null,
+            idempotencyKey: versionKey,
+          });
+        } else if (!asset) {
+          const assetKey = existing?.assetId
+            ? `${idempotencyKey}:replacement:${checksum}`
+            : `${idempotencyKey}:asset`;
+          asset = await createUserAsset({
+            ...scope,
+            name: title,
+            fileName: `${input.reportKey}.md`,
+            mimeType,
+            bytes: raw,
+            source: "system",
+            conversationId: input.conversationId ?? null,
+            idempotencyKey: assetKey,
+          });
+        }
+
+        const versionId = asset.currentVersionId;
+        if (!versionId) throw new Error("service-owned review asset has no current version");
+        const artifactId = existing?.artifactId ?? await nextArtifactId();
+        const now = new Date().toISOString();
+        const turnId = input.conversationId
+          ? getCurrentTurnId({ userId: input.userId, instanceId: input.instanceId, conversationId: input.conversationId })
+          : null;
+
+        if (existing) {
+          sqlite.prepare(
+            `UPDATE conversation_artifacts
+             SET conversation_id = ?, title = ?, file_name = ?, mime_type = ?, relative_path = ?, size_bytes = ?, checksum = ?,
+                 asset_id = ?, version_id = ?, updated_at = ?, turn_id = ?,
+                 origin = ?, retention_class = ?, visibility = ?, expires_at = ?
+             WHERE artifact_id = ? AND user_id = ? AND instance_id = ?`,
+          ).run(
+            input.conversationId ?? null,
+            title,
+            `${input.reportKey}.md`,
+            mimeType,
+            relativePath,
+            raw.length,
+            checksum,
+            asset.assetId,
+            versionId,
+            now,
+            turnId,
+            classification?.origin ?? null,
+            classification?.retentionClass ?? null,
+            classification?.visibility ?? null,
+            classification?.expiresAt ?? null,
+            artifactId,
+            input.userId,
+            input.instanceId,
+          );
+        } else {
+          sqlite.prepare(
+            `INSERT INTO conversation_artifacts (
+               artifact_id, user_id, instance_id, project_id, assistant_id,
+               conversation_id, message_id, turn_id, source, kind, preview_mode,
+               title, file_name, mime_type, relative_path, size_bytes, checksum, asset_id, version_id, idempotency_key,
+               created_at, updated_at, origin, retention_class, visibility, expires_at
+             ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'reviews.save', 'report', 'markdown', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            artifactId,
+            input.userId,
+            input.instanceId,
+            input.projectId,
+            input.assistantId,
+            input.conversationId ?? null,
+            turnId,
+            title,
+            `${input.reportKey}.md`,
+            mimeType,
+            relativePath,
+            raw.length,
+            checksum,
+            asset.assetId,
+            versionId,
+            idempotencyKey,
+            now,
+            now,
+            classification?.origin ?? null,
+            classification?.retentionClass ?? null,
+            classification?.visibility ?? null,
+            classification?.expiresAt ?? null,
+          );
+        }
+
+        await registerReportAssetMapping({
+          ...scope,
+          reportId: artifactId,
+          title,
+          fileName: `${input.reportKey}.md`,
+          mimeType,
+          sizeBytes: raw.length,
+          backingAssetId: asset.assetId,
+          backingVersionId: versionId,
+          readPath: relativePath,
+        });
+
+        recordFileLifecycleEvent({
+          entityType: "artifact",
+          entityId: artifactId,
+          userId: input.userId,
+          instanceId: input.instanceId,
+          event: "artifact.classified",
+          status: "success",
+          summary: {
+            source: "reviews.save",
+            retentionClass: classification?.retentionClass ?? null,
+            visibility: classification?.visibility ?? null,
+            sizeBytes: raw.length,
+            expiresAt: classification?.expiresAt ?? null,
+            serviceOwned: true,
+          },
+        });
+
+        const result = requireRecord(
+          sqlite.prepare(`SELECT ${ARTIFACT_SELECT_COLUMNS} FROM conversation_artifacts WHERE artifact_id = ?`).get(artifactId) as ConversationArtifactRecord | undefined,
+        );
+        return {
+          ...result,
+          scope: {
+            projectId: input.projectId,
+            assistantId: input.assistantId,
+            conversationId: input.conversationId ?? null,
+            messageId: null,
+            source: "reviews.save" as const,
+          },
+        };
+      },
+    );
+  } catch (error) {
+    if (error instanceof ReviewArtifactPublishError) throw error;
+    throw new ReviewArtifactPublishError(error);
+  }
+}
+
 export interface ReadArtifactPayload {
   fileName: string;
   mimeType: string;
@@ -761,6 +1047,37 @@ export async function readConversationArtifactPayload(input: {
     if (record.deletedAt) throw new ConversationArtifactError("ARTIFACT_DELETED", input.artifactId);
     if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) {
       throw new ConversationArtifactError("ARTIFACT_EXPIRED", input.artifactId);
+    }
+
+    // Service-owned reviews have no reports/<kind>/<key>.md workspace file.
+    // When a backing version is present it is authoritative, which also
+    // prevents a same-path user file from shadowing the published content.
+    if (record.source === "reviews.save" && record.assetId && record.versionId) {
+      const backing = await readUserAssetVersion({
+        userId: record.userId,
+        projectId: record.projectId,
+        instanceId: record.instanceId,
+        assetId: record.assetId,
+        versionId: record.versionId,
+      });
+      const raw = backing.bytes;
+      if (record.checksum && sha256Hex(raw) !== record.checksum) {
+        throw new ConversationArtifactError("ARTIFACT_UNSAFE", "backing asset checksum mismatch");
+      }
+      const { mimeType, sanitizedBase64, sanitized } = await prepareArtifactPayload(record.mimeType, raw);
+      const bytes = sanitizedBase64 ? Buffer.from(sanitizedBase64, "base64") : raw;
+      if (bytes.length > MAX_INLINE_BYTES) throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(bytes.length));
+      return {
+        descriptor: record,
+        payload: {
+          fileName: record.fileName,
+          mimeType,
+          sizeBytes: bytes.length,
+          base64: bytes.toString("base64"),
+          checksum: record.checksum ?? undefined,
+          sanitized,
+        },
+      };
     }
 
     const workspacePath = await resolveProjectStorageRoot({ userId: record.userId, projectId: record.projectId, instanceId: record.instanceId });
@@ -928,6 +1245,8 @@ interface LibraryRow {
   relativePath: string;
   sizeBytes: number;
   checksum: string | null;
+  assetId: string | null;
+  versionId: string | null;
   createdAt: string;
   updatedAt: string;
   origin: string | null;
@@ -964,9 +1283,9 @@ interface LibraryCursor {
  * 6. No path segment starts with `.`, and the file name does not match the
  *    fixed temp/backup patterns (`.#` prefix; `~`/`.tmp`/`.temp`/`.bak`/`.swp`
  *    suffix, case-insensitive).
- * 7. The file still exists, is a regular file, stays within the real reports
- *    root after `realpath` (no symlink escape), and is within the durable size
- *    cap (1 MiB) — oversize files are not promoted to the library.
+ * 7. The file still exists as a regular file within the real reports root
+ *    (no symlink escape), or the row carries a scope-checked backing asset
+ *    version for a service-owned review; both are within the durable size cap.
  *
  * When one `relative_path` has several publish records, versions are walked
  * newest-first and the first version passing every rule wins. Tombstoned
@@ -993,19 +1312,12 @@ export async function listCuratedArtifactLibrary(input: {
 
   const workspacePath = await resolveProjectStorageRoot({ userId: input.userId, projectId: input.projectId, instanceId: input.instanceId });
   const reportsPath = path.join(workspacePath, REPORT_ROOT);
-  let realReportsPath: string;
+  let realReportsPath: string | null = null;
   try {
     realReportsPath = await realpath(reportsPath);
   } catch {
-    recordArtifactLibraryListEvent({
-      userId: input.userId,
-      instanceId: input.instanceId,
-      itemCount: 0,
-      limit,
-      hasCursor: Boolean(cursor),
-      hasNextCursor: false,
-    });
-    return { items: [] };
+    // Service-owned periodic reviews may have no reports directory. Their
+    // backing user asset is checked below, so keep evaluating artifact rows.
   }
 
   const rows = sqlite
@@ -1020,6 +1332,8 @@ export async function listCuratedArtifactLibrary(input: {
          relative_path AS relativePath,
          size_bytes AS sizeBytes,
          checksum,
+         asset_id AS assetId,
+         version_id AS versionId,
          created_at AS createdAt,
          updated_at AS updatedAt,
          origin,
@@ -1057,7 +1371,17 @@ export async function listCuratedArtifactLibrary(input: {
       if (version.visibility !== null && version.visibility !== "library") continue;
       if (!LIBRARY_PREVIEW_MODES.has(version.previewMode)) continue;
       if (!isCuratedLibraryPath(version.relativePath)) continue;
-      if (!(await isLibraryFileValid(realReportsPath, workspacePath, version.relativePath, version.mimeType))) continue;
+      if (!(await isLibraryFileValid(
+        realReportsPath,
+        workspacePath,
+        version.relativePath,
+        version.mimeType,
+        input.userId,
+        input.projectId || DEFAULT_PROJECT_ID,
+        input.instanceId,
+        version.assetId,
+        version.versionId,
+      ))) continue;
       curated.push(toLibraryItem(version));
       break;
     }
@@ -1152,11 +1476,31 @@ function isCuratedLibraryPath(relativePath: string): boolean {
 }
 
 async function isLibraryFileValid(
-  realReportsPath: string,
+  realReportsPath: string | null,
   workspacePath: string,
   relativePath: string,
   mimeType: string,
+  userId: string,
+  projectId: string,
+  instanceId: string,
+  assetId: string | null,
+  versionId: string | null,
 ): Promise<boolean> {
+  const maxBytes = mimeType === "text/html" ? MAX_HTML_BYTES : DURABLE_LIBRARY_MAX_BYTES;
+
+  // A service-owned review is represented by a scoped backing version rather
+  // than a user workspace file. Prefer it even if a user happens to have a
+  // file at the same display path.
+  if (assetId && versionId) {
+    try {
+      const backing = await readUserAssetVersion({ userId, projectId, instanceId, assetId, versionId });
+      return backing.bytes.length <= maxBytes;
+    } catch {
+      return false;
+    }
+  }
+
+  if (!realReportsPath) return false;
   const targetPath = path.resolve(workspacePath, relativePath);
   let realTargetPath: string;
   try {
@@ -1171,7 +1515,6 @@ async function isLibraryFileValid(
     // HTML still has its own tighter preview cap; everything else in the
     // library is bounded by the durable 1 MiB threshold so the file tree only
     // shows files the retention layer would actually promote.
-    const maxBytes = mimeType === "text/html" ? MAX_HTML_BYTES : DURABLE_LIBRARY_MAX_BYTES;
     if (fileStat.size > maxBytes) return false;
   } catch {
     return false;

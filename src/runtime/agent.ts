@@ -131,6 +131,37 @@ function resolvePositiveTimeoutMs(name: string, fallback: number): number {
   return value;
 }
 
+const INTERNAL_AUTOMATION_MAX_STEPS = 10;
+const INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS = 480_000;
+const INTERNAL_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
+
+/** Service-owned limits for generic automation ACP turns. */
+export function resolveInternalAutomationBudget(input: {
+  channel: string;
+  taskType?: string;
+  maxToolCalls?: unknown;
+  attemptTimeoutMs?: unknown;
+  fallbackMinRemainingMs?: unknown;
+}): { enabled: boolean; maxSteps: number; attemptTimeoutMs?: number; fallbackMinRemainingMs: number } {
+  const enabled = input.channel === "automation" && input.taskType === "automation-execution";
+  if (!enabled) return { enabled: false, maxSteps: 20, fallbackMinRemainingMs: 120_000 };
+  const requestedMaxSteps = typeof input.maxToolCalls === "number" && Number.isFinite(input.maxToolCalls)
+    ? Math.floor(input.maxToolCalls)
+    : INTERNAL_AUTOMATION_MAX_STEPS;
+  const requestedAttemptTimeout = typeof input.attemptTimeoutMs === "number" && Number.isFinite(input.attemptTimeoutMs)
+    ? Math.floor(input.attemptTimeoutMs)
+    : INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS;
+  const requestedReserve = typeof input.fallbackMinRemainingMs === "number" && Number.isFinite(input.fallbackMinRemainingMs)
+    ? Math.floor(input.fallbackMinRemainingMs)
+    : INTERNAL_AUTOMATION_FALLBACK_RESERVE_MS;
+  return {
+    enabled: true,
+    maxSteps: Math.min(INTERNAL_AUTOMATION_MAX_STEPS, Math.max(1, requestedMaxSteps)),
+    attemptTimeoutMs: Math.min(INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS, Math.max(1, requestedAttemptTimeout)),
+    fallbackMinRemainingMs: Math.max(1, requestedReserve),
+  };
+}
+
 export interface RuntimeAgent {
   agentId: string;
   agentName: string;
@@ -200,6 +231,12 @@ export function createRuntimeAgent(): RuntimeAgent {
           instanceExpansionPath: message.context?.instanceExpansionPath ? String(message.context.instanceExpansionPath) : undefined,
           workspacePath: message.context?.workspacePath ? String(message.context.workspacePath) : undefined,
           taskType: message.context?.taskType ? String(message.context.taskType) : undefined,
+          expectedReviewKind: message.context?.expectedReviewKind === "daily"
+            || message.context?.expectedReviewKind === "weekly"
+            || message.context?.expectedReviewKind === "monthly"
+            ? message.context.expectedReviewKind
+            : undefined,
+          expectedReviewKey: message.context?.expectedReviewKey ? String(message.context.expectedReviewKey) : undefined,
           mcpAllowedTools: Array.isArray(message.context?.mcpAllowedTools)
             ? message.context.mcpAllowedTools.filter((item): item is string => typeof item === "string")
             : undefined,
@@ -280,6 +317,18 @@ export function createRuntimeAgent(): RuntimeAgent {
           runId: turnRequestId ?? message.id,
         });
         try {
+          // Generic automation runs carry service-owned internal budget hints.
+          // They are intentionally ignored for interactive/API messages and
+          // capped here so a prompt cannot raise the runtime ceiling.
+          const automationBudget = resolveInternalAutomationBudget({
+            channel,
+            taskType: userContext.taskType,
+            maxToolCalls: message.context?._automationMaxToolCalls,
+            attemptTimeoutMs: message.context?._attemptTimeoutMs,
+            fallbackMinRemainingMs: message.context?._fallbackMinRemainingMs,
+          });
+          const genericAutomationExecution = automationBudget.enabled;
+          const maxSteps = automationBudget.maxSteps;
           const inlineImages = await loadImageAttachmentParts(message.context?.attachments, userContext.workspacePath);
           const executionDeadlineMs = typeof message.context?._executionDeadlineAt === "string"
             ? Date.parse(message.context._executionDeadlineAt)
@@ -291,7 +340,7 @@ export function createRuntimeAgent(): RuntimeAgent {
               : AGENT_EVALUATION_CASE_TIMEOUT_MS > 0 ? AGENT_EVALUATION_CASE_TIMEOUT_MS : undefined;
           const initialBudget = resolveTurnExecutionBudget({
             executionDeadlineMs,
-            configuredTimeoutMs: channelTimeoutMs,
+            configuredTimeoutMs: genericAutomationExecution ? automationBudget.attemptTimeoutMs : channelTimeoutMs,
             firstTokenTimeoutMs: Number(process.env.MASTRA_AUTO_FIRST_TOKEN_TIMEOUT_MS ?? 45_000),
           });
           if (initialBudget.expired) throw new Error("TASK_CANCELLED: execution deadline exceeded");
@@ -307,7 +356,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             requestContext: workspaceScope,
             toolsets: observedToolsets,
             signal: cancelSignal,
-            maxSteps: 20,
+            maxSteps,
             ...(message.context?._onProgress ? { onProgress: message.context._onProgress as import("./protocol.js").AgentTurnProgressCallback } : {}),
           } as Parameters<typeof runMastraTurn>[0];
           const turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
@@ -316,7 +365,9 @@ export function createRuntimeAgent(): RuntimeAgent {
           // 并把网关 upstream 错误（如 Upstream error: 400）纳入可重试签名。
           const AUTO_FIRST_TOKEN_TIMEOUT_MS = Number(process.env.MASTRA_AUTO_FIRST_TOKEN_TIMEOUT_MS ?? 45_000);
           const AUTO_FALLBACK_MAX = Math.max(1, Number(process.env.MASTRA_AUTO_FALLBACK_MAX ?? 3));
-          const AUTO_FALLBACK_MIN_REMAINING_MS = Math.max(1, Number(process.env.MASTRA_AUTO_FALLBACK_MIN_REMAINING_MS ?? 120_000));
+          const AUTO_FALLBACK_MIN_REMAINING_MS = genericAutomationExecution
+            ? automationBudget.fallbackMinRemainingMs
+            : Math.max(1, Number(process.env.MASTRA_AUTO_FALLBACK_MIN_REMAINING_MS ?? 120_000));
           const isRetriableTurnError = (text: string) => {
             const normalized = text.toLowerCase();
             return normalized.includes("mastra_first_token_timeout")

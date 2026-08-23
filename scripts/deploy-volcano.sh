@@ -10,6 +10,7 @@ RUN_SMOKE="${RUN_SMOKE:-false}"
 RELEASE_ID="${RELEASE_ID:-}"
 RELEASE_COMMIT="${RELEASE_COMMIT:-}"
 RELEASE_OPERATION="${RELEASE_OPERATION:-deploy}"
+SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=10)
 
 if [[ -n "${RELEASE_ID}" ]] && [[ ! "${RELEASE_ID}" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]]; then
   echo "[deploy] ERROR: invalid RELEASE_ID" >&2
@@ -27,7 +28,7 @@ fi
 echo "[deploy] sync to ${DEPLOY_USER}@${HOST}:${REMOTE_DIR}"
 # Remove source files retired by the release after transfer while keeping all
 # excluded runtime paths protected from deletion.
-rsync -avz --delete-delay \
+rsync -avz --delete-delay -e "ssh -o BatchMode=yes -o ConnectTimeout=10" \
   --exclude='node_modules' \
   --exclude='dist' \
   --exclude='data' \
@@ -63,7 +64,7 @@ rsync -avz --delete-delay \
   ./ "${DEPLOY_USER}@${HOST}:${REMOTE_DIR}"
 
 echo "[deploy] remote install/build"
-ssh "${DEPLOY_USER}@${HOST}" "REMOTE_DIR='${REMOTE_DIR}' RUN_SMOKE='${RUN_SMOKE}' RELEASE_ID='${RELEASE_ID}' RELEASE_COMMIT='${RELEASE_COMMIT}' RELEASE_OPERATION='${RELEASE_OPERATION}' bash" <<'EOF'
+ssh "${SSH_OPTIONS[@]}" "${DEPLOY_USER}@${HOST}" "REMOTE_DIR='${REMOTE_DIR}' RUN_SMOKE='${RUN_SMOKE}' RELEASE_ID='${RELEASE_ID}' RELEASE_COMMIT='${RELEASE_COMMIT}' RELEASE_OPERATION='${RELEASE_OPERATION}' bash" <<'EOF'
 set -euo pipefail
 cd "${REMOTE_DIR/#\~/$HOME}"
 
@@ -98,7 +99,7 @@ pm2 list
 EOF
 
 echo "[deploy] verify"
-ssh "${DEPLOY_USER}@${HOST}" "PORT='${PORT}' REMOTE_DIR='${REMOTE_DIR}' RELEASE_ID='${RELEASE_ID}' RELEASE_COMMIT='${RELEASE_COMMIT}' RELEASE_OPERATION='${RELEASE_OPERATION}' bash" <<'EOF'
+ssh "${SSH_OPTIONS[@]}" "${DEPLOY_USER}@${HOST}" "PORT='${PORT}' REMOTE_DIR='${REMOTE_DIR}' RELEASE_ID='${RELEASE_ID}' RELEASE_COMMIT='${RELEASE_COMMIT}' RELEASE_OPERATION='${RELEASE_OPERATION}' bash" <<'EOF'
 set -euo pipefail
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   if curl -fsS "http://127.0.0.1:${PORT}/health"; then

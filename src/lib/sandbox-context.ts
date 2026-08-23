@@ -154,6 +154,7 @@ export function sandboxContextFromUserContext(
   permissions?: SandboxPermission[]
 ): SandboxContext {
   const defaultPermissions = userContext.taskType === "scheduled-automation"
+    || userContext.taskType === "automation-execution"
     ? AUTOMATION_SANDBOX_PERMISSIONS
     : DEFAULT_SANDBOX_PERMISSIONS;
   return {

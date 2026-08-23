@@ -40,6 +40,16 @@ test("scheduled automation receives read-only sandbox permissions by default", (
   });
   assert.deepEqual(scheduled.permissions, ["read:self"]);
 
+  const generic = sandboxContextFromUserContext({
+    userId: "generic-automation-user",
+    projectId: "invest-agent",
+    instanceId: "generic-automation-instance",
+    channel: "web",
+    taskType: "automation-execution",
+    mcpAllowedTools: ["assets.version.read"],
+  });
+  assert.deepEqual(generic.permissions, ["read:self"]);
+
   const interactive = sandboxContextFromUserContext({
     userId: "interactive-sandbox-user",
     projectId: "invest-agent",

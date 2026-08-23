@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import ExcelJS from "exceljs";
 
-import { writeAutomationSpreadsheetHelper } from "../src/services/automation-spreadsheet.js";
+import { appendRowsToXlsxBytes, inspectAutomationXlsx, writeAutomationSpreadsheetHelper } from "../src/services/automation-spreadsheet.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -77,4 +77,40 @@ test("automation spreadsheet helper creates a new structured workbook", async ()
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("automation XLSX inspection returns schema and the last dedupe marker without row dumps", async () => {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("行业复盘");
+  sheet.addRow(["交易日", "序号", "行业"]);
+  sheet.addRow(["2026-08-21", 1, "通信"]);
+  sheet.addRow(["2026-08-22", 2, "煤炭"]);
+  const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
+
+  const inspection = await inspectAutomationXlsx(bytes);
+  assert.deepEqual(inspection.sheets, [{
+    name: "行业复盘",
+    headerRow: 1,
+    headers: ["交易日", "序号", "行业"],
+    columnCount: 3,
+    rowCount: 3,
+    dedupeColumn: 1,
+    lastDedupeValue: "2026-08-22",
+  }]);
+  assert.equal(JSON.stringify(inspection).includes("通信"), false, "inspection must not dump row contents");
+
+  const titled = new ExcelJS.Workbook();
+  const titledSheet = titled.addWorksheet("带标题");
+  titledSheet.addRow(["2026 年行业复盘"]);
+  titledSheet.addRow(["交易日", "行业"]);
+  titledSheet.addRow(["2026-08-22", "煤炭"]);
+  const titledInspection = await inspectAutomationXlsx(Buffer.from(await titled.xlsx.writeBuffer()));
+  assert.equal(titledInspection.sheets[0]?.headerRow, 2);
+  assert.deepEqual(titledInspection.sheets[0]?.headers, ["交易日", "行业"]);
+  assert.equal(titledInspection.sheets[0]?.lastDedupeValue, "2026-08-22");
+
+  await assert.rejects(
+    () => appendRowsToXlsxBytes({ bytes, sheet: "行业复盘", rows: [["2026-08-23", "行业列多余", "煤炭", "越界"]] }),
+    /expected exactly 3 columns/,
+  );
 });

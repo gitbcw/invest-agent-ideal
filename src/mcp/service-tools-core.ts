@@ -1722,7 +1722,7 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
   };
 
   // F2: 按 kind 分派。daily 走 saveSkillDailyReview（不变）；weekly/monthly 走 saveSkillPeriodicReview
-  let saved: { date?: string; kind?: string; reportKey?: string; filePath: string };
+  let saved: { date?: string; kind?: string; reportKey?: string; filePath: string; artifact?: ConversationArtifactRecord };
   if (kind === "weekly" || kind === "monthly") {
     const reportKey = stringInput(input?.reportKey);
     if (!reportKey) throw new Error(`reviews.save requires reportKey for kind=${kind}`);
@@ -1735,7 +1735,7 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
       summary: pushBrief,
       context: publicationMeta,
     });
-    saved = { kind: result.kind, reportKey: result.reportKey, filePath: result.filePath };
+    saved = { kind: result.kind, reportKey: result.reportKey, filePath: result.filePath, artifact: result.artifact };
   } else {
     const result = await saveSkillDailyReview({
       userId: context.userId,
@@ -1781,35 +1781,40 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
     },
     resultSummary: `saved ${kind} review ${resourceId}; decisions=${decisionRecords.length}; sourceEvents=${sourceEvents.length}`,
   });
-  let artifact: ConversationArtifact | undefined;
-  try {
-    const reportPath = kind === "daily"
-      ? `reports/daily/${saved.date}.md`
-      : `reports/${kind}/${saved.reportKey}.md`;
-    await mirrorReviewIntoWorkspace(context, reportPath, saved.filePath);
-    const published = await publishConversationArtifact({
-      userId: context.userId,
-      instanceId: context.instanceId,
-      relativePath: reportPath,
-      kind: "report",
-      title: kind === "daily" ? `每日复盘 ${saved.date}` : `${kind === "weekly" ? "周" : "月"}复盘 ${saved.reportKey}`,
-      scope: {
-        projectId: context.projectId || DEFAULT_PROJECT_ID,
-        assistantId: context.instanceId,
-        conversationId: context.conversationId ?? null,
-        source: "reviews.save",
-      },
-    });
-    artifact = await attachPublishedArtifactToUserFiles(published, context);
-  } catch (error) {
-    await audit(context, {
-      operation: "reviews.save",
-      resourceType,
-      resourceId,
-      requestBody: { artifactPublish: "failed" },
-      resultSummary: `artifact publish skipped: ${(error as Error).message}`,
-      status: "error",
-    }).catch(() => undefined);
+  let artifact: ConversationArtifact | undefined = saved.artifact;
+  if (!artifact) {
+    try {
+      const reportPath = kind === "daily"
+        ? `reports/daily/${saved.date}.md`
+        : `reports/${kind}/${saved.reportKey}.md`;
+      await mirrorReviewIntoWorkspace(context, reportPath, saved.filePath);
+      const published = await publishConversationArtifact({
+        userId: context.userId,
+        instanceId: context.instanceId,
+        relativePath: reportPath,
+        kind: "report",
+        title: kind === "daily" ? `每日复盘 ${saved.date}` : `${kind === "weekly" ? "周" : "月"}复盘 ${saved.reportKey}`,
+        scope: {
+          projectId: context.projectId || DEFAULT_PROJECT_ID,
+          assistantId: context.instanceId,
+          conversationId: context.conversationId ?? null,
+          source: "reviews.save",
+        },
+      });
+      artifact = await attachPublishedArtifactToUserFiles(published, context);
+    } catch (error) {
+      await audit(context, {
+        operation: "reviews.save",
+        resourceType,
+        resourceId,
+        requestBody: { artifactPublish: "failed" },
+        resultSummary: `artifact publish failed: ${(error as Error).message}`,
+        status: "error",
+      }).catch(() => undefined);
+      if (scheduledCompletion) {
+        throw new Error(`REVIEW_ARTIFACT_PUBLISH_FAILED:${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
   return {
     ok: true,

@@ -28,7 +28,13 @@ import {
   type AutomationTaskRunRecord,
 } from "./automation-tasks.js";
 import { classifyTaskError, executionResponseError, type TaskErrorInfo } from "./task-execution.js";
-import { appendRowsToXlsxBytes, writeAutomationSpreadsheetHelper } from "./automation-spreadsheet.js";
+import { hasReviewArtifactPublication } from "./conversation-artifacts.js";
+import {
+  appendRowsToXlsxBytes,
+  inspectAutomationXlsx,
+  writeAutomationSpreadsheetHelper,
+  type AutomationSpreadsheetInspection,
+} from "./automation-spreadsheet.js";
 import {
   createUserAsset,
   findActiveAssetByFileName,
@@ -47,6 +53,8 @@ export type GenericAutomationExecutor = (input: {
   inputs: UserAssetBytes[];
   writableTargets: Array<NonNullable<ResolvedOutput>>;
   spreadsheetHelper?: string;
+  spreadsheetContext?: GenericAutomationSpreadsheetContext[];
+  xlsxAppendOnly?: boolean;
   monthlyRollover?: MonthlyRollover | null;
   executionDeadlineAt: string | null;
   signal: AbortSignal;
@@ -60,6 +68,16 @@ export type GenericAutomationRunResult = {
 
 type ResolvedOutput = { assetId: string; versionId: string; fileName: string; mimeType: string } | null;
 type MonthlyRollover = { targetFileName: string; boundFileName: string };
+export type GenericAutomationSpreadsheetContext = AutomationSpreadsheetInspection & {
+  assetId: string;
+  versionId: string;
+  fileName: string;
+};
+export type GenericAutomationReviewTarget = {
+  kind: "daily" | "weekly" | "monthly";
+  reportKey: string;
+  conversationId: string;
+};
 type ResolvedBindings = {
   inputs: UserAssetBytes[];
   output: ResolvedOutput;
@@ -75,6 +93,110 @@ class AutomationExecutionFailure extends Error {
     super(taskError.internalReason);
     this.name = "AutomationExecutionFailure";
   }
+}
+
+/**
+ * Generic runs use an explicit service-tool allowlist.  Keep this list small:
+ * the runner already owns task lookup, binding resolution and durable output
+ * commits, so the ACP session has no reason to discover automations, inspect
+ * conversation confirmations, or patrol watch rules.
+ */
+export const GENERIC_AUTOMATION_TOOL_ALLOWLIST = [
+  "market_watch.snapshot",
+  "file.parse",
+  "research.news_search",
+  "research.web_search",
+  "research.web_read",
+  "assets.version.read",
+  "portfolio.read",
+  "watchlist.read",
+  "plans.read",
+  "spreadsheet.create",
+] as const;
+
+const GENERIC_AUTOMATION_CONTEXT_TASK_TYPE = "automation-execution";
+const GENERIC_AUTOMATION_MAX_TOOL_CALLS = 10;
+const GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS = 480_000;
+const GENERIC_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
+const GENERIC_AUTOMATION_COMMIT_RESERVE_MS = 30_000;
+
+export function resolveGenericAutomationToolAllowlist(
+  task: Pick<AutomationTaskRecord, "taskType">,
+  options: { xlsxAppendOnly?: boolean } = {},
+): string[] {
+  const allowed: string[] = [...GENERIC_AUTOMATION_TOOL_ALLOWLIST];
+  // Ordinary table-tail appends use the runner's declarative appendRows path;
+  // spreadsheet.transform remains available for explicit cell/format edits
+  // and monthly rollover creation.
+  if (!options.xlsxAppendOnly) allowed.push("spreadsheet.transform");
+  // Typed review tasks still publish through the service-owned final action.
+  // It is the only additional capability they receive; generic file tasks do
+  // not need to see reviews.save at all.
+  if (task.taskType === "scheduled-daily-review"
+    || task.taskType === "scheduled-weekly-review"
+    || task.taskType === "scheduled-monthly-review") {
+    allowed.push("reviews.save");
+  }
+  return allowed;
+}
+
+/**
+ * Reserve only the terminal commit time from the ACP deadline. Fallback is
+ * checked against this same total agent deadline by the runtime, while each
+ * individual model attempt has its own shorter timeout.
+ */
+export function resolveGenericAutomationAgentDeadline(executionDeadlineAt: string | null): string | null {
+  if (!executionDeadlineAt) return null;
+  const deadlineMs = Date.parse(executionDeadlineAt);
+  if (!Number.isFinite(deadlineMs)) return executionDeadlineAt;
+  return new Date(deadlineMs - GENERIC_AUTOMATION_COMMIT_RESERVE_MS).toISOString();
+}
+
+function shanghaiDate(value: string | null | undefined): string {
+  const parsed = value ? new Date(value) : new Date();
+  const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+export function resolveGenericAutomationReviewTarget(
+  task: Pick<AutomationTaskRecord, "taskType">,
+  run: Pick<AutomationTaskRunRecord, "scheduledFor" | "claimedAt" | "userId" | "instanceId">,
+): GenericAutomationReviewTarget | null {
+  const kind = task.taskType === "scheduled-daily-review"
+    ? "daily"
+    : task.taskType === "scheduled-weekly-review"
+      ? "weekly"
+      : task.taskType === "scheduled-monthly-review"
+        ? "monthly"
+        : null;
+  if (!kind) return null;
+  const date = shanghaiDate(run.scheduledFor ?? run.claimedAt);
+  const reportKey = kind === "daily" ? date : kind === "weekly" ? `${date}_weekly` : date.slice(0, 7);
+  return {
+    kind,
+    reportKey,
+    conversationId: `scheduler:${kind}-review:${run.userId}:${run.instanceId}`,
+  };
+}
+
+function isXlsxAsset(fileName: string, format?: string): boolean {
+  return format === "xlsx" || fileName.toLowerCase().endsWith(".xlsx");
+}
+
+function isXlsxAppendOnlyTask(task: AutomationTaskRecord, resolved: ResolvedBindings): boolean {
+  if (task.revision.output.mode !== "update" || !resolved.output || !isXlsxAsset(resolved.output.fileName)) return false;
+  if (task.revision.output.rollover || resolved.monthlyRollover) return false;
+  const instruction = task.revision.instruction.toLowerCase();
+  const hasAppendIntent = /(表尾|追加|新增行|新增数据|append\s*rows?|append-only|table\s*tail)/i.test(instruction);
+  if (!hasAppendIntent) return false;
+  // Keep transform for explicit structural/cell edits and rollover tasks,
+  // even when their instruction also mentions appending rows.
+  return !/(rollover|roll\s*over|滚动|切月|月度|表头|格式|单元格|改列|改表|重命名|合并|冻结|筛选|结构|创建|新建|transform|setcells|createSheets|renameSheets)/i.test(instruction);
 }
 
 export async function runGenericAutomationTaskNow(input: {
@@ -133,6 +255,11 @@ export async function runGenericAutomationTaskNow(input: {
         || task.revision.output.mode === "agent"
         || (task.revision.output.mode === "create" && task.revision.output.format === "xlsx");
       const spreadsheetHelper = usesXlsx ? await writeAutomationSpreadsheetHelper(stagingPath) : undefined;
+      const spreadsheetContext = usesXlsx
+        ? await resolveSpreadsheetContext(input.scope, resolved)
+        : undefined;
+      const xlsxAppendOnly = isXlsxAppendOnlyTask(task, resolved);
+      const reviewTarget = resolveGenericAutomationReviewTarget(task, boundRun);
       const response = await (input.executor || defaultExecutor)({
         scope: input.scope,
         task,
@@ -141,11 +268,23 @@ export async function runGenericAutomationTaskNow(input: {
         inputs: resolved.inputs,
         writableTargets: resolved.writableTargets,
         spreadsheetHelper,
+        spreadsheetContext,
+        xlsxAppendOnly,
         monthlyRollover: resolved.monthlyRollover,
         executionDeadlineAt,
         signal: deadlineController.signal,
       });
       assertAgentSucceeded(response);
+      if (reviewTarget && !hasReviewArtifactPublication({
+        ...input.scope,
+        ...reviewTarget,
+        updatedAfter: boundRun.claimedAt,
+      })) {
+        throw new AutomationTaskError(
+          "AUTOMATION_RUN_INVALID_RESULT",
+          `REVIEW_ARTIFACT_NOT_PUBLISHED:${reviewTarget.kind}:${reviewTarget.reportKey}`,
+        );
+      }
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
       const result = await normalizeStructuredResult(response, task, resolved, input.scope, stagingPath);
       const output = await commitOutput(input.scope, task, run, result, resolved);
@@ -197,6 +336,46 @@ export async function runGenericAutomationTaskNow(input: {
     }
     return { run: failed, conversationId, task };
   }
+}
+
+async function resolveSpreadsheetContext(scope: AutomationScope, resolved: ResolvedBindings): Promise<GenericAutomationSpreadsheetContext[]> {
+  const candidates = new Map<string, { assetId: string; versionId: string; fileName: string; bytes: Uint8Array }>();
+  for (const item of resolved.inputs) {
+    if (!isXlsxAsset(item.descriptor.fileName, item.descriptor.format)) continue;
+    candidates.set(`${item.descriptor.assetId}:${item.descriptor.versionId}`, {
+      assetId: item.descriptor.assetId,
+      versionId: item.descriptor.versionId,
+      fileName: item.descriptor.fileName,
+      bytes: item.bytes,
+    });
+  }
+  if (resolved.output && isXlsxAsset(resolved.output.fileName)) {
+    const key = `${resolved.output.assetId}:${resolved.output.versionId}`;
+    if (!candidates.has(key)) {
+      const output = await readUserAssetVersion({
+        ...scope,
+        assetId: resolved.output.assetId,
+        versionId: resolved.output.versionId,
+      });
+      candidates.set(key, {
+        assetId: output.descriptor.assetId,
+        versionId: output.descriptor.versionId,
+        fileName: output.descriptor.fileName,
+        bytes: output.bytes,
+      });
+    }
+  }
+  const contexts: GenericAutomationSpreadsheetContext[] = [];
+  for (const candidate of candidates.values()) {
+    const inspection = await inspectAutomationXlsx(candidate.bytes);
+    contexts.push({
+      assetId: candidate.assetId,
+      versionId: candidate.versionId,
+      fileName: candidate.fileName,
+      ...inspection,
+    });
+  }
+  return contexts;
 }
 
 async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecord): Promise<ResolvedBindings> {
@@ -284,6 +463,12 @@ async function createStagingPath(scope: AutomationScope): Promise<string> {
 }
 
 async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]): Promise<AgentResponse> {
+  const agentDeadlineAt = resolveGenericAutomationAgentDeadline(input.executionDeadlineAt);
+  const toolAllowlist = resolveGenericAutomationToolAllowlist(input.task, { xlsxAppendOnly: input.xlsxAppendOnly });
+  const reviewTarget = resolveGenericAutomationReviewTarget(input.task, input.run);
+  const spreadsheetContextText = input.spreadsheetContext && input.spreadsheetContext.length > 0
+    ? `服务端已确定性解析绑定 XLSX 结构（不要猜测）：${JSON.stringify(input.spreadsheetContext)}`
+    : "本次没有可注入的 XLSX 结构信息。";
   const message: AgentMessage = {
     id: input.run.runId,
     from: `automation:${input.task.taskId}`,
@@ -298,13 +483,18 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
         `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item, index) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, stagedPath: `inputs/${index + 1}-${item.descriptor.fileName}`, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
         `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
+        reviewTarget
+          ? `本次是受控 ${reviewTarget.kind} 复盘：必须调用 reviews.save，并严格使用 kind='${reviewTarget.kind}'、${reviewTarget.kind === "daily" ? "date" : "reportKey"}='${reviewTarget.reportKey}'；只有服务端回读到本次 artifact 后 run 才能成功。`
+          : "",
+        spreadsheetContextText,
         input.monthlyRollover
           ? `本任务按月滚动工作簿：当前绑定《${input.monthlyRollover.boundFileName}》不是本月目标《${input.monthlyRollover.targetFileName}》。本次运行必须：先用 assets.version.read 读取当前绑定文件，沿用其工作表、表头与字段口径生成本月目标文件（只含表头与口径、不含历史行），把本次结果追加进新文件，并在 stagedOutput 返回 operation='create'、fileName='${input.monthlyRollover.targetFileName}' 与完整新文件内容；不得继续向旧月份文件追加，也不得使用其他文件名。服务层会把任务绑定切换到本月文件。`
           : "",
         "需要读取绑定文件时，直接使用上述 assetId 调用 assets.version.read；不要用 assets.list 猜测或替换任务对象。其他“我的文件”仅可作为参考，绝不能作为本次更新输出目标。",
         input.spreadsheetHelper
-          ? `本次包含 XLSX 绑定文件。若本次变更是向绑定工作簿的某个工作表表尾追加数据行（最常见情形），不要调用 spreadsheet.transform，直接在最终 stagedOutput 返回 {operation:'appendRows', sheet:'工作表名'（工作簿只有一个工作表时可省略）, rows:[[每行各列的值],…]（必须是二维数组：外层=行，内层=单元格，列序与表头一致）, skipIfCellMatches:{column:判重列号(从1起), value:'判重值'}（用于避免同一交易日重复追加；先读取绑定文件确认当日行是否已存在）}，服务层会确定性地追加到表尾并提交新版本，不需要你生成或搬运文件。只有需要修改表头、格式或既有单元格等非追加变更时，才使用 spreadsheet.transform 工具生成更新后的工作簿（inputPath 必须用上面 stagedPath 字段的精确值，outputPath 为暂存目录内的新文件名，changes 的合法操作与期望形状见工具 schema 及其报错提示），然后在 stagedOutput 返回 {operation:'update', assetId: 可更新目标的 assetId, fileName: 可更新目标的原文件名（不得改名）, filePath: transform 的 outputPath}。执行环境不能运行本地脚本，暂存目录中的 automation-sheet.mjs 仅供参考、无法执行；不要把 XLSX 当文本编辑，也不要声称没有电子表格处理能力。transform 失败时按返回的 error 信息修正参数后重试，不要放弃更新。`
+          ? `本次包含 XLSX 绑定文件。服务端已注入每个工作表的 sheet/header/columnCount/dedupeColumn/lastDedupeValue；严格沿用这些事实。普通表尾追加不要调用 spreadsheet.transform，直接在最终 stagedOutput 返回 {operation:'appendRows', sheet:'服务端给出的工作表名'（只有一个工作表时可省略）, rows:[[每行各列的值],…]（必须是二维数组，列数必须等于 columnCount，列序必须等于 header）, skipIfCellMatches:{column:dedupeColumn, value:'本次待追加行在判重列中的值'}}。先把本次判重值与 lastDedupeValue 比较：相同则返回 outputSkipped:true；不同则必须使用本次新值作为 skipIfCellMatches.value，绝不能直接使用旧的 lastDedupeValue，否则会把正常新行误判为重复。服务层会确定性追加到表尾并提交新版本。只有确需修改表头、格式或既有单元格等非追加变更时，才使用 spreadsheet.transform 生成更新后的工作簿；不要用它模拟普通追加。执行环境不能运行本地脚本，暂存目录中的 automation-sheet.mjs 仅供参考、无法执行；不要把 XLSX 当文本编辑，也不要声称没有电子表格处理能力。`
           : "本次没有 XLSX 文件，不需要电子表格处理。",
+        `执行预算（服务层约束）：最多 ${GENERIC_AUTOMATION_MAX_TOOL_CALLS} 次服务/外部工具调用；单次模型尝试最多 ${GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS / 1000} 秒；按“读取绑定输入与结构 → 必要的有限研究 → 一次最终动作”三阶段执行。不要重复读取同一版本、不要探索任务/会话/确认/盯盘配置。自动换模型仅在总 agent 截止时间尚余至少 ${GENERIC_AUTOMATION_FALLBACK_RESERVE_MS / 1000} 秒时发生，截止时间前另预留 ${GENERIC_AUTOMATION_COMMIT_RESERVE_MS / 1000} 秒提交空间；进入收尾阶段后立即返回结构化 JSON。`,
         `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
         "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变、显式返回 outputSkipped:true 并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         input.task.revision.output.mode === "none"
@@ -323,13 +513,22 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       // Automation runs are not conversations: a distinct channel keeps them
       // out of the conversation audit scope and any channel-based stats.
       channel: "automation",
-      conversationId: `automation-run:${input.run.runId}`,
+      conversationId: reviewTarget?.conversationId ?? `automation-run:${input.run.runId}`,
       userId: input.scope.userId,
       projectId: input.scope.projectId,
       instanceId: input.scope.instanceId,
       workspacePath: input.stagingPath,
-      taskType: input.task.taskType ?? "scheduled-automation",
-      _executionDeadlineAt: input.executionDeadlineAt,
+      // Keep the registered task type out of the generic ACP scope guard:
+      // mcpAllowedTools is the precise per-run grant below. The original
+      // scheduled-automation marker expands to every read tool.
+      taskType: GENERIC_AUTOMATION_CONTEXT_TASK_TYPE,
+      mcpAllowedTools: toolAllowlist,
+      expectedReviewKind: reviewTarget?.kind,
+      expectedReviewKey: reviewTarget?.reportKey,
+      _executionDeadlineAt: agentDeadlineAt,
+      _automationMaxToolCalls: GENERIC_AUTOMATION_MAX_TOOL_CALLS,
+      _attemptTimeoutMs: GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS,
+      _fallbackMinRemainingMs: GENERIC_AUTOMATION_FALLBACK_RESERVE_MS,
       _cancelSignal: input.signal,
     },
   };
@@ -383,7 +582,7 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
   if (task.revision.output.mode === "none") {
     // The domain output (e.g. a saved review) may already be persisted by the
     // agent; an unexpected stagedOutput must not fail the whole run (T-324).
-    if (stagedRaw !== undefined) {
+    if (stagedRaw !== undefined && stagedRaw !== null) {
       logger.warn(`automation run ignored stagedOutput under output.mode=none task=${task.taskId} keys=${Object.keys(stagedRaw as object).join(",")}`);
     }
     return { summary: summary || "自动化运行完成。", shouldNotify };

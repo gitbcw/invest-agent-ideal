@@ -4,6 +4,25 @@ import path from "node:path";
 
 export type AutomationSpreadsheetExtension = ".csv" | ".xlsx";
 
+/**
+ * Small, deterministic workbook facts injected into a generic automation
+ * prompt.  Do not include arbitrary rows here: the model only needs the
+ * schema and the current dedupe marker to produce an appendRows envelope.
+ */
+export interface AutomationSpreadsheetSheetSummary {
+  name: string;
+  headerRow: number;
+  headers: unknown[];
+  columnCount: number;
+  rowCount: number;
+  dedupeColumn: number;
+  lastDedupeValue?: unknown;
+}
+
+export interface AutomationSpreadsheetInspection {
+  sheets: AutomationSpreadsheetSheetSummary[];
+}
+
 export class AutomationSpreadsheetValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -196,6 +215,88 @@ function normalizeCellText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+function promptCellValue(value: unknown): unknown {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "object") return value;
+  if ("result" in value) return promptCellValue((value as { result?: unknown }).result);
+  if ("text" in value && typeof (value as { text?: unknown }).text === "string") return (value as { text: string }).text;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return String(value);
+  }
+}
+
+function rowValues(row: ExcelJS.Row): unknown[] {
+  return (row.values as unknown[]).slice(1).map(promptCellValue);
+}
+
+function hasCellValue(value: unknown): boolean {
+  return value !== null && value !== undefined && normalizeCellText(value) !== "";
+}
+
+function resolveDedupeColumn(headers: unknown[]): number {
+  const index = headers.findIndex((header) => /日期|交易日|date|day/i.test(normalizeCellText(header)));
+  if (index >= 0) return index + 1;
+  return 1;
+}
+
+function findLikelyHeaderRow(sheet: ExcelJS.Worksheet): number {
+  const first = rowValues(sheet.getRow(1));
+  if (first.filter(hasCellValue).length >= 2) return 1;
+  // A title-only first row is common in manually maintained workbooks. Pick
+  // the first following row with at least two populated cells as the schema
+  // row; keep row 1 as the conservative fallback for one-column sheets.
+  const limit = Math.min(sheet.rowCount, 10);
+  for (let rowNumber = 2; rowNumber <= limit; rowNumber += 1) {
+    if (rowValues(sheet.getRow(rowNumber)).filter(hasCellValue).length >= 2) return rowNumber;
+  }
+  return 1;
+}
+
+function sheetSchema(sheet: ExcelJS.Worksheet): { headerRow: number; headers: unknown[]; columnCount: number; dedupeColumn: number } {
+  const headerRow = findLikelyHeaderRow(sheet);
+  const headers = rowValues(sheet.getRow(headerRow));
+  const lastHeaderColumn = headers.reduce<number>((last, value, index) => hasCellValue(value) ? index + 1 : last, 0);
+  const columnCount = Math.max(1, sheet.columnCount, lastHeaderColumn);
+  return { headerRow, headers, columnCount, dedupeColumn: resolveDedupeColumn(headers) };
+}
+
+/**
+ * Inspect only the workbook structure needed by a generic update task.  The
+ * first row is treated as the header row and the dedupe marker is taken from
+ * the last non-empty data row in the date-like column (or column 1 when no
+ * date-like header exists).  This intentionally avoids returning row data.
+ */
+export async function inspectAutomationXlsx(bytes: Uint8Array): Promise<AutomationSpreadsheetInspection> {
+  const workbook = new ExcelJS.Workbook();
+  const input = Buffer.from(bytes);
+  await (workbook.xlsx.load as unknown as (loaded: ArrayBuffer) => Promise<unknown>)(
+    input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer,
+  );
+  return {
+    sheets: workbook.worksheets.map((sheet) => {
+      const schema = sheetSchema(sheet);
+      let lastDedupeValue: unknown;
+      for (let rowNumber = sheet.rowCount; rowNumber > schema.headerRow; rowNumber -= 1) {
+        const values = rowValues(sheet.getRow(rowNumber));
+        if (values.some(hasCellValue)) {
+          const candidate = values[schema.dedupeColumn - 1];
+          if (hasCellValue(candidate)) lastDedupeValue = candidate;
+          break;
+        }
+      }
+      return {
+        name: sheet.name,
+        ...schema,
+        rowCount: sheet.rowCount,
+        ...(lastDedupeValue === undefined ? {} : { lastDedupeValue }),
+      };
+    }),
+  };
+}
+
 /**
  * Deterministic row-append for update-mode automation output: the agent only
  * supplies the row data, the service owns the workbook mechanics. When
@@ -226,10 +327,19 @@ export async function appendRowsToXlsxBytes(input: {
   if (!sheet) {
     throw new Error(`worksheet not found: ${key || "(unspecified)"}; available sheets: ${workbook.worksheets.map((item) => item.name).join(", ")}`);
   }
+  const schema = sheetSchema(sheet);
+  for (const [index, row] of input.rows.entries()) {
+    if (row.length !== schema.columnCount) {
+      throw new Error(`appendRows row #${index + 1} has ${row.length} columns; expected exactly ${schema.columnCount} columns matching header row ${schema.headerRow}`);
+    }
+  }
   if (input.skipIfCellMatches) {
     const target = input.skipIfCellMatches.value.trim();
     const values = sheet.getColumn(input.skipIfCellMatches.column).values as unknown[];
-    for (let rowIndex = 1; rowIndex < values.length; rowIndex++) {
+    if (input.skipIfCellMatches.column > schema.columnCount) {
+      throw new Error(`skipIfCellMatches column ${input.skipIfCellMatches.column} exceeds sheet columnCount ${schema.columnCount}`);
+    }
+    for (let rowIndex = schema.headerRow + 1; rowIndex < values.length; rowIndex++) {
       if (values[rowIndex] !== null && values[rowIndex] !== undefined && normalizeCellText(values[rowIndex]) === target) {
         return { kind: "skipped", sheetName: sheet.name, matchedRow: rowIndex };
       }
