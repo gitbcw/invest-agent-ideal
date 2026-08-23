@@ -1921,6 +1921,14 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
   const inputAbsolute = resolveInside(inputPath);
   const outputAbsolute = resolveInside(outputPath);
   if (outputAbsolute === inputAbsolute) throw new Error("outputPath must differ from inputPath; keep the staged input untouched");
+  if (context.taskType === "scheduled-automation" || context.taskType === "automation-execution") {
+    const reservedInputsRoot = path.join(base, "inputs");
+    const reservedHelperPath = path.join(base, "automation-sheet.mjs");
+    const writesIntoInputs = outputAbsolute === reservedInputsRoot || outputAbsolute.startsWith(`${reservedInputsRoot}${path.sep}`);
+    if (writesIntoInputs || outputAbsolute === reservedHelperPath) {
+      throw new Error("outputPath is reserved for automation inputs/helpers; write a new .xlsx file in the automation staging root (for example result.xlsx), then use that exact outputPath as stagedOutput.filePath");
+    }
+  }
 
   const SHEET_OPERATION_KEYS = ["createSheets", "renameSheets", "setCells", "appendRows", "setColumnWidths", "setRowHeights", "mergeCells", "freezePanes", "autoFilters"] as const;
   const changesValue = value.changes;

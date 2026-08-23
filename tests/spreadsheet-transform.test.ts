@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -80,6 +80,36 @@ test("spreadsheet.transform applies structured changes to a staged workbook", as
     }, context) as { ok: boolean; error?: string };
     assert.equal(samePath.ok, false);
     assert.equal(samePath.error, "spreadsheet_transform_failed");
+
+    const automationContext = { ...context, taskType: "automation-execution" };
+    const reservedInputOutput = await callServiceTool("spreadsheet.transform", {
+      inputPath: "inputs/1-tracker.xlsx",
+      outputPath: "inputs/tracker-v2.xlsx",
+      changes: { appendRows: [{ sheet: "热点", values: [["2026-W34", "机器人", "测试标的"]] }] },
+    }, automationContext) as { ok: boolean; error?: string; message?: string; hint?: string };
+    assert.equal(reservedInputOutput.ok, false);
+    assert.equal(reservedInputOutput.error, "spreadsheet_transform_failed");
+    assert.match(reservedInputOutput.message ?? "", /reserved for automation inputs\/helpers/);
+    assert.match(reservedInputOutput.message ?? "", /staging root/);
+    assert.equal(existsSync(path.join(workspace, "inputs", "tracker-v2.xlsx")), false);
+
+    const reservedHelperOutput = await callServiceTool("spreadsheet.transform", {
+      inputPath: "inputs/1-tracker.xlsx",
+      outputPath: "automation-sheet.mjs",
+      changes: { appendRows: [{ sheet: "热点", values: [["2026-W34", "机器人", "测试标的"]] }] },
+    }, automationContext) as { ok: boolean; error?: string };
+    assert.equal(reservedHelperOutput.ok, false);
+    assert.equal(reservedHelperOutput.error, "spreadsheet_transform_failed");
+
+    const automationRootOutput = await callServiceTool("spreadsheet.transform", {
+      inputPath: "inputs/1-tracker.xlsx",
+      outputPath: "tracker-automation-v2.xlsx",
+      changes: { appendRows: [{ sheet: "热点", values: [["2026-W34", "机器人", "测试标的"]] }] },
+    }, automationContext) as { ok: boolean; outputPath?: string; bytes?: number };
+    assert.equal(automationRootOutput.ok, true);
+    assert.equal(automationRootOutput.outputPath, "tracker-automation-v2.xlsx");
+    assert.ok((automationRootOutput.bytes ?? 0) > 0);
+    assert.ok((await readFile(path.join(workspace, "tracker-automation-v2.xlsx"))).length > 0);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
