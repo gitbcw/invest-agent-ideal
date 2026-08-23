@@ -101,6 +101,26 @@ export function applyAutomationSheetChanges(workbook: ExcelJS.Workbook, changes:
     if (!name || name.length > 31 || workbook.getWorksheet(name)) throw new Error(`invalid renameSheets item: ${expectedShapeHint("renameSheets", index)}`);
     sheet.name = name;
   }
+  // A title row is commonly merged across the future header columns. When a
+  // change explicitly targets a non-master cell in that merged range, keeping
+  // the merge would redirect every assignment to the master cell and the last
+  // value would overwrite the whole header. Unmerge only ranges whose
+  // non-master cells are explicitly addressed; writing the master alone keeps
+  // the original merge intact.
+  const unmergedRanges = new Set<string>();
+  for (const change of Array.isArray(changes.setCells) ? changes.setCells : []) {
+    const sheet = getSheet(change.sheet);
+    const row = Number(change.row);
+    const column = Number(change.column);
+    if (!Number.isInteger(row) || row < 1 || !Number.isInteger(column) || column < 1) continue;
+    const cell = sheet.getCell(row, column);
+    if (!cell.isMerged || cell.address === cell.master.address) continue;
+    const mergeRange = sheet.model.merges.find((range) => sheet.getCell(range.split(":", 1)[0]).address === cell.master.address);
+    if (mergeRange && !unmergedRanges.has(`${sheet.id}:${mergeRange}`)) {
+      sheet.unMergeCells(mergeRange);
+      unmergedRanges.add(`${sheet.id}:${mergeRange}`);
+    }
+  }
   for (const [index, change] of (Array.isArray(changes.setCells) ? changes.setCells : []).entries()) {
     const sheet = getSheet(change.sheet);
     const row = Number(change.row);

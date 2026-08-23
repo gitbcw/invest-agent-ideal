@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import ExcelJS from "exceljs";
 
-import { appendRowsToXlsxBytes, inspectAutomationXlsx, writeAutomationSpreadsheetHelper } from "../src/services/automation-spreadsheet.js";
+import { appendRowsToXlsxBytes, inspectAutomationXlsx, transformXlsxBytes, writeAutomationSpreadsheetHelper } from "../src/services/automation-spreadsheet.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -113,4 +113,28 @@ test("automation XLSX inspection returns schema and the last dedupe marker witho
     () => appendRowsToXlsxBytes({ bytes, sheet: "行业复盘", rows: [["2026-08-23", "行业列多余", "煤炭", "越界"]] }),
     /expected exactly 3 columns/,
   );
+});
+
+test("spreadsheet transform expands a merged title row when distinct header cells are assigned", async () => {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("行业复盘");
+  sheet.addRow(["行业复盘标题"]);
+  sheet.mergeCells("A1:C1");
+  const bytes = Buffer.from(await workbook.xlsx.writeBuffer());
+
+  const transformed = await transformXlsxBytes(bytes, {
+    setCells: [
+      { sheet: "行业复盘", row: 1, column: 1, value: "序号" },
+      { sheet: "行业复盘", row: 1, column: 2, value: "复盘日期" },
+      { sheet: "行业复盘", row: 1, column: 3, value: "行业代码" },
+    ],
+  });
+  const inspection = await inspectAutomationXlsx(transformed);
+  assert.deepEqual(inspection.sheets[0]?.headers, ["序号", "复盘日期", "行业代码"]);
+
+  const reopened = new ExcelJS.Workbook();
+  await (reopened.xlsx.load as unknown as (input: ArrayBuffer) => Promise<unknown>)(
+    transformed.buffer.slice(transformed.byteOffset, transformed.byteOffset + transformed.byteLength) as ArrayBuffer,
+  );
+  assert.equal(reopened.getWorksheet("行业复盘")!.getCell("B1").isMerged, false);
 });
