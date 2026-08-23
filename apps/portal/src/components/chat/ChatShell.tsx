@@ -6,7 +6,7 @@ import { nanoid } from "nanoid";
 import { Folder, FolderOpen } from "lucide-react";
 
 import { Sidebar } from "./Sidebar";
-import { MessageComposer, type ComposerAttachment } from "./MessageComposer";
+import { MessageComposer, type ComposerAttachment, type ComposerSendResult } from "./MessageComposer";
 import { MessageBubble } from "./MessageBubble";
 import { DocumentWorkspace } from "./DocumentWorkspace";
 import { ImageLightbox } from "./ImageLightbox";
@@ -59,6 +59,10 @@ interface ChatShellProps {
     assistantId: string;
     instanceId: string;
   };
+}
+
+function buildComposerDraftKey(user: ChatShellProps["initialUser"], conversationId: string | null) {
+  return [user.instanceId, user.id, user.assistantId, conversationId ?? "new-conversation"].join(":");
 }
 
 export function ChatShell({ initialUser }: ChatShellProps) {
@@ -163,6 +167,10 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const waiting = activeView.waiting || Boolean(activeId && processingConversations[activeId]);
   const waitingStartedAt = activeView.waitingStartedAt;
   const animatingAssistantMessageId = activeView.animatingAssistantMessageId;
+  const composerDraftKey = useMemo(
+    () => buildComposerDraftKey(initialUser, activeId),
+    [activeId, initialUser.assistantId, initialUser.id, initialUser.instanceId]
+  );
 
   const clampRightPanelWidth = useCallback((requested: number) => {
     const sidebarWidth = collapsed ? 72 : 224;
@@ -541,9 +549,9 @@ export function ChatShell({ initialUser }: ChatShellProps) {
 
   // ---- 发送消息 ----
   const handleSend = useCallback(
-    async (text: string, attachments: ComposerAttachment[] = []) => {
+    async (text: string, attachments: ComposerAttachment[] = []): Promise<ComposerSendResult> => {
       const offline = status && !status.online;
-      if (offline) return;
+      if (offline) return { ok: false, draftKey: buildComposerDraftKey(initialUser, activeId) };
       const conversationId = activeId ?? `web_${nanoid(16)}`;
       const clientSentAt = new Date().toISOString();
       const processingStartedAt = Date.parse(clientSentAt);
@@ -685,6 +693,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
             updatedAt: result.assistantMessage?.createdAt ?? clientSentAt
           }, ...next];
         });
+        return { ok: result.ok, draftKey: buildComposerDraftKey(initialUser, conversationId) };
       } catch (err) {
         writeProcessingStartedAt(conversationId, null);
         setConversationProcessing(conversationId, false);
@@ -708,6 +717,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
           })
         }));
         setFatalError((err as Error).message);
+        return { ok: false, draftKey: buildComposerDraftKey(initialUser, conversationId) };
       } finally {
         stopProgress();
         setStoppingConversations((current) => {
@@ -731,7 +741,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         }, 1200);
       }
     },
-    [activeId, selectedModel, setConversationProcessing, status, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]
+    [activeId, initialUser.assistantId, initialUser.id, initialUser.instanceId, selectedModel, setConversationProcessing, status, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]
   );
 
   const handleCancelConversation = useCallback(async () => {
@@ -1004,11 +1014,11 @@ export function ChatShell({ initialUser }: ChatShellProps) {
             </div>
           </div>
           <MessageComposer
-            key={activeId ?? "new-conversation"}
             disabled={offline}
             disabledReason={disabledReason ?? (waiting ? "正在等待助手回复..." : undefined)}
             processing={waiting}
             stopping={Boolean(activeId && stoppingConversations[activeId])}
+            draftKey={composerDraftKey}
             onSend={handleSend}
             onCancel={handleCancelConversation}
           />

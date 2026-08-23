@@ -12,13 +12,36 @@ const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const MAX_FILES_PER_MESSAGE = 8;
 const MAX_TOTAL_BYTES_PER_MESSAGE = 40 * 1024 * 1024;
 const MAX_TEXTAREA_HEIGHT = 176;
+const DRAFT_MAX_CHARS = 20_000;
+
+function draftStorageKey(draftKey: string) {
+  return `composer-draft:${encodeURIComponent(draftKey)}`;
+}
+
+function readDraft(draftKey: string) {
+  try { return window.sessionStorage.getItem(draftStorageKey(draftKey))?.slice(0, DRAFT_MAX_CHARS) ?? ""; } catch { return ""; }
+}
+
+function writeDraft(draftKey: string, value: string) {
+  try {
+    if (value.trim()) window.sessionStorage.setItem(draftStorageKey(draftKey), value.slice(0, DRAFT_MAX_CHARS));
+    else window.sessionStorage.removeItem(draftStorageKey(draftKey));
+  } catch { /* storage is an optional enhancement */ }
+}
+
+function clearDraft(draftKey: string) {
+  try { window.sessionStorage.removeItem(draftStorageKey(draftKey)); } catch { /* optional */ }
+}
+
+export interface ComposerSendResult { ok: boolean; draftKey?: string; }
 
 interface MessageComposerProps {
   disabled: boolean;
   disabledReason?: string;
   processing?: boolean;
   stopping?: boolean;
-  onSend: (text: string, attachments: ComposerAttachment[]) => Promise<void>;
+  draftKey?: string;
+  onSend: (text: string, attachments: ComposerAttachment[]) => Promise<ComposerSendResult | void>;
   onCancel?: () => Promise<void>;
 }
 
@@ -32,6 +55,7 @@ export function MessageComposer({
   disabledReason,
   processing = false,
   stopping = false,
+  draftKey,
   onSend,
   onCancel
 }: MessageComposerProps) {
@@ -44,10 +68,41 @@ export function MessageComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
+  const draftKeyRef = useRef<string | null>(null);
+  const draftInitializedRef = useRef(false);
+  const restoringDraftRef = useRef(false);
+  const clearedDraftKeysRef = useRef(new Set<string>());
 
   const inputDisabled = disabled || processing || stopping;
   const cancelPending = stopping || cancelRequested;
   const canSend = !inputDisabled && !sending && !error && (value.trim().length > 0 || attachments.length > 0);
+
+  const mirrorDraft = (key: string, text: string) => {
+    if (!clearedDraftKeysRef.current.has(key)) writeDraft(key, text);
+  };
+
+  useLayoutEffect(() => {
+    const nextKey = draftKey ?? null;
+    const previousKey = draftKeyRef.current;
+    if (draftInitializedRef.current && previousKey === nextKey) return;
+    if (previousKey && previousKey !== nextKey) {
+      mirrorDraft(previousKey, value);
+      attachments.forEach((item) => { if (item.previewUrl) URL.revokeObjectURL(item.previewUrl); });
+      setAttachments([]);
+      setError(null);
+    }
+    draftKeyRef.current = nextKey;
+    draftInitializedRef.current = true;
+    restoringDraftRef.current = true;
+    setValue(nextKey ? readDraft(nextKey) : "");
+  }, [draftKey]);
+
+  useEffect(() => {
+    const key = draftKeyRef.current;
+    if (!key || key !== draftKey) return;
+    if (restoringDraftRef.current) { restoringDraftRef.current = false; return; }
+    mirrorDraft(key, value);
+  }, [value, draftKey]);
 
   useEffect(() => {
     if (!stopping) setCancelRequested(false);
@@ -79,11 +134,25 @@ export function MessageComposer({
     if (!canSend) return;
     const text = value.trim();
     const outgoing = attachments;
+    const submittedDraftKey = draftKeyRef.current;
+    if (submittedDraftKey) {
+      clearedDraftKeysRef.current.add(submittedDraftKey);
+      clearDraft(submittedDraftKey);
+    }
     setValue("");
     setAttachments([]);
     setSending(true);
     try {
-      await onSend(text, outgoing);
+      const result = await onSend(text, outgoing);
+      if (result?.ok === false) {
+        const targetKey = result.draftKey ?? submittedDraftKey;
+        if (targetKey) { clearedDraftKeysRef.current.delete(targetKey); writeDraft(targetKey, text); }
+      } else if (submittedDraftKey) {
+        clearedDraftKeysRef.current.delete(submittedDraftKey);
+      }
+    } catch (error) {
+      if (submittedDraftKey) { clearedDraftKeysRef.current.delete(submittedDraftKey); writeDraft(submittedDraftKey, text); }
+      throw error;
     } finally {
       outgoing.forEach((item) => {
         if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
