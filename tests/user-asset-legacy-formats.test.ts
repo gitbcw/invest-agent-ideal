@@ -113,11 +113,35 @@ test("T-348: legacy CSV head converts to a standard XLSX version and replays ide
   await writeFile(path.join(projectRoot, storagePath), csvBytes);
 
   const script = path.resolve("scripts/backfill-csv-assets-to-xlsx.mjs");
-  const runBackfill = (args: string[] = []) => execFile(process.execPath, ["--import", "tsx", script, ...args], {
+  const runBackfill = (args: string[] = [], envOverrides: NodeJS.ProcessEnv = {}) => execFile(process.execPath, ["--import", "tsx", script, ...args], {
     cwd: path.resolve("."),
-    env: process.env,
+    env: { ...process.env, ...envOverrides },
     maxBuffer: 2 * 1024 * 1024,
   });
+
+  // Dry-run must be usable against a production snapshot without triggering
+  // initDb() migrations. A minimal read-only fixture proves it only selects
+  // from the two tables required for candidate discovery.
+  const dryRunDbPath = path.join(root, "assets-dry-run.db");
+  const { default: Database } = await import("better-sqlite3");
+  const dryRunDb = new Database(dryRunDbPath);
+  dryRunDb.exec(`
+    CREATE TABLE user_assets (
+      asset_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL, current_version_id TEXT, status TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE user_asset_versions (
+      version_id TEXT PRIMARY KEY, size_bytes INTEGER NOT NULL, format TEXT NOT NULL
+    );
+  `);
+  dryRunDb.close();
+  const readonlyInventory = await runBackfill(["--dry-run"], { DB_PATH: dryRunDbPath });
+  assert.match(readonlyInventory.stdout, /mode=dry-run candidates=0/);
+  const postInventoryDb = new Database(dryRunDbPath, { readonly: true });
+  assert.equal(postInventoryDb.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'").get().count, 2);
+  postInventoryDb.close();
+
   const dryRun = await runBackfill(["--dry-run"]);
   assert.match(dryRun.stdout, /mode=dry-run candidates=1/);
   assert.match(dryRun.stdout, /would convert asset=ast_legacy_csv_t348 bytes=\d+/);
