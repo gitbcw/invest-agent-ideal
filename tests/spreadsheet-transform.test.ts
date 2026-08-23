@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync } from "node:fs";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -93,13 +93,13 @@ test("spreadsheet.transform applies structured changes to a staged workbook", as
     assert.match(reservedInputOutput.message ?? "", /staging root/);
     assert.equal(existsSync(path.join(workspace, "inputs", "tracker-v2.xlsx")), false);
 
-    const reservedHelperOutput = await callServiceTool("spreadsheet.transform", {
+    const nestedAutomationOutput = await callServiceTool("spreadsheet.transform", {
       inputPath: "inputs/1-tracker.xlsx",
-      outputPath: "automation-sheet.mjs",
+      outputPath: "outputs/tracker-v2.xlsx",
       changes: { appendRows: [{ sheet: "热点", values: [["2026-W34", "机器人", "测试标的"]] }] },
     }, automationContext) as { ok: boolean; error?: string };
-    assert.equal(reservedHelperOutput.ok, false);
-    assert.equal(reservedHelperOutput.error, "spreadsheet_transform_failed");
+    assert.equal(nestedAutomationOutput.ok, false);
+    assert.equal(nestedAutomationOutput.error, "spreadsheet_transform_failed");
 
     const automationRootOutput = await callServiceTool("spreadsheet.transform", {
       inputPath: "inputs/1-tracker.xlsx",
@@ -110,6 +110,35 @@ test("spreadsheet.transform applies structured changes to a staged workbook", as
     assert.equal(automationRootOutput.outputPath, "tracker-automation-v2.xlsx");
     assert.ok((automationRootOutput.bytes ?? 0) > 0);
     assert.ok((await readFile(path.join(workspace, "tracker-automation-v2.xlsx"))).length > 0);
+
+    await symlink(path.join(workspace, "inputs"), path.join(workspace, "alias-inputs"));
+    const symlinkInput = await callServiceTool("spreadsheet.transform", {
+      inputPath: "alias-inputs/1-tracker.xlsx",
+      outputPath: "symlink-input-result.xlsx",
+      changes: { appendRows: [{ sheet: "热点", values: [["2026-W34", "机器人", "测试标的"]] }] },
+    }, automationContext) as { ok: boolean; error?: string };
+    assert.equal(symlinkInput.ok, false);
+    assert.equal(symlinkInput.error, "spreadsheet_transform_failed");
+
+    const outside = path.join(tempRoot, "outside");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, path.join(workspace, "alias-outside"));
+    const symlinkOutput = await callServiceTool("spreadsheet.transform", {
+      inputPath: "inputs/1-tracker.xlsx",
+      outputPath: "alias-outside/result.xlsx",
+      changes: { appendRows: [{ sheet: "热点", values: [["2026-W34", "机器人", "测试标的"]] }] },
+    }, context) as { ok: boolean; error?: string };
+    assert.equal(symlinkOutput.ok, false);
+    assert.equal(symlinkOutput.error, "spreadsheet_transform_failed");
+    assert.equal(existsSync(path.join(outside, "result.xlsx")), false);
+
+    const caseVariantOutput = await callServiceTool("spreadsheet.transform", {
+      inputPath: "inputs/1-tracker.xlsx",
+      outputPath: "Inputs/case.xlsx",
+      changes: { appendRows: [{ sheet: "热点", values: [["2026-W34", "机器人", "测试标的"]] }] },
+    }, automationContext) as { ok: boolean; error?: string };
+    assert.equal(caseVariantOutput.ok, false);
+    assert.equal(caseVariantOutput.error, "spreadsheet_transform_failed");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

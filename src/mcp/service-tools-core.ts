@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import ExcelJS from "exceljs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { db, sqlite } from "../db/index.js";
 import { alertRules, conversationArtifacts, conversationMessages, mastraProjectProfiles, pendingSandboxConfirmations, sandboxAuditLogs } from "../db/schema.js";
@@ -1912,7 +1912,7 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
   if (!inputPath || !outputPath) throw new Error("inputPath and outputPath are required");
   if (!/\.xlsx$/i.test(inputPath) || !/\.xlsx$/i.test(outputPath)) throw new Error("inputPath and outputPath must be .xlsx files inside the current workspace");
   if (!context.workspacePath) throw new Error("spreadsheet.transform requires a workspace path (automation staging or user project)");
-  const base = path.resolve(context.workspacePath);
+  const base = await realpath(context.workspacePath);
   const resolveInside = (relative: string) => {
     const absolute = path.resolve(base, relative);
     if (absolute !== base && !absolute.startsWith(base + path.sep)) throw new Error("path must stay inside the current workspace");
@@ -1921,13 +1921,23 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
   const inputAbsolute = resolveInside(inputPath);
   const outputAbsolute = resolveInside(outputPath);
   if (outputAbsolute === inputAbsolute) throw new Error("outputPath must differ from inputPath; keep the staged input untouched");
+  const inputEntry = await lstat(inputAbsolute).catch(() => null);
+  const realInput = await realpath(inputAbsolute).catch(() => "");
+  if (!inputEntry?.isFile() || inputEntry.isSymbolicLink() || realInput !== inputAbsolute) {
+    throw new Error("inputPath must resolve to a regular workbook inside the current workspace without symbolic links");
+  }
   if (context.taskType === "scheduled-automation" || context.taskType === "automation-execution") {
-    const reservedInputsRoot = path.join(base, "inputs");
-    const reservedHelperPath = path.join(base, "automation-sheet.mjs");
-    const writesIntoInputs = outputAbsolute === reservedInputsRoot || outputAbsolute.startsWith(`${reservedInputsRoot}${path.sep}`);
-    if (writesIntoInputs || outputAbsolute === reservedHelperPath) {
-      throw new Error("outputPath is reserved for automation inputs/helpers; write a new .xlsx file in the automation staging root (for example result.xlsx), then use that exact outputPath as stagedOutput.filePath");
+    if (!/^[^/\\]+\.xlsx$/i.test(outputPath) || outputAbsolute !== path.join(base, outputPath)) {
+      throw new Error("outputPath is reserved for automation inputs/helpers; write a new .xlsx file name in the automation staging root (for example result.xlsx), then use that exact outputPath as stagedOutput.filePath");
     }
+  }
+  const outputParent = path.dirname(outputAbsolute);
+  await mkdir(outputParent, { recursive: true });
+  const realOutputParent = await realpath(outputParent).catch(() => "");
+  if (realOutputParent !== outputParent) throw new Error("outputPath parent must stay inside the current workspace without symbolic links");
+  const outputEntry = await lstat(outputAbsolute).catch(() => null);
+  if (outputEntry && (outputEntry.isSymbolicLink() || !outputEntry.isFile() || await realpath(outputAbsolute).catch(() => "") !== outputAbsolute)) {
+    throw new Error("outputPath must be a regular workbook inside the current workspace without symbolic links");
   }
 
   const SHEET_OPERATION_KEYS = ["createSheets", "renameSheets", "setCells", "appendRows", "setColumnWidths", "setRowHeights", "mergeCells", "freezePanes", "autoFilters"] as const;
@@ -1945,7 +1955,6 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
     await readFile(inputAbsolute),
     changes as Parameters<typeof transformXlsxBytes>[1],
   );
-  await mkdir(path.dirname(outputAbsolute), { recursive: true });
   await writeFile(outputAbsolute, output, { mode: 0o600 });
   await audit(context, {
     operation: "spreadsheet.transform",
