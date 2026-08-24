@@ -24,11 +24,14 @@ LOCAL_HASHES="${BACKUP_ROOT}/.local-hashes-${BACKUP_LABEL}-$$"
 STAGING_DIR=""
 WORKSPACES=()
 RSYNC_EXCLUDES=(
-  "--exclude=/.sandbox-token"
-  "--exclude=/.codex/auth.json"
-  "--exclude=/.codex/logs_2.sqlite*"
-  "--exclude=/.codex/.tmp/"
-  "--exclude=/.codex/tmp/"
+  # Unanchored patterns: .codex sandbox artifacts also appear nested inside
+  # automation run dirs (e.g. .generic-automation-run-*/.codex/.tmp), and the
+  # release-snapshot safety verifier rejects them at ANY depth.
+  "--exclude=.sandbox-token"
+  "--exclude=.codex/auth.json"
+  "--exclude=.codex/logs_2.sqlite*"
+  "--exclude=.codex/.tmp/"
+  "--exclude=.codex/tmp/"
   "--exclude=.rsync-partial/"
   "--exclude=._*"
 )
