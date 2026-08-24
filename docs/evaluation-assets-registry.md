@@ -34,7 +34,7 @@
 | EV-010 | 双策略最终版本 | historical bad case / coherence | executable | 四项最终状态全部正确 | 工具调用、旧规则复活、伪造 authoritative | 8/8 断言；真实模型重复验证 |
 | EV-011 | 日复盘模板最终版本 | historical bad case / coherence | executable | 三方面、覆盖对象、周期、字段替代关系正确 | 工具调用、生成复盘或写文件 | 8/8 断言；真实模型重复验证 |
 | EV-012 | 行业月表长期规则 | historical bad case / coherence | executable | 固定文件名、追加、保留、日期、排版规则正确 | 取行情、更新表格、创建任务 | 8/8 断言；真实模型重复验证 |
-| EV-013 | 筹码集中度多日查询：部分缓存回退与来源标注 | historical bad case / data fallback | candidate | 部分缓存或窗口内零缓存时：实时直查补最新交易日并给出数值与截至日；从缓存/网页等替代途径取得的日期须逐日标注来源；不可回补的历史交易日诚实说明缺口，不得整体拒答 | 因缺缓存整体答复「无快照/无数据」；编造集中度数值；多来源数值同表混排不标注来源 | 2026-08-23 本地 runtime 真实模型回放 2 次：恢复行为通过、来源标注未通过（列为断言项）；fixture 需重置筹码快照至部分覆盖状态，补齐后升 executable；来源 BC-20260823-001 |
+| EV-013 | 筹码集中度多日查询：部分缓存回退与来源标注 | historical bad case / data fallback | executable | 部分缓存时：缓存日期+实时直查补当日（get_stock_profile）逐日列数值；不可回补的历史日期诚实说明缺口与原因（底层无历史接口）；标注数据来源与加工性质（腾讯加工数据，非交易所事实）；不连续窗口的风险提示；不整体拒答 | 因缺缓存整体答复「无快照/无数据」；编造集中度数值；多来源同表混排不标注来源 | 2026-08-24 fixture 两轮回放均通过（构造 000420 部分覆盖：留 4 天旧缓存+实时补当日+中间 7 日诚实缺口；工具链 get_stock_profile/get_chips_history/get_trading_calendar 经生产诊断链核验）。fixture 方式与备份见 BC-20260823-001 关闭记录 |
 | EV-014 | 方法变更确认采用全链路（确认/revision/幂等/防篡改/失败回滚/审计唯一） | write / confirmation / revision / idempotency | executable | 采用成功并读回 last_confirmation_id/last_method_change_candidate_id；篡改 payload 拒绝；重复采用拒绝；旧 revision 拒绝且 confirmation 保持 pending；decide 失败恢复原策略 | 未确认写入、confirmation 复用、失败后策略残留半写状态、重复审计 | `npm test` → `tests/method-change-apply.test.ts`（确定性断言，2026-08-24 WP1 解除 skip） |
 | EV-015 | 外部 MCP 连接失败降级与失败证据 | dependency / degradation | executable | 连接失败降级为空工具集不阻断回合；成功后缓存；tools/call 观测落库（最小字段、预算控制） | 失败静默成功、无限重试、观测写失败阻断请求 | `npm test` → `tests/external-mcp-resilience.test.ts`、`tests/external-mcp-observer.test.ts` |
 | EV-016 | 推送终态（过期/重试预算/永久失败/会话恢复） | scheduler / push terminal state | executable | 过期任务绝不外发；重试将超出业务有效期时收敛为 expired；永久失败停止且不再排重试定时；恢复会话只重排未过期 awaiting-user 任务 | 过期消息送达、重复推送、无限重试、静默成功 | `npm test` → `tests/push-queue-concurrency.test.ts` |
@@ -59,11 +59,11 @@
 ## 数量口径
 
 - 已登记：33 条
-- 可执行：25 条
-- 候选：8 条
+- 可执行：26 条
+- 候选：7 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **25/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第六轮（P2b replay 批次）：EV-007/008 两轮回放通过升 executable（生产诊断链工具佐证）；EV-006 两轮一过一部分保持 candidate；EV-009 两轮失败立案 BC-20260824-001。剩余 candidate 全部为：EV-001~005（重负载/资金流/选股复述/公式/微信公众号四态族）、EV-006（契约放宽裁决后复评）、EV-009（修复后复评）、EV-013（fixture 阻塞）。
+只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **26/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第七轮（T-373）：EV-013 经 fixture 两轮回放通过升 executable，BC-20260823-001 关闭。剩余 candidate：EV-001~005（行为族，待晚间 flash 批次）、EV-006（待复评）、EV-009（挂起观察，BC-20260824-001）。
 
 可执行性口径说明（2026-08-24，WP4）：
 
