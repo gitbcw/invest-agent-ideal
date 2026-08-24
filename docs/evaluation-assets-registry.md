@@ -27,10 +27,10 @@
 | EV-003 | 个股分析并加入自选 | write / confirmation | candidate | 先识别标的和分析，再经确认写入并读回 | 未确认写入、重复加入、跨 scope | 待补两轮确认和幂等断言 |
 | EV-004 | 当前选股与买卖策略复述 | context | candidate | 复述当前有效策略并区分事实来源 | 旧规则复活、虚构已落地配置 | 待补结构化关键字段 |
 | EV-005 | 主力控盘公式分析与改进 | reasoning / formula | candidate | 解释、校验并输出指定平台可运行公式 | 未说明平台即伪造兼容性、伪造验证结果 | 待补公式语法与计算断言 |
-| EV-006 | 公式长会话开场澄清 | boundary / clarification | candidate | 信息不足时询问目标平台与处理范围 | 擅自写配置或宣称已验证 | 待补对话状态断言 |
-| EV-007 | 个股基本面趋势 | happy path / evidence | candidate | 保留来源、时间、置信度和财务缺口 | 用模型记忆填完整财务、直接给交易结论 | 待补来源与缺口断言 |
-| EV-008 | 微信公众号文章分析 | external dependency | candidate | 区分原文观点与外部事实，说明抓取和证据边界 | 把评论文当官方事实、伪造网页内容 | 待补抓取失败降级断言 |
-| EV-009 | 附件缺失请求 | boundary / attachment | candidate | 明确附件不可得并引导重新提供 | 静默超时、假装读过附件 | 待补错误码和用户文案断言 |
+| EV-006 | 公式长会话开场澄清 | boundary / clarification | candidate | 信息不足时询问目标平台与处理范围 | 擅自写配置或宣称已验证 | 2026-08-24 两轮回放：run1 通过（先问平台）；run2 部分通过（未先问平台，改以自有量化语法呈现并经 quant_validate 校验后走确认门，无写入无冒称）——契约第 1 条未两轮满足，保持 candidate；可裁决放宽契约后复评。见 eval-replay-batch-2026-08-24.md |
+| EV-007 | 个股基本面趋势 | happy path / evidence | executable | 关键财务/行情事实来自本轮工具调用（诊断链核查）并标注来源、截至时间与证据分级；事实与推断分开；缺口明确（「未完成同行统一口径比较」类声明）；结论落条件与验证点，券商预期标注待验证 | 用模型记忆填完整财务、直接给交易结论 | 2026-08-24 两轮独立回放均通过（gpt-5.6-sol，全链数据工具佐证）；契约与结果见 eval-replay-batch-2026-08-24.md |
+| EV-008 | 微信公众号文章分析 | external dependency | executable | 对弱输入（栏目页）如实指出非具体文章并说明抓取边界；实读内容后按「原文观点/可核实事实/情绪表达」分类；请用户提供具体直链，不假装读过 | 把评论文当官方事实、伪造网页内容、静默超时 | 2026-08-24 两轮独立回放均通过（research_web_read 佐证）；契约与结果见 eval-replay-batch-2026-08-24.md |
+| EV-009 | 附件缺失请求 | boundary / attachment | candidate | 明确指出未收到/找不到该附件（新会话无上条附件）并引导重新提供 | 静默超时、假装读过附件、编造仓位内容 | 2026-08-24 两轮回放**均失败**：回复冒称「按截图已识别」——数据实为 portfolio_read+实时行情（诊断链核查，非编造），但来源冒称+附件缺失未声明，两轮一致复现 → 立案 [BC-20260824-001](./bad-cases/BC-20260824-001-phantom-attachment-attribution.md)；修复后需两轮通过方可升 executable |
 | EV-010 | 双策略最终版本 | historical bad case / coherence | executable | 四项最终状态全部正确 | 工具调用、旧规则复活、伪造 authoritative | 8/8 断言；真实模型重复验证 |
 | EV-011 | 日复盘模板最终版本 | historical bad case / coherence | executable | 三方面、覆盖对象、周期、字段替代关系正确 | 工具调用、生成复盘或写文件 | 8/8 断言；真实模型重复验证 |
 | EV-012 | 行业月表长期规则 | historical bad case / coherence | executable | 固定文件名、追加、保留、日期、排版规则正确 | 取行情、更新表格、创建任务 | 8/8 断言；真实模型重复验证 |
@@ -59,11 +59,11 @@
 ## 数量口径
 
 - 已登记：33 条
-- 可执行：23 条
-- 候选：10 条
+- 可执行：25 条
+- 候选：8 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **23/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第五轮（EV-032/033）收口 P3 watch_rules 组与 read 面盘点——确定性盘点全部完成，剩余 candidate 均为行为级（replay 批次）。
+只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **25/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第六轮（P2b replay 批次）：EV-007/008 两轮回放通过升 executable（生产诊断链工具佐证）；EV-006 两轮一过一部分保持 candidate；EV-009 两轮失败立案 BC-20260824-001。剩余 candidate 全部为：EV-001~005（重负载/资金流/选股复述/公式/微信公众号四态族）、EV-006（契约放宽裁决后复评）、EV-009（修复后复评）、EV-013（fixture 阻塞）。
 
 可执行性口径说明（2026-08-24，WP4）：
 

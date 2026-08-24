@@ -18,6 +18,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [bad-case-record-template.md](./bad-case-record-template.md) | Bad Case 证据、归因、修复、回归和回滚记录模板 |
 | [bad-cases/BC-20260821-001-long-conversation-coherence-latency.md](./bad-cases/BC-20260821-001-long-conversation-coherence-latency.md) | 首次治理演练：长会话逻辑已修复但性能与 Trace 证据未过放行门 |
 | [bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md](./bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md) | 筹码集中度查询缓存未命中即宣告缺口：归因 L1 工具学说缺证据穷尽规则，修复为指令补行，回归样例 EV-013 |
+| [bad-cases/BC-20260824-001-phantom-attachment-attribution.md](./bad-cases/BC-20260824-001-phantom-attachment-attribution.md) | 附件引用被冒称已读：真实工具数据（portfolio_read）被表述为「截图识别」，两轮回放复现，回归样例 EV-009 |
 | [run-diagnostic-view-contract.md](./run-diagnostic-view-contract.md) | 从 traceId 串起对话、工具、审计、调度、产物和投递的最小诊断契约 |
 | [release-governance-evidence-template.md](./release-governance-evidence-template.md) | 变更影响、验证、灰度、观测、回滚和 go/no-go 记录模板 |
 | [release-record-20260824-dd072a15.md](./release-record-20260824-dd072a15.md) | 真实发布记录：T-357 治理执行线（WP0–WP5）上线，含验收九项与 known-good 标记 |
