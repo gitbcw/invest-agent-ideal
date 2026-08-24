@@ -43,8 +43,9 @@
 | preferences.apply | ✅ EV-027 | — |
 | reviews.save | ✅ EV-025（reportKey 校验含路径穿越拒绝 + kind 绑定）；调度授权面 EV-026 | — |
 | confirmations.request | ✅ EV-024 | — |
-| artifacts.publish / spreadsheet.* / assets.* | 部分（EV-021 覆盖路径逃逸与 xlsx 结构；conversation-artifacts.test.ts、user-assets-mcp.test.ts、mastra-spreadsheet 系列存在但未入册） | P2：盘点入册 |
-| onboarding.* / watch_rules.* | **待盘点**（mastra-onboarding-confirm-write.test.ts 等套件存在） | P2/P3：盘点入册；watch_rules.validate/dry_run 有纯确定性潜力 |
+| artifacts.publish / spreadsheet.* / assets.* | ✅ EV-028（产物发布 47 项：格式校验/原子配额/幂等重试/字节保持）、EV-029（资产库组：scope/删除确认/生命周期/legacy/Portal 契约）、EV-030（表格组：transform/结构/合并行展开） | — |
+| onboarding.* | ✅ EV-031（确认写投影/draft commit/共享契约跳步 409/微信引导门） | — |
+| watch_rules.* | **待盘点**（watch_rules.validate/dry_run 有纯确定性潜力） | P3：盘点入册 |
 
 ### read 19 个
 
@@ -65,4 +66,4 @@
 
 - 巡检（19:15 自动化）与 bad case 关闭时产出 candidate 挂接本清单；
 - 每次盘点后更新「已覆盖/待盘点」列，保持本文件是盲区地图的单一入口；
-- 变更门选择规则表的七面在盘点完成后重算覆盖率（当前 17/30 executable，P1 写工具组已闭合）。
+- 变更门选择规则表的七面在盘点完成后重算覆盖率（当前 21/30 executable，P1 写工具组与 P2a 资产/onboarding 组已闭合；剩余：P2b replay 批次待授权、P3 watch_rules、read 类 scope 盘点）。

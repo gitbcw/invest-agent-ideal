@@ -49,15 +49,19 @@
 | EV-025 | reviews.save 受控保存契约 | final-action / validation | executable | reportKey 格式按 kind 校验（周 YYYY-MM-DD_weekly / 月 YYYY-MM）、路径穿越拒绝、空与控制字符拒绝；调度保存绑定服务端提供的 kind/reportKey；backend upsert/get 对非法 key 拒绝/返回 null | 路径穿越写、kind 漂移、非法 key 落库 | `npm test` → `tests/periodic-review-controlled-save.test.ts` |
 | EV-026 | 调度任务工具授权面（fail-closed） | authorization / scope | executable | 分类表覆盖全部注册工具且 read/final-action/other-write 分区等于全集；调度授权=reads+该任务 final-action；未知 taskType 收敛为只读；任何调度授权不暴露 portfolio/watchlist/plans/onboarding 写工具 | 未分类工具被放行、调度任务拿到无关写工具、授权表漂移 | `npm test` → `tests/service-tool-grant.test.ts` |
 | EV-027 | preferences.apply 确认更新 | write / preference | executable | 复盘节奏/通知偏好经确认流更新并回读，changedPaths 预览与实际一致 | 未确认改偏好、静默改调度节奏 | `npm test` → `tests/preferences-apply.test.ts` |
+| EV-028 | artifacts.publish 产物发布契约 | artifact / publication / idempotency | executable | 格式校验（mg 形态 markdown、合法 XLSX 字节、假 XLSX 拒绝、SVG checksum 与字节保持、YAML 不改字节）；日/周/月报告原子建配额映射；配额失败回滚产物行/映射/预留；幂等重试不产生第二条记录 | 非法字节入库、配额半写、重复发布双记录 | `npm test` → `tests/conversation-artifacts.test.ts`（47 项） |
+| EV-029 | assets.* 资产库组 | asset / scope / lifecycle | executable | 同 scope CRUD 与删除确认绑定；跨 scope 读拒绝；附件晋升 My Files；版本复用/恢复/归档；CSV 规范化为 XLSX；三 scope 字段强制且跨 scope 不可见；删除释放存储；legacy 格式兼容；Portal 契约 | 越权读删、无确认删除、存储泄漏、跨 scope 泄露 | `npm test` → `tests/user-assets-mcp.test.ts`、`tests/user-assets.test.ts`（25 项）、`tests/user-asset-legacy-formats.test.ts`、`tests/user-assets-portal-contract.test.ts` |
+| EV-030 | spreadsheet.* 表格组 | spreadsheet / transform | executable | 结构化变更应用到暂存工作簿；新建结构化工作簿；检查返回 schema 与去重标记不倾倒行；合并标题行在独立表头赋值时展开（37352 回归） | 行倾倒、合并单元格错乱、结构漂移 | `npm test` → `tests/spreadsheet-transform.test.ts`、`tests/automation-spreadsheet.test.ts`（4 项） |
+| EV-031 | onboarding.* 引导组 | onboarding / contract / projection | executable | 确认写落服务投影且新用户懒建行与 Workspace 语义一致；draft commit 一次更新全部导入投影；共享契约先存 style 再推进、跳步 409 拒绝、通知与盘中调度对齐；未初始化用户微信轻引导、已配置放行 | 跳步推进、半写投影、未初始化用户进全量流程 | `npm test` → `tests/mastra-onboarding-confirm-write.test.ts`、`tests/mastra-onboarding-draft-commit.test.ts`、`tests/onboarding-contract.test.ts`、`tests/mastra-onboarding-guidance-gate.test.ts`、`tests/mastra-weixin-onboarding-gate.test.ts` |
 
 ## 数量口径
 
-- 已登记：27 条
-- 可执行：17 条
+- 已登记：31 条
+- 可执行：21 条
 - 候选：10 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **17/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第三轮（EV-023~027）为 P1 写工具组盘点入册——盘点结论：组合覆盖已成立，无需新增测试。
+只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **21/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第四轮（EV-028~031）为 P2a 资产/onboarding 组盘点入册——盘点结论：组合覆盖已成立，无需新增测试。
 
 可执行性口径说明（2026-08-24，WP4）：
 
@@ -73,6 +77,7 @@
 | 方法变更/策略写入/确认流（service-tools 写路径） | EV-014 + EV-024 | 确认、revision、幂等、回滚、审计全确定性断言；通用确认门覆盖全部持久写 |
 | 持仓/观察/预案/偏好组合写 | EV-023 + EV-024 | 并发串行、stale revision 拒绝、共享资源锁 |
 | 调度任务授权/工具清单变更 | EV-026 | fail-closed 授权计算 |
+| 资产库/产物发布/表格/onboarding 变更 | EV-028/029/030/031 | 格式与配额原子性、scope、生命周期、契约 |
 | 外部 MCP 装配/装配清单/预算/observer | EV-015 | 降级与失败证据 |
 | scheduler、push、投递重试/过期策略 | EV-016 | 终态收敛与重复副作用 |
 | 观测 schema、trace/audit 关联、诊断链 | EV-017 | 显式关联与缺失计数 |
