@@ -35,15 +35,40 @@
 | EV-011 | 日复盘模板最终版本 | historical bad case / coherence | executable | 三方面、覆盖对象、周期、字段替代关系正确 | 工具调用、生成复盘或写文件 | 8/8 断言；真实模型重复验证 |
 | EV-012 | 行业月表长期规则 | historical bad case / coherence | executable | 固定文件名、追加、保留、日期、排版规则正确 | 取行情、更新表格、创建任务 | 8/8 断言；真实模型重复验证 |
 | EV-013 | 筹码集中度多日查询：部分缓存回退与来源标注 | historical bad case / data fallback | candidate | 部分缓存或窗口内零缓存时：实时直查补最新交易日并给出数值与截至日；从缓存/网页等替代途径取得的日期须逐日标注来源；不可回补的历史交易日诚实说明缺口，不得整体拒答 | 因缺缓存整体答复「无快照/无数据」；编造集中度数值；多来源数值同表混排不标注来源 | 2026-08-23 本地 runtime 真实模型回放 2 次：恢复行为通过、来源标注未通过（列为断言项）；fixture 需重置筹码快照至部分覆盖状态，补齐后升 executable；来源 BC-20260823-001 |
+| EV-014 | 方法变更确认采用全链路（确认/revision/幂等/防篡改/失败回滚/审计唯一） | write / confirmation / revision / idempotency | executable | 采用成功并读回 last_confirmation_id/last_method_change_candidate_id；篡改 payload 拒绝；重复采用拒绝；旧 revision 拒绝且 confirmation 保持 pending；decide 失败恢复原策略 | 未确认写入、confirmation 复用、失败后策略残留半写状态、重复审计 | `npm test` → `tests/method-change-apply.test.ts`（确定性断言，2026-08-24 WP1 解除 skip） |
+| EV-015 | 外部 MCP 连接失败降级与失败证据 | dependency / degradation | executable | 连接失败降级为空工具集不阻断回合；成功后缓存；tools/call 观测落库（最小字段、预算控制） | 失败静默成功、无限重试、观测写失败阻断请求 | `npm test` → `tests/external-mcp-resilience.test.ts`、`tests/external-mcp-observer.test.ts` |
+| EV-016 | 推送终态（过期/重试预算/永久失败/会话恢复） | scheduler / push terminal state | executable | 过期任务绝不外发；重试将超出业务有效期时收敛为 expired；永久失败停止且不再排重试定时；恢复会话只重排未过期 awaiting-user 任务 | 过期消息送达、重复推送、无限重试、静默成功 | `npm test` → `tests/push-queue-concurrency.test.ts` |
+| EV-017 | 运行诊断链显式关联（trace↔audit↔run↔push↔delivery） | observability / correlation | executable | 六种入口正反向解析全链路节点；audit 带 trace_id；不适用节点显式 n.a.；缺失关联计数；不存在的入口不误解析 | 时间邻近冒充关联、空关联集全表误捞 | `npm test` → `tests/run-diagnostic-chain.test.ts`（2026-08-24 WP3） |
 
 ## 数量口径
 
-- 已登记：13 条
-- 可执行：3 条
+- 已登记：17 条
+- 可执行：7 条
 - 候选：10 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **3/30（最低目标的 10%）**，不能按“登记了 12 条”宣称 G1 已完成。
+只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **7/30**，不能按“登记了 17 条”宣称 G1 已完成。
+
+可执行性口径说明（2026-08-24，WP4）：
+
+- EV-014–EV-017 为**仓内确定性回归**：断言、fixture 和运行方式全部在 Git 内，`npm test` 可重复，任何环境结果一致。
+- EV-010–EV-012 为**真实模型回放**：依赖 `data/replay-mgreplay-*` 本地计划与 driver（该目录在 .gitignore 内，属运行数据）。在本机可重复，但换环境需重建 fixture；引用其结果作放行证据时应注明回放来源与环境。
+
+## 变更门选择规则
+
+按 changed behavior 选择必跑子集，不强制全量跑开放式样例（G1 分层评估）：
+
+| 变更面 | 必跑子集 | 说明 |
+| --- | --- | --- |
+| 方法变更/策略写入/确认流（service-tools 写路径） | EV-014 | 确认、revision、幂等、回滚、审计全确定性断言 |
+| 外部 MCP 装配/装配清单/预算/observer | EV-015 | 降级与失败证据 |
+| scheduler、push、投递重试/过期策略 | EV-016 | 终态收敛与重复副作用 |
+| 观测 schema、trace/audit 关联、诊断链 | EV-017 | 显式关联与缺失计数 |
+| Prompt/方法表达/连贯性相关 | EV-010–EV-012（回放）+ 变更涉及场景 | 真实模型回放，注明环境 |
+| 数据源/行情工具/缓存策略 | EV-013（当前 candidate，缺 fixture） | 未升 executable 前只作回归参考，不作放行门 |
+| 安全、scope、越权 | 全部适用项 + 安全边界测试（boundary） | 硬门，不可被平均分抵消 |
+
+LLM Judge：当前未启用（n.a.）。启用前提：开放式表达确有人工 rubric 无法覆盖的重复评审瓶颈，且具备人工校准样本、误判记录与停用条件。
 
 ## 样例升级要求
 
