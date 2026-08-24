@@ -45,11 +45,12 @@
 | confirmations.request | ✅ EV-024 | — |
 | artifacts.publish / spreadsheet.* / assets.* | ✅ EV-028（产物发布 47 项：格式校验/原子配额/幂等重试/字节保持）、EV-029（资产库组：scope/删除确认/生命周期/legacy/Portal 契约）、EV-030（表格组：transform/结构/合并行展开） | — |
 | onboarding.* | ✅ EV-031（确认写投影/draft commit/共享契约跳步 409/微信引导门） | — |
-| watch_rules.* | **待盘点**（watch_rules.validate/dry_run 有纯确定性潜力） | P3：盘点入册 |
+| watch_rules.* | ✅ EV-032（catalog/退役拒绝/参数归一化/dry-run 生产语义/SSE 与 NOT_CONFIGURED 降级/三类价格事实映射） | — |
 
 ### read 19 个
 
-- 越权面：connector 层已有（EV-019），服务工具层的 scope 三字段断言已有（EV-021 automation 读），其余读工具的 scope 断言待盘点。
+- 越权面：✅ 组合闭合——EV-021（automation 读三 scope 字段强制）、EV-029（资产跨 scope 不可见）、EV-024（跨实例确认拒绝）、EV-026（read 分区=全集）。
+- 审计面：✅ EV-033（state 读留轻量审计）。
 - 缺口诚实性（EV-013 一般化）：**需行为级验证**（模型表达），走 replay 批次——EV-006/007/008/009 四条 candidate 即此批，加上 EV-013 fixture。
 - 依赖失败：外部 MCP 面已覆盖（EV-015）；数据源工具（market_watch.snapshot 等）的失败降级待 EV-013 fixture 一并处理。
 
@@ -66,4 +67,4 @@
 
 - 巡检（19:15 自动化）与 bad case 关闭时产出 candidate 挂接本清单；
 - 每次盘点后更新「已覆盖/待盘点」列，保持本文件是盲区地图的单一入口；
-- 变更门选择规则表的七面在盘点完成后重算覆盖率（当前 21/30 executable，P1 写工具组与 P2a 资产/onboarding 组已闭合；剩余：P2b replay 批次待授权、P3 watch_rules、read 类 scope 盘点）。
+- 变更门选择规则表的七面在盘点完成后重算覆盖率（当前 23/30 executable；**确定性盘点已全部完成**——P1/P2a/P3/read 面闭合，剩余 10 条 candidate 全部为行为级 replay 批次：EV-001~009 及 EV-013，依赖真实模型回放与本机 fixture）。

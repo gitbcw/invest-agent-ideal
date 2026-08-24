@@ -53,15 +53,17 @@
 | EV-029 | assets.* 资产库组 | asset / scope / lifecycle | executable | 同 scope CRUD 与删除确认绑定；跨 scope 读拒绝；附件晋升 My Files；版本复用/恢复/归档；CSV 规范化为 XLSX；三 scope 字段强制且跨 scope 不可见；删除释放存储；legacy 格式兼容；Portal 契约 | 越权读删、无确认删除、存储泄漏、跨 scope 泄露 | `npm test` → `tests/user-assets-mcp.test.ts`、`tests/user-assets.test.ts`（25 项）、`tests/user-asset-legacy-formats.test.ts`、`tests/user-assets-portal-contract.test.ts` |
 | EV-030 | spreadsheet.* 表格组 | spreadsheet / transform | executable | 结构化变更应用到暂存工作簿；新建结构化工作簿；检查返回 schema 与去重标记不倾倒行；合并标题行在独立表头赋值时展开（37352 回归） | 行倾倒、合并单元格错乱、结构漂移 | `npm test` → `tests/spreadsheet-transform.test.ts`、`tests/automation-spreadsheet.test.ts`（4 项） |
 | EV-031 | onboarding.* 引导组 | onboarding / contract / projection | executable | 确认写落服务投影且新用户懒建行与 Workspace 语义一致；draft commit 一次更新全部导入投影；共享契约先存 style 再推进、跳步 409 拒绝、通知与盘中调度对齐；未初始化用户微信轻引导、已配置放行 | 跳步推进、半写投影、未初始化用户进全量流程 | `npm test` → `tests/mastra-onboarding-confirm-write.test.ts`、`tests/mastra-onboarding-draft-commit.test.ts`、`tests/onboarding-contract.test.ts`、`tests/mastra-onboarding-guidance-gate.test.ts`、`tests/mastra-weixin-onboarding-gate.test.ts` |
+| EV-032 | watch_rules.* 规则组（catalog/validate/dry_run） | watch rules / semantics | executable | 目录含 price_cross+复活均线+指标规则且退役类型拒绝（「不支持的 ruleType」）；校验归一化参数；ma_cross dry-run 复现生产交叉语义；SSE 帧解析与 NOT_CONFIGURED 降级；MCP 失败时价格事实降级；可用/缺失/无效价格三类事实映射带 provider | 退役规则复活、dry-run 与生产语义漂移、失败编造事实 | `npm test` → `tests/rule-patrol-mcp.test.ts`（6 项）、`tests/watch-rules-deprecation.test.ts`（5 项）、`tests/rule-price-facts.test.ts` |
+| EV-033 | state 读工具审计证据（read 面收口） | read / audit | executable | portfolio.read/watchlist.read/plans.read 留轻量审计（operation+resultSummary）；read 面 scope 由 EV-021（三字段强制）、EV-029（资产跨 scope 不可见）、EV-024（跨实例确认拒绝）、EV-026（read 分区=全集）组合闭合 | 静默读、跨 scope 读无痕、分区漂移 | `npm test` → `tests/mcp-state-read-audit.test.ts` + 组合证据 |
 
 ## 数量口径
 
-- 已登记：31 条
-- 可执行：21 条
+- 已登记：33 条
+- 可执行：23 条
 - 候选：10 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **21/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第四轮（EV-028~031）为 P2a 资产/onboarding 组盘点入册——盘点结论：组合覆盖已成立，无需新增测试。
+只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **23/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第五轮（EV-032/033）收口 P3 watch_rules 组与 read 面盘点——确定性盘点全部完成，剩余 candidate 均为行为级（replay 批次）。
 
 可执行性口径说明（2026-08-24，WP4）：
 
