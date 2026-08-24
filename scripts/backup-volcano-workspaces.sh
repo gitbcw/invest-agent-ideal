@@ -136,25 +136,20 @@ run_rsync() {
 }
 
 clean_excluded_from_staging() {
-  local workspace workspace_dir excluded_dir
+  local workspace workspace_dir
   for workspace in "${WORKSPACES[@]}"; do
     workspace_dir="${STAGING_DIR}/${workspace}"
     [[ -d "${workspace_dir}" ]] || continue
-    for excluded_dir in "${workspace_dir}/.codex/.tmp" "${workspace_dir}/.codex/tmp"; do
-      if [[ -d "${excluded_dir}" ]]; then
-        case "${excluded_dir}" in
-          "${STAGING_DIR}"/*) find "${excluded_dir}" -depth -delete ;;
-          *) fail "refusing to clean outside staging: ${excluded_dir}" ;;
-        esac
-      fi
-    done
-    find "${workspace_dir}" -maxdepth 1 -type f -name '.sandbox-token' -delete
+    # Depth-agnostic: automation run dirs carry their own nested .codex
+    # sandboxes; staging filters must stay aligned with the unanchored rsync
+    # excludes and the release-snapshot safety verifier.
+    find "${workspace_dir}" -type f -name '.sandbox-token' -delete
     find "${workspace_dir}" -depth -name '.rsync-partial' -type d -delete
     find "${workspace_dir}" -depth -name '._*' -delete
-    if [[ -d "${workspace_dir}/.codex" ]]; then
-      find "${workspace_dir}/.codex" -maxdepth 1 -type f \
-        \( -name 'auth.json' -o -name 'logs_2.sqlite*' \) -delete
-    fi
+    find "${workspace_dir}" -type f -path '*/.codex/auth.json' -delete
+    find "${workspace_dir}" -type f -path '*/.codex/logs_2.sqlite*' -delete
+    find "${workspace_dir}" -depth -type d -path '*/.codex/.tmp' -delete
+    find "${workspace_dir}" -depth -type d -path '*/.codex/tmp' -delete
   done
 }
 
@@ -168,15 +163,15 @@ write_remote_hashes() {
       (
         cd "${LOCAL_SOURCE}/${workspace}"
         find . \
-          \( -path './.codex/.tmp' -o -path './.codex/tmp' -o -name '.rsync-partial' -o -name '._*' \) -prune -o \
-          -type f ! -path './.sandbox-token' ! -path './.codex/auth.json' ! -path './.codex/logs_2.sqlite*' -print0 \
+          \( -path '*/.codex/.tmp' -o -path '*/.codex/tmp' -o -name '.rsync-partial' -o -name '._*' \) -prune -o \
+          -type f ! -name '.sandbox-token' ! -path '*/.codex/auth.json' ! -path '*/.codex/logs_2.sqlite*' -print0 \
           | LC_ALL=C sort -z | xargs -0 shasum -a 256
       ) >> "${output}"
     else
       "${SSH_BIN}" -o BatchMode=yes -o ConnectTimeout=15 "${REMOTE_HOST}" \
         "cd '${REMOTE_WORKSPACE_ROOT}/${workspace}' && find . \\
-          \\( -path './.codex/.tmp' -o -path './.codex/tmp' -o -name '.rsync-partial' -o -name '._*' \\) -prune -o \\
-          -type f ! -path './.sandbox-token' ! -path './.codex/auth.json' ! -path './.codex/logs_2.sqlite*' -print0 \\
+          \\( -path '*/.codex/.tmp' -o -path '*/.codex/tmp' -o -name '.rsync-partial' -o -name '._*' \\) -prune -o \\
+          -type f ! -name '.sandbox-token' ! -path '*/.codex/auth.json' ! -path '*/.codex/logs_2.sqlite*' -print0 \\
           | LC_ALL=C sort -z | xargs -0 sha256sum" \
         >> "${output}"
     fi
@@ -192,8 +187,8 @@ write_local_hashes() {
     (
       cd "${STAGING_DIR}/${workspace}"
       find . \
-        \( -path './.codex/.tmp' -o -path './.codex/tmp' -o -name '.rsync-partial' -o -name '._*' \) -prune -o \
-        -type f ! -path './.sandbox-token' ! -path './.codex/auth.json' ! -path './.codex/logs_2.sqlite*' -print0 \
+        \( -path '*/.codex/.tmp' -o -path '*/.codex/tmp' -o -name '.rsync-partial' -o -name '._*' \) -prune -o \
+        -type f ! -name '.sandbox-token' ! -path '*/.codex/auth.json' ! -path '*/.codex/logs_2.sqlite*' -print0 \
         | LC_ALL=C sort -z | xargs -0 shasum -a 256
     ) >> "${output}"
   done
