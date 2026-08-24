@@ -44,15 +44,20 @@
 | EV-020 | 自动化调度终态与互斥 | automation / scheduler terminal state | executable | 任务互斥拒绝手动/定时重叠；过期租约转终态且重试获新围栏；孤儿运行回收且槽位推进；超截止期判败不判成；并发 claim 串行化；过期槽不召模型 | 重复派发、无限重试、静默成功、过期消息照发 | `npm test` → `tests/automation-scheduler-reliability.test.ts`（10 项断言） |
 | EV-021 | 自动化任务生命周期与 scope/路径边界 | automation / lifecycle / scope | executable | revision 不可变；归档只读且不进到期工作；list/detail/资产读强制三 scope 字段；资产路径逃逸拒绝；xlsx 仅接受结构合法字节 | 越权读、路径穿越、恶意文件字节入库 | `npm test` → `tests/automation-tasks.test.ts` |
 | EV-022 | Agent Trace 观测契约 | observability / contract | executable | trace 存 compact 元数据并脱敏；legacy ACP 审计行只迁移一次；关联字段符合观测契约 | 完整 Prompt/原文入库、重复迁移、字段漂移 | `npm test` → `tests/acp-trace-observability.test.ts` |
+| EV-023 | portfolio.apply_changes 全链 + plans/watchlist 共享资源锁 | write / revision / concurrency | executable | 确认+revision 绑定的组合变更生效并回读；并发确认串行化、stale revision 败者拒绝；revision 比较按时刻不按时区拼写；portfolio/watchlist/plans 六写操作共享同一物理资源锁（互斥基础）；绑定两次真实回归（2026-08-16 微信 schema 噪声、2026-08-19 dyk 时区拼写） | 未确认写入、并发双写、时区拼写误判 stale | `npm test` → `tests/portfolio-apply-changes.test.ts`（4 项）、`tests/mutation-resource-keys.test.ts` |
+| EV-024 | 通用确认门（confirmations 精确单次消费） | confirmation / tamper / scope | executable | 持久写消费的确认必须精确匹配草案、单次消费、晚于确认消息轮；缺 confirmationId 拒绝；跨实例消费拒绝；篡改 payload 拒绝；请求与消费均留审计 | 确认复用、跨实例重放、草案篡改后仍执行、无审计 | `npm test` → `tests/mcp-confirmation.test.ts`（以 watchlist.add 为载体） |
+| EV-025 | reviews.save 受控保存契约 | final-action / validation | executable | reportKey 格式按 kind 校验（周 YYYY-MM-DD_weekly / 月 YYYY-MM）、路径穿越拒绝、空与控制字符拒绝；调度保存绑定服务端提供的 kind/reportKey；backend upsert/get 对非法 key 拒绝/返回 null | 路径穿越写、kind 漂移、非法 key 落库 | `npm test` → `tests/periodic-review-controlled-save.test.ts` |
+| EV-026 | 调度任务工具授权面（fail-closed） | authorization / scope | executable | 分类表覆盖全部注册工具且 read/final-action/other-write 分区等于全集；调度授权=reads+该任务 final-action；未知 taskType 收敛为只读；任何调度授权不暴露 portfolio/watchlist/plans/onboarding 写工具 | 未分类工具被放行、调度任务拿到无关写工具、授权表漂移 | `npm test` → `tests/service-tool-grant.test.ts` |
+| EV-027 | preferences.apply 确认更新 | write / preference | executable | 复盘节奏/通知偏好经确认流更新并回读，changedPaths 预览与实际一致 | 未确认改偏好、静默改调度节奏 | `npm test` → `tests/preferences-apply.test.ts` |
 
 ## 数量口径
 
-- 已登记：22 条
-- 可执行：12 条
+- 已登记：27 条
+- 可执行：17 条
 - 候选：10 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **12/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第二轮入册（EV-019~022）来自既有确定性套件的盘点，全部绑定变更门面缺口。
+只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **17/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第三轮（EV-023~027）为 P1 写工具组盘点入册——盘点结论：组合覆盖已成立，无需新增测试。
 
 可执行性口径说明（2026-08-24，WP4）：
 
@@ -65,7 +70,9 @@
 
 | 变更面 | 必跑子集 | 说明 |
 | --- | --- | --- |
-| 方法变更/策略写入/确认流（service-tools 写路径） | EV-014 | 确认、revision、幂等、回滚、审计全确定性断言 |
+| 方法变更/策略写入/确认流（service-tools 写路径） | EV-014 + EV-024 | 确认、revision、幂等、回滚、审计全确定性断言；通用确认门覆盖全部持久写 |
+| 持仓/观察/预案/偏好组合写 | EV-023 + EV-024 | 并发串行、stale revision 拒绝、共享资源锁 |
+| 调度任务授权/工具清单变更 | EV-026 | fail-closed 授权计算 |
 | 外部 MCP 装配/装配清单/预算/observer | EV-015 | 降级与失败证据 |
 | scheduler、push、投递重试/过期策略 | EV-016 | 终态收敛与重复副作用 |
 | 观测 schema、trace/audit 关联、诊断链 | EV-017 | 显式关联与缺失计数 |

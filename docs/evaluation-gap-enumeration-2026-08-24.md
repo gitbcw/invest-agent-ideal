@@ -39,10 +39,12 @@
 | --- | --- | --- |
 | method_changes.* | ✅ EV-014 | — |
 | automation.* | ✅ EV-020/021 | — |
-| portfolio.apply_changes / watchlist.add / plans.set / preferences.apply | **待盘点**（tests/ 有 mcp-confirmation 等套件，未逐工具核对归属） | P1：盘点后入册或补断言（复用 EV-014 测试模式：确认→篡改拒绝→幂等→回读） |
-| reviews.save | **待盘点**（tests/daily-review-push-brief-contract.test.ts 疑似相关） | P1：核验四元组回读+审计断言后入册 |
+| portfolio.apply_changes / watchlist.add / plans.set / plans.watch_conditions | ✅ EV-023（确认/revision/并发串行 + 六写操作共享物理资源锁）+ EV-024（通用确认门） | — |
+| preferences.apply | ✅ EV-027 | — |
+| reviews.save | ✅ EV-025（reportKey 校验含路径穿越拒绝 + kind 绑定）；调度授权面 EV-026 | — |
+| confirmations.request | ✅ EV-024 | — |
 | artifacts.publish / spreadsheet.* / assets.* | 部分（EV-021 覆盖路径逃逸与 xlsx 结构；conversation-artifacts.test.ts、user-assets-mcp.test.ts、mastra-spreadsheet 系列存在但未入册） | P2：盘点入册 |
-| onboarding.* / confirmations.* / watch_rules.* | **待盘点**（mcp-confirmation.test.ts、onboarding-flow 相关套件存在） | P2/P3：盘点入册；watch_rules.validate/dry_run 有纯确定性潜力 |
+| onboarding.* / watch_rules.* | **待盘点**（mastra-onboarding-confirm-write.test.ts 等套件存在） | P2/P3：盘点入册；watch_rules.validate/dry_run 有纯确定性潜力 |
 
 ### read 19 个
 
@@ -63,4 +65,4 @@
 
 - 巡检（19:15 自动化）与 bad case 关闭时产出 candidate 挂接本清单；
 - 每次盘点后更新「已覆盖/待盘点」列，保持本文件是盲区地图的单一入口；
-- 变更门选择规则表的七面在盘点完成后重算覆盖率（当前 12/30 executable）。
+- 变更门选择规则表的七面在盘点完成后重算覆盖率（当前 17/30 executable，P1 写工具组已闭合）。
