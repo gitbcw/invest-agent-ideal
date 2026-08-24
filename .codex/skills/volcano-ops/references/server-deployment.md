@@ -108,6 +108,8 @@ npm run release:snapshot -- accept <release-id> --confirm=mark-known-good-v1
 
 `templates/workspace/.codex` 属于发布代码，必须同步。禁止给 rsync 增加 `--delete-excluded`。
 
+发布同步必须排除 `apps/portal/.next`，不能让源码 rsync 删除正在服务的 Portal 构建。远端安装阶段必须显式安装 Portal 依赖并执行 `apps/portal` 的 `next build`；构建前停止 `mastra-portal` 并把旧 `.next` 移到 `.deploy/portal-previous-*`。只有 `BUILD_ID`、服务端清单、路由清单和 `_error.js` 齐全后才能启动新进程；构建或验收失败时必须恢复旧 `.next` 并重新拉起旧版本。
+
 ### 3.2 运行时数据迁移或恢复
 
 `volcano:package-runtime` / `volcano:apply-runtime` 会替换数据库、Workspace 或其他运行资产，不属于普通发布。只有用户明确要求数据迁移、快照恢复、生产数据替换或灾难恢复时才允许使用，并且必须：
@@ -211,7 +213,7 @@ npm run workspace:adopt-template -- \
 
 1. `curl http://127.0.0.1:23655/health` 返回正常。
 2. `pm2 list` 中 `invest-agent` 为 `online`。
-3. Portal `/api/health` 正常，生产 connector/relay 没有冲突。
+3. Portal `/api/health`、`/login` 和至少一个由登录页引用的 `/_next/static` 哈希资源均正常，生产 connector/relay 没有冲突。仅凭 `/api/health` 或 PM2 `online` 不足以判定 Portal 构建健康。
 4. `npm run smoke:mcp-service-tools` 通过。
 5. 每个 Workspace 预检没有 blocker；`template_updates` 可以继续存在。
 6. 微信实例仍为 `connected`，listener 已恢复。
