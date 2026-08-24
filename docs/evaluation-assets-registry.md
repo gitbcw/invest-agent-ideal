@@ -40,15 +40,19 @@
 | EV-016 | 推送终态（过期/重试预算/永久失败/会话恢复） | scheduler / push terminal state | executable | 过期任务绝不外发；重试将超出业务有效期时收敛为 expired；永久失败停止且不再排重试定时；恢复会话只重排未过期 awaiting-user 任务 | 过期消息送达、重复推送、无限重试、静默成功 | `npm test` → `tests/push-queue-concurrency.test.ts` |
 | EV-017 | 运行诊断链显式关联（trace↔audit↔run↔push↔delivery） | observability / correlation | executable | 六种入口正反向解析全链路节点；audit 带 trace_id；不适用节点显式 n.a.；缺失关联计数；不存在的入口不误解析 | 时间邻近冒充关联、空关联集全表误捞 | `npm test` → `tests/run-diagnostic-chain.test.ts`（2026-08-24 WP3） |
 | EV-018 | 隔离故障演练 F1/F3（模型 503、首字挂起、connector 未知命令与旧协议重放） | fault drill / terminal state | executable | F1：预算内明确失败终态、不静默成功、零副作用；F3：显式错误信封（非 retryable）、零会话/消息残留 | 静默成功、挂死、预算外重试、失败回合留下写入 | `npm test` → `tests/isolated-fault-drills.test.ts`；F2/F4 演练由 EV-015/EV-016 承担；记录见 isolated-fault-drill-record-2026-08-24.md |
+| EV-019 | Connector 取消/迟到抑制/孤儿回收/越权拒绝 | portal / cancel / scope | executable | 取消在模型启动前生效且不毒化下轮；孤儿回合被回收；迟到成功被抑制；payload scope 覆写与跨 scope 会话被拒 | 取消后仍送达、孤儿回合悬挂、越权取消他人会话 | `npm test` → `tests/portal-conversation-cancel.test.ts`（6 项断言） |
+| EV-020 | 自动化调度终态与互斥 | automation / scheduler terminal state | executable | 任务互斥拒绝手动/定时重叠；过期租约转终态且重试获新围栏；孤儿运行回收且槽位推进；超截止期判败不判成；并发 claim 串行化；过期槽不召模型 | 重复派发、无限重试、静默成功、过期消息照发 | `npm test` → `tests/automation-scheduler-reliability.test.ts`（10 项断言） |
+| EV-021 | 自动化任务生命周期与 scope/路径边界 | automation / lifecycle / scope | executable | revision 不可变；归档只读且不进到期工作；list/detail/资产读强制三 scope 字段；资产路径逃逸拒绝；xlsx 仅接受结构合法字节 | 越权读、路径穿越、恶意文件字节入库 | `npm test` → `tests/automation-tasks.test.ts` |
+| EV-022 | Agent Trace 观测契约 | observability / contract | executable | trace 存 compact 元数据并脱敏；legacy ACP 审计行只迁移一次；关联字段符合观测契约 | 完整 Prompt/原文入库、重复迁移、字段漂移 | `npm test` → `tests/acp-trace-observability.test.ts` |
 
 ## 数量口径
 
-- 已登记：18 条
-- 可执行：8 条
+- 已登记：22 条
+- 可执行：12 条
 - 候选：10 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **8/30**，不能按“登记了 18 条”宣称 G1 已完成。
+只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **12/30**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第二轮入册（EV-019~022）来自既有确定性套件的盘点，全部绑定变更门面缺口。
 
 可执行性口径说明（2026-08-24，WP4）：
 
