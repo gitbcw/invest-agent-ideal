@@ -28,6 +28,7 @@ test("buildAgentInstructions carries identity, discipline, tool doctrine and met
     "事实和推断分开",
     "不使用资金净流入",
     "服务工具",
+    "不代表数据不存在",
     "结构化草案",
     "methods/strategy-rules.md",
     "可进化资产",
