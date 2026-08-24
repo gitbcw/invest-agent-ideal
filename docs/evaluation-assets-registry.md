@@ -39,15 +39,16 @@
 | EV-015 | 外部 MCP 连接失败降级与失败证据 | dependency / degradation | executable | 连接失败降级为空工具集不阻断回合；成功后缓存；tools/call 观测落库（最小字段、预算控制） | 失败静默成功、无限重试、观测写失败阻断请求 | `npm test` → `tests/external-mcp-resilience.test.ts`、`tests/external-mcp-observer.test.ts` |
 | EV-016 | 推送终态（过期/重试预算/永久失败/会话恢复） | scheduler / push terminal state | executable | 过期任务绝不外发；重试将超出业务有效期时收敛为 expired；永久失败停止且不再排重试定时；恢复会话只重排未过期 awaiting-user 任务 | 过期消息送达、重复推送、无限重试、静默成功 | `npm test` → `tests/push-queue-concurrency.test.ts` |
 | EV-017 | 运行诊断链显式关联（trace↔audit↔run↔push↔delivery） | observability / correlation | executable | 六种入口正反向解析全链路节点；audit 带 trace_id；不适用节点显式 n.a.；缺失关联计数；不存在的入口不误解析 | 时间邻近冒充关联、空关联集全表误捞 | `npm test` → `tests/run-diagnostic-chain.test.ts`（2026-08-24 WP3） |
+| EV-018 | 隔离故障演练 F1/F3（模型 503、首字挂起、connector 未知命令与旧协议重放） | fault drill / terminal state | executable | F1：预算内明确失败终态、不静默成功、零副作用；F3：显式错误信封（非 retryable）、零会话/消息残留 | 静默成功、挂死、预算外重试、失败回合留下写入 | `npm test` → `tests/isolated-fault-drills.test.ts`；F2/F4 演练由 EV-015/EV-016 承担；记录见 isolated-fault-drill-record-2026-08-24.md |
 
 ## 数量口径
 
-- 已登记：17 条
-- 可执行：7 条
+- 已登记：18 条
+- 可执行：8 条
 - 候选：10 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **7/30**，不能按“登记了 17 条”宣称 G1 已完成。
+只有 `executable` 计入放行门。目前完成度按可执行样例计算为 **8/30**，不能按“登记了 18 条”宣称 G1 已完成。
 
 可执行性口径说明（2026-08-24，WP4）：
 

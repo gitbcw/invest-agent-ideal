@@ -1,6 +1,8 @@
 # 隔离故障演练矩阵
 
-状态：治理基线草案（2026-08-22）
+状态：治理基线草案（2026-08-22）；四类演练首轮已执行（2026-08-24，T-365 / WP5）
+
+> **实施状态（2026-08-24，T-365 / WP5）**：F1–F4 首轮演练完成，记录见 [isolated-fault-drill-record-2026-08-24.md](./isolated-fault-drill-record-2026-08-24.md)。F1（网关 503 / 首字挂起）与 F3（未知命令 / 旧协议重放信封）的注入 fixture 在 `tests/isolated-fault-drills.test.ts`（npm test 可重复）；F2、F4 由 `tests/external-mcp-resilience.test.ts`、`tests/external-mcp-observer.test.ts`、`tests/push-queue-concurrency.test.ts` 承担。同轮完成隔离发布演练（release-snapshot-smoke 全链），生产发布不在该记录授权内。
 
 本矩阵只描述隔离环境的故障演练方法，不对生产用户、生产微信、生产数据库或真实 Workspace 注入故障。每次演练都必须使用临时 DB/Workspace、受限 MCP、模拟依赖或授权测试账号。
 

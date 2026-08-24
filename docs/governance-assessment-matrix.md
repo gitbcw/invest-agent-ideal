@@ -104,6 +104,18 @@
 下一复核条件：WP4 评估资产回归接入诊断链证据；WP5 故障演练引用诊断链缺口计数
 ```
 
+### 2026-08-24 故障与发布演练证据（T-365 / WP5）
+
+```text
+日期：2026-08-24
+复核范围：G3 四类隔离故障演练（F1–F4）、G4 隔离发布演练（快照→部署→known-good→代码回退→workspace 受控回退）
+证据链接：docs/isolated-fault-drill-record-2026-08-24.md（四份演练记录 + 发布演练门类表 + Go/No-Go）；tests/isolated-fault-drills.test.ts（F1/F3 新 fixture）；F2/F4 复用 external-mcp-resilience/observer、push-queue-concurrency；release-snapshot-smoke 当前工作树重跑通过；EV-018 入册（executable 8/30）
+等级变化：G3 由「部分落地」证据增强（四类故障均有仓内可重复 fixture 与终态/副作用断言）；G4 证据增强（隔离全链发布演练闭环，生产灰度仍未发生）
+新增缺口：真实远端部署路径（volcano-ops）未在演练中覆盖，以下次真实发布的独立发布记录为准；F1 多模型轮内兜底的端到端回放为可选增强
+是否阻断发布：维持既有阻断项不变；生产发布需独立记录与用户授权
+下一复核条件：下一次真实代码发布时按 release-governance-evidence 模板出记录并回填 G4 复核
+```
+
 每次更新矩阵时追加：
 
 ```text
