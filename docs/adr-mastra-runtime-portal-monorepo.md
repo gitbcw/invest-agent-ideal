@@ -45,7 +45,7 @@ packages/contracts/  无存储实现的共享 DTO
 - shared protocol fixture 对 Portal 和 runtime 都通过；capability 未分类差异为 0。
 - Portal 43 项现有测试、runtime 全套测试和 browser acceptance 通过。
 - Portal 不读取 runtime SQLite/文件根；runtime 不读取 Portal session DB。
-- 生产发布源切换需单独批准；在此之前 `/Users/combo/MyFile/projects/invest-agent-portal` 仍是正式 Portal 唯一发布源。
+- 生产发布源切换需单独批准；在此之前 `/Users/combo/MyFile/projects/invest-agent-portal` 仍是正式 Portal 唯一发布源。（2026-08-24 用户裁决：切换已批准并生效——正式 Portal 为本仓 `apps/portal`，随 `scripts/deploy-volcano.sh` 构建感知流程发布，旧仓库仅作审计与历史参照；本条前半句自此作废，红线表述以 `AGENTS.md` 为准。）
 
 ## 风险
 
@@ -64,4 +64,4 @@ packages/contracts/  无存储实现的共享 DTO
 
 ## 暂停门
 
-`apps/portal/` 已从授权的正式 Portal 仓库以可追溯方式导入，并通过独立构建与测试；本 ADR 不批准改变正式 Portal 发布源、部署生产服务、生产数据迁移或分支合并。
+`apps/portal/` 已从授权的正式 Portal 仓库以可追溯方式导入，并通过独立构建与测试；本 ADR 不批准改变正式 Portal 发布源、部署生产服务、生产数据迁移或分支合并。（2026-08-24 更新：发布源切换已经用户单独批准并生效，见上文验收条件注与 `AGENTS.md` 红线；部署生产服务、生产数据迁移、分支合并的暂停项维持不变。）

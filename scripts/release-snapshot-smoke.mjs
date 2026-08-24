@@ -50,7 +50,7 @@ for (const name of ["release-snapshot.mjs", "release-deploy.mjs", "workspace-rol
   const sourceText = readFileSync(source, "utf8");
   writeFileSync(join(repo, "scripts", name), name === "release-snapshot.mjs"
     ? sourceText.replace(
-      'const canonicalRepositoryRoot = "/Users/combo/MyFile/projects/invest-agent-ideal";',
+      'const canonicalRepositoryRoot = "/Users/combo/MyFile/projects/invest-agent-ideal-mastra";',
       `const canonicalRepositoryRoot = ${JSON.stringify(repo)};`,
     )
     : sourceText);
@@ -60,14 +60,17 @@ set -euo pipefail
 test ! -d workspaces
 printf '%s %s %s\\n' "\${RELEASE_ID}" "\${RELEASE_COMMIT}" "\${RELEASE_OPERATION}" > "\${FAKE_DEPLOY_LOG}"
 `);
-run("git", ["init", "-b", "main"]);
+run("git", ["init", "-b", "feat/mastra-migration"]);
 run("git", ["config", "user.email", "smoke@example.invalid"]);
 run("git", ["config", "user.name", "Release Smoke"]);
 run("git", ["add", "."]);
 run("git", ["commit", "-m", "fixture"]);
 run("git", ["init", "--bare", origin], { cwd: fixture });
+// Point the bare origin HEAD at the baseline branch so clones check it out
+// (init.defaultBranch on the host may still be another branch).
+run("git", ["symbolic-ref", "HEAD", "refs/heads/feat/mastra-migration"], { cwd: origin });
 run("git", ["remote", "add", "origin", origin]);
-run("git", ["push", "-u", "origin", "main"]);
+run("git", ["push", "-u", "origin", "feat/mastra-migration"]);
 
 const env = {
   ...process.env,
@@ -91,7 +94,7 @@ const releaseId = initialReleaseIds[0];
 run(process.execPath, [snapshotScript, "verify", releaseId], { env });
 const initialManifest = JSON.parse(readFileSync(join(releases, releaseId, "manifest.json"), "utf8"));
 assert.equal(initialManifest.schemaVersion, 2);
-assert.equal(initialManifest.sourceControl.mode, "committed-local-main");
+assert.equal(initialManifest.sourceControl.mode, "committed-local-baseline");
 assert.equal(initialManifest.sourceControl.head, initialManifest.commit);
 assert.equal(initialManifest.sourceControl.originMain, initialManifest.commit);
 assert.equal(initialManifest.sourceControl.fetchSucceeded, true);
@@ -132,15 +135,15 @@ writeFileSync(dirtyProbe, "dirty\n");
 expectRejected(["create"], /clean worktree/, { env });
 rmSync(dirtyProbe);
 run("git", ["switch", "-c", "release-smoke-feature"]);
-expectRejected(["create"], /requires branch main/, { env });
-run("git", ["switch", "main"]);
+expectRejected(["create"], /requires branch feat\/mastra-migration/, { env });
+run("git", ["switch", "feat/mastra-migration"]);
 
 run("git", ["commit", "--allow-empty", "-m", "unpublished"]);
 run(process.execPath, [snapshotScript, "create"], { env });
 const aheadReleaseId = releaseNames().find((name) => ![releaseId, legacyId, legacyV2NormalId].includes(name));
 assert.ok(aheadReleaseId);
 const aheadManifest = JSON.parse(readFileSync(join(releases, aheadReleaseId, "manifest.json"), "utf8"));
-assert.equal(aheadManifest.sourceControl.mode, "committed-local-main");
+assert.equal(aheadManifest.sourceControl.mode, "committed-local-baseline");
 assert.equal(aheadManifest.sourceControl.originRelation, "ahead");
 assert.equal(aheadManifest.sourceControl.fetchSucceeded, true);
 
@@ -160,7 +163,7 @@ rewriteChecksums(legacyV2EmergencyPath);
 run(process.execPath, [snapshotScript, "verify", legacyV2EmergencyId], { env });
 
 run("git", ["remote", "set-url", "origin", join(fixture, "missing-origin.git")]);
-run("git", ["update-ref", "-d", "refs/remotes/origin/main"]);
+run("git", ["update-ref", "-d", "refs/remotes/origin/feat/mastra-migration"]);
 run("git", ["commit", "--allow-empty", "-m", "remote unavailable"]);
 run(process.execPath, [snapshotScript, "create"], { env });
 const unavailableReleaseId = releaseNames().find((name) => ![
@@ -168,7 +171,7 @@ const unavailableReleaseId = releaseNames().find((name) => ![
 ].includes(name));
 assert.ok(unavailableReleaseId);
 const unavailableManifest = JSON.parse(readFileSync(join(releases, unavailableReleaseId, "manifest.json"), "utf8"));
-assert.equal(unavailableManifest.sourceControl.mode, "committed-local-main");
+assert.equal(unavailableManifest.sourceControl.mode, "committed-local-baseline");
 assert.equal(unavailableManifest.sourceControl.fetchSucceeded, false);
 assert.equal(unavailableManifest.sourceControl.originMain, null);
 assert.equal(unavailableManifest.sourceControl.originRelation, "unavailable");
@@ -183,13 +186,13 @@ run(process.execPath, [
 ], { cwd: standaloneVerifier, env });
 
 run("git", ["remote", "set-url", "origin", origin]);
-run("git", ["push", "origin", "main"]);
+run("git", ["push", "origin", "feat/mastra-migration"]);
 const remoteClone = join(fixture, "remote-clone");
 run("git", ["clone", origin, remoteClone], { cwd: fixture });
 run("git", ["config", "user.email", "remote-smoke@example.invalid"], { cwd: remoteClone });
 run("git", ["config", "user.name", "Remote Smoke"], { cwd: remoteClone });
 run("git", ["commit", "--allow-empty", "-m", "remote ahead"] , { cwd: remoteClone });
-run("git", ["push", "origin", "main"], { cwd: remoteClone });
+run("git", ["push", "origin", "feat/mastra-migration"], { cwd: remoteClone });
 run(process.execPath, [snapshotScript, "create"], { env });
 const behindReleaseId = releaseNames().find((name) => ![
   releaseId, legacyId, legacyV2NormalId, aheadReleaseId, legacyV2EmergencyId, unavailableReleaseId,
@@ -210,11 +213,11 @@ run("git", ["checkout", "--orphan", "force-main"], { cwd: remoteClone });
 run("git", ["rm", "-rf", "."], { cwd: remoteClone });
 writeFileSync(join(remoteClone, "force-push.txt"), "force-push\n");
 run("git", ["add", "force-push.txt"], { cwd: remoteClone });
-run("git", ["commit", "-m", "force-pushed main"], { cwd: remoteClone });
+run("git", ["commit", "-m", "force-pushed baseline"], { cwd: remoteClone });
 const forcePushedCommit = run("git", ["rev-parse", "HEAD"], { cwd: remoteClone }).trim();
-run("git", ["push", "--force", "origin", "HEAD:main"], { cwd: remoteClone });
-run("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
-assert.equal(run("git", ["rev-parse", "refs/remotes/origin/main"]).trim(), forcePushedCommit);
+run("git", ["push", "--force", "origin", "HEAD:feat/mastra-migration"], { cwd: remoteClone });
+run("git", ["fetch", "--no-tags", "origin", "+refs/heads/feat/mastra-migration:refs/remotes/origin/feat/mastra-migration"]);
+assert.equal(run("git", ["rev-parse", "refs/remotes/origin/feat/mastra-migration"]).trim(), forcePushedCommit);
 
 const nonCanonicalRepo = join(fixture, "noncanonical-repo");
 const nonCanonicalScript = join(nonCanonicalRepo, "scripts", "release-snapshot.mjs");

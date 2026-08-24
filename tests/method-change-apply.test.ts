@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-test("method_changes.apply adopts a confirmed candidate and publishes strategy", { skip: "E8 src regression: applyMethodChange write-verify compares last_confirmation_id/last_method_change_candidate_id against readMastraStrategyProjection output, which never returns those fields, so every apply fails with 策略写入后回读校验失败 — cannot pass without a src/ fix (outside this task's boundary). Test body already migrated to the mastra profile projection." }, async () => {
+test("method_changes.apply adopts a confirmed candidate and publishes strategy", async () => {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-method-change-"));
   process.env.NODE_ENV = "test";
   process.env.DB_PATH = path.join(tempRoot, "test.db");

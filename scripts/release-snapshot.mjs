@@ -25,7 +25,8 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const canonicalRepositoryRoot = "/Users/combo/MyFile/projects/invest-agent-ideal";
+const canonicalRepositoryRoot = "/Users/combo/MyFile/projects/invest-agent-ideal-mastra";
+const baselineBranch = process.env.INVEST_AGENT_RELEASE_BRANCH ?? "feat/mastra-migration";
 const releaseRoot = resolve(
   process.env.INVEST_AGENT_RELEASE_ROOT
     ?? "/Users/combo/MyFile/my-data/backups/invest-agent/releases",
@@ -99,9 +100,9 @@ function nextBackupLabel() {
   fail("could not allocate a unique workspace backup label");
 }
 
-function ensureMainAndClean() {
+function ensureBaselineAndClean() {
   const branch = run("git", ["branch", "--show-current"]).trim();
-  if (branch !== "main") fail(`snapshot creation requires branch main, found ${branch || "detached HEAD"}`);
+  if (branch !== baselineBranch) fail(`snapshot creation requires branch ${baselineBranch}, found ${branch || "detached HEAD"}`);
   const status = run("git", ["status", "--porcelain", "--untracked-files=normal"]);
   if (status.trim()) fail("snapshot creation requires a clean worktree");
 }
@@ -122,9 +123,12 @@ function assertCanonicalRepository() {
   }
 }
 
+// Historical v2 manifests call this field `originMain`; keep the name so old
+// releases stay verifiable. For new snapshots it records the origin baseline
+// branch commit (see `baselineBranch` in the same object).
 function originMainCommit() {
   try {
-    return run("git", ["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"]).trim();
+    return run("git", ["rev-parse", "--verify", `refs/remotes/origin/${baselineBranch}^{commit}`]).trim();
   } catch {
     return null;
   }
@@ -177,23 +181,24 @@ function inspectSourceBundle(bundlePath, manifest) {
 function sourceControlGate() {
   let fetchSucceeded = false;
   try {
-    run("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
+    run("git", ["fetch", "--no-tags", "origin", `+refs/heads/${baselineBranch}:refs/remotes/origin/${baselineBranch}`], {
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     });
     fetchSucceeded = true;
   } catch {
-    // Remote state is audit evidence only; a committed local main remains releasable.
+    // Remote state is audit evidence only; a committed local baseline remains releasable.
   }
 
   const head = run("git", ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
   if (!isCommit(head)) fail("source-control gate requires HEAD to resolve to a commit");
   const originMain = originMainCommit();
   return {
-    mode: "committed-local-main",
+    mode: "committed-local-baseline",
     head,
     originMain,
     fetchSucceeded,
     originRelation: originRelation(head, originMain),
+    baselineBranch,
   };
 }
 
@@ -273,13 +278,13 @@ function checksumsFor(releaseDir) {
 function createSnapshot() {
   assertCanonicalRepository();
   assertPrivateRoot();
-  ensureMainAndClean();
+  ensureBaselineAndClean();
   const sourceControl = sourceControlGate();
   if (!Number.isInteger(retention) || retention < 3) fail("release retention must be an integer >= 3");
 
   console.log("[release-snapshot] run repository verification");
   run("npm", ["run", "verify"], { stdio: "inherit" });
-  ensureMainAndClean();
+  ensureBaselineAndClean();
   const verifiedHead = run("git", ["rev-parse", "HEAD"]).trim();
   if (verifiedHead !== sourceControl.head) {
     fail("repository HEAD changed during verification");
@@ -303,7 +308,7 @@ function createSnapshot() {
 
   // Workspace capture can take long enough for a local source change. Recheck
   // immediately before archiving so the source and manifest remain aligned.
-  ensureMainAndClean();
+  ensureBaselineAndClean();
   if (run("git", ["rev-parse", "HEAD"]).trim() !== commit) {
     fail("repository HEAD changed before archive");
   }
@@ -319,7 +324,7 @@ function createSnapshot() {
     releaseId,
     state: "candidate",
     commit,
-    branch: "main",
+    branch: baselineBranch,
     createdAt: new Date().toISOString(),
     sourceControl,
     workspaces: ["111", "dyk", "mg"],
@@ -344,17 +349,22 @@ function resolveRelease(releaseId) {
 function verifyRelease(releaseId) {
   const releaseDir = resolveRelease(releaseId);
   const manifest = JSON.parse(readFileSync(join(releaseDir, "manifest.json"), "utf8"));
-  if (manifest.releaseId !== releaseId || manifest.branch !== "main" || !isCommit(manifest.commit)) {
+  // Releases created before the feat/mastra-migration cutover record
+  // branch "main"; both identities remain verifiable.
+  if (manifest.releaseId !== releaseId || !["main", baselineBranch].includes(manifest.branch) || !isCommit(manifest.commit)) {
     fail("invalid release manifest identity");
   }
   if (manifest.schemaVersion === 2) {
     const sourceControl = manifest.sourceControl;
     if (!sourceControl || typeof sourceControl !== "object"
-      || !["normal", "emergency-unpushed-main", "committed-local-main"].includes(sourceControl.mode)
+      || !["normal", "emergency-unpushed-main", "committed-local-main", "committed-local-baseline"].includes(sourceControl.mode)
       || sourceControl.head !== manifest.commit
       || !isCommit(sourceControl.head)
       || typeof sourceControl.fetchSucceeded !== "boolean") {
       fail("invalid release source-control gate evidence");
+    }
+    if (sourceControl.baselineBranch !== undefined && sourceControl.baselineBranch !== manifest.branch) {
+      fail("release source-control baseline branch does not match manifest branch");
     }
     if (sourceControl.originMain !== null && !isCommit(sourceControl.originMain)) {
       fail("invalid release source-control origin evidence");
@@ -367,7 +377,8 @@ function verifyRelease(releaseId) {
       && sourceControl.originMain === sourceControl.head) {
       fail("invalid emergency source-control gate evidence");
     }
-    if (sourceControl.mode === "committed-local-main") {
+    if (sourceControl.mode === "committed-local-main"
+      || sourceControl.mode === "committed-local-baseline") {
       const relations = ["equal", "ahead", "behind", "diverged", "unavailable"];
       if (!relations.includes(sourceControl.originRelation)
         || (sourceControl.originMain === null) !== (sourceControl.originRelation === "unavailable")

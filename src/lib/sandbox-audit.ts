@@ -10,6 +10,8 @@ export async function recordSandboxAudit(input: {
   requestBody?: unknown;
   resultSummary?: string;
   status: "success" | "denied" | "error";
+  /** Explicit agent-trace correlation (runtime message id); omit when the caller has none. */
+  traceId?: string;
 }) {
   await db.insert(sandboxAuditLogs).values({
     userId: input.context.userId,
@@ -19,6 +21,7 @@ export async function recordSandboxAudit(input: {
     channel: input.context.channel,
     backend: input.context.backend,
     conversationId: input.context.conversationId,
+    traceId: input.traceId,
     tokenId: input.context.tokenId,
     operation: input.operation,
     resourceType: input.resourceType,

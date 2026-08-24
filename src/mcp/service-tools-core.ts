@@ -89,6 +89,9 @@ export interface ServiceToolContext {
   projectId?: string;
   conversationId?: string;
   runId?: string;
+  taskId?: string;
+  /** Agent-trace correlation key (runtime message id) for audit linkage. */
+  traceId?: string;
   expectedReviewKind?: "daily" | "weekly" | "monthly";
   expectedReviewKey?: string;
 }
@@ -1484,14 +1487,19 @@ async function readMastraStrategyProjection(context: ServiceToolContext): Promis
   try {
     const value = JSON.parse(rows[0].profileJson) as Record<string, unknown>;
     const profile = (value.profile && typeof value.profile === "object" ? value.profile : value) as Record<string, unknown>;
+    // Omit absent profile keys instead of emitting `key: undefined` so
+    // round-trip reads stay deep-equal to what callers wrote.
+    const nextProfile: NonNullable<StrategyYaml["profile"]> = { markets: [] };
+    if (typeof profile.style === "string") nextProfile.style = profile.style;
+    const selectedStylePack = profile.selected_style_pack ?? profile.selectedStylePack;
+    if (typeof selectedStylePack === "string") nextProfile.selected_style_pack = selectedStylePack;
+    const riskPreference = profile.risk_preference ?? profile.riskPreference;
+    if (typeof riskPreference === "string") nextProfile.risk_preference = riskPreference;
+    const investmentHorizon = profile.investment_horizon ?? profile.investmentHorizon;
+    if (typeof investmentHorizon === "string") nextProfile.investment_horizon = investmentHorizon;
+    if (Array.isArray(profile.markets)) nextProfile.markets = profile.markets as string[];
     return {
-      profile: {
-        style: typeof profile.style === "string" ? profile.style : undefined,
-        selected_style_pack: typeof (profile.selected_style_pack ?? profile.selectedStylePack) === "string" ? (profile.selected_style_pack ?? profile.selectedStylePack) as string : undefined,
-        risk_preference: typeof (profile.risk_preference ?? profile.riskPreference) === "string" ? (profile.risk_preference ?? profile.riskPreference) as string : undefined,
-        investment_horizon: typeof (profile.investment_horizon ?? profile.investmentHorizon) === "string" ? (profile.investment_horizon ?? profile.investmentHorizon) as string : undefined,
-        markets: Array.isArray(profile.markets) ? profile.markets as string[] : [],
-      },
+      profile: nextProfile,
       allocation: (value.allocation && typeof value.allocation === "object" ? value.allocation : {}) as Record<string, unknown>,
       position_roles: (value.position_roles ?? value.positionRoles ?? {}) as Record<string, unknown>,
       buy_rules: Array.isArray(value.buy_rules ?? value.buyRules) ? (value.buy_rules ?? value.buyRules) as unknown[] : [],
@@ -1502,6 +1510,11 @@ async function readMastraStrategyProjection(context: ServiceToolContext): Promis
       decision_boundaries: (value.decision_boundaries ?? value.decisionBoundaries ?? {}) as Record<string, unknown>,
       notes: typeof value.notes === "string" ? value.notes : undefined,
       last_confirmed_at: rows[0].sourceRevision ?? undefined,
+      last_confirmed_by: typeof value.last_confirmed_by === "string" ? value.last_confirmed_by : undefined,
+      last_confirmation_id: typeof value.last_confirmation_id === "string" ? value.last_confirmation_id : undefined,
+      last_method_change_candidate_id: typeof value.last_method_change_candidate_id === "string"
+        ? value.last_method_change_candidate_id
+        : undefined,
     };
   } catch (error) {
     throw new Error(`MASTRA_PROJECTION_INVALID: strategy profile payload is invalid: ${(error as Error).message}`);
@@ -2904,6 +2917,7 @@ async function audit(context: ServiceToolContext, input: {
   status?: "success" | "denied" | "error";
 }) {
   await recordSandboxAudit({
+    traceId: context.traceId,
     context: {
       userId: context.userId,
       projectId: context.projectId || DEFAULT_PROJECT_ID,

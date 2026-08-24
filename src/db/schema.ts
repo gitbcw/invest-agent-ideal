@@ -546,6 +546,8 @@ export const sandboxAuditLogs = sqliteTable("sandbox_audit_logs", {
   channel: text("channel").notNull(),
   backend: text("backend"),
   conversationId: text("conversation_id"),
+  /** Correlation to the agent trace (runtime message id); null for legacy rows. */
+  traceId: text("trace_id"),
   tokenId: text("token_id"),
   operation: text("operation").notNull(),
   resourceType: text("resource_type").notNull(),

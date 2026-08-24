@@ -1,12 +1,14 @@
 # 版本快照与 AI 辅助回退执行方案
 
+> **基线更新（2026-08-24，T-362 / WP1）**：发布快照基线已从旧规范仓库 `invest-agent-ideal` 的 `main` 迁移到当前规范仓库 `invest-agent-ideal-mastra` 的 `feat/mastra-migration` 维护分支；历史 `main` 快照清单仍可验证（manifest 同时接受两个 branch 身份，source-control 模式新增 `committed-local-baseline`）。实现以 `scripts/release-snapshot.mjs` 与 `release-snapshot-smoke.mjs` 为准；本文中提到 `main` 的旧表述按此说明解释。文中 `/home/claude/invest-agent` 等旧生产路径为历史记录，当前生产拓扑以 [README.md](./README.md) 的生产事实段和 `.codex/skills/volcano-ops` 为准。
+
 ## 目标与边界
 
 本方案是 T-194 阶段 2 的执行基线。目标是在不引入 CI/CD、多环境、蓝绿、金丝雀或自动回滚的前提下，把当前“从某个目录手工发布、现场修复”的方式收敛为可审计的版本快照、标准部署和人工门禁回退流程。
 
 必须同时满足：
 
-- 系统版本由 `main` 的确定提交确定，代码、系统 prompt、模板和模板 Skills 一起版本化。
+- 系统版本由规范仓库 `feat/mastra-migration` 维护分支的确定提交确定，代码、系统 prompt、模板和模板 Skills 一起版本化。
 - `111`、`dyk`、`mg` 的真实 Workspace 独立快照，至少保留最近 3 个已知可用发布版本。
 - 默认回退只替换系统代码，不替换 `.env`、SQLite、真实 Workspace、reviews、微信状态或其他运行资产。
 - Workspace 回退先生成差异清单和 AI 合并提案，逐用户、逐文件人工确认后才能应用。
@@ -19,7 +21,7 @@
 
 | 对象 | 权威位置 | 所有权 | 回退策略 |
 | --- | --- | --- | --- |
-| Git 系统源 | 本机仓库 `main` | 系统 | 从已验证发布快照重新部署 |
+| Git 系统源 | 本机规范仓库 `invest-agent-ideal-mastra` 的 `feat/mastra-migration` 分支 | 系统 | 从已验证发布快照重新部署 |
 | 生产代码 | `/home/claude/invest-agent` | 系统 | 允许标准代码回退 |
 | 真实 Workspace | `/home/claude/invest-agent-data/workspaces/{111,dyk,mg}` | 用户实例 | 默认保留当前；只允许受控逐文件恢复 |
 | SQLite、reviews、`.state`、微信状态 | `/home/claude/invest-agent-data` 及生产 runtime | 服务运行资产 | 代码回退不触碰；仅灾难恢复时走独立流程 |

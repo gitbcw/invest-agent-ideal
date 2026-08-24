@@ -8,7 +8,7 @@ Invest Agent 是一个网页端（Portal）优先的投资决策助手，微信�
 - 真实 Workspace 的 `AGENTS.md`、Skills、方法、配置和产物属于用户实例。模板差异只能报告；采用具体模板资产必须逐用户、逐文件确认并先备份。
 - 访问控制、scope、确认、审计、调度和推送等安全保证必须由服务/MCP 层强制，不能把 Skill 或文档文本当作安全边界。
 - 当前生产维护与发布基线是 `feat/mastra-migration`。旧 `main` 生产 runtime 已停止；除非用户明确要求，不得把 `main`、旧 `invest-agent` 或旧端口当作生产目标。快照、冻结标签和历史迁移分支仅用于审计、比较和回滚。
-- 正式 Portal 的唯一本地仓库是 `/Users/combo/MyFile/projects/invest-agent-portal`，生产目标是 `/home/claude/invest-agent-portal`。`test-projects/` 下的任何项目均不得作为 Portal 实现、验收证据或生产发布源；操作 Portal 前必须先核对该仓库根目录和 `package.json` 项目身份。
+- 正式 Portal 由本仓库 `apps/portal`（PM2 `mastra-portal`，生产目录 `/home/claude/invest-agent-mastra/apps/portal`）承担，随 `scripts/deploy-volcano.sh` 的构建感知流程发布（2026-08-24 用户裁决）。旧 `invest-agent-portal` 仓库与 `/home/claude/invest-agent-portal` 自 2026-08-21 切换后仅作审计与历史参照，不得当作生产目标。`test-projects/` 下的任何项目均不得作为 Portal 实现、验收证据或生产发布源；操作 Portal 发布前必须核对当前仓库与分支身份。
 - `docs/archive/` 仅用于考古，除非当前权威文档明确引用。不得根据历史方案推翻当前契约。
 - 保留用户已有工作树改动；不得用 reset、checkout、批量覆盖或无关重构清除它们。
 

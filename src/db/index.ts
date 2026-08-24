@@ -1149,6 +1149,8 @@ export function initDb() {
   ensureColumn("external_mcp_tool_calls", "run_id", "TEXT");
   ensureColumn("sandbox_audit_logs", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("sandbox_audit_logs", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
+  // WP3 run-diagnostic chain: explicit trace correlation for service-tool audits.
+  ensureColumn("sandbox_audit_logs", "trace_id", "TEXT");
   ensureColumn("pending_sandbox_confirmations", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
   ensureColumn("pending_sandbox_confirmations", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("onboarding_drafts", "project_id", "TEXT NOT NULL DEFAULT 'invest-agent'");
