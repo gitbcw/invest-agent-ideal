@@ -116,6 +116,18 @@
 下一复核条件：下一次真实代码发布时按 release-governance-evidence 模板出记录并回填 G4 复核
 ```
 
+### 2026-08-24 真实发布 G4 回填（release 20260824T065229Z-dd072a15）
+
+```text
+日期：2026-08-24
+复核范围：G4 真实代码发布全链（快照→部署→验收→known-good）
+证据链接：docs/release-record-20260824-dd072a15.md（变更范围/适用门/验收九项/回滚口径/Go-No-Go）；快照含 verify 555 用例 0 skip；发布后 health/Portal/微信/connector/推送队列全部收敛；发布过程修复备份脚本两层深度口径缺陷（b43edd2、dd072a1 随发布验证）
+等级变化：G4 证据从「隔离演练」升级为「真实发布记录」（手册第 8 节九项验收 + known-good 标记 + 回滚目标明确）
+新增缺口：生产首条真实回合落 trace_id 后复查 diagnosticCoverage；远端 origin 未推送（用户指示），审计以 committed-local-baseline 为准
+是否阻断发布：无新增阻断
+下一复核条件：观测窗口 7 天（调度 runId 落库、audit trace_id 覆盖率、无重复推送）
+```
+
 每次更新矩阵时追加：
 
 ```text

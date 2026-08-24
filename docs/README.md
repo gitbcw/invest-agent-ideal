@@ -19,6 +19,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md](./bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md) | 筹码集中度查询缓存未命中即宣告缺口：归因 L1 工具学说缺证据穷尽规则，修复为指令补行，回归样例 EV-013 |
 | [run-diagnostic-view-contract.md](./run-diagnostic-view-contract.md) | 从 traceId 串起对话、工具、审计、调度、产物和投递的最小诊断契约 |
 | [release-governance-evidence-template.md](./release-governance-evidence-template.md) | 变更影响、验证、灰度、观测、回滚和 go/no-go 记录模板 |
+| [release-record-20260824-dd072a15.md](./release-record-20260824-dd072a15.md) | 真实发布记录：T-357 治理执行线（WP0–WP5）上线，含验收九项与 known-good 标记 |
 | [isolated-fault-drill-matrix.md](./isolated-fault-drill-matrix.md) | 四类隔离故障演练的注入点、终态、副作用和通过门槛 |
 | [AI应用复杂系统管理落地方案.md](./AI应用复杂系统管理落地方案.md) | 方法论来源（非执行规范，2026-08-24 起带 ⚠️ 非规范性标注）：复杂系统评估/护栏/韧性/演化/可观测性的通用方法论素材；固定数字、工具栈与团队规模仅为示例，执行口径以 [ai-system-governance-principles.md](./ai-system-governance-principles.md) 为准 |
 | [mastra-architecture-baseline.md](./mastra-architecture-baseline.md) | Candidate architecture baseline: verified topology, layering, data architecture, capability surface inventory, UX contracts, confirmed directions, and the layer-by-layer review agenda |
