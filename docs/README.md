@@ -6,8 +6,21 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 
 ### Mastra Production Branch
 
+领域 Profile：本仓治理执行口径是 [ai-system-governance-principles.md](./ai-system-governance-principles.md)（Invest Agent Profile）；Personal OS 域适用其仓库自己的 tailoring 领域 Profile（`ai-app-complex-systems-tailoring`，v1.1）；[AI应用复杂系统管理落地方案.md](./AI应用复杂系统管理落地方案.md) 是两域共同的方法论素材，不是执行规范（已加 ⚠️ 非规范性标注）。
+
 | Document | Use It For |
 | --- | --- |
+| [ai-system-governance-principles.md](./ai-system-governance-principles.md) | Invest Agent AI 系统治理上位原则：评估反馈、服务护栏、韧性、观测、灰度发布和回滚边界 |
+| [next-direction-governance-analysis-2026-08-22.md](./next-direction-governance-analysis-2026-08-22.md) | 基于治理上位原则的项目成熟度评估、证据缺口和治理计划起点；不创建产品执行任务 |
+| [governance-assessment-matrix.md](./governance-assessment-matrix.md) | G1–G5、L1–L4 治理证据矩阵与复核规则 |
+| [evaluation-assets-registry.md](./evaluation-assets-registry.md) | 第一批版本化评估资产目录及 executable/candidate 数量口径 |
+| [bad-case-record-template.md](./bad-case-record-template.md) | Bad Case 证据、归因、修复、回归和回滚记录模板 |
+| [bad-cases/BC-20260821-001-long-conversation-coherence-latency.md](./bad-cases/BC-20260821-001-long-conversation-coherence-latency.md) | 首次治理演练：长会话逻辑已修复但性能与 Trace 证据未过放行门 |
+| [bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md](./bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md) | 筹码集中度查询缓存未命中即宣告缺口：归因 L1 工具学说缺证据穷尽规则，修复为指令补行，回归样例 EV-013 |
+| [run-diagnostic-view-contract.md](./run-diagnostic-view-contract.md) | 从 traceId 串起对话、工具、审计、调度、产物和投递的最小诊断契约 |
+| [release-governance-evidence-template.md](./release-governance-evidence-template.md) | 变更影响、验证、灰度、观测、回滚和 go/no-go 记录模板 |
+| [isolated-fault-drill-matrix.md](./isolated-fault-drill-matrix.md) | 四类隔离故障演练的注入点、终态、副作用和通过门槛 |
+| [AI应用复杂系统管理落地方案.md](./AI应用复杂系统管理落地方案.md) | 方法论来源（非执行规范，2026-08-24 起带 ⚠️ 非规范性标注）：复杂系统评估/护栏/韧性/演化/可观测性的通用方法论素材；固定数字、工具栈与团队规模仅为示例，执行口径以 [ai-system-governance-principles.md](./ai-system-governance-principles.md) 为准 |
 | [mastra-architecture-baseline.md](./mastra-architecture-baseline.md) | Candidate architecture baseline: verified topology, layering, data architecture, capability surface inventory, UX contracts, confirmed directions, and the layer-by-layer review agenda |
 | [context-and-prompt-architecture.md](./context-and-prompt-architecture.md) | Context/prompt layering for the Mastra runtime: persistent instructions, per-turn state injection, multi-turn history from the authoritative conversation table, and user-evolvable methodology skills |
 | [go-live-beta-test-checklist.md](./go-live-beta-test-checklist.md) | Pre-go-live dense test checklist (user-journey scenarios, expected behaviors, go-live actions, Monday scheduler first-run verification) |
