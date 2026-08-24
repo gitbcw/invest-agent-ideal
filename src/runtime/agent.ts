@@ -296,7 +296,15 @@ export function createRuntimeAgent(): RuntimeAgent {
           // must stay at user priority and never be promoted into system instructions.
           ? [{ role: "user" as const, content: coherenceContext.text }, ...recentHistory]
           : recentHistory;
-        const mastraTools = await createMastraToolMap({ ...userContext, instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId) });
+        const mastraTools = await createMastraToolMap({
+          ...userContext,
+          instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId),
+          // Explicit turn correlation so service-tool audits link to the trace
+          // without time-proximity guessing (WP3 diagnostic chain).
+          traceId: message.id,
+          runId: typeof message.context?.runId === "string" ? message.context.runId : undefined,
+          taskId: typeof message.context?.taskId === "string" ? message.context.taskId : undefined,
+        });
         const workspaceScope = {
           userId: userContext.userId,
           projectId: userContext.projectId ?? "invest-agent",

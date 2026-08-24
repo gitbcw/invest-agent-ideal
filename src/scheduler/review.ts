@@ -176,6 +176,7 @@ async function resolveReviewText(
     shouldSkipFallback?: () => Promise<boolean>;
     generate?: () => Promise<string | null>;
   } = {},
+  runId?: string,
 ) {
   const readText = overrides.readText ?? (() => readReusableReviewText(scope, kind, dateKey));
   let text = await readText();
@@ -184,7 +185,11 @@ async function resolveReviewText(
       ?? (() => shouldSkipFallbackDailyGeneration(kind, scope, dateKey, manualReason)))();
     if (!shouldSkip) {
       text = await (overrides.generate
-        ?? (() => runScheduledReviewTask({ userId: scope.userId, instanceId: scope.instanceId, projectId: scope.projectId }, kind)))();
+        ?? (() => runScheduledReviewTask(
+          { userId: scope.userId, instanceId: scope.instanceId, projectId: scope.projectId },
+          kind,
+          { runId },
+        )))();
     }
   }
   return text;
@@ -216,7 +221,7 @@ export async function triggerReviewNow(
   }
 
   try {
-    const text = await resolveReviewText(kind, { ...scope, projectId }, dateKey, options.manualReason);
+    const text = await resolveReviewText(kind, { ...scope, projectId }, dateKey, options.manualReason, {}, taskKey);
     if (!text) {
       await finishScheduledTaskRun(taskKey, { status: "skipped" });
       return { taskKey, skipped: true };

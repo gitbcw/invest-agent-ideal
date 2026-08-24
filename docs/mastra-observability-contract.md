@@ -14,7 +14,9 @@ This contract applies to Mastra-native turns from Portal, WeChat, scheduler, and
 | `taskId` | Automation task definition | Automation context |
 | `messageId` | Channel or persisted message identity | Portal/WeChat/runtime adapter |
 
-Interactive turns must have `traceId`, `conversationId`, backend and model. Scheduler turns must additionally have `runId` when the runner owns one. Automation turns must additionally have `taskId`. Coverage is reported by `/api/platform/audit/trace-coverage` and does not count inapplicable fields as missing.
+Interactive turns must have `traceId`, `conversationId`, backend and model. Scheduler turns must additionally have `runId` when the runner owns one (since 2026-08-24 / WP3 the market-watch and review runners pass their `taskKey` as `runId`, so scheduler traces link to `scheduled_task_runs.taskKey` explicitly). Automation turns must additionally have `taskId`. Coverage is reported by `/api/platform/audit/trace-coverage` and does not count inapplicable fields as missing.
+
+Service-tool audits written from an agent turn carry the turn's `trace_id` in `sandbox_audit_logs` (explicit correlation; no time-proximity inference). Legacy audit rows without `trace_id` remain conversation-level evidence only and are counted as gaps by the run-diagnostic coverage metrics. The end-to-end diagnostic view lives in [run-diagnostic-view-contract.md](./run-diagnostic-view-contract.md) and `GET /api/platform/audit/run-diagnostic`.
 
 ## Required execution data
 

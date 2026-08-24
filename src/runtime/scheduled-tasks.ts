@@ -140,7 +140,10 @@ export async function runScheduledReviewPublicationProbe(
   throw new Error(`scheduled review publication probe failed after ${maxAttempts} attempts: ${lastError}`);
 }
 
-export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promise<string | null> {
+export async function runScheduledMarketWatchTask(
+  scope: ScheduledScope,
+  correlation?: { runId?: string },
+): Promise<string | null> {
   const pushMode = await resolveMarketWatchPushMode(scope);
 
   // WP4 新路径: 开放研究交还 Mastra runtime。不约束工具 (Mastra 自由选任意已启用只读 MCP)、
@@ -156,6 +159,7 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
     conversationId: userContext.conversationId!,
     messageId: randomUUID(),
     mode: "scheduled-market-watch",
+    runId: correlation?.runId,
     sandboxTokenId: promptContext.sandboxContext.tokenId,
     sandboxPermissions: promptContext.sandboxContext.permissions,
   });
@@ -165,26 +169,30 @@ export async function runScheduledMarketWatchTask(scope: ScheduledScope): Promis
   return cleaned;
 }
 
-export async function runScheduledReviewTask(scope: ScheduledScope, kind: ScheduledReviewKind): Promise<string | null> {
+export async function runScheduledReviewTask(
+  scope: ScheduledScope,
+  kind: ScheduledReviewKind,
+  correlation?: { runId?: string },
+): Promise<string | null> {
   // F1: taskType 驱动最小权限授权 (daily = reads + reviews.save; weekly/monthly = reads only)
   const userContext = { ...await buildScheduledUserContext(scope, `${kind}-review`), taskType: `scheduled-${kind}-review` };
 
   if (kind === "daily") {
-    return runScheduledDailyReview(userContext);
+    return runScheduledDailyReview(userContext, correlation?.runId);
   }
 
   if (kind === "weekly") {
-    return runScheduledPeriodicReview(userContext, "weekly");
+    return runScheduledPeriodicReview(userContext, "weekly", correlation?.runId);
   }
 
-  return runScheduledPeriodicReview(userContext, "monthly");
+  return runScheduledPeriodicReview(userContext, "monthly", correlation?.runId);
 }
 
 /**
  * 日复盘: reviews.save 是唯一完成路径,回读校验四元组 (publicationAt/convId/scheduled/pushBrief)。
  * WP4 新路径不预聚合注入、不禁工具; flag=true 时走旧编排 (buildDailyReviewContext + 禁工具 prompt)。
  */
-async function runScheduledDailyReview(userContext: UserContext): Promise<string | null> {
+async function runScheduledDailyReview(userContext: UserContext, runId?: string): Promise<string | null> {
   const publicationStartedAt = Date.now();
   const legacy = isLegacyReviewOrch();
   const reviewContext = legacy
@@ -205,6 +213,7 @@ async function runScheduledDailyReview(userContext: UserContext): Promise<string
     conversationId: userContext.conversationId!,
     messageId: randomUUID(),
     mode: "scheduled-daily-review",
+    runId,
     reviewContextSummary: promptContext.reviewContextSummary,
     sandboxTokenId: promptContext.sandboxContext.tokenId,
     sandboxPermissions: promptContext.sandboxContext.permissions,
@@ -235,7 +244,7 @@ async function runScheduledDailyReview(userContext: UserContext): Promise<string
  * 周复盘: WP4 新路径不预聚合注入 context; flag=true 时走旧编排。
  * F2: 新路径改为受控保存——Agent 调 reviews.save(kind/reportKey)，服务回读校验四元组。
  */
-async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekly" | "monthly"): Promise<string | null> {
+async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekly" | "monthly", runId?: string): Promise<string | null> {
   const legacy = isLegacyReviewOrch();
   const reportKey = kind === "weekly"
     ? `${weekRangeForDate().weekStart}_weekly`
@@ -246,12 +255,12 @@ async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekl
   if (legacy) {
     if (kind === "weekly") {
       const context = await buildWeeklyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
-      const content = await runStructuredReviewPrompt(userContext, "weekly", context);
+      const content = await runStructuredReviewPrompt(userContext, "weekly", context, undefined, runId);
       await writeWorkspaceReview(userContext.userId, "weekly", `${context.weekStart}_weekly`, content);
       return sanitizeWeixinCustomerText(buildScheduledReviewPush("周复盘", content));
     }
     const context = await buildMonthlyReviewContext({ userId: userContext.userId, instanceId: userContext.instanceId });
-    const content = await runStructuredReviewPrompt(userContext, "monthly", context);
+    const content = await runStructuredReviewPrompt(userContext, "monthly", context, undefined, runId);
     await writeWorkspaceReview(userContext.userId, "monthly", context.monthKey, content);
     return sanitizeWeixinCustomerText(buildScheduledReviewPush("月复盘", content));
   }
@@ -259,7 +268,7 @@ async function runScheduledPeriodicReview(userContext: UserContext, kind: "weekl
   // F2 新路径: 受控保存。prompt 要求 Agent 调 reviews.save(kind/reportKey)，
   // 服务回读 periodicReviewBackend 校验四元组（publicationAt/convId/scheduled/pushBrief）。
   const publicationStartedAt = Date.now();
-  await runStructuredReviewPrompt(userContext, kind, null, reportKey);
+  await runStructuredReviewPrompt(userContext, kind, null, reportKey, runId);
   const published = await periodicReviewBackend.get(userContext.userId, userContext.instanceId!, kind, reportKey);
   const publishedAt = published?.generatedAt ? Date.parse(published.generatedAt) : Number.NaN;
   const publication = published?.data && typeof published.data === "object"
@@ -306,7 +315,13 @@ async function buildScheduledUserContext(scope: ScheduledScope, taskName: string
   };
 }
 
-async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly" | "monthly", context: unknown, reportKey?: string) {
+async function runStructuredReviewPrompt(
+  userContext: UserContext,
+  kind: "weekly" | "monthly",
+  context: unknown,
+  reportKey?: string,
+  runId?: string,
+) {
   const label = kind === "weekly" ? "周复盘" : "月复盘";
   const promptLines = [
     `【后台任务：${label}】`,
@@ -342,6 +357,7 @@ async function runStructuredReviewPrompt(userContext: UserContext, kind: "weekly
     conversationId: userContext.conversationId!,
     messageId: randomUUID(),
     mode: `scheduled-${kind}-review`,
+    runId,
     sandboxTokenId: promptContext.sandboxContext.tokenId,
     sandboxPermissions: promptContext.sandboxContext.permissions,
   });
@@ -364,7 +380,15 @@ interface ScheduledAgentTaskInput {
 async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
   const startedAt = Date.now();
   try {
-    const mastraTools = await createMastraToolMap({ ...input.userContext, instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID });
+    const mastraTools = await createMastraToolMap({
+      ...input.userContext,
+      instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID,
+      // Explicit correlation so audits link to this turn's trace and its
+      // scheduler run without time-proximity guessing (WP3 diagnostic chain).
+      traceId: input.messageId,
+      runId: input.runId,
+      taskId: input.taskId,
+    });
     const externalMcp = await resolveExternalMastraToolsets("scheduled-read");
     const observedToolsets = withExternalToolCallObserver(externalMcp.toolsets, {
       userId: input.userContext.userId,

@@ -7,6 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { parse as parseYaml } from "yaml";
 import { renderPlatformPage } from "../admin/platform-page.js";
 import { renderPartnerPlatformPage } from "../admin/partner-platform-page.js";
+import { buildRunDiagnostic, loadDiagnosticCoverage, parseDiagnosticEntryType } from "../services/run-diagnostic.js";
 import { db, sqlite } from "../db/index.js";
 import {
   aiInstances,
@@ -483,22 +484,38 @@ function aggregatePushRuns(input: { traceRows: any[]; pushRows: any[]; taskRows:
   const traces = [...input.traceRows];
   const pushes = [...input.pushRows];
   const pushById = new Map(pushes.map((item) => [item.id, item]));
+  const tracesByRunId = new Map<string, any>();
+  for (const trace of traces) {
+    if (trace.runId && !tracesByRunId.has(String(trace.runId))) tracesByRunId.set(String(trace.runId), trace);
+  }
   const usedTraceIds = new Set<string>();
   const usedPushIds = new Set<string>();
 
   const runs = input.taskRows.map((task) => {
-    const trace = nearestTrace(task.finishedAt || task.createdAt, traces, usedTraceIds);
+    // Explicit correlation first (trace.runId === taskKey, WP3); time proximity
+    // is a display-only fallback for legacy rows and is flagged as such so it
+    // is never mistaken for governance evidence.
+    let traceLink: "run_id" | "time_proximity" | "none" = "none";
+    let trace = task.taskKey ? tracesByRunId.get(String(task.taskKey)) : undefined;
+    if (trace) {
+      traceLink = "run_id";
+    } else {
+      trace = nearestTrace(task.finishedAt || task.createdAt, traces, usedTraceIds);
+      if (trace) traceLink = "time_proximity";
+    }
     if (trace) usedTraceIds.add(String(trace.id));
     const push = task.pushJobId ? pushById.get(task.pushJobId) : null;
     if (push) usedPushIds.add(String(push.id));
-    return buildPushRun({ task, trace, push });
+    return buildPushRun({ task, trace, push, traceLink });
   });
 
   for (const trace of traces) {
     if (usedTraceIds.has(String(trace.id))) continue;
-    const push = nearestPush(trace.createdAt, pushes, usedPushIds);
+    // Explicit first: a push whose originRunId equals this trace's runId.
+    const push = (trace.runId && pushes.find((item) => String(item.originRunId || "") === String(trace.runId) && !usedPushIds.has(String(item.id))))
+      ?? nearestPush(trace.createdAt, pushes, usedPushIds);
     if (push) usedPushIds.add(String(push.id));
-    runs.push(buildPushRun({ trace, push }));
+    runs.push(buildPushRun({ trace, push, traceLink: trace ? "none" : "none" }));
   }
 
   for (const push of pushes) {
@@ -511,7 +528,7 @@ function aggregatePushRuns(input: { traceRows: any[]; pushRows: any[]; taskRows:
     .slice(0, input.limit);
 }
 
-function buildPushRun(input: { task?: any; trace?: any; push?: any }) {
+function buildPushRun(input: { task?: any; trace?: any; push?: any; traceLink?: "run_id" | "time_proximity" | "none" }) {
   const { task, trace, push } = input;
   const status = push?.status || task?.status || trace?.status || "unknown";
   return {
@@ -522,6 +539,10 @@ function buildPushRun(input: { task?: any; trace?: any; push?: any }) {
     channel: push?.channel || trace?.channel || null,
     mode: task?.mode || trace?.mode || push?.mode || null,
     status,
+    // "run_id" = explicit ID correlation (governance-grade);
+    // "time_proximity" = legacy display-only guess for rows without runId;
+    // "none" = unlinked (or trace-first rows where the link key differs).
+    traceLink: input.traceLink ?? "none",
     conversationId: trace?.conversationId || null,
     messageId: trace?.messageId || null,
     userText: trace?.userText || task?.userText || push?.userText || null,
@@ -552,6 +573,9 @@ function buildPushRun(input: { task?: any; trace?: any; push?: any }) {
   };
 }
 
+// Legacy display-only correlation: used solely for rows written before WP3
+// added explicit runId linkage. Never treat a time-proximity match as
+// governance evidence (WP3 ④).
 function nearestTrace(anchor: string | null | undefined, traces: any[], used: Set<string>) {
   return nearestByTime(anchor, traces.filter((item) => !used.has(String(item.id))), 5 * 60 * 1000);
 }
@@ -1159,6 +1183,7 @@ function partnerRoutePermission(pathname: string, method: string): PlatformPermi
   if (pathname === "/api/platform/partner/runtime-health") return "operations.read";
   if (pathname === "/api/platform/audit/usage") return "cost.read";
   if (pathname === "/api/platform/audit/trace-coverage") return "admin_audit.read";
+  if (pathname === "/api/platform/audit/run-diagnostic") return "admin_audit.read";
   if (pathname === "/api/platform/instances/" && method === "GET") return "customers.sensitive.read";
   if (pathname.includes("/investment-state")) return "customers.sensitive.read";
   if (pathname === "/api/platform/audit" || pathname === "/api/platform/automation-runs" || pathname === "/api/platform/rule-alerts") return "admin_audit.read";
@@ -1724,7 +1749,16 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       updatedAt: new Date().toISOString(),
       filters: { userId: userId || "", instanceId: instanceId || "", days: Number(request.query.days || 30) },
       coverage: await loadTraceCoverage({ userId, instanceId, days: Number(request.query.days || 30) }),
+      diagnosticCoverage: await loadDiagnosticCoverage(Number(request.query.days || 30)),
     };
+  }));
+
+  // WP3 运行诊断链：入口 ID → 全链路节点 + 缺失关联计数（显式 ID 关联，无时间邻近）。
+  app.get<{ Querystring: { by?: string; id?: string } }>("/api/platform/audit/run-diagnostic", safe(async (request) => {
+    const by = parseDiagnosticEntryType(request.query.by);
+    const id = request.query.id?.trim();
+    if (!id) throw new Error("query parameter id is required");
+    return buildRunDiagnostic(by, id);
   }));
 
   app.get<{ Querystring: { reportLimit?: string; alertLimit?: string } }>("/api/platform/source-quality", safe(async (request) => {

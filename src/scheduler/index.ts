@@ -352,7 +352,7 @@ export async function triggerScheduledMarketWatchNow(
   }
 
   try {
-    const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId });
+    const text = await runScheduledMarketWatchTask({ userId, instanceId, projectId }, { runId: taskKey });
     if (!text) {
       logger.info(`盘中定时简报无推送 user=${userId} instance=${instanceId} reason=${manualReason}`);
       await finishScheduledTaskRun(taskKey, { status: "skipped" });
