@@ -971,7 +971,7 @@ async function updateGenericAutomationTask(input: {
     ...input.input,
     instruction: input.input.instruction ?? input.currentRevision.instruction,
     inputs: input.input.inputs ?? input.currentRevision.inputs,
-    output: input.input.output ?? input.currentRevision.output,
+    output: inheritRolloverPolicy(input.input.output ?? input.currentRevision.output, input.currentRevision.output),
     delivery: input.input.delivery ?? input.currentRevision.delivery,
   });
   const revision = input.task.currentRevision + 1;
@@ -1062,6 +1062,22 @@ function normalizeAssetBinding(raw: Record<string, unknown>): AutomationTaskAsse
   if (versionPolicy === "latest" && versionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "latest cannot carry versionId");
   if (versionPolicy === "fixed" && !versionId) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "fixed requires versionId");
   return { assetId, role, versionPolicy, ...(versionId ? { versionId } : {}) };
+}
+
+/** An edit replaces the whole output policy, but callers re-send
+ * {mode:'update',…} without knowing about rollover — without inheritance
+ * every such edit silently strips a configured monthly rollover (the
+ * 2026-08-24 industry-review regression). Undefined rollover inherits the
+ * previous policy's; an explicit null clears it. */
+function inheritRolloverPolicy(
+  incoming: AutomationTaskOutputPolicy | Record<string, unknown> | undefined,
+  previous: AutomationTaskOutputPolicy,
+): AutomationTaskOutputPolicy | Record<string, unknown> | undefined {
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return incoming;
+  const record = incoming as Record<string, unknown>;
+  if (record.mode !== "update" || record.rollover !== undefined) return incoming;
+  if (previous.mode !== "update" || !previous.rollover) return incoming;
+  return { ...record, rollover: previous.rollover };
 }
 
 function normalizeOutputPolicy(raw: AutomationTaskOutputPolicy | Record<string, unknown> | undefined): AutomationTaskOutputPolicy {

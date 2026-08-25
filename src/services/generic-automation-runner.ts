@@ -747,13 +747,23 @@ async function normalizeAppendRowsResult(
   current: { summary: string; shouldNotify: boolean },
 ): Promise<Awaited<ReturnType<typeof normalizeStructuredResult>>> {
   const outputPolicy = task.revision.output;
-  if (outputPolicy.mode !== "update" || !resolved.output) {
-    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput appendRows is only valid for update tasks with a bound workbook; use operation 'update' or 'create'");
+  // The spreadsheet prompt recommends appendRows for any XLSX binding
+  // regardless of output mode (T-378), so agent-mode tasks with exactly one
+  // XLSX update target use the same deterministic append path.
+  let target: NonNullable<ResolvedOutput> | null = resolved.output;
+  if (outputPolicy.mode === "agent") {
+    const xlsxTargets = [...resolved.agentUpdateTargets.values()].filter((item) => isXlsxAsset(item.fileName));
+    target = xlsxTargets.length === 1 ? xlsxTargets[0] : null;
+  }
+  if (!target) {
+    throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", outputPolicy.mode === "agent"
+      ? "stagedOutput appendRows requires agent tasks to bind exactly one XLSX workbook; use operation 'update' or 'create' otherwise"
+      : "stagedOutput appendRows is only valid for update tasks with a bound workbook; use operation 'update' or 'create'");
   }
   if (resolved.monthlyRollover) {
     throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `appendRows cannot target the stale monthly file 《${resolved.monthlyRollover.boundFileName}》; create this month's 《${resolved.monthlyRollover.targetFileName}》 with operation 'create' instead`);
   }
-  if (!resolved.output.fileName.toLowerCase().endsWith(".xlsx")) {
+  if (!target.fileName.toLowerCase().endsWith(".xlsx")) {
     throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput appendRows requires an XLSX workbook target; use spreadsheet.transform for other formats");
   }
   const sheet = typeof staged.sheet === "string" && staged.sheet.trim() ? staged.sheet.trim() : undefined;
@@ -766,7 +776,7 @@ async function normalizeAppendRowsResult(
     : undefined;
   let outcome: Awaited<ReturnType<typeof appendRowsToXlsxBytes>>;
   try {
-    const currentBytes = await readUserAssetVersion({ ...scope, assetId: resolved.output.assetId, versionId: resolved.output.versionId });
+    const currentBytes = await readUserAssetVersion({ ...scope, assetId: target.assetId, versionId: target.versionId });
     outcome = await appendRowsToXlsxBytes({ bytes: currentBytes.bytes, sheet, rows: rows as unknown[][], skipIfCellMatches: skip });
   } catch (error) {
     throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `appendRows failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -780,9 +790,9 @@ async function normalizeAppendRowsResult(
     shouldNotify: current.shouldNotify,
     stagedOutput: {
       operation: "update" as const,
-      assetId: resolved.output.assetId,
-      fileName: resolved.output.fileName,
-      mimeType: resolved.output.mimeType,
+      assetId: target.assetId,
+      fileName: target.fileName,
+      mimeType: target.mimeType,
       base64: outcome.bytes.toString("base64"),
     },
   };

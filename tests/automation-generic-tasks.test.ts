@@ -1290,3 +1290,89 @@ test("monthly rollover policy validates the fileNamePattern (T-317)", async () =
     /path separators/,
   );
 });
+
+test("agent-mode appendRows appends deterministically to the single bound XLSX (T-378, mg 2026-08-25 regression)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const bytes = await convertCsvBytesToXlsx(Buffer.from("日期,标的,收盘\n2026-08-24,示例,10\n"));
+  const target = await assets.createUserAsset({ ...scope, name: "持仓明细", fileName: "2026-08-24 持仓与关注股日复盘明细.xlsx", mimeType: XLSX_MIME, bytes });
+  const task = await automation.createAutomationTask({
+    ...scope, taskId: "generic-agent-appendrows", name: "持仓复盘",
+    instruction: "逐只生成一行明细，追加到当月汇总工作簿表尾。",
+    schedule: schedule(),
+    inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }],
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const result = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-agent-appendrows-once",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: {
+      summary: "已追加 2026-08-25 明细。",
+      stagedOutput: { operation: "appendRows", rows: [["2026-08-25", "贵州茅台", 1500]], skipIfCellMatches: { column: 1, value: "2026-08-25" } },
+    } }),
+  });
+  assert.equal(result.run.status, "succeeded", "agent mode + single XLSX binding must accept the prompt-recommended appendRows");
+  assert.equal(result.run.outputAssetId, target.assetId);
+  assert.notEqual(result.run.outputVersionId, target.currentVersionId);
+  const ExcelJS = (await import("exceljs")).default;
+  const current = await assets.readCurrentUserAsset({ ...scope, assetId: target.assetId });
+  const workbook = new ExcelJS.Workbook();
+  const buf = Buffer.from(current.bytes);
+  await workbook.xlsx.load(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer);
+  const sheet = workbook.getWorksheet("数据")!;
+  assert.deepEqual((sheet.getRow(sheet.rowCount).values as unknown[]).slice(1), ["2026-08-25", "贵州茅台", 1500]);
+
+  const second = await assets.createUserAsset({ ...scope, name: "第二本账", fileName: "2026-08-24 第二明细.xlsx", mimeType: XLSX_MIME, bytes });
+  const ambiguous = await automation.createAutomationTask({
+    ...scope, taskId: "generic-agent-appendrows-ambiguous", name: "双账本",
+    instruction: "追加明细。",
+    schedule: schedule(),
+    inputs: [
+      { assetId: target.assetId, role: "input", versionPolicy: "latest" },
+      { assetId: second.assetId, role: "input", versionPolicy: "latest" },
+    ],
+    output: { mode: "agent" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: ambiguous.taskId, expectedRevision: 1 });
+  const ambiguousRun = await runner.runGenericAutomationTaskNow({
+    scope, taskId: ambiguous.taskId, origin: "scheduled", idempotencyKey: "generic-agent-appendrows-ambiguous-once",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: {
+      summary: "追加。", stagedOutput: { operation: "appendRows", rows: [["2026-08-25", "歧义", 1]] },
+    } }),
+  });
+  assert.equal(ambiguousRun.run.status, "failed", "multiple XLSX bindings leave appendRows target ambiguous");
+  assert.match(ambiguousRun.run.errorMessage || "", /exactly one XLSX workbook/);
+  assert.equal(ambiguousRun.run.outputAssetId, null);
+});
+
+test("task edits inherit the monthly rollover unless explicitly cleared (2026-08-24 industry-review regression)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const bytes = await convertCsvBytesToXlsx(Buffer.from("日期,行业\n"));
+  const target = await assets.createUserAsset({ ...scope, name: "行业复盘继承", fileName: "2026年08月行业复盘表_序号分段版.xlsx", mimeType: XLSX_MIME, bytes });
+  const rollover = { kind: "monthly" as const, fileNamePattern: "{YYYY}年{MM}月行业复盘表_序号分段版.xlsx" };
+  const task = await automation.createAutomationTask({
+    ...scope, taskId: "generic-rollover-inherit", name: "行业复盘",
+    instruction: "追加当日行业复盘。",
+    schedule: schedule(),
+    inputs: [{ assetId: target.assetId, role: "input", versionPolicy: "latest" }],
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest", rollover },
+  });
+  const edited = await automation.updateAutomationTask({
+    ...scope, taskId: task.taskId, expectedRevision: 1,
+    instruction: "追加当日行业复盘，涨停公司字段改口径。",
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest" },
+  });
+  assert.equal(edited.currentRevision, 2);
+  assert.deepEqual(edited.revision.output, { mode: "update", assetId: target.assetId, versionPolicy: "latest", rollover }, "an edit that re-sends the output without rollover must not strip it");
+
+  const cleared = await automation.updateAutomationTask({
+    ...scope, taskId: task.taskId, expectedRevision: 2,
+    output: { mode: "update", assetId: target.assetId, versionPolicy: "latest", rollover: null },
+  });
+  assert.equal(cleared.currentRevision, 3);
+  assert.deepEqual(cleared.revision.output, { mode: "update", assetId: target.assetId, versionPolicy: "latest" }, "an explicit rollover:null clears the policy");
+});
