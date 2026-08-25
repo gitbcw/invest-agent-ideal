@@ -480,6 +480,22 @@ async function dispatchServiceTool(
   }
 }
 
+/** Automation runs stage their bound inputs before the agent starts;
+ * conversations have no such staging pass, so spreadsheet tools fall back to
+ * the user's registered project root (the same root deliveries/ lives under).
+ * This is what lets a conversation load a saved workbook, edit it through
+ * spreadsheet.transform, and commit a new version of the same asset. */
+async function serviceWorkspaceBase(context: ServiceToolContext): Promise<string> {
+  if (context.workspacePath) return realpath(context.workspacePath);
+  const root = await resolveProjectStorageRoot({
+    userId: context.userId,
+    projectId: context.projectId || DEFAULT_PROJECT_ID,
+    instanceId: context.instanceId,
+  });
+  await mkdir(root, { recursive: true });
+  return realpath(root);
+}
+
 async function readAssetVersionTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const assetId = stringInput(input?.assetId);
   if (!assetId) throw new UserAssetError("ASSET_NOT_FOUND", "assetId is required");
@@ -487,18 +503,29 @@ async function readAssetVersionTool(input: Record<string, unknown> | undefined, 
   const result = stringInput(input?.versionId)
     ? await readUserAssetVersion({ ...scope, assetId, versionId: stringInput(input?.versionId)! })
     : await readCurrentUserAsset({ ...scope, assetId });
+  let stagedPath: string | undefined;
+  if (input?.stage === true) {
+    const base = await serviceWorkspaceBase(context);
+    const stagedDir = path.join(base, "staged-assets");
+    await mkdir(stagedDir, { recursive: true });
+    const safeName = path.basename(result.descriptor.fileName) || "asset.bin";
+    const stagedFile = path.join(stagedDir, `${result.descriptor.versionId}-${safeName}`);
+    await writeFile(stagedFile, result.bytes, { mode: 0o600 });
+    stagedPath = path.relative(base, stagedFile);
+  }
   await audit(context, {
     operation: "assets.version.read",
     resourceType: "user_asset_version",
     resourceId: result.descriptor.versionId,
     requestBody: { assetId, versionId: input?.versionId ?? null },
-    resultSummary: "format=" + result.descriptor.format + "; sizeBytes=" + result.bytes.length,
+    resultSummary: "format=" + result.descriptor.format + "; sizeBytes=" + result.bytes.length + (stagedPath ? "; staged=" + stagedPath : ""),
   });
   return {
     ok: true,
     asset: publicAssetDescriptor(await getUserAsset({ ...scope, assetId })),
     version: publicAssetVersion(result.descriptor),
     base64: result.bytes.toString("base64"),
+    ...(stagedPath ? { stagedPath } : {}),
   };
 }
 
@@ -745,8 +772,20 @@ async function setAutomationPausedTool(input: Record<string, unknown> | undefine
 async function submitAssetVersionTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const assetId = stringInput(input?.assetId);
   const fileName = stringInput(input?.fileName);
-  const base64 = stringInput(input?.base64);
-  if (!assetId || !fileName || !base64) throw new UserAssetError("ASSET_INVALID_CONTENT", "assetId, fileName and base64 are required");
+  let base64 = stringInput(input?.base64);
+  const filePath = stringInput(input?.filePath);
+  if (!assetId || !fileName) throw new UserAssetError("ASSET_INVALID_CONTENT", "assetId, fileName and base64 (or filePath) are required");
+  if (!base64 && filePath) {
+    const base = await serviceWorkspaceBase(context);
+    const absolute = path.resolve(base, filePath);
+    if (absolute !== base && !absolute.startsWith(base + path.sep)) throw new UserAssetError("ASSET_INVALID_CONTENT", "filePath must stay inside the current workspace");
+    const entry = await lstat(absolute).catch(() => null);
+    if (!entry?.isFile() || entry.isSymbolicLink() || await realpath(absolute).catch(() => "") !== absolute) {
+      throw new UserAssetError("ASSET_INVALID_CONTENT", "filePath must resolve to a regular file inside the current workspace without symbolic links");
+    }
+    base64 = (await readFile(absolute)).toString("base64");
+  }
+  if (!base64) throw new UserAssetError("ASSET_INVALID_CONTENT", "assetId, fileName and base64 (or filePath) are required");
   const run = await automationAssetRun(context);
   if (run) {
     assertAutomationOutputTarget(run, assetId, "commit");
@@ -1924,8 +1963,7 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
   const outputPath = stringInput(value.outputPath);
   if (!inputPath || !outputPath) throw new Error("inputPath and outputPath are required");
   if (!/\.xlsx$/i.test(inputPath) || !/\.xlsx$/i.test(outputPath)) throw new Error("inputPath and outputPath must be .xlsx files inside the current workspace");
-  if (!context.workspacePath) throw new Error("spreadsheet.transform requires a workspace path (automation staging or user project)");
-  const base = await realpath(context.workspacePath);
+  const base = await serviceWorkspaceBase(context);
   const resolveInside = (relative: string) => {
     const absolute = path.resolve(base, relative);
     if (absolute !== base && !absolute.startsWith(base + path.sep)) throw new Error("path must stay inside the current workspace");
