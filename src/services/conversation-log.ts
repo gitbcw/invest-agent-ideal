@@ -40,7 +40,7 @@ import { scheduleConversationWorkingStateRefresh } from "./conversation-working-
 
 export type ConversationChannel = "web" | "weixin-mobile";
 export type ConversationRole = "user" | "assistant" | "system";
-export type ConversationStatus = "pending" | "sent" | "failed";
+export type ConversationStatus = "pending" | "sent" | "failed" | "superseded";
 
 export interface ConversationScope {
   userId: string;
@@ -586,6 +586,7 @@ export function getConversation(input: {
       created_at AS createdAt
     FROM conversation_messages
     WHERE conversation_id = ? AND user_id = ? AND instance_id = ?
+      AND status != 'superseded'
     ORDER BY created_at ASC, rowid ASC
     LIMIT ? OFFSET ?
   `).all(input.conversationId, scope.userId, scope.instanceId, limit + 1, offset) as any[];
@@ -616,6 +617,9 @@ export async function chatViaConversationLog(input: {
   clientSentAt?: string;
   /** Per-turn model selection (D25); empty/absent = service default model. */
   model?: string;
+  /** 重新生成（owner 2026-08-26）：重放该 assistant 消息（须为会话最后一条），
+   *  旧回答标记 superseded，不新插 user 行、不重传附件。 */
+  regenerateAssistantMessageId?: string;
   /** Internal/test injection point; Portal routes never accept an agent body field. */
   agent?: RuntimeAgent;
   /** T-199 工作过程事件回调（尽力而为）；connector 用它向 relay 转发进度。 */
@@ -913,6 +917,7 @@ async function chatViaConversationLogOnce(input: {
   idempotencyKey?: string;
   clientSentAt?: string;
   model?: string;
+  regenerateAssistantMessageId?: string;
   agent?: RuntimeAgent;
   onProgress?: import("../runtime/protocol.js").AgentTurnProgressCallback;
 }, control: ActiveConversationChat): Promise<ConversationChatResult> {
@@ -950,9 +955,37 @@ async function chatViaConversationLogOnce(input: {
   if (automationBinding && (input.attachments?.length ?? 0) > 0) {
     throw new Error("AUTOMATION_CONVERSATION_ATTACHMENTS_UNSUPPORTED");
   }
+  // ---- 重新生成（owner 2026-08-26）：只允许重放会话最后一条 assistant 回答。
+  // 旧回答标记 superseded（保留审计行，但不再进入模型上下文与门户列表），随后以
+  // 其前一条 user 消息的存储文本重放一轮；不新插 user 行、不重传附件。
+  let regenerateUserMessage: ConversationMessageRecord | undefined;
+  if (input.regenerateAssistantMessageId) {
+    if (automationBinding) throw new Error("REGENERATE_AUTOMATION_UNSUPPORTED");
+    const target = getConversationMessage(input.regenerateAssistantMessageId);
+    if (!target
+      || target.conversationId !== input.conversationId
+      || target.userId !== scope.userId
+      || target.instanceId !== scope.instanceId
+      || target.role !== "assistant"
+      || target.status !== "sent") {
+      throw new Error("REGENERATE_TARGET_INVALID");
+    }
+    const recent = sqlite.prepare(`
+      SELECT message_id AS messageId, role FROM conversation_messages
+      WHERE conversation_id = ? AND user_id = ? AND instance_id = ?
+      ORDER BY created_at DESC, rowid DESC LIMIT 50
+    `).all(input.conversationId, scope.userId, scope.instanceId) as Array<{ messageId: string; role: string }>;
+    const targetIndex = recent.findIndex((row) => row.messageId === target.messageId);
+    if (targetIndex !== 0) throw new Error("REGENERATE_ONLY_LAST_REPLY");
+    const previousUserRow = recent.slice(targetIndex + 1).find((row) => row.role === "user");
+    const previousUser = previousUserRow ? getConversationMessage(previousUserRow.messageId) : null;
+    if (!previousUser || previousUser.status !== "sent") throw new Error("REGENERATE_USER_MESSAGE_MISSING");
+    sqlite.prepare(`UPDATE conversation_messages SET status = 'superseded' WHERE message_id = ?`).run(target.messageId);
+    regenerateUserMessage = previousUser;
+  }
   const workspaceRoot = await resolveProjectStorageRoot({ userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId });
   const requestId = `portal-${randomUUID()}`;
-  const automationConversation = automationBinding
+  const automationConversation = automationBinding && !regenerateUserMessage
     ? await prepareAutomationConversation({
       scope: persistenceScope,
       binding: automationBinding,
@@ -960,25 +993,27 @@ async function chatViaConversationLogOnce(input: {
       idempotencyKey: `automation-chat:${input.conversationId}:${requestId}`,
     })
     : null;
-  const storedAttachments = await storePortalAttachments({
+  const storedAttachments = regenerateUserMessage ? [] : await storePortalAttachments({
     workspacePath: workspaceRoot,
     attachments: input.attachments,
   });
-  const userTextForAgent = automationConversation
+  const userTextForAgent = regenerateUserMessage
+    ? regenerateUserMessage.content
+    : automationConversation
     ? [
-      "这是一次受控自动化任务的后续互动。",
-      `任务名称：${automationConversation.task.revision.name}`,
-      `任务说明：${automationConversation.task.revision.description || "（未提供额外说明）"}`,
-      `源文件：source/${automationConversation.task.sourceAsset?.fileName || "source"}`,
-      `工作文件：working/${automationConversation.task.workingAsset?.fileName || "working"}`,
-      "只能读取 source/ 与 working/ 的当前任务文件；不得修改 source/，不得访问其他文件或确定性投资状态。XLSX 使用当前目录的 automation-sheet.mjs 结构化读取/写入，不能按纯文本拼接。若用户要求修改任务的规则、时间、文件绑定或启停，说明必须回到自动化任务编辑页，而不要静默修改。",
-      `用户本次要求：${String(input.text || "请说明本次运行结果")}`,
-    ].join("\n")
+        "这是一次受控自动化任务的后续互动。",
+        `任务名称：${automationConversation.task.revision.name}`,
+        `任务说明：${automationConversation.task.revision.description || "（未提供额外说明）"}`,
+        `源文件：source/${automationConversation.task.sourceAsset?.fileName || "source"}`,
+        `工作文件：working/${automationConversation.task.workingAsset?.fileName || "working"}`,
+        "只能读取 source/ 与 working/ 的当前任务文件；不得修改 source/，不得访问其他文件或确定性投资状态。XLSX 使用当前目录的 automation-sheet.mjs 结构化读取/写入，不能按纯文本拼接。若用户要求修改任务的规则、时间、文件绑定或启停，说明必须回到自动化任务编辑页，而不要静默修改。",
+        `用户本次要求：${String(input.text || "请说明本次运行结果")}`,
+      ].join("\n")
     : buildPortalUserText(input.text, storedAttachments);
-  const userMetadata = storedAttachments.length > 0
+  const userMetadata = !regenerateUserMessage && storedAttachments.length > 0
     ? { attachments: storedAttachments.map((stored) => toPublicAttachmentDescriptorWithExpiry(stored)) }
     : undefined;
-  const userMessage = appendConversationMessage({
+  const userMessage = regenerateUserMessage ?? appendConversationMessage({
     scope: persistenceScope,
     conversationId: input.conversationId,
     channel: "web",

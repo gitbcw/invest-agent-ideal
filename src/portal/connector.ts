@@ -81,6 +81,7 @@ const TYPES = {
   CONVERSATION_LIST: "conversation.list",
   CONVERSATION_GET: "conversation.get",
   CONVERSATION_CHAT: "conversation.chat",
+  CONVERSATION_REGENERATE: "conversation.regenerate",
   CONVERSATION_CANCEL: "conversation.cancel",
   TRACE_GET: "trace.get",
   CONVERSATION_CHAT_PROGRESS: "conversation.chat.progress",
@@ -526,6 +527,24 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         clientSentAt: message.payload?.clientSentAt,
         model: typeof message.payload?.model === "string" && message.payload.model.trim() ? message.payload.model.trim() : undefined,
         ...(forwardProgress ? { onProgress: forwardProgress } : {}),
+      })));
+    }
+    case TYPES.CONVERSATION_REGENERATE: {
+      const conversationId = String(message.payload?.conversationId || "").trim();
+      const regenerateMessageId = String(message.payload?.messageId || "").trim();
+      if (!conversationId || !regenerateMessageId) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "conversationId and messageId are required"));
+      }
+      const progressForward = (event: import("../runtime/protocol.js").AgentTurnProgressEvent) => {
+        progressForwarders.get(scope.assistantId)?.({ conversationId, requestId: message.requestId, event });
+      };
+      return finish(ok(message.type, message.requestId, await chatViaConversationLog({
+        ...commandScope,
+        conversationId,
+        regenerateAssistantMessageId: regenerateMessageId,
+        idempotencyKey: message.payload?.idempotencyKey,
+        model: typeof message.payload?.model === "string" && message.payload.model.trim() ? message.payload.model.trim() : undefined,
+        onProgress: progressForward,
       })));
     }
     case TYPES.TRACE_GET: {
@@ -1427,7 +1446,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
+        capabilities: ["conversation.chat", "conversation.regenerate", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {
@@ -1483,7 +1502,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
           }
           return;
         }
-        const isChatTask = message.type === TYPES.CONVERSATION_CHAT || message.type === TYPES.AUTOMATION_RUN_NOW;
+        const isChatTask = message.type === TYPES.CONVERSATION_CHAT || message.type === TYPES.CONVERSATION_REGENERATE || message.type === TYPES.AUTOMATION_RUN_NOW;
         if (isChatTask && !taskLimiter.tryAcquire()) {
           send(socket, fail(
             message.type,

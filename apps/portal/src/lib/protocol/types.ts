@@ -15,6 +15,7 @@ export type ConnectorMode = "real" | "mock";
 
 export type ConnectorCapability =
   | "conversation.chat"
+  | "conversation.regenerate"
   | "conversation.cancel"
   | "conversation.list"
   | "conversation.get"

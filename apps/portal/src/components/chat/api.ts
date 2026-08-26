@@ -265,6 +265,29 @@ export async function cancelConversation(conversationId: string): Promise<Conver
   return json.data;
 }
 
+/** 重新生成最后一条 assistant 回答：旧回答 superseded，原 user 消息重放一轮。 */
+export async function regenerateMessage(
+  conversationId: string,
+  assistantMessageId: string,
+  model?: string
+): Promise<SendMessageResult> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/regenerate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ messageId: assistantMessageId, model })
+  });
+  const json = await jsonOrThrow<{
+    ok: boolean;
+    data?: SendMessageResult;
+    error?: { message: string; code: string };
+  }>(res);
+  if (!json.ok || !json.data) {
+    throw new Error(json.error?.message ?? "重新生成失败");
+  }
+  return json.data;
+}
+
 export async function fetchAssistantStatus(): Promise<AssistantStatus> {
   const res = await fetch("/api/assistant/status", { credentials: "same-origin" });
   const json = await jsonOrThrow<{

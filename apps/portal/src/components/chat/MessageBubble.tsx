@@ -21,6 +21,8 @@ interface MessageBubbleProps {
   isWaiting: boolean;
   waitingStartedAt: number | null;
   onRetry?: (message: ChatMessageView) => void;
+  /** 重新生成（owner 2026-08-26）：最后一条已送达回答不满意时重放该轮。 */
+  onRegenerate?: (message: ChatMessageView) => void;
   onArtifactOpen?: (artifact: ArtifactCardView) => void;
   onArtifactSave?: (artifact: ArtifactCardView) => Promise<{ ok: boolean; message?: string }>;
   onArtifactLegacyPath?: (relativePath: string, messageId: string, conversationId: string) => void;
@@ -41,6 +43,7 @@ export function MessageBubble({
   isWaiting,
   waitingStartedAt,
   onRetry,
+  onRegenerate,
   onArtifactOpen,
   onArtifactSave,
   onArtifactLegacyPath,
@@ -203,6 +206,16 @@ export function MessageBubble({
                 点此重试
               </button>
             </div>
+        ) : null}
+        {!isWaiting && !typewriter.isAnimating && message.status === "sent" && isLastAssistant && onRegenerate ? (
+            <button
+              type="button"
+              onClick={() => onRegenerate(message)}
+              className="mt-2 text-[11px] text-[#b4b4b8] underline-offset-2 transition-colors hover:text-slate-500 hover:underline"
+              title="对这份回答不满意时，用同一条消息重新生成一轮；旧回答会被替换"
+            >
+              重新生成
+            </button>
         ) : null}
         {!isWaiting && !typewriter.isAnimating && message.traceId ? (
             traceOpen && traceDetail ? (

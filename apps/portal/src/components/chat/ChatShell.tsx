@@ -33,6 +33,7 @@ import {
   publishLegacyArtifact,
   recordArtifactEvent,
   sendMessage,
+  regenerateMessage,
   subscribeConversationProgress,
   saveArtifactToAssets,
   updateConversation,
@@ -797,6 +798,78 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     [activeId, messages, handleSend, updateConversationView]
   );
 
+  // ---- 重新生成（owner 2026-08-26）：最后一条已送达回答不满意时重放该轮 ----
+  const handleRegenerate = useCallback(
+    (assistantMessage: ChatMessageView) => {
+      if (!activeId) return;
+      const offline = status && !status.online;
+      if (offline) return;
+      const clientSentAt = new Date().toISOString();
+      const processingStartedAt = Date.parse(clientSentAt);
+      const pendingMessage: ChatMessageView = {
+        messageId: `regen_${nanoid(8)}`,
+        conversationId: activeId,
+        role: "assistant",
+        content: "",
+        status: "pending",
+        createdAt: clientSentAt,
+        isLocal: true
+      };
+      updateConversationView(activeId, (current) => ({
+        ...current,
+        messages: [...current.messages.filter((m) => m.messageId !== assistantMessage.messageId), pendingMessage],
+        waiting: true,
+        waitingStartedAt: processingStartedAt,
+        animatingAssistantMessageId: null
+      }));
+      setConversationProcessing(activeId, true);
+      writeProcessingStartedAt(activeId, processingStartedAt);
+      const stopProgress = subscribeConversationProgress(activeId, (step) => {
+        setLiveSteps((current) => {
+          const existing = current[activeId] ?? [];
+          return { ...current, [activeId]: [...existing, step].slice(-200) };
+        });
+      });
+      void (async () => {
+        try {
+          const result = await regenerateMessage(activeId, assistantMessage.messageId, selectedModel || undefined);
+          const assistantView = result.ok && result.assistantMessage
+            ? { ...toView(result.assistantMessage), traceId: result.traceId ?? undefined, processedDurationMs: Date.now() - processingStartedAt }
+            : null;
+          updateConversationView(activeId, (current) => {
+            const next: ChatMessageView[] = current.messages.map((m) => {
+              if (m.messageId === pendingMessage.messageId && assistantView) return assistantView;
+              if (m.messageId === pendingMessage.messageId && !result.ok) {
+                return {
+                  messageId: `failed_${nanoid(8)}`,
+                  conversationId: activeId,
+                  role: "assistant",
+                  content: result.error?.message ?? "重新生成失败，请稍后重试。",
+                  status: "failed",
+                  createdAt: new Date().toISOString()
+                };
+              }
+              return m;
+            });
+            return { ...current, messages: next, animatingAssistantMessageId: assistantView?.messageId ?? null };
+          });
+          if (result.ok) writeProcessingStartedAt(activeId, null);
+        } catch (err) {
+          updateConversationView(activeId, (current) => ({
+            ...current,
+            messages: current.messages.map((m) => m.messageId === pendingMessage.messageId
+              ? { ...m, messageId: `failed_${nanoid(8)}`, content: (err as Error).message || "重新生成失败，请稍后重试。", status: "failed" as const }
+              : m)
+          }));
+        } finally {
+          stopProgress();
+          setConversationProcessing(activeId, false);
+        }
+      })();
+    },
+    [activeId, status, selectedModel, updateConversationView, setConversationProcessing, writeProcessingStartedAt]
+  );
+
   // ---- 加载更多会话 ----
   const handleLoadMore = useCallback(async () => {
     if (!cursorRef.current) return;
@@ -1001,6 +1074,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
                       isWaiting={Boolean(isWaiting)}
                       waitingStartedAt={waitingStartedAt}
                       onRetry={handleRetry}
+                      onRegenerate={handleRegenerate}
                         onArtifactOpen={handleOpenArtifact}
                         onArtifactSave={handleSaveArtifact}
                       onArtifactLegacyPath={handleArtifactLegacyPath}

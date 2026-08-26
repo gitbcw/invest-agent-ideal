@@ -78,7 +78,7 @@ export function loadLatestConversationWorkingState(input: {
     SELECT message_id AS messageId, metadata
     FROM conversation_messages
     WHERE conversation_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
-      AND role = 'assistant' AND status != 'failed'
+      AND role = 'assistant' AND status NOT IN ('failed', 'superseded')
     ORDER BY created_at DESC, rowid DESC
     LIMIT 40
   `).all(input.conversationId, input.scope.userId, input.scope.projectId, input.scope.instanceId) as CheckpointRow[];
@@ -118,7 +118,7 @@ export function loadConversationWorkingStateTranscript(input: {
     SELECT message_id AS messageId, role, content, created_at AS createdAt, request_id AS requestId
     FROM conversation_messages
     WHERE conversation_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
-      AND role IN ('user', 'assistant') AND status != 'failed'
+      AND role IN ('user', 'assistant') AND status NOT IN ('failed', 'superseded')
     ORDER BY created_at ASC, rowid ASC
   `).all(input.conversationId, input.scope.userId, input.scope.projectId, input.scope.instanceId) as TranscriptRow[];
   const start = input.afterMessageId
@@ -153,7 +153,7 @@ export function persistConversationWorkingStateCheckpoint(input: {
     SELECT message_id AS messageId, created_at AS createdAt, metadata
     FROM conversation_messages
     WHERE message_id = ? AND conversation_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
-      AND role = 'assistant' AND status != 'failed'
+      AND role = 'assistant' AND status NOT IN ('failed', 'superseded')
   `).get(
     input.assistantMessageId,
     input.conversationId,

@@ -40,7 +40,7 @@ export function loadConversationHistory(input: LoadConversationHistoryInput): Ma
         `SELECT role, content, request_id FROM conversation_messages
          WHERE conversation_id = ?
            AND role IN ('user', 'assistant')
-           AND status != 'failed'
+           AND status NOT IN ('failed', 'superseded')
            AND (? IS NULL OR request_id IS NULL OR request_id != ?)
          ORDER BY created_at DESC, message_id DESC
          LIMIT ? * 2`

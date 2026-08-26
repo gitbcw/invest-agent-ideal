@@ -135,6 +135,7 @@ export const PORTAL_TYPES = {
   CONVERSATION_LIST: "conversation.list",
   CONVERSATION_GET: "conversation.get",
   CONVERSATION_CHAT: "conversation.chat",
+  CONVERSATION_REGENERATE: "conversation.regenerate",
   CONVERSATION_CANCEL: "conversation.cancel",
   TRACE_GET: "trace.get",
   CONVERSATION_CHAT_PROGRESS: "conversation.chat.progress",
