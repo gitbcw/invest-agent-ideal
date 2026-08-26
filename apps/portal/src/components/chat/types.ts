@@ -83,6 +83,8 @@ export interface ChatMessageView {
   inlineVisuals?: InlineSvgVisual[];
   /** Duration from the user's request to this completed assistant response. */
   processedDurationMs?: number;
+  /** 服务端记录的轮真实时长（metadata.executionDurationMs）；重新生成轮与推算值不同源时以此为准。 */
+  executionDurationMs?: number;
   /** 用户对该回答的【喜欢/不喜欢】标注（metadata.userFeedback）；undefined = 未标注。 */
   userFeedback?: "like" | "dislike";
   /** 本地未持久化的临时消息(乐观插入) */
@@ -94,6 +96,7 @@ export function toView(msg: ConversationMessage): ChatMessageView {
   const artifacts = normalizeArtifacts(msg.metadata?.artifacts, msg);
   const inlineVisuals = normalizeInlineVisuals(msg.metadata?.inlineVisuals);
   const rawFeedback = msg.metadata?.userFeedback;
+  const rawDuration = msg.metadata?.executionDurationMs;
   return {
     messageId: msg.messageId,
     conversationId: msg.conversationId,
@@ -106,6 +109,9 @@ export function toView(msg: ConversationMessage): ChatMessageView {
     artifacts,
     inlineVisuals,
     ...(rawFeedback === "like" || rawFeedback === "dislike" ? { userFeedback: rawFeedback } : {}),
+    ...(typeof rawDuration === "number" && Number.isFinite(rawDuration) && rawDuration >= 0
+      ? { executionDurationMs: rawDuration }
+      : {}),
   };
 }
 

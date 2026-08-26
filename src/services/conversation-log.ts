@@ -1085,6 +1085,9 @@ async function chatViaConversationLogOnce(input: {
   }
 
   const agent = input.agent ?? createRuntimeAgent();
+  // 轮真实时长落消息 metadata（owner 2026-08-26）：重新生成不新插 user 行，
+  // 门户按「回复 − 前一条 user」推算的用时会跨到原提问时间；以本值为准。
+  const turnStartedAtMs = Date.now();
   const agentMessage: AgentMessage = {
     id: requestId,
     from: input.conversationId,
@@ -1135,6 +1138,7 @@ async function chatViaConversationLogOnce(input: {
       const responseError = executionResponseError(response);
       return {
         ...(inlineVisuals && inlineVisuals.length > 0 ? { inlineVisuals } : {}),
+        executionDurationMs: Math.max(0, Date.now() - turnStartedAtMs),
         ...(responseError ? {
           executionStatus: "failed",
           executionErrorCode: responseError.code,

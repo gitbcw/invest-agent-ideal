@@ -1220,7 +1220,12 @@ function withProcessedDurations(messages: ChatMessageView[]): ChatMessageView[] 
       lastUserCreatedAt = Number.isFinite(timestamp) ? timestamp : null;
       return message;
     }
-    if (message.role !== "assistant" || message.status !== "sent" || lastUserCreatedAt === null) return message;
+    if (message.role !== "assistant" || message.status !== "sent") return message;
+    // 服务端记录的轮真实时长优先：重新生成不新插 user 行，按时间戳推算会跨到原提问。
+    if (typeof message.executionDurationMs === "number" && message.executionDurationMs >= 0) {
+      return { ...message, processedDurationMs: message.executionDurationMs };
+    }
+    if (lastUserCreatedAt === null) return message;
     const completedAt = Date.parse(message.createdAt);
     if (!Number.isFinite(completedAt) || completedAt < lastUserCreatedAt) return message;
     return { ...message, processedDurationMs: completedAt - lastUserCreatedAt };

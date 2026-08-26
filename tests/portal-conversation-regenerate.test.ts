@@ -61,6 +61,9 @@ test("regenerate replaces the last reply, excludes it from history, and keeps on
   });
   assert.equal(regenerated.assistantMessage.status, "sent");
   assert.equal(regenerated.assistantMessage.content, "第二版回答（更好）");
+  // 轮真实时长落 metadata：重新生成轮的用时以它为准，而不是跨到原提问时间。
+  assert.equal(typeof regenerated.assistantMessage.metadata?.executionDurationMs, "number");
+  assert.ok((regenerated.assistantMessage.metadata?.executionDurationMs as number) >= 0);
   // 重放轮拿到的正是原 user 消息的文本，且不新插 user 行。
   assert.equal(seenRegen.length, 1);
   assert.equal(seenRegen[0].text, seenFirst[0].text);
