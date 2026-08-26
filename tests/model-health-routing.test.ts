@@ -18,15 +18,15 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     const { __resetModelHealthForTest, recordModelFeedback, resolveAutoModel, getModelHealth } = await import("../src/services/model-health.js");
     __resetModelHealthForTest(() => clock);
 
-    // 新启动或没有 GPT 快探针时，自动路由直接使用国产模型（文本链兜底 2026-08-27 起为 glm-5.3-flash）。
+    // 新启动或没有 GPT 快探针时，自动路由直接使用国产模型（glm-5.3-flash 全模态，文本/图片链国产兜底 2026-08-27）。
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
-    assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-v4-flash-vision-exp");
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
     // GPT 系列裁撤（2026-08-26 二次修订）：terra/luna 需要各自 <=10s 探针；terra 优先于 luna。
     recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 9_000, source: "probe" });
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 9_000, source: "probe" });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
-    assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-v4-flash-vision-exp");
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
     // 单次慢证据不降级（防抖：需要连续 2 个）。
     recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 45_000 });
@@ -43,14 +43,15 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     clock += 60_000;
     recordModelFeedback("gpt-5.6-luna", { ok: false });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
-    assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-v4-flash-vision-exp");
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
-    // 国产链逐级降级：glm → deepseek → qwen → doubao（文本）；deepseek → qwen（图片）。
+    // 国产链逐级降级：glm → deepseek → qwen → doubao（文本与图片同序）。
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-v4-flash-vision-exp");
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-v4-flash-vision-exp");
     clock += 60_000;
     recordModelFeedback("deepseek-v4-flash-vision-exp", { ok: false });
     clock += 60_000;
@@ -108,9 +109,10 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra"] }).model, "gpt-5.6-luna");
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra", "gpt-5.6-luna"] }).model, "glm-5.3-flash");
-    assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-v4-flash-vision-exp");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["deepseek-v4-flash-vision-exp"] }).model, "qwen3.7-flash");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["deepseek-v4-flash-vision-exp", "qwen3.7-flash"] }).model, "doubao-seed-2-1-turbo-260628");
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash"] }).model, "deepseek-v4-flash-vision-exp");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-v4-flash-vision-exp"] }).model, "qwen3.7-flash");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-v4-flash-vision-exp", "qwen3.7-flash"] }).model, "doubao-seed-2-1-turbo-260628");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
