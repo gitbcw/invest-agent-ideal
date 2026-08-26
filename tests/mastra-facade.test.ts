@@ -213,8 +213,11 @@ test("Mastra turns continue after tool steps within the server-owned step budget
 });
 
 test("Mastra maxSteps is bounded and rejects unsafe caller values", async () => {
+  // 2026-08-27：上限 20 -> 50（通用自动化预算 30 需要放行）。
+  const pass30 = await runMastraTurn({ conversationId: "max-steps-30", text: "test", maxSteps: 30 }, { agent: { stream: () => ({ text: "ok" }) } });
+  assert.equal(pass30.text, "ok");
   await assert.rejects(
-    () => runMastraTurn({ conversationId: "max-steps-invalid", text: "test", maxSteps: 21 }, { agent: { stream: () => ({ text: "ok" }) } }),
+    () => runMastraTurn({ conversationId: "max-steps-invalid", text: "test", maxSteps: 51 }, { agent: { stream: () => ({ text: "ok" }) } }),
     /MASTRA_MAX_STEPS_INVALID/,
   );
 });

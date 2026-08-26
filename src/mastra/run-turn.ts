@@ -516,7 +516,10 @@ function normalizeTimeout(timeoutMs: number | undefined): number {
 
 function normalizeMaxSteps(value: number | undefined): number {
   const maxSteps = value ?? DEFAULT_MASTRA_MAX_STEPS;
-  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 20) {
+  // 2026-08-27：上限 20 -> 50。通用自动化预算已调至 30（多标的逐股取数），
+  // 20 的硬顶会让这类运行在起跑瞬间抛 MASTRA_MAX_STEPS_INVALID（mgreplay
+  // 回放实测暴露）。50 仍保留防失控守卫意义。
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 50) {
     throw new Error(`MASTRA_MAX_STEPS_INVALID: ${maxSteps}`);
   }
   return maxSteps;
