@@ -54,7 +54,8 @@ export async function createMastraAgent(options: MastraAgentFactoryOptions = {})
   if (options.tools !== undefined) agentOptions.tools = options.tools;
   if (options.workspace !== undefined) agentOptions.workspace = options.workspace;
   if (options.maxSteps !== undefined) {
-    if (!Number.isInteger(options.maxSteps) || options.maxSteps < 1 || options.maxSteps > 20) {
+    // 2026-08-27：与 run-turn normalizeMaxSteps 同步放宽到 50（自动化预算 30）。
+    if (!Number.isInteger(options.maxSteps) || options.maxSteps < 1 || options.maxSteps > 50) {
       throw new Error(`MASTRA_MAX_STEPS_INVALID: ${options.maxSteps}`);
     }
     agentOptions.defaultOptions = { maxSteps: options.maxSteps };
