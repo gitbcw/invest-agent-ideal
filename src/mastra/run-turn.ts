@@ -1,7 +1,7 @@
 import type { UserContext } from "../lib/user-context.js";
 import { createMastraAgent, type MastraAgentFactory, type MastraAgentFactoryOptions } from "./agent-factory.js";
 import { createMastraRequestContext } from "./bindings.js";
-import { createModelGateway, type MastraModelGateway, type ModelGatewayOptions } from "./model-gateway.js";
+import { createModelGateway, gptReasoningEffort, isGptSeriesModel, type MastraModelGateway, type ModelGatewayOptions } from "./model-gateway.js";
 import {
   type MastraAgentLike,
   type MastraMessage,
@@ -654,6 +654,13 @@ export async function runMastraTurn(
     }
     if (params.toolsets && Object.keys(params.toolsets).length > 0) streamOptions.toolsets = params.toolsets;
     if (params.model && gateway) streamOptions.model = gateway.resolve(params.model);
+    // GPT 系列默认思考深度（owner 2026-08-26）：gpt-* 轮次统一携带 reasoningEffort=high，
+    // 命名空间键取模型描述符的 provider 前缀（默认 gateway），无 UI 入口、可用环境变量覆盖。
+    const effectiveModel = params.model ?? gateway?.defaultModel;
+    if (effectiveModel && isGptSeriesModel(effectiveModel) && gateway) {
+      const providerName = gateway.resolve(effectiveModel).id.split("/")[0];
+      streamOptions.providerOptions = { [providerName]: { reasoningEffort: gptReasoningEffort() } };
+    }
 
     const streamStartedAtMs = Date.now();
     const streamPromise = Promise.resolve().then(() => agent.stream(messages, streamOptions));

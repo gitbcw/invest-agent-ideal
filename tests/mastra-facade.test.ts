@@ -121,6 +121,52 @@ test("runMastraTurn without images keeps plain string content", async () => {
   assert.equal(messages[messages.length - 1].content, "hi");
 });
 
+test("GPT-series turns carry default reasoningEffort=high; non-GPT turns do not (owner 2026-08-26)", async () => {
+  const gatewayOptions = { baseUrl: "https://gateway.invalid/v1", apiKey: "test-key" };
+  const capture = () => {
+    const seen: { providerOptions?: unknown; model?: unknown } = {};
+    const agent: MastraAgentLike = {
+      stream(_messages, options) {
+        seen.providerOptions = options?.providerOptions;
+        seen.model = options?.model;
+        return { text: "ok" };
+      },
+    };
+    return { agent, seen };
+  };
+
+  // gpt-* 轮：providerOptions 以 provider 前缀为命名空间携带 reasoningEffort=high。
+  const gptRun = capture();
+  await runMastraTurn(
+    { conversationId: "gpt-effort", text: "test", model: "gpt-5.6-terra" },
+    { agent: gptRun.agent, gateway: gatewayOptions },
+  );
+  assert.deepEqual(gptRun.seen.providerOptions, { gateway: { reasoningEffort: "high" } });
+
+  // 非 GPT 轮：不携带 providerOptions。
+  const domesticRun = capture();
+  await runMastraTurn(
+    { conversationId: "domestic-effort", text: "test", model: "deepseek-v4-flash-vision-exp" },
+    { agent: domesticRun.agent, gateway: gatewayOptions },
+  );
+  assert.equal(domesticRun.seen.providerOptions, undefined);
+
+  // 环境变量覆盖：MASTRA_GPT_REASONING_EFFORT 临时调整思考深度。
+  const previous = process.env.MASTRA_GPT_REASONING_EFFORT;
+  try {
+    process.env.MASTRA_GPT_REASONING_EFFORT = "low";
+    const overrideRun = capture();
+    await runMastraTurn(
+      { conversationId: "gpt-effort-override", text: "test", model: "gpt-5.6-luna" },
+      { agent: overrideRun.agent, gateway: gatewayOptions },
+    );
+    assert.deepEqual(overrideRun.seen.providerOptions, { gateway: { reasoningEffort: "low" } });
+  } finally {
+    if (previous === undefined) delete process.env.MASTRA_GPT_REASONING_EFFORT;
+    else process.env.MASTRA_GPT_REASONING_EFFORT = previous;
+  }
+});
+
 test("Mastra model configuration is snapshotted per turn and changes only affect later agents", async () => {
   const previousModel = process.env.MASTRA_DEFAULT_MODEL;
   const captured: string[] = [];

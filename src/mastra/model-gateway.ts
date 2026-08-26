@@ -83,3 +83,17 @@ export function resolveModelConfig(
     : { ...(modelOrOptions ?? {}), env: modelOrOptions?.env ?? env };
   return createModelGateway(options).resolve(options.defaultModel);
 }
+
+/** GPT 系列（gpt-* 前缀）判定，用于思考深度等家族级默认行为。 */
+export function isGptSeriesModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("gpt-");
+}
+
+/**
+ * GPT 系列默认思考深度（owner 2026-08-26）：默认 high，无 UI 入口；
+ * 可用 MASTRA_GPT_REASONING_EFFORT 环境变量临时覆盖（none/minimal/low/medium/high/xhigh/max）。
+ */
+export function gptReasoningEffort(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.MASTRA_GPT_REASONING_EFFORT?.trim();
+  return raw || "high";
+}
