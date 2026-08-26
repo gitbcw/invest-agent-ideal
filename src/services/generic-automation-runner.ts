@@ -468,6 +468,11 @@ async function createStagingPath(scope: AutomationScope): Promise<string> {
 async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]): Promise<AgentResponse> {
   const agentDeadlineAt = resolveGenericAutomationAgentDeadline(input.executionDeadlineAt);
   const toolAllowlist = resolveGenericAutomationToolAllowlist(input.task, { xlsxAppendOnly: input.xlsxAppendOnly });
+  // Operator/replay pin (mgreplay 2026-08-27): set GENERIC_AUTOMATION_MODEL in the
+  // process env to lock the run's model instead of routing the auto chain. Not
+  // part of any production .env; the runtime treats an explicit context.model as
+  // a user-selection lock (no in-turn auto fallback).
+  const pinnedModel = process.env.GENERIC_AUTOMATION_MODEL?.trim() || "";
   const reviewTarget = resolveGenericAutomationReviewTarget(input.task, input.run);
   const spreadsheetContextText = input.spreadsheetContext && input.spreadsheetContext.length > 0
     ? `服务端已确定性解析绑定 XLSX 结构（不要猜测）：${JSON.stringify(input.spreadsheetContext)}`
@@ -525,6 +530,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       // mcpAllowedTools is the precise per-run grant below. The original
       // scheduled-automation marker expands to every read tool.
       taskType: GENERIC_AUTOMATION_CONTEXT_TASK_TYPE,
+      ...(pinnedModel ? { model: pinnedModel } : {}),
       mcpAllowedTools: toolAllowlist,
       expectedReviewKind: reviewTarget?.kind,
       expectedReviewKey: reviewTarget?.reportKey,

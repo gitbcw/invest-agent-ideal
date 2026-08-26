@@ -1425,3 +1425,10 @@ test("parseStructuredAcpResponse still accepts whole-text and fenced envelopes u
   const fenced = parseStructuredAcpResponse(textResponse("说明\n```json\n" + JSON.stringify({ summary: "围栏JSON", shouldNotify: false }) + "\n```"));
   assert.equal(fenced.data?.summary, "围栏JSON");
 });
+
+test("generic automation supports an operator model pin via GENERIC_AUTOMATION_MODEL (mgreplay replay 2026-08-27)", async () => {
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.ok(runnerSource.includes("GENERIC_AUTOMATION_MODEL"), "env pin must exist");
+  assert.ok(runnerSource.includes("...(pinnedModel ? { model: pinnedModel } : {})"), "pin must land in the ACP context model field");
+});
