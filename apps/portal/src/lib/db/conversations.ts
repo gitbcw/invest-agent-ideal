@@ -492,7 +492,7 @@ export class ConversationMirrorRepository {
     assistantId?: string;
     instanceId?: string;
   }): { items: ConversationMessageMirrorRow[]; nextCursor: string | null } {
-    const where: string[] = ["conversation_id = @conversationId"];
+    const where: string[] = ["conversation_id = @conversationId", "status != 'superseded'"];
     const params: Record<string, unknown> = { conversationId: input.conversationId, limit: input.limit + 1 };
     if (input.cursor) {
       const cursor = decodeMessageCursor(input.cursor);

@@ -63,8 +63,8 @@ export async function POST(request: Request, { params }: Params) {
     });
   }
 
-  // 镜像同步：旧行按 messageId 删除（不存在时为无操作），新回复幂等写入。
-  repo.removeMessage({ ...scope, messageId: parsed.data.messageId, conversationId: params.id, updatedAt: remote.data.assistantMessage.createdAt });
+  // 镜像与 runtime 共库（PORTAL_DB_PATH 即 runtime.db）：superseded 旧回答由 runtime
+  // 权威标记并保留审计行，这里只做幂等写入，绝不能物理删除。
   repo.upsertMessage(remote.data.assistantMessage);
   repo.touchConversationPreview(
     params.id,
@@ -72,5 +72,6 @@ export async function POST(request: Request, { params }: Params) {
     remote.data.assistantMessage.createdAt,
     scope
   );
-  return ok(remote.data);
+  // 客户端 SendMessageResult 契约需要显式 ok 字段（缺它会把成功渲染成失败）。
+  return ok({ ...remote.data, ok: true });
 }

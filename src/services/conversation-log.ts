@@ -204,6 +204,14 @@ export function setConversationMessageFeedback(input: Partial<ConversationScope>
   else metadata.userFeedback = rating;
   sqlite.prepare(`UPDATE conversation_messages SET metadata = ? WHERE message_id = ?`)
     .run(metadataJson(metadata), messageId);
+  // Portal 镜像读 metadata_json（同库异列，由 Portal schema 负责 ensure）；
+  // 纯 runtime 库没有该列，写入失败时忽略。
+  try {
+    sqlite.prepare(`UPDATE conversation_messages SET metadata_json = ? WHERE message_id = ?`)
+      .run(metadataJson(metadata), messageId);
+  } catch {
+    // metadata_json column absent in runtime-only databases
+  }
   return getConversationMessage(messageId)!;
 }
 
