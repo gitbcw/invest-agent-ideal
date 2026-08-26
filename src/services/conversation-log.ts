@@ -175,6 +175,38 @@ function parseMetadata(value: unknown): Record<string, unknown> | undefined {
   }
 }
 
+/**
+ * 用户对 assistant 回答的【喜欢/不喜欢】标注（owner 2026-08-26）：写入
+ * conversation_messages.metadata.userFeedback，随现有会话同步链路分发；
+ * 后台分析用 json_extract(metadata, '$.userFeedback') 即可全量取出。
+ * rating=null 表示撤销标注（再次点击同一按钮）。
+ */
+export function setConversationMessageFeedback(input: Partial<ConversationScope> & {
+  conversationId: string;
+  messageId: string;
+  rating: "like" | "dislike" | null;
+}): ConversationMessageRecord {
+  const { conversationId, messageId, rating, ...scopeFields } = input;
+  const scope = normalizeConversationScope(scopeFields);
+  const message = getConversationMessage(messageId);
+  if (!message
+    || message.conversationId !== conversationId
+    || message.userId !== scope.userId
+    || message.instanceId !== scope.instanceId
+    || message.role !== "assistant") {
+    throw new Error("FEEDBACK_TARGET_INVALID");
+  }
+  const rawRow = sqlite
+    .prepare(`SELECT metadata FROM conversation_messages WHERE message_id = ?`)
+    .get(messageId) as { metadata?: string } | undefined;
+  const metadata = parseMetadata(rawRow?.metadata) ?? {};
+  if (rating === null) delete metadata.userFeedback;
+  else metadata.userFeedback = rating;
+  sqlite.prepare(`UPDATE conversation_messages SET metadata = ? WHERE message_id = ?`)
+    .run(metadataJson(metadata), messageId);
+  return getConversationMessage(messageId)!;
+}
+
 export function normalizeConversationScope(input: Partial<ConversationScope> = {}): ConversationScope {
   const userId = input.userId?.trim() || DEFAULT_USER_ID;
   const instanceId = input.instanceId?.trim() || defaultInstanceIdForUser(userId);

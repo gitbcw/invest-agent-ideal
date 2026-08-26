@@ -122,3 +122,67 @@ test("regenerate only accepts the last reply and rejects invalid targets", async
   assert.equal(listed.filter((m) => m.role === "user").length, 2);
   assert.equal(listed.filter((m) => m.role === "assistant" && m.status === "sent").length, 2);
 });
+
+test("feedback labels an assistant reply, switches, and revokes (owner 2026-08-26)", async () => {
+  const { conversations } = await fixture;
+  const conversationId = "feedback-path";
+  const turn = await conversations.chatViaConversationLog({
+    ...scope,
+    conversationId,
+    text: "帮我看看大盘",
+    agent: fakeAgent("大盘点评"),
+  });
+  const targetId = turn.assistantMessage.messageId;
+
+  const like = conversations.setConversationMessageFeedback({
+    ...scope,
+    conversationId,
+    messageId: targetId,
+    rating: "like",
+  });
+  assert.equal(like.metadata?.userFeedback, "like");
+
+  // 切换为 dislike：同一键覆写。
+  const dislike = conversations.setConversationMessageFeedback({
+    ...scope,
+    conversationId,
+    messageId: targetId,
+    rating: "dislike",
+  });
+  assert.equal(dislike.metadata?.userFeedback, "dislike");
+
+  // 撤销：键移除，其余 metadata 字段保留。
+  const revoked = conversations.setConversationMessageFeedback({
+    ...scope,
+    conversationId,
+    messageId: targetId,
+    rating: null,
+  });
+  assert.equal(revoked.metadata?.userFeedback, undefined);
+
+  // user 消息与无效目标拒绝。
+  assert.throws(
+    () => conversations.setConversationMessageFeedback({
+      ...scope,
+      conversationId,
+      messageId: turn.userMessage.messageId,
+      rating: "like",
+    }),
+    /FEEDBACK_TARGET_INVALID/
+  );
+  assert.throws(
+    () => conversations.setConversationMessageFeedback({
+      ...scope,
+      conversationId,
+      messageId: "no-such-message",
+      rating: "like",
+    }),
+    /FEEDBACK_TARGET_INVALID/
+  );
+
+  // 原始行可被分析侧直接 json_extract 取出。
+  const raw = (await import("../src/db/index.js")).sqlite
+    .prepare(`SELECT json_extract(metadata, '$.userFeedback') AS rating FROM conversation_messages WHERE message_id = ?`)
+    .get(targetId) as { rating: string | null };
+  assert.equal(raw.rating, null);
+});

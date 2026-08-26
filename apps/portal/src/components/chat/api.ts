@@ -288,6 +288,29 @@ export async function regenerateMessage(
   return json.data;
 }
 
+/** 【喜欢/不喜欢】标注（owner 2026-08-26）：rating=null 撤销；返回最新消息记录。 */
+export async function sendFeedback(
+  conversationId: string,
+  messageId: string,
+  rating: "like" | "dislike" | null
+): Promise<import("@/lib/protocol").ConversationMessage> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/feedback`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ messageId, rating })
+  });
+  const json = await jsonOrThrow<{
+    ok: boolean;
+    data?: { message: import("@/lib/protocol").ConversationMessage };
+    error?: { message: string; code: string };
+  }>(res);
+  if (!json.ok || !json.data) {
+    throw new Error(json.error?.message ?? "标注失败");
+  }
+  return json.data.message;
+}
+
 export async function fetchAssistantStatus(): Promise<AssistantStatus> {
   const res = await fetch("/api/assistant/status", { credentials: "same-origin" });
   const json = await jsonOrThrow<{

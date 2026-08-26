@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, RefreshCw, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { ArtifactCard } from "./ArtifactCard";
 import { MarkdownLite } from "./MarkdownLite";
@@ -23,6 +23,8 @@ interface MessageBubbleProps {
   onRetry?: (message: ChatMessageView) => void;
   /** 重新生成（owner 2026-08-26）：最后一条已送达回答不满意时重放该轮。 */
   onRegenerate?: (message: ChatMessageView) => void;
+  /** 【喜欢/不喜欢】标注（owner 2026-08-26）：再次点击同一按钮 = 撤销。 */
+  onFeedback?: (message: ChatMessageView, rating: "like" | "dislike") => void;
   onArtifactOpen?: (artifact: ArtifactCardView) => void;
   onArtifactSave?: (artifact: ArtifactCardView) => Promise<{ ok: boolean; message?: string }>;
   onArtifactLegacyPath?: (relativePath: string, messageId: string, conversationId: string) => void;
@@ -44,6 +46,7 @@ export function MessageBubble({
   waitingStartedAt,
   onRetry,
   onRegenerate,
+  onFeedback,
   onArtifactOpen,
   onArtifactSave,
   onArtifactLegacyPath,
@@ -207,16 +210,6 @@ export function MessageBubble({
               </button>
             </div>
         ) : null}
-        {!isWaiting && !typewriter.isAnimating && message.status === "sent" && isLastAssistant && onRegenerate ? (
-            <button
-              type="button"
-              onClick={() => onRegenerate(message)}
-              className="mt-2 text-[11px] text-[#b4b4b8] underline-offset-2 transition-colors hover:text-slate-500 hover:underline"
-              title="对这份回答不满意时，用同一条消息重新生成一轮；旧回答会被替换"
-            >
-              重新生成
-            </button>
-        ) : null}
         {!isWaiting && !typewriter.isAnimating && message.traceId ? (
             traceOpen && traceDetail ? (
               <div className="mt-1">
@@ -233,10 +226,70 @@ export function MessageBubble({
             )
         ) : null}
       </div>
-      {message.status === "sent" && message.content ? (
-        <CopyMessageButton copied={copied} onClick={() => void handleCopy()} align="left" />
+      {!isWaiting && !typewriter.isAnimating && message.status === "sent" && message.content ? (
+        <div className="mt-2 flex items-center gap-0.5">
+          <ActionButton
+            onClick={() => void handleCopy()}
+            label={copied ? "已复制" : "复制"}
+            active={false}
+          >
+            {copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+          </ActionButton>
+          {onFeedback ? (
+            <>
+              <ActionButton
+                onClick={() => onFeedback(message, "like")}
+                label={message.userFeedback === "like" ? "已标喜欢" : "喜欢"}
+                active={message.userFeedback === "like"}
+              >
+                <ThumbsUp size={15} aria-hidden="true" />
+              </ActionButton>
+              <ActionButton
+                onClick={() => onFeedback(message, "dislike")}
+                label={message.userFeedback === "dislike" ? "已标不喜欢" : "不喜欢"}
+                active={message.userFeedback === "dislike"}
+              >
+                <ThumbsDown size={15} aria-hidden="true" />
+              </ActionButton>
+            </>
+          ) : null}
+          {isLastAssistant && onRegenerate ? (
+            <ActionButton onClick={() => onRegenerate(message)} label="重新生成" active={false}>
+              <RefreshCw size={15} aria-hidden="true" />
+            </ActionButton>
+          ) : null}
+        </div>
       ) : null}
     </div>
+  );
+}
+
+/** 回复下方常显操作钮（owner 2026-08-26）：图标 + 悬停提示；active 时高亮。 */
+function ActionButton({
+  onClick,
+  label,
+  active,
+  children
+}: {
+  onClick: () => void;
+  label: string;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition focus:outline-none focus:ring-2 focus:ring-accent-300 ${
+        active
+          ? "bg-accent-50 text-accent-600"
+          : "text-[#b4b4b8] hover:bg-black/5 hover:text-[#202123]"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

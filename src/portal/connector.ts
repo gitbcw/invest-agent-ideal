@@ -3,7 +3,7 @@ import { initDb, sqlite } from "../db/index.js";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
-import { cancelConversationChat, chatViaConversationLog, ConversationScopeError, getConversation, listConversations } from "../services/conversation-log.js";
+import { cancelConversationChat, chatViaConversationLog, ConversationScopeError, getConversation, listConversations, setConversationMessageFeedback } from "../services/conversation-log.js";
 import { getRulePatrolStatus, listRulePatrolRuns, runRulePatrolNow } from "../services/rule-patrol.js";
 import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule, type WatchRuleType } from "../services/watch-rules.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
@@ -82,6 +82,7 @@ const TYPES = {
   CONVERSATION_GET: "conversation.get",
   CONVERSATION_CHAT: "conversation.chat",
   CONVERSATION_REGENERATE: "conversation.regenerate",
+  CONVERSATION_FEEDBACK: "conversation.feedback",
   CONVERSATION_CANCEL: "conversation.cancel",
   TRACE_GET: "trace.get",
   CONVERSATION_CHAT_PROGRESS: "conversation.chat.progress",
@@ -546,6 +547,26 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         model: typeof message.payload?.model === "string" && message.payload.model.trim() ? message.payload.model.trim() : undefined,
         onProgress: progressForward,
       })));
+    }
+    case TYPES.CONVERSATION_FEEDBACK: {
+      const conversationId = String(message.payload?.conversationId || "").trim();
+      const feedbackMessageId = String(message.payload?.messageId || "").trim();
+      const rating = message.payload?.rating;
+      if (!conversationId || !feedbackMessageId || (rating !== "like" && rating !== "dislike" && rating !== null)) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "conversationId, messageId and rating (like|dislike|null) are required"));
+      }
+      try {
+        return finish(ok(message.type, message.requestId, {
+          message: setConversationMessageFeedback({
+            ...commandScope,
+            conversationId,
+            messageId: feedbackMessageId,
+            rating,
+          }),
+        }));
+      } catch (error) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", (error as Error).message));
+      }
     }
     case TYPES.TRACE_GET: {
       const traceId = String(message.payload?.traceId || "").trim();
@@ -1446,7 +1467,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.regenerate", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
+        capabilities: ["conversation.chat", "conversation.regenerate", "conversation.feedback", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {

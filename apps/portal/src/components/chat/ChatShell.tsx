@@ -34,6 +34,7 @@ import {
   recordArtifactEvent,
   sendMessage,
   regenerateMessage,
+  sendFeedback,
   subscribeConversationProgress,
   saveArtifactToAssets,
   updateConversation,
@@ -870,6 +871,40 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     [activeId, status, selectedModel, updateConversationView, setConversationProcessing, writeProcessingStartedAt]
   );
 
+  // ---- 【喜欢/不喜欢】标注（owner 2026-08-26）：再次点击同一按钮撤销 ----
+  const handleFeedback = useCallback(
+    (feedbackMessage: ChatMessageView, rating: "like" | "dislike") => {
+      if (!activeId) return;
+      const next = feedbackMessage.userFeedback === rating ? null : rating;
+      // 乐观更新；失败静默回滚（下次刷新以 runtime 为准）。
+      const previous = feedbackMessage.userFeedback;
+      updateConversationView(activeId, (current) => ({
+        ...current,
+        messages: current.messages.map((m) => m.messageId === feedbackMessage.messageId
+          ? { ...m, userFeedback: next ?? undefined }
+          : m)
+      }));
+      void sendFeedback(activeId, feedbackMessage.messageId, next)
+        .then((updated) => {
+          updateConversationView(activeId, (current) => ({
+            ...current,
+            messages: current.messages.map((m) => m.messageId === updated.messageId
+              ? { ...toView(updated), processedDurationMs: m.processedDurationMs }
+              : m)
+          }));
+        })
+        .catch(() => {
+          updateConversationView(activeId, (current) => ({
+            ...current,
+            messages: current.messages.map((m) => m.messageId === feedbackMessage.messageId
+              ? { ...m, userFeedback: previous }
+              : m)
+          }));
+        });
+    },
+    [activeId, updateConversationView]
+  );
+
   // ---- 加载更多会话 ----
   const handleLoadMore = useCallback(async () => {
     if (!cursorRef.current) return;
@@ -1075,6 +1110,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
                       waitingStartedAt={waitingStartedAt}
                       onRetry={handleRetry}
                       onRegenerate={handleRegenerate}
+                      onFeedback={handleFeedback}
                         onArtifactOpen={handleOpenArtifact}
                         onArtifactSave={handleSaveArtifact}
                       onArtifactLegacyPath={handleArtifactLegacyPath}
