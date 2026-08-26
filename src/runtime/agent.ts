@@ -131,7 +131,9 @@ function resolvePositiveTimeoutMs(name: string, fallback: number): number {
   return value;
 }
 
-const INTERNAL_AUTOMATION_MAX_STEPS = 10;
+// 与 generic-automation-runner 的 GENERIC_AUTOMATION_MAX_TOOL_CALLS 同步调整
+//（2026-08-26：10 -> 30）。此处是硬顶：低于 runner 值会把任务预算压回去。
+const INTERNAL_AUTOMATION_MAX_STEPS = 30;
 const INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS = 480_000;
 const INTERNAL_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
 

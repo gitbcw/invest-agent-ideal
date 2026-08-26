@@ -40,7 +40,7 @@ test("generic automation internal hints cap max steps and preserve a fallback re
     fallbackMinRemainingMs: 300_000,
   }), {
     enabled: true,
-    maxSteps: 10,
+    maxSteps: 30,
     attemptTimeoutMs: 480_000,
     fallbackMinRemainingMs: 300_000,
   });

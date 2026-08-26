@@ -115,7 +115,10 @@ export const GENERIC_AUTOMATION_TOOL_ALLOWLIST = [
 ] as const;
 
 const GENERIC_AUTOMATION_CONTEXT_TASK_TYPE = "automation-execution";
-const GENERIC_AUTOMATION_MAX_TOOL_CALLS = 10;
+// 2026-08-26：10 -> 30。无批量接口的数据维度（如单股筹码 get_stock_profile）在
+// 10 次预算内对多标的任务结构性无解（13 只持仓 = 13 次调用），agent 只能整列标缺失。
+// 时间侧仍有总截止/租约/单次尝试超时兜底，调高次数不会放大执行时长上限。
+const GENERIC_AUTOMATION_MAX_TOOL_CALLS = 30;
 const GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS = 480_000;
 const GENERIC_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
 const GENERIC_AUTOMATION_COMMIT_RESERVE_MS = 30_000;
@@ -536,12 +539,44 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
   return parseStructuredAcpResponse(response);
 }
 
+/** Top-level balanced {...} spans in mixed prose+JSON text. String literals
+ * are tracked so braces inside values never break depth counting; prose
+ * fragments merely produce spans that fail JSON.parse and get skipped. */
+function findTopLevelJsonObjectSpans(text: string): string[] {
+  const spans: string[] = [];
+  const openStack: number[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") openStack.push(index);
+    else if (char === "}" && openStack.length > 0) {
+      const start = openStack.pop()!;
+      if (openStack.length === 0) spans.push(text.slice(start, index + 1));
+    }
+  }
+  return spans;
+}
+
 /** The ACP client exposes customer text, so generic runs use a strict JSON
  * envelope in the final response to carry the service-owned staged output. */
-function parseStructuredAcpResponse(response: AgentResponse): AgentResponse {
+export function parseStructuredAcpResponse(response: AgentResponse): AgentResponse {
   if (response.data?.stagedOutput !== undefined || response.data?.summary !== undefined || response.data?.shouldNotify !== undefined) return response;
   const text = response.content.text?.trim() || "";
-  const candidates = [text, text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || ""];
+  // 2026-08-27（mg 行业复盘失败教训）：模型偶发在最终 JSON 前后混入叙述文本，
+  // 整段/围栏解析都失败时，兜底抽取文本中的顶层平衡 JSON 对象，最后出现的优先。
+  const candidates = [
+    text,
+    text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || "",
+    ...findTopLevelJsonObjectSpans(text).reverse(),
+  ];
   for (const candidate of candidates) {
     if (!candidate) continue;
     try {
