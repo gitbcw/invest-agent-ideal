@@ -11,6 +11,8 @@ import { logger } from "../lib/logger.js";
  * - 全链不健康时只在通过家族门禁的候选中按优先级硬选第 1 位。
  * - GPT 系列裁撤（owner 2026-08-26，同日二次修订）：sol 因上游持续首字超时禁用；
  *   terra + luna 可用，terra 优先级高于 luna。
+ * - 文本链国产兜底换挡（owner 2026-08-27）：glm-5.3-flash 当日上线且上游
+ *   网关已支持，顶替 vision-exp 的文本兜底位；vision-exp 保留在图片链首位。
  */
 
 export interface AutoChainEntry {
@@ -24,12 +26,14 @@ export interface AutoChainEntry {
 export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "gpt-5.6-terra" },
   { model: "gpt-5.6-luna" },
+  { model: "glm-5.3-flash" },
   { model: "deepseek-v4-flash-vision-exp" },
   { model: "qwen3.7-flash" },
   { model: "doubao-seed-2-1-turbo-260628" },
 ];
 
-/** 图片优先使用国产全模态模型；GPT 仅作为通过探针门禁后的后备。 */
+/** 图片优先使用国产全模态模型；GPT 仅作为通过探针门禁后的后备。
+ * glm-5.3-flash 图片能力未验证，不进图片链（2026-08-27）。 */
 export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "deepseek-v4-flash-vision-exp" },
   { model: "qwen3.7-flash" },
@@ -42,7 +46,8 @@ export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
 export const MODEL_DESCRIPTIONS: Record<string, string> = {
   "gpt-5.6-terra": "高质量均衡档，日常深度分析推荐",
   "gpt-5.6-luna": "轻量快速档，低成本兜底",
-  "deepseek-v4-flash-vision-exp": "全模态档，支持图片理解与工具调用，国产优先",
+  "glm-5.3-flash": "智谱轻量档，文本链国产兜底",
+  "deepseek-v4-flash-vision-exp": "全模态档，支持图片理解与工具调用，图片链首选",
   "qwen3.7-flash": "全模态极速档，支持图片理解与工具调用",
   "doubao-seed-2-1-turbo-260628": "全模态档，支持图片理解与工具调用",
 };

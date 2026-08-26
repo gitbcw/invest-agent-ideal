@@ -1376,3 +1376,52 @@ test("task edits inherit the monthly rollover unless explicitly cleared (2026-08
   assert.equal(cleared.currentRevision, 3);
   assert.deepEqual(cleared.revision.output, { mode: "update", assetId: target.assetId, versionPolicy: "latest" }, "an explicit rollover:null clears the policy");
 });
+
+test("parseStructuredAcpResponse extracts the trailing JSON object from mixed prose (mg 2026-08-26 failure shape)", async () => {
+  const { parseStructuredAcpResponse } = await import("../src/services/generic-automation-runner.js");
+  const { textResponse } = await import("../src/runtime/protocol.js");
+  const payload = {
+    summary: "已完成2026-08-26行业复盘表尾追加。",
+    shouldNotify: true,
+    stagedOutput: { operation: "appendRows", sheet: "行业复盘", rows: [[61, "2026-08-26", "有色金属"]], skipIfCellMatches: { column: "日期", value: "2026-08-26" } },
+  };
+  const prose = `I have gathered the key evidence. Now I'll append today's rows.\n\nKey data compiled: {"note": "inline brace { in prose"} and more narration.\n\n${JSON.stringify(payload)}`;
+  const parsed = parseStructuredAcpResponse(textResponse(prose));
+  assert.equal(parsed.data?.summary, payload.summary);
+  assert.deepEqual(parsed.data?.stagedOutput, payload.stagedOutput);
+  assert.equal(parsed.data?.shouldNotify, true);
+});
+
+test("parseStructuredAcpResponse prefers the last JSON object and tolerates trailing prose", async () => {
+  const { parseStructuredAcpResponse } = await import("../src/services/generic-automation-runner.js");
+  const { textResponse } = await import("../src/runtime/protocol.js");
+  const earlier = { summary: "草稿版本" };
+  const final = { summary: "最终版本", outputSkipped: true };
+  const mixed = `${JSON.stringify(earlier)}\n中间叙述。\n${JSON.stringify(final)}\n尾随说明文字。`;
+  const parsed = parseStructuredAcpResponse(textResponse(mixed));
+  assert.equal(parsed.data?.summary, "最终版本");
+  assert.equal(parsed.data?.outputSkipped, true);
+});
+
+test("parseStructuredAcpResponse keeps failing closed on prose without a valid envelope", async () => {
+  const { parseStructuredAcpResponse } = await import("../src/services/generic-automation-runner.js");
+  const { textResponse } = await import("../src/runtime/protocol.js");
+  for (const text of [
+    "纯叙述回复，没有任何 JSON。",
+    "未闭合的对象 {\"summary\": \"被截断",
+    "{\"unrelated\": true}",
+    "```json\n{\"summary\": 42}\n```",
+  ]) {
+    const parsed = parseStructuredAcpResponse(textResponse(text));
+    assert.equal(parsed.data, undefined, `expected no envelope for: ${text.slice(0, 40)}`);
+  }
+});
+
+test("parseStructuredAcpResponse still accepts whole-text and fenced envelopes unchanged", async () => {
+  const { parseStructuredAcpResponse } = await import("../src/services/generic-automation-runner.js");
+  const { textResponse } = await import("../src/runtime/protocol.js");
+  const whole = parseStructuredAcpResponse(textResponse(JSON.stringify({ summary: "整段即JSON" })));
+  assert.equal(whole.data?.summary, "整段即JSON");
+  const fenced = parseStructuredAcpResponse(textResponse("说明\n```json\n" + JSON.stringify({ summary: "围栏JSON", shouldNotify: false }) + "\n```"));
+  assert.equal(fenced.data?.summary, "围栏JSON");
+});
