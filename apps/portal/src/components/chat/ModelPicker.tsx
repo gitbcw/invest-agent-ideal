@@ -17,6 +17,7 @@ interface ModelsStateResponse {
 }
 
 const LABELS: Record<string, string> = {
+  "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-5.6-luna": "GPT-5.6 Luna",
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "deepseek-v4-flash": "DeepSeek V4 Flash",
@@ -71,7 +72,7 @@ export function ModelPicker({
   const selectedLabel = value === AUTO_MODEL_VALUE
     ? `自动${autoModel ? ` · ${LABELS[autoModel] ?? autoModel}` : "（推荐）"}`
     : LABELS[value] ?? value;
-  const autoOption = options.find((opt) => opt.value === (autoModel ?? "gpt-5.6-luna"));
+  const autoOption = options.find((opt) => opt.value === (autoModel ?? "gpt-5.6-terra"));
 
   return (
     <div ref={rootRef} className="relative mr-2 shrink-0">

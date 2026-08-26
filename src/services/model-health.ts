@@ -9,8 +9,8 @@ import { logger } from "../lib/logger.js";
  *   （重试失败只需 1 个新坏证据即再次降级）。P2 引入小时探针后替换回升语义。
  * - GPT 自动路由有独立探针门禁：该模型自己的最新探针必须在有效期内且 <= 10 秒。
  * - 全链不健康时只在通过家族门禁的候选中按优先级硬选第 1 位。
- * - GPT 系列裁撤（owner 2026-08-26）：sol/terra/5.5 因上游持续首字超时禁用，
- *   luna 是 GPT 系列唯一保留档。
+ * - GPT 系列裁撤（owner 2026-08-26，同日二次修订）：sol 因上游持续首字超时禁用；
+ *   terra + luna 可用，terra 优先级高于 luna。
  */
 
 export interface AutoChainEntry {
@@ -22,6 +22,7 @@ export interface AutoChainEntry {
 }
 
 export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
+  { model: "gpt-5.6-terra" },
   { model: "gpt-5.6-luna" },
   { model: "deepseek-v4-flash-vision-exp" },
   { model: "qwen3.7-flash" },
@@ -33,12 +34,14 @@ export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "deepseek-v4-flash-vision-exp" },
   { model: "qwen3.7-flash" },
   { model: "doubao-seed-2-1-turbo-260628" },
+  { model: "gpt-5.6-terra" },
   { model: "gpt-5.6-luna" },
 ];
 
 /** UI 展示用的一句话定位说明（W2）。不在此列的模型不进入选择器。 */
 export const MODEL_DESCRIPTIONS: Record<string, string> = {
-  "gpt-5.6-luna": "轻量快速档，GPT 系列当前唯一保留",
+  "gpt-5.6-terra": "高质量均衡档，日常深度分析推荐",
+  "gpt-5.6-luna": "轻量快速档，低成本兜底",
   "deepseek-v4-flash-vision-exp": "全模态档，支持图片理解与工具调用，国产优先",
   "qwen3.7-flash": "全模态极速档，支持图片理解与工具调用",
   "doubao-seed-2-1-turbo-260628": "全模态档，支持图片理解与工具调用",
