@@ -2653,6 +2653,11 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
     requestBody: { operation, payload, summary: stringInput(input?.summary) },
     resultSummary: `confirmation requested for ${operation}`,
   });
+  // 摩擦修复（2026-08-26 用户 111 调仓确认循环）：兜底模型常在用户已回复确认后才补注册
+  // 草案，这类注册注定过不了「确认消息必须晚于草案注册」的时序校验。返回值里显式预警，
+  // 引导模型本轮只展示草案、等用户下一条确认，而不是当轮直接写入被拒后让用户反复重确认。
+  const latest = await latestUserMessage(context);
+  const registeredAfterUserConfirmation = latest ? isExplicitConfirmationText(latest.content?.trim() || "") : false;
   return {
     ok: true,
     userId: context.userId,
@@ -2660,6 +2665,9 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
     confirmationId: pending.id,
     operation,
     expiresAt: pending.expiresAt,
+    ...(registeredAfterUserConfirmation
+      ? { warning: "本草案注册晚于用户当前已发送的确认消息，用户本轮的确认不能用于执行此草案：请在回复中展示草案并等待用户的下一条确认消息，本轮不要调用写入工具。" }
+      : {}),
     ...(preview ? { preview } : {}),
   };
 }
@@ -2903,17 +2911,7 @@ function requireConfirmed(input: Record<string, unknown> | undefined) {
   }
 }
 
-async function requireRecentUserConfirmation(context: ServiceToolContext, operation: string, confirmationId: string) {
-  const [confirmation] = await db.select({ createdAt: pendingSandboxConfirmations.createdAt })
-    .from(pendingSandboxConfirmations)
-    .where(and(
-      eq(pendingSandboxConfirmations.id, confirmationId),
-      eq(pendingSandboxConfirmations.userId, context.userId),
-      eq(pendingSandboxConfirmations.instanceId, context.instanceId),
-      eq(pendingSandboxConfirmations.status, "pending")
-    ))
-    .limit(1);
-  if (!confirmation) throw new Error(`pending confirmation is unavailable for ${operation}`);
+async function latestUserMessage(context: ServiceToolContext): Promise<{ content: string; createdAt: string } | undefined> {
   const conditions = [
     eq(conversationMessages.userId, context.userId),
     eq(conversationMessages.instanceId, context.instanceId),
@@ -2930,10 +2928,27 @@ async function requireRecentUserConfirmation(context: ServiceToolContext, operat
     .where(and(...conditions))
     .orderBy(desc(conversationMessages.createdAt))
     .limit(1);
+  return latest;
+}
+
+async function requireRecentUserConfirmation(context: ServiceToolContext, operation: string, confirmationId: string) {
+  const [confirmation] = await db.select({ createdAt: pendingSandboxConfirmations.createdAt })
+    .from(pendingSandboxConfirmations)
+    .where(and(
+      eq(pendingSandboxConfirmations.id, confirmationId),
+      eq(pendingSandboxConfirmations.userId, context.userId),
+      eq(pendingSandboxConfirmations.instanceId, context.instanceId),
+      eq(pendingSandboxConfirmations.status, "pending")
+    ))
+    .limit(1);
+  if (!confirmation) throw new Error(`pending confirmation is unavailable for ${operation}`);
+  const latest = await latestUserMessage(context);
   const text = latest?.content?.trim() || "";
-  if (!text) throw new Error(`recent user confirmation is unavailable for ${operation}`);
+  if (!latest || !text) throw new Error(`recent user confirmation is unavailable for ${operation}`);
   if (new Date(latest.createdAt).getTime() <= new Date(confirmation.createdAt).getTime()) {
-    throw new Error(`recent user confirmation predates the draft for ${operation}`);
+    throw new Error(
+      `recent user confirmation predates the draft for ${operation}（用户确认消息早于草案注册，本轮不能写入：请在回复中展示草案并等待用户的下一条确认消息，本轮不要重试写入工具）`
+    );
   }
   if (isExplicitConfirmationText(text)) return;
   throw new Error(`recent user message is not an explicit confirmation for ${operation}`);

@@ -518,6 +518,125 @@ test("portfolio.apply_changes confirmation survives schema-noise between draft a
   }
 });
 
+test("late draft registration after the user already confirmed is guided, not silently rejected (111 2026-08-26 regression)", async () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-portfolio-late-"));
+  process.env.NODE_ENV = "test";
+  process.env.DB_PATH = path.join(tempRoot, "test.db");
+  process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
+  process.env.INVEST_AGENT_SANDBOX_SECRET_FILE = path.join(tempRoot, ".sandbox-secret");
+
+  try {
+    const { eq } = await import("drizzle-orm");
+    const { db, initDb } = await import("../src/db/index.js");
+    const { conversationMessages, conversationSessions, pendingSandboxConfirmations } = await import("../src/db/schema.js");
+    const { ensureWorkspace, resolveWorkspacePath } = await import("../src/lib/workspace.js");
+    const { readMastraPortfolioProjection } = await import("../src/lib/mastra-portfolio-backend.js");
+    const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+
+    const userId = "portfolio-late-user";
+    const instanceId = "invest-agent-portfolio-late-user";
+    const conversationId = "portfolio-late-conversation";
+    const context = { userId, instanceId, projectId: "invest-agent", conversationId, workspacePath: resolveWorkspacePath(userId) };
+    const revision = "2026-08-25T02:55:56.892Z";
+
+    initDb();
+    await ensureWorkspace({ userId, tenantId: userId, projectId: "invest-agent" });
+    const seedPortfolio = {
+      cash: { ratio_percent: 65, notes: "现金仓位约 65%" },
+      holdings: [
+        { code: "002460", name: "赣锋锂业", weight: 25, notes: "仓位25%" },
+        { code: "002240", name: "盛新锂能", weight: 10, notes: "仓位10%" },
+        { code: "601579", name: "会稽山", weight: 3, notes: "仓位3%" },
+      ],
+      watchlist: [],
+      accounts: [],
+      last_confirmed_at: revision,
+      last_confirmed_by: "user",
+    };
+    (await import("../src/db/index.js")).sqlite.prepare(
+      `INSERT INTO mastra_portfolio_states (user_id,project_id,instance_id,portfolio_json,source_path,source_checksum,source_revision,migration_batch_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    ).run(userId, "invest-agent", instanceId, JSON.stringify(seedPortfolio), "service-owned://portfolio", "test:seed", revision, "test-seed", revision, revision);
+    const now = new Date().toISOString();
+    await db.insert(conversationSessions).values({
+      conversationId, userId, projectId: "invest-agent", instanceId, assistantId: instanceId,
+      channel: "weixin-mobile", title: "Late draft registration regression", createdAt: now, updatedAt: now,
+    });
+
+    const insertUserMessage = (messageId: string, content: string, createdAt: Date) =>
+      db.insert(conversationMessages).values({
+        messageId, conversationId, userId, projectId: "invest-agent", instanceId, assistantId: instanceId,
+        channel: "weixin-mobile", role: "user", content, createdAt: createdAt.toISOString(),
+      });
+
+    const payload = {
+      expectedLastConfirmedAt: revision,
+      removeHoldingCodes: ["601579"],
+      upsertHoldings: [
+        { code: "002240", name: "盛新锂能", weight: 21, notes: "持仓占比 21%" },
+        { code: "002460", name: "赣锋锂业", weight: 18, notes: "持仓占比 18%" },
+      ],
+      cashRatioPercent: 61,
+    };
+
+    // 正常草案轮：用户消息是调仓请求（不是确认），注册不应带预警。
+    await insertUserMessage("late-request-message", "更新下持仓，赣锋锂业18%，盛新锂能21%", new Date(Date.now() - 120_000));
+    const properDraft = await callServiceTool("confirmations.request", {
+      operation: "portfolio.apply_changes",
+      payload,
+      summary: "请确认调整持仓比例",
+    }, context) as { confirmationId: string; warning?: string };
+    assert.equal(properDraft.warning, undefined, "a draft registered while the latest user message is a request must not warn");
+
+    // 事故路径：模型没在草案轮注册，用户确认已经发出去之后才补注册。
+    await insertUserMessage("late-confirmation-message", "确认", new Date(Date.now() - 60_000));
+    const lateDraft = await callServiceTool("confirmations.request", {
+      operation: "portfolio.apply_changes",
+      payload,
+      summary: "补注册草案",
+    }, context) as { confirmationId: string; warning?: string };
+    assert.ok(lateDraft.warning, "registering a draft after the user already replied with a confirmation must carry a warning");
+    assert.match(lateDraft.warning!, /不能用于执行此草案/);
+
+    // 用这份晚注册的草案当轮执行：必须被时序校验拒绝，且错误带行动指引。
+    await assert.rejects(
+      () => callServiceTool("portfolio.apply_changes", {
+        confirmedByUser: true,
+        confirmationId: lateDraft.confirmationId,
+        ...payload,
+      }, context),
+      (error: unknown) => {
+        assert.match((error as Error).message, /predates the draft/);
+        assert.match((error as Error).message, /本轮不能写入/);
+        return true;
+      }
+    );
+    let [stillPending] = await db.select().from(pendingSandboxConfirmations).where(eq(pendingSandboxConfirmations.id, lateDraft.confirmationId));
+    assert.equal(stillPending?.status, "pending", "the rejected apply must not consume the confirmation");
+
+    // 用户下一条确认晚于补注册时间：同一份草案这时可以执行（今早生产自愈路径）。
+    await insertUserMessage("late-confirmation-message-2", "确认", new Date(Date.now() + 1_000));
+    const applied = await callServiceTool("portfolio.apply_changes", {
+      confirmedByUser: true,
+      confirmationId: lateDraft.confirmationId,
+      ...payload,
+    }, context) as { ok: boolean };
+    assert.equal(applied.ok, true);
+
+    const saved = readMastraPortfolioProjection(userId, instanceId) as {
+      holdings?: Array<{ code: string; weight?: number }>;
+      cash?: { ratio_percent?: number };
+    };
+    assert.equal(saved.holdings?.find((item) => item.code === "601579"), undefined);
+    assert.equal(saved.holdings?.find((item) => item.code === "002460")?.weight, 18);
+    assert.equal(saved.holdings?.find((item) => item.code === "002240")?.weight, 21);
+    assert.equal(saved.cash?.ratio_percent, 61);
+    [stillPending] = await db.select().from(pendingSandboxConfirmations).where(eq(pendingSandboxConfirmations.id, lateDraft.confirmationId));
+    assert.equal(stillPending?.status, "confirmed");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("portfolio revision equality compares instants, not timezone spellings (dyk 2026-08-19 regression)", async () => {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-portfolio-tz-"));
   process.env.NODE_ENV = "test";

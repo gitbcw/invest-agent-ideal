@@ -191,7 +191,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   // ── other-write: 确认 / 持仓 / 观察仓 / 计划 ──
   {
     id: "confirmations.request",
-    description: "Safe pre-write step: call this in the same turn when the user asks to change durable state. It only registers an exact draft and returns a confirmationId; it does not perform the durable write. After this call, show the draft and wait for a later explicit user confirmation before calling the matching write tool.",
+    description: "Safe pre-write step: call this in the same turn when the user asks to change durable state. It only registers an exact draft and returns a confirmationId; it does not perform the durable write. Register the draft BEFORE asking the user to confirm: a confirmation message that predates this registration is rejected by the write tool. After this call, show the draft and wait for a later explicit user confirmation before calling the matching write tool.",
     inputSchema: {
       operation: z.enum(["portfolio.apply_changes", "onboarding.confirm_portfolio", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create"]),
       payload: z.record(z.string(), z.unknown()),

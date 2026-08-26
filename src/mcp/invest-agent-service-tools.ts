@@ -391,7 +391,7 @@ async function main() {
   registerJsonTool(
     { server, callServiceTool, context },
     "confirmations.request",
-    "Safe pre-write step: call this in the same turn when the user asks to change durable state. It only registers an exact draft and returns a confirmationId; it does not perform the durable write. After this call, show the draft and wait for a later explicit user confirmation before calling the matching write tool.",
+    "Safe pre-write step: call this in the same turn when the user asks to change durable state. It only registers an exact draft and returns a confirmationId; it does not perform the durable write. Register the draft BEFORE asking the user to confirm: a confirmation message that predates this registration is rejected by the write tool. After this call, show the draft and wait for a later explicit user confirmation before calling the matching write tool.",
     {
       operation: z.enum(["portfolio.apply_changes", "onboarding.confirm_portfolio", "onboarding.confirm_step", "watchlist.add", "plans.set", "plans.watch_conditions", "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create"]),
       payload: z.record(z.string(), z.unknown()),
