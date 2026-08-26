@@ -22,6 +22,9 @@ export interface ModelOption {
 
 export const AUTO_MODEL_VALUE = "auto";
 
+/** 选择器默认选中值（owner 2026-08-26）：默认推荐 gpt-5.6-terra；「自动」仍在下拉中可选。 */
+export const DEFAULT_MODEL_VALUE = "gpt-5.6-terra";
+
 /** 兜底快照（与 runtime 注册表同步维护，峰谷按峰值）。 */
 export const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
   { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", description: "高质量均衡档，日常深度分析推荐", inputPrice: 1.0, outputPrice: 6.0 },

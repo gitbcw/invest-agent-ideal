@@ -49,6 +49,7 @@ import {
 } from "./conversation-navigation";
 import { toView, type ArtifactCardView, type ChatMessageView, type ConversationListItem, type WorkStepView } from "./types";
 import type { WorkspaceFileItem } from "@/lib/protocol";
+import { DEFAULT_MODEL_VALUE } from "@/lib/models";
 import { ModelPicker } from "@/components/chat/ModelPicker";
 
 interface ChatShellProps {
@@ -87,8 +88,8 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const [rightPanelWidth, setRightPanelWidth] = useState<number | null>(null);
   // Attachment opened from a message card via attachment.get → image Lightbox.
   const [attachmentLightbox, setAttachmentLightbox] = useState<{ attachmentId: string; title: string } | null>(null);
-  // 按回合模型选择（D25）：空字符串 = 服务端默认模型。
-  const [selectedModel, setSelectedModel] = useState<string>("auto");
+  // 按回合模型选择（D25）：默认推荐 gpt-5.6-terra（owner 2026-08-26）；「自动」可在下拉中切换。
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_VALUE);
   // Historical artifact cards still accept a deleted-id set, but the current
   // read-only Portal never mutates it.
   const deletedArtifactIds = useMemo(() => new Set<string>(), []);
