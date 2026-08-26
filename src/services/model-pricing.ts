@@ -120,6 +120,10 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
   },
   // qwen3.7-flash：owner 提供牌价 2026-08-18（输入 0.6 元 / 输出 2.4 元，单一价）。
   { model: "qwen3.7-flash", currency: "CNY", tier: { input: 0.6, output: 2.4 } },
+  // glm-5.3-flash：owner 提供折算 2026-08-27——按 glm-5.3 牌价的 1/10。
+  // 基价（阿里云百炼 ZHIPU/GLM-5.3 挂牌，检索 2026-08-27）：输入 8 / 输出 28 /
+  // 缓存命中 2 元，折算后 0.8 / 2.8 / 0.2，单一价无峰谷。
+  { model: "glm-5.3-flash", currency: "CNY", tier: { input: 0.8, output: 2.8, cacheRead: 0.2 } },
   { model: "doubao-seed-2-0-lite-260428", currency: "CNY", tier: { input: 6, output: 30 } },
   { model: "doubao-seed-2-1-turbo-260628", currency: "CNY", tier: { input: 6, output: 30 } },
 ];

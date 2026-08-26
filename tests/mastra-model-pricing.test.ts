@@ -65,6 +65,13 @@ test("model pricing registry computes per-model costs with provider-aligned defa
   assert.equal(visionPeak.source, "priced");
   assert.equal(visionPeak.amount, 3);
   assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-flash-vision-exp" && entry.timeTiered && entry.timeTiered.peak.input === 3));
+
+  // glm-5.3-flash：owner 折算 2026-08-27（glm-5.3 牌价 1/10），单一价 ¥0.8/¥2.8、
+  // 缓存命中显式 ¥0.2（不用 input/10 默认）。
+  const glm = computeModelCost("glm-5.3-flash", { inputTokens: 1_000_000, outputTokens: 1_000_000, cachedReadTokens: 1_000_000 });
+  assert.equal(glm.source, "priced");
+  assert.equal(glm.amount, 0.8 + 2.8 + 0.2);
+  assert.ok(summary.models.some((entry) => entry.model === "glm-5.3-flash" && entry.tier.input === 0.8 && !entry.timeTiered));
 });
 
 test("recordAgentTrace prices usage at write time with costSource envelope (E10 C2)", async () => {
