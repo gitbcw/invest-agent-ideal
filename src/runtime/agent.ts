@@ -139,6 +139,14 @@ const INTERNAL_AUTOMATION_MAX_STEPS = 30;
 // 兜底仅在 attempt 早期失败时发生，全时长 attempt 后无兜底属预期。
 const INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS = 570_000;
 const INTERNAL_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
+// 共创期不设限观测开关（owner 2026-08-27）：AUTOMATION_UNLIMITED=1 仅注入
+// 回放/评测进程环境，不进任何生产 .env。开启后 attempt/步数放宽到观测级
+//（步数 50 对齐 run-turn 守卫上限），租约由 AUTOMATION_TASK_LEASE_MS 同步放大。
+function internalAutomationCeilings(): { maxSteps: number; attemptTimeoutMs: number } {
+  return process.env.AUTOMATION_UNLIMITED === "1"
+    ? { maxSteps: 50, attemptTimeoutMs: 3_600_000 }
+    : { maxSteps: INTERNAL_AUTOMATION_MAX_STEPS, attemptTimeoutMs: INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS };
+}
 
 /** Service-owned limits for generic automation ACP turns. */
 export function resolveInternalAutomationBudget(input: {
@@ -150,19 +158,20 @@ export function resolveInternalAutomationBudget(input: {
 }): { enabled: boolean; maxSteps: number; attemptTimeoutMs?: number; fallbackMinRemainingMs: number } {
   const enabled = input.channel === "automation" && input.taskType === "automation-execution";
   if (!enabled) return { enabled: false, maxSteps: 20, fallbackMinRemainingMs: 120_000 };
+  const ceilings = internalAutomationCeilings();
   const requestedMaxSteps = typeof input.maxToolCalls === "number" && Number.isFinite(input.maxToolCalls)
     ? Math.floor(input.maxToolCalls)
-    : INTERNAL_AUTOMATION_MAX_STEPS;
+    : ceilings.maxSteps;
   const requestedAttemptTimeout = typeof input.attemptTimeoutMs === "number" && Number.isFinite(input.attemptTimeoutMs)
     ? Math.floor(input.attemptTimeoutMs)
-    : INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS;
+    : ceilings.attemptTimeoutMs;
   const requestedReserve = typeof input.fallbackMinRemainingMs === "number" && Number.isFinite(input.fallbackMinRemainingMs)
     ? Math.floor(input.fallbackMinRemainingMs)
     : INTERNAL_AUTOMATION_FALLBACK_RESERVE_MS;
   return {
     enabled: true,
-    maxSteps: Math.min(INTERNAL_AUTOMATION_MAX_STEPS, Math.max(1, requestedMaxSteps)),
-    attemptTimeoutMs: Math.min(INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS, Math.max(1, requestedAttemptTimeout)),
+    maxSteps: Math.min(ceilings.maxSteps, Math.max(1, requestedMaxSteps)),
+    attemptTimeoutMs: Math.min(ceilings.attemptTimeoutMs, Math.max(1, requestedAttemptTimeout)),
     fallbackMinRemainingMs: Math.max(1, requestedReserve),
   };
 }

@@ -118,11 +118,14 @@ const GENERIC_AUTOMATION_CONTEXT_TASK_TYPE = "automation-execution";
 // 2026-08-26：10 -> 30。无批量接口的数据维度（如单股筹码 get_stock_profile）在
 // 10 次预算内对多标的任务结构性无解（13 只持仓 = 13 次调用），agent 只能整列标缺失。
 // 时间侧仍有总截止/租约/单次尝试超时兜底，调高次数不会放大执行时长上限。
-const GENERIC_AUTOMATION_MAX_TOOL_CALLS = 30;
+// 共创期不设限观测（owner 2026-08-27）：AUTOMATION_UNLIMITED=1 仅注入评测进程，
+// 放宽到观测级；生产 .env 不设该变量，行为不变。
+const UNLIMITED_EVAL = process.env.AUTOMATION_UNLIMITED === "1";
+const GENERIC_AUTOMATION_MAX_TOOL_CALLS = UNLIMITED_EVAL ? 200 : 30;
 // 2026-08-27：480s → 570s，与 runtime/agent.ts 的 INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS
 // 同步（glm-5.3-flash 三步实测 ~480s 差 90s 被掐；570+300+30=900 恰满租约）。
-const GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS = 570_000;
-const GENERIC_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
+const GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS = UNLIMITED_EVAL ? 3_600_000 : 570_000;
+const GENERIC_AUTOMATION_FALLBACK_RESERVE_MS = UNLIMITED_EVAL ? 600_000 : 300_000;
 const GENERIC_AUTOMATION_COMMIT_RESERVE_MS = 30_000;
 
 export function resolveGenericAutomationToolAllowlist(

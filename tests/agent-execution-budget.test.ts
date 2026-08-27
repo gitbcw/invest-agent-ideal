@@ -55,3 +55,30 @@ test("generic automation internal hints cap max steps and preserve a fallback re
     fallbackMinRemainingMs: 120_000,
   });
 });
+
+test("AUTOMATION_UNLIMITED relaxes automation ceilings for co-creation observation runs (owner 2026-08-27)", () => {
+  const capped = resolveInternalAutomationBudget({
+    channel: "automation",
+    taskType: "automation-execution",
+    maxToolCalls: 999,
+    attemptTimeoutMs: 9_000_000,
+  });
+  assert.equal(capped.maxSteps, 30);
+  assert.equal(capped.attemptTimeoutMs, 570_000);
+
+  const previous = process.env.AUTOMATION_UNLIMITED;
+  try {
+    process.env.AUTOMATION_UNLIMITED = "1";
+    const unlimited = resolveInternalAutomationBudget({
+      channel: "automation",
+      taskType: "automation-execution",
+      maxToolCalls: 999,
+      attemptTimeoutMs: 9_000_000,
+    });
+    assert.equal(unlimited.maxSteps, 50, "unlimited steps align with the run-turn guard ceiling");
+    assert.equal(unlimited.attemptTimeoutMs, 3_600_000);
+  } finally {
+    if (previous === undefined) delete process.env.AUTOMATION_UNLIMITED;
+    else process.env.AUTOMATION_UNLIMITED = previous;
+  }
+});
