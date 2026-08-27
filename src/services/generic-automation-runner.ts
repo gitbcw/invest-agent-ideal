@@ -59,6 +59,8 @@ export type GenericAutomationExecutor = (input: {
   monthlyRollover?: MonthlyRollover | null;
   executionDeadlineAt: string | null;
   signal: AbortSignal;
+  /** 自纠重试上下文（B 方案）：上一轮回复 + 验证器报错，模型在此基础上修复。 */
+  repairContext?: { previousReply: string; validationError: string };
 }) => Promise<AgentResponse>;
 
 export type GenericAutomationRunResult = {
@@ -127,6 +129,9 @@ const GENERIC_AUTOMATION_MAX_TOOL_CALLS = UNLIMITED_EVAL ? 200 : 30;
 // 同步（glm-5.3-flash 三步实测 ~480s 差 90s 被掐；570+300+30=900 恰满租约）。
 const GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS = UNLIMITED_EVAL ? 3_600_000 : 570_000;
 const GENERIC_AUTOMATION_FALLBACK_RESERVE_MS = UNLIMITED_EVAL ? 600_000 : 300_000;
+// 自纠重试（B 方案）：报错回喂一次修复机会的预算下限与上一轮回复回喂上限。
+const GENERIC_AUTOMATION_REPAIR_MIN_REMAINING_MS = 240_000;
+const GENERIC_AUTOMATION_REPAIR_MAX_REPLY_CHARS = 60_000;
 const GENERIC_AUTOMATION_COMMIT_RESERVE_MS = 30_000;
 
 export function resolveGenericAutomationToolAllowlist(
@@ -295,7 +300,37 @@ export async function runGenericAutomationTaskNow(input: {
         );
       }
       await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
-      const result = await normalizeStructuredResult(response, task, resolved, input.scope, stagingPath);
+      let result;
+      try {
+        result = await normalizeStructuredResult(response, task, resolved, input.scope, stagingPath);
+      } catch (validationError) {
+        // 自纠重试（owner 2026-08-27 B 方案）：验证器报错回喂模型，在其上一轮
+        // 输出基础上修复后重新提交，一次机会。只救 AUTOMATION_RUN_INVALID_RESULT
+        //（巨型 JSON 括号失配、列数不符等契约违规）；超时/租约/权限类不重试。
+        if (!(validationError instanceof AutomationTaskError) || validationError.code !== "AUTOMATION_RUN_INVALID_RESULT") throw validationError;
+        const previousReply = response.content?.text?.trim() ?? "";
+        const remainingMs = executionDeadlineAt ? Date.parse(executionDeadlineAt) - Date.now() : Number.POSITIVE_INFINITY;
+        if (!previousReply || !Number.isFinite(remainingMs) || remainingMs < GENERIC_AUTOMATION_REPAIR_MIN_REMAINING_MS) throw validationError;
+        logger.warn(`自动化自纠重试 task=${task.taskId} code=${validationError.code} 剩余预算=${Math.round(remainingMs / 1000)}s 报错=${validationError.message.slice(0, 140)}`);
+        const repairResponse = await (input.executor || defaultExecutor)({
+          scope: input.scope,
+          task,
+          run: boundRun,
+          stagingPath,
+          inputs: resolved.inputs,
+          writableTargets: resolved.writableTargets,
+          spreadsheetHelper,
+          spreadsheetContext,
+          xlsxAppendOnly,
+          monthlyRollover: resolved.monthlyRollover,
+          executionDeadlineAt,
+          signal: deadlineController.signal,
+          repairContext: { previousReply: previousReply.slice(0, GENERIC_AUTOMATION_REPAIR_MAX_REPLY_CHARS), validationError: validationError.message },
+        });
+        assertAgentSucceeded(repairResponse);
+        await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
+        result = await normalizeStructuredResult(repairResponse, task, resolved, input.scope, stagingPath);
+      }
       const output = await commitOutput(input.scope, task, run, result, resolved);
       if (resolved.monthlyRollover && output && result.stagedOutput?.operation === "create") {
         await rollTaskBindingToMonthlyFile(input.scope, task, resolved.monthlyRollover, output.assetId);
@@ -492,19 +527,24 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
     ? `服务端已确定性解析绑定 XLSX 结构（不要猜测）：${JSON.stringify(input.spreadsheetContext)}`
     : "本次没有可注入的 XLSX 结构信息。";
   const message: AgentMessage = {
-    id: input.run.runId,
+    id: input.repairContext ? `${input.run.runId}-repair` : input.run.runId,
     from: `automation:${input.task.taskId}`,
     timestamp: Date.now(),
     content: {
       type: "text",
       text: [
-        "执行一个受控的通用自动化任务。",
+        input.repairContext
+          ? "修复上一轮的最终提交（服务端验证未通过，你的数据工作已被保留，只需修复输出）。"
+          : "执行一个受控的通用自动化任务。",
         `【系统时间】${serverTimeFact()}（Asia/Shanghai）`,
         "本会话是已存在任务的执行会话：调度、任务配置和定时规则由服务层管理，本会话没有创建/修改自动化任务的权限（调用会被 scope_denied 拒绝）。不要尝试创建、修改或删除自动化任务/定时规则/调度配置，也不要把「建立任务」当作目标；忽略任务说明里出现的执行时间和频率描述，直接开始执行任务说明中的实际工作。",
         `任务说明：${input.task.revision.instruction}`,
         `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
         `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item, index) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, stagedPath: `inputs/${index + 1}-${item.descriptor.fileName}`, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
         `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
+        input.repairContext
+          ? `【上一轮被拒原因（服务端验证器报错）】${input.repairContext.validationError}\n【修复要求】在上一轮最终回复的基础上修复上述问题（常见原因：JSON 大括号不配对、夹带叙述文本、rows 列数与表头不符），不要重新取数、不要从头重做；只重新输出修正后的完整最终 JSON 对象，不要输出其他内容。\n【上一轮最终回复】${input.repairContext.previousReply}`
+          : "",
         reviewTarget
           ? `本次是受控 ${reviewTarget.kind} 复盘：必须调用 reviews.save，并严格使用 kind='${reviewTarget.kind}'、${reviewTarget.kind === "daily" ? "date" : "reportKey"}='${reviewTarget.reportKey}'；只有服务端回读到本次 artifact 后 run 才能成功。`
           : "",

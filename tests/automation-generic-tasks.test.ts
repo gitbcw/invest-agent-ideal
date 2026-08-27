@@ -1443,3 +1443,13 @@ test("service tool manifest is trimmed to the mcpAllowedTools grant (glm stall d
   assert.equal(filterServiceToolsByGrant(full, undefined), full);
   assert.equal(filterServiceToolsByGrant(full, []), full);
 });
+
+test("validation failures trigger one repair round-trip with the validator error fed back (owner 2026-08-27 B plan)", async () => {
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.ok(runnerSource.includes("repairContext: { previousReply"), "runner must feed the previous reply and validator error back");
+  assert.ok(runnerSource.includes("GENERIC_AUTOMATION_REPAIR_MIN_REMAINING_MS"), "repair must be budget-gated");
+  assert.ok(runnerSource.includes("AUTOMATION_RUN_INVALID_RESULT") && runnerSource.includes("只救"), "only contract violations get a repair round");
+  assert.ok(runnerSource.includes("不要重新取数、不要从头重做"), "repair directive must preserve prior work");
+  assert.ok(runnerSource.includes("上一轮被拒原因"), "validator error must be quoted in the repair directive");
+});
