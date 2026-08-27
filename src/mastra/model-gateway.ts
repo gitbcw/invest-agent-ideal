@@ -12,14 +12,6 @@ export interface MastraModelConfig {
   url: string;
   /** Kept as a string for Mastra's provider config; empty means unconfigured. */
   apiKey: string;
-  /**
-   * 透传给 Mastra ModelRouter → createOpenAICompatible 的默认请求头。
-   * 2026-08-27：默认 `Connection: close`（每请求新连接）。AI SDK/undici 直连
-   * new-api glm 通道的长流式响应存在零字节黑洞（mgreplay 回放 5 次复现，
-   * 经每请求新建连接的本地代理完全正常）；关连接复用即等效代理行为。
-   * 设 MASTRA_GATEWAY_KEEPALIVE=1 恢复旧的连接复用行为。
-   */
-  headers?: Record<string, string>;
 }
 
 export interface ModelGatewayOptions {
@@ -73,7 +65,6 @@ export function createModelGateway(options: ModelGatewayOptions = {}): MastraMod
         id: `${provider}/${modelName}`,
         url: baseUrl,
         apiKey,
-        ...(env.MASTRA_GATEWAY_KEEPALIVE === "1" ? {} : { headers: { Connection: "close" } }),
       };
     },
   };
