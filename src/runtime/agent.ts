@@ -505,6 +505,7 @@ export function createRuntimeAgent(): RuntimeAgent {
           //（2026-08-19 mg 复盘事故排查时 error trace 全空是最大盲区）。
           agentModel: selectedModel || (error as { model?: string }).model,
           toolCalls: (error as { toolCalls?: unknown[] }).toolCalls,
+          firstTokenMs: (error as { firstTokenMs?: number }).firstTokenMs,
           modelSource,
         });
         if (isBusy) {

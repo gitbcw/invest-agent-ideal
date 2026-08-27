@@ -506,3 +506,25 @@ test("runMastraTurn rejects a concurrent turn for the same conversation", async 
   output.resolve("first response");
   await first;
 });
+
+test("timeout mid-stream still carries first-token and tool-call evidence (glm 2026-08-27 diagnosis)", async () => {
+  // 复现生产形态：思考流可见 → 工具调用发生 → 流挂起 → 轮超时。
+  // 超时轨迹此前不落 firstTokenMs/toolCalls，导致 glm 运行被两次误读为「零进度」。
+  const never = new Promise<never>(() => {});
+  async function* fakeFullStream() {
+    yield { type: "reasoning-delta", payload: { id: "r0", text: "思考片段" } };
+    yield { type: "tool-call", payload: { toolCallId: "tc1", toolName: "get_zt_pool" } };
+    await never;
+  }
+  const agent: MastraAgentLike = { stream: () => ({ fullStream: fakeFullStream() }) };
+  const error = await runMastraTurn(
+    { conversationId: "timeout-evidence", text: "test", timeoutMs: 400 },
+    { agent },
+  ).then(() => null, (e: unknown) => e);
+  assert.ok(error instanceof MastraTurnTimeoutError, `expected timeout error, got ${String(error)}`);
+  // T-327 链路：已发生的工具调用必须挂在错误上。
+  assert.ok(Array.isArray(error.toolCalls) && error.toolCalls.length === 1, `toolCalls should carry the executed call, got ${JSON.stringify(error.toolCalls)}`);
+  // 2026-08-27 修复：首字时间（思考流即可见）也必须挂上。
+  assert.equal(typeof error.firstTokenMs, "number");
+  assert.ok((error.firstTokenMs as number) < 400);
+});

@@ -25,6 +25,9 @@ export class MastraTurnError extends Error {
   /** T-327 取证字段：失败轮次实际使用的模型与已发生的工具调用摘要。 */
   model?: string;
   toolCalls?: unknown[];
+  /** 2026-08-27 取证补全：超时/失败轮次的首字时间（思考流即计入）。此前
+   * error trace 不落该值，glm 长思考运行被误读为「零首字零进度」两次。 */
+  firstTokenMs?: number;
   constructor(
     message: string,
     readonly code: MastraTurnErrorCode,
@@ -581,6 +584,9 @@ export async function runMastraTurn(
   const firstTokenWindow = Number(params.firstTokenTimeoutMs);
   // T-327 取证：失败轮次也保留已发生的工具调用，随异常抛给调用方落 trace。
   const observedToolCalls: unknown[] = [];
+  // 2026-08-27 取证补全：首字时间同样要在 race 打断时随错误带出（外层作用域
+  // 供 catch 读取；思考流即计入首字）。
+  let firstTokenAtMs: number | undefined;
   try {
     const startedAtMs = (dependencies.now ?? Date.now)();
     const timingStartedAtMs = Date.now();
@@ -684,6 +690,7 @@ export async function runMastraTurn(
     const mapped = await Promise.race([
       resolveOutput(output, params.text, startedAt,
         () => {
+          if (firstTokenAtMs === undefined) firstTokenAtMs = Date.now() - startedAtMs;
           clearFirstTokenWatchdog();
           emitProgress?.({ kind: "first_token", at: new Date().toISOString() });
         },
@@ -734,6 +741,7 @@ export async function runMastraTurn(
     // T-327 取证：失败轮次带上实际模型与已观测到的工具调用（此前 error trace 全空）。
     mapped.model = params.model;
     if (observedToolCalls.length > 0) mapped.toolCalls = observedToolCalls;
+    if (firstTokenAtMs !== undefined) mapped.firstTokenMs = firstTokenAtMs;
     throw mapped;
   } finally {
     clearFirstTokenWatchdog();
