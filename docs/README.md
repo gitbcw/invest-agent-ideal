@@ -14,6 +14,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [next-direction-governance-analysis-2026-08-22.md](./next-direction-governance-analysis-2026-08-22.md) | 基于治理上位原则的项目成熟度评估、证据缺口和治理计划起点；不创建产品执行任务 |
 | [governance-assessment-matrix.md](./governance-assessment-matrix.md) | G1–G5、L1–L4 治理证据矩阵与复核规则 |
 | [evaluation-assets-registry.md](./evaluation-assets-registry.md) | 第一批版本化评估资产目录及 executable/candidate 数量口径 |
+| [model-evaluation-2026-08-27-glm-qwen.md](./model-evaluation-2026-08-27-glm-qwen.md) | 共创期首轮模型评测论文：glm-5.3-flash×3 档 vs qwen3.7-flash×思考开关的双层对照（120 层1 样本 + 2 类自动化任务），含路由建议、成本模型、完整复现指南与两次误诊翻案记录 |
 | [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md) | 工具面×失败模式盲区地图：已覆盖/待盘点标注与 candidate 优先级队列 |
 | [bad-case-record-template.md](./bad-case-record-template.md) | Bad Case 证据、归因、修复、回归和回滚记录模板 |
 | [bad-cases/BC-20260821-001-long-conversation-coherence-latency.md](./bad-cases/BC-20260821-001-long-conversation-coherence-latency.md) | 首次治理演练：长会话逻辑已修复但性能与 Trace 证据未过放行门 |
