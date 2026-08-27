@@ -1,7 +1,7 @@
 import type { UserContext } from "../lib/user-context.js";
 import { createMastraAgent, type MastraAgentFactory, type MastraAgentFactoryOptions } from "./agent-factory.js";
 import { createMastraRequestContext } from "./bindings.js";
-import { createModelGateway, gptReasoningEffort, isGptSeriesModel, type MastraModelGateway, type ModelGatewayOptions } from "./model-gateway.js";
+import { createModelGateway, glmReasoningEffort, gptReasoningEffort, isGlmSeriesModel, isGptSeriesModel, type MastraModelGateway, type ModelGatewayOptions } from "./model-gateway.js";
 import {
   type MastraAgentLike,
   type MastraMessage,
@@ -659,10 +659,15 @@ export async function runMastraTurn(
     if (params.model && gateway) streamOptions.model = gateway.resolve(params.model);
     // GPT 系列默认思考深度（owner 2026-08-26）：gpt-* 轮次统一携带 reasoningEffort=high，
     // 命名空间键取模型描述符的 provider 前缀（默认 gateway），无 UI 入口、可用环境变量覆盖。
+    // GLM-5.3 系列（owner 2026-08-27）：官方不支持关思考，统一调至 high 档
+    //（glm-5.3 默认 max，重负载思考量约为输入 1.5-2 倍会超出自动化窗口）。
     const effectiveModel = params.model ?? gateway?.defaultModel;
-    if (effectiveModel && isGptSeriesModel(effectiveModel) && gateway) {
+    if (effectiveModel && gateway && (isGptSeriesModel(effectiveModel) || isGlmSeriesModel(effectiveModel))) {
       const providerName = gateway.resolve(effectiveModel).id.split("/")[0];
-      streamOptions.providerOptions = { [providerName]: { reasoningEffort: gptReasoningEffort() } };
+      const reasoningEffort = isGlmSeriesModel(effectiveModel) ? glmReasoningEffort() : gptReasoningEffort();
+      const existing = streamOptions.providerOptions as Record<string, unknown> | undefined;
+      const namespaced = existing?.[providerName] as Record<string, unknown> | undefined;
+      streamOptions.providerOptions = { ...existing, [providerName]: { ...namespaced, reasoningEffort } };
     }
 
     const streamStartedAtMs = Date.now();

@@ -97,3 +97,19 @@ export function gptReasoningEffort(env: NodeJS.ProcessEnv = process.env): string
   const raw = env.MASTRA_GPT_REASONING_EFFORT?.trim();
   return raw || "high";
 }
+
+/** GLM-5.3 系列（glm-5.3* 前缀）判定。官方不支持关闭思考，只有档位可调。 */
+export function isGlmSeriesModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("glm-5.3");
+}
+
+/**
+ * GLM-5.3 系列默认思考档位（owner 2026-08-27）：官方档位 low/high/max，
+ * glm-5.3 默认 max（深度推理，重负载下思考量约为输入的 1.5-2 倍，超出
+ * 自动化单次尝试窗口）；owner 裁决统一调至 high（中等思考）。
+ * 可用 MASTRA_GLM_REASONING_EFFORT 环境变量临时覆盖。
+ */
+export function glmReasoningEffort(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.MASTRA_GLM_REASONING_EFFORT?.trim();
+  return raw || "high";
+}

@@ -121,7 +121,7 @@ test("runMastraTurn without images keeps plain string content", async () => {
   assert.equal(messages[messages.length - 1].content, "hi");
 });
 
-test("GPT-series turns carry default reasoningEffort=high; non-GPT turns do not (owner 2026-08-26)", async () => {
+test("GPT-series turns carry default reasoningEffort=high; GLM-5.3 carries high; other domestic turns do not (owner 2026-08-26/27)", async () => {
   const gatewayOptions = { baseUrl: "https://gateway.invalid/v1", apiKey: "test-key" };
   const capture = () => {
     const seen: { providerOptions?: unknown; model?: unknown } = {};
@@ -143,7 +143,15 @@ test("GPT-series turns carry default reasoningEffort=high; non-GPT turns do not 
   );
   assert.deepEqual(gptRun.seen.providerOptions, { gateway: { reasoningEffort: "high" } });
 
-  // 非 GPT 轮：不携带 providerOptions。
+  // glm-5.3* 轮（owner 2026-08-27）：官方思考不可关，统一 high 档。
+  const glmRun = capture();
+  await runMastraTurn(
+    { conversationId: "glm-effort", text: "test", model: "glm-5.3-flash" },
+    { agent: glmRun.agent, gateway: gatewayOptions },
+  );
+  assert.deepEqual(glmRun.seen.providerOptions, { gateway: { reasoningEffort: "high" } });
+
+  // 其他国产轮：不携带 providerOptions。
   const domesticRun = capture();
   await runMastraTurn(
     { conversationId: "domestic-effort", text: "test", model: "deepseek-v4-flash-vision-exp" },
@@ -164,6 +172,21 @@ test("GPT-series turns carry default reasoningEffort=high; non-GPT turns do not 
   } finally {
     if (previous === undefined) delete process.env.MASTRA_GPT_REASONING_EFFORT;
     else process.env.MASTRA_GPT_REASONING_EFFORT = previous;
+  }
+
+  // 环境变量覆盖：MASTRA_GLM_REASONING_EFFORT 临时调整 glm 思考档位。
+  const previousGlm = process.env.MASTRA_GLM_REASONING_EFFORT;
+  try {
+    process.env.MASTRA_GLM_REASONING_EFFORT = "low";
+    const glmOverrideRun = capture();
+    await runMastraTurn(
+      { conversationId: "glm-effort-override", text: "test", model: "glm-5.3-flash" },
+      { agent: glmOverrideRun.agent, gateway: gatewayOptions },
+    );
+    assert.deepEqual(glmOverrideRun.seen.providerOptions, { gateway: { reasoningEffort: "low" } });
+  } finally {
+    if (previousGlm === undefined) delete process.env.MASTRA_GLM_REASONING_EFFORT;
+    else process.env.MASTRA_GLM_REASONING_EFFORT = previousGlm;
   }
 });
 
