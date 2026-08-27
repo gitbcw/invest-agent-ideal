@@ -1453,3 +1453,10 @@ test("validation failures trigger one repair round-trip with the validator error
   assert.ok(runnerSource.includes("不要重新取数、不要从头重做"), "repair directive must preserve prior work");
   assert.ok(runnerSource.includes("上一轮被拒原因"), "validator error must be quoted in the repair directive");
 });
+
+test("contract tasks (update/create output) bypass the judge with a deterministic low guard (T-396 interim, 2026-08-27)", async () => {
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.ok(runnerSource.includes("contractOutputMode"), "deterministic guard must exist");
+  assert.ok(runnerSource.includes("确定性守卫"), "guard must be marked as the T-396 interim mechanism");
+});

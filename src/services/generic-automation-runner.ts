@@ -518,10 +518,17 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
   // 思考深度路由（owner 2026-08-27 扩展到自动化轮）：每轮用任务指令重判一次
   //（指令稳定，但规则集会随 bad case 进化）。决策经 context 传给 runtime，
   // 仅当自动链落点为 glm-5.3-flash 时升级到深度别名；裁判失败 fail-open low。
-  const thinkingDecision = await classifyThinkingDepth({
-    text: `${input.task.revision.name}\n${input.task.revision.instruction}\n输出模式: ${JSON.stringify(input.task.revision.output)}`,
-    mode: "automation",
-  });
+  // 【确定性守卫·T-396 过渡机制】输出模式为 update/create 的契约任务直接 low，
+  // 不问裁判：实盘三次实测（8-27）裁判在「逐股推算 vs 写表契约」边界反复翻转
+  //（low/high/low/high），规则集锚定例句无效；且 F1 实验证据表明契约任务
+  // 深度越高违约率越高。T-396 根治（裁判确定性）落地后移除此守卫恢复全量裁判。
+  const contractOutputMode = input.task.revision.output.mode === "update" || input.task.revision.output.mode === "create";
+  const thinkingDecision = contractOutputMode
+    ? { depth: "low" as const, reason: "输出契约任务·确定性守卫(T-396过渡)" }
+    : await classifyThinkingDepth({
+        text: `${input.task.revision.name}\n${input.task.revision.instruction}\n输出模式: ${JSON.stringify(input.task.revision.output)}`,
+        mode: "automation",
+      });
   logger.info(`思考深度路由(automation) task=${input.task.taskId} depth=${thinkingDecision.depth} reason=${thinkingDecision.reason}`);
   const spreadsheetContextText = input.spreadsheetContext && input.spreadsheetContext.length > 0
     ? `服务端已确定性解析绑定 XLSX 结构（不要猜测）：${JSON.stringify(input.spreadsheetContext)}`
