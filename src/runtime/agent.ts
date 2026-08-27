@@ -13,7 +13,7 @@ import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 import { classifyTaskError } from "../services/task-execution.js";
 import { OUTPUT_VOLUME_POLICY } from "./spreadsheet-output-policy.js";
 import { createMastraToolMap, filterServiceToolsByGrant } from "../mastra/tools/mastra-tools.js";
-import { classifyThinkingDepth, THINKING_DEPTH_HIGH_MODEL } from "../services/thinking-depth-router.js";
+import { classifyThinkingDepth, THINKING_DEPTH_MODELS, type ThinkingDepthDecision } from "../services/thinking-depth-router.js";
 import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { recordModelFeedback, resolveAutoModel } from "../services/model-health.js";
@@ -235,7 +235,7 @@ export function createRuntimeAgent(): RuntimeAgent {
       // T-327 取证：catch 里拿不到 try 内的 const，提前挂一个可写的引用。
       let promptTextForTrace: string | undefined;
       // 思考深度路由决策要同时落成功/失败轨迹：声明提升到 try 外。
-      let thinkingRouter: { depth: "low" | "high"; reason: string } | undefined;
+      let thinkingRouter: ThinkingDepthDecision | undefined;
 
       try {
         if (cancelSignal?.aborted) throw new Error("TASK_CANCELLED");
@@ -261,16 +261,24 @@ export function createRuntimeAgent(): RuntimeAgent {
           conversationId,
         };
 
-        // 共创期思考深度路由（owner 2026-08-27）：交互轮落点为 glm-5.3-flash 时，
-        // 由 glm-flash(low) 裁判模型按版本化规则集判 low/high，high 换深度别名
-        // glm-5.3-flash-high（new-api 双渠道）。自动化轮不路由（契约型任务一律
-        // low，实验依据 docs/model-evaluation-2026-08-27-glm-qwen.md F1）。
-        // 规则迭代 = 修订 THINKING_DEPTH_ROUTING_RULES 文档 + 提交部署，不写代码分支。
+        // 共创期思考深度路由（owner 2026-08-27，同日扩展三档+自动化轮）：
+        // 交互轮落点 glm-5.3-flash 时由裁判模型（glm-flash low）按交互规则集判
+        // low/high/max，非 low 换网关深度别名。自动化轮由 runner 用任务指令预判
+        // 并经 context._thinkingDepthHint 传入（指令稳定但规则集会进化，故每轮
+        // 重判）。规则迭代 = 修订规则集文档 + 部署，不写代码分支。
         if (selectedModel === "glm-5.3-flash"
           && (userChannel === "web" || userChannel === "weixin-mobile" || userChannel === "dashboard" || userChannel === "api")) {
           thinkingRouter = await classifyThinkingDepth({ text });
-          if (thinkingRouter.depth === "high") selectedModel = THINKING_DEPTH_HIGH_MODEL;
+          if (thinkingRouter.depth !== "low") selectedModel = THINKING_DEPTH_MODELS[thinkingRouter.depth];
           logger.info(`思考深度路由 user=${userId} depth=${thinkingRouter.depth} reason=${thinkingRouter.reason}`);
+        } else if (channel === "automation" && selectedModel === "glm-5.3-flash") {
+          const hint = message.context?._thinkingDepthHint as { depth?: unknown; reason?: unknown } | undefined;
+          if (hint && (hint.depth === "high" || hint.depth === "max" || hint.depth === "low")) {
+            const hintDecision: ThinkingDepthDecision = { depth: hint.depth, reason: typeof hint.reason === "string" ? hint.reason.slice(0, 60) : "runner-hint" };
+            thinkingRouter = hintDecision;
+            if (hintDecision.depth !== "low") selectedModel = THINKING_DEPTH_MODELS[hintDecision.depth];
+            logger.info(`思考深度路由(automation) task=${String(message.context?.taskId ?? "")} depth=${hintDecision.depth} reason=${hintDecision.reason}`);
+          }
         }
 
         // O1: WeChat is not an onboarding channel. Users who have not finished

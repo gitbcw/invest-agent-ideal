@@ -12,17 +12,22 @@ import { logger } from "../lib/logger.js";
  * 失败一律 fail-open 回 low（宁可快，用户会追问）。
  */
 
-export type ThinkingDepth = "low" | "high";
+export type ThinkingDepth = "low" | "high" | "max";
 export interface ThinkingDepthDecision {
   depth: ThinkingDepth;
   reason: string;
 }
 
 export const THINKING_DEPTH_ROUTER_MODEL = "glm-5.3-flash";
-export const THINKING_DEPTH_HIGH_MODEL = "glm-5.3-flash-high";
+/** 深度 → 网关模型别名（new-api 双/三渠道：zai / zai-high / zai-max）。 */
+export const THINKING_DEPTH_MODELS: Record<ThinkingDepth, string> = {
+  low: "glm-5.3-flash",
+  high: "glm-5.3-flash-high",
+  max: "glm-5.3-flash-max",
+};
 
-/** 规则集 v1（2026-08-27）：源自 14 天真实交互分类（docs/model-evaluation-2026-08-27-glm-qwen.md）。 */
-export const THINKING_DEPTH_ROUTING_RULES = `你是思考深度路由器。判断这条用户消息需要哪种思考深度，只输出一个 JSON 对象：{"depth":"low"或"high","reason":"不超过20字的理由"}，不要输出其他内容。
+/** 交互轮规则集 v2（2026-08-27）：源自 14 天真实交互分类（docs/model-evaluation-2026-08-27-glm-qwen.md）。 */
+export const THINKING_DEPTH_ROUTING_RULES = `你是思考深度路由器。判断这条用户消息需要哪种思考深度，只输出一个 JSON 对象：{"depth":"low"或"high"或"max","reason":"不超过20字的理由"}，不要输出其他内容。
 
 low（默认档；执行、查询、格式化产出类）：
 - 确认/取消/选项（如"确认""A""1""继续"）与纯寒暄问候
@@ -38,15 +43,42 @@ high（需要多步推理、权衡、推算或批判性判断）：
 - 需要推算的技术问题：指标交叉位置预估、参数推算
 - 政策/文章内容映射到行业与个股的筛选推理
 - 多约束权衡的开放决策问题（该不该买卖、如何配置）需要论据链
-- 用户明确要求"深入分析""仔细想想"
+
+max（极少使用；用户明确要求极限深度时）：
+- 用户明说"穷尽分析""最深入""不要怕慢"等极限深度要求
+- 绝大多数深度需求 high 已足够；交互中 max 意味着等待 1-3 分钟，从严判定
 
 拿不准时选 low（宁可快，用户会追问）。`;
+
+/** 自动化任务规则集 v1（2026-08-27）：judge 对象是任务指令（每轮运行重复判定，
+ * 规则集修订下一次运行即生效）。核心实验教训（论文 F1）：严格表格契约类任务
+ * 思考越深输出违约率越高（列数/文件名错误），low 是契约任务最优解。 */
+export const THINKING_DEPTH_AUTOMATION_RULES = `你是自动化任务的思考深度路由器。下面是一条自动化任务的定义（指令），判断它需要哪种思考深度，只输出一个 JSON 对象：{"depth":"low"或"high"或"max","reason":"不超过20字的理由"}，不要输出其他内容。
+
+low（默认档；产出有严格格式契约的任务）：
+- 结构化数据采集与表尾追加（表格类复盘、扫描表、台账）
+- 按既有模板/既定规则的复盘、选股、盯盘快照
+- 简报/摘要推送（早报、盘中快报、涨跌汇总）
+- 重要实验事实：表格契约类任务思考越深，列数/格式违约率越高（实测 high/max 连续违约、low 一次通过）——凡是要写入工作簿或输出结构化 JSON 的任务，除非另有强理由，一律 low
+
+high（产出以分析叙述为主的任务）：
+- 周报/月报中的深度复盘、趋势研判、逻辑归因（有叙述性章节的）
+- 策略验证报告、假设检验、多空论证类任务
+- 需要跨信息源综合并给出判断依据链的任务
+
+max（极少使用；研究设计类）：
+- 多源交叉研究、复杂策略设计、开放性问题探索类自动化
+- 从严判定：max 意味着单步耗时 2-4 分钟且总时长可能超出预算
+
+拿不准时选 low。`;
 
 const ROUTER_TIMEOUT_MS = 6_000;
 const ROUTER_MAX_INPUT_CHARS = 4_000;
 
 export async function classifyThinkingDepth(input: {
   text: string;
+  /** interactive=用户消息走交互规则集；automation=任务指令走自动化规则集。 */
+  mode?: "interactive" | "automation";
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
 }): Promise<ThinkingDepthDecision> {
@@ -56,6 +88,7 @@ export async function classifyThinkingDepth(input: {
   const key = env.MASTRA_GATEWAY_API_KEY || env.GATEWAY_API_KEY || env.OPENAI_API_KEY || "";
   const text = input.text.trim();
   if (!base || !key || !text) return { depth: "low", reason: "router-skipped" };
+  const rules = input.mode === "automation" ? THINKING_DEPTH_AUTOMATION_RULES : THINKING_DEPTH_ROUTING_RULES;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("router-timeout")), ROUTER_TIMEOUT_MS);
   try {
@@ -65,7 +98,7 @@ export async function classifyThinkingDepth(input: {
       body: JSON.stringify({
         model: THINKING_DEPTH_ROUTER_MODEL,
         messages: [
-          { role: "system", content: THINKING_DEPTH_ROUTING_RULES },
+          { role: "system", content: rules },
           { role: "user", content: text.slice(0, ROUTER_MAX_INPUT_CHARS) },
         ],
         max_tokens: 1024,
@@ -79,7 +112,7 @@ export async function classifyThinkingDepth(input: {
     const match = content.match(/\{[\s\S]*\}/);
     if (!match) return { depth: "low", reason: "router-unparsed" };
     const parsed = JSON.parse(match[0]) as { depth?: unknown; reason?: unknown };
-    if (parsed.depth === "high" || parsed.depth === "low") {
+    if (parsed.depth === "high" || parsed.depth === "low" || parsed.depth === "max") {
       return { depth: parsed.depth, reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 60) : "router" };
     }
     return { depth: "low", reason: "router-unparsed-depth" };

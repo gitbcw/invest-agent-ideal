@@ -29,6 +29,7 @@ import {
 } from "./automation-tasks.js";
 import { classifyTaskError, executionResponseError, type TaskErrorInfo } from "./task-execution.js";
 import { hasReviewArtifactPublication } from "./conversation-artifacts.js";
+import { classifyThinkingDepth } from "./thinking-depth-router.js";
 import {
   appendRowsToXlsxBytes,
   inspectAutomationXlsx,
@@ -479,6 +480,14 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
   // a user-selection lock (no in-turn auto fallback).
   const pinnedModel = process.env.GENERIC_AUTOMATION_MODEL?.trim() || "";
   const reviewTarget = resolveGenericAutomationReviewTarget(input.task, input.run);
+  // 思考深度路由（owner 2026-08-27 扩展到自动化轮）：每轮用任务指令重判一次
+  //（指令稳定，但规则集会随 bad case 进化）。决策经 context 传给 runtime，
+  // 仅当自动链落点为 glm-5.3-flash 时升级到深度别名；裁判失败 fail-open low。
+  const thinkingDecision = await classifyThinkingDepth({
+    text: `${input.task.revision.name}\n${input.task.revision.instruction}\n输出模式: ${JSON.stringify(input.task.revision.output)}`,
+    mode: "automation",
+  });
+  logger.info(`思考深度路由(automation) task=${input.task.taskId} depth=${thinkingDecision.depth} reason=${thinkingDecision.reason}`);
   const spreadsheetContextText = input.spreadsheetContext && input.spreadsheetContext.length > 0
     ? `服务端已确定性解析绑定 XLSX 结构（不要猜测）：${JSON.stringify(input.spreadsheetContext)}`
     : "本次没有可注入的 XLSX 结构信息。";
@@ -541,6 +550,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       expectedReviewKey: reviewTarget?.reportKey,
       _executionDeadlineAt: agentDeadlineAt,
       _automationMaxToolCalls: GENERIC_AUTOMATION_MAX_TOOL_CALLS,
+      _thinkingDepthHint: thinkingDecision,
       _attemptTimeoutMs: GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS,
       _fallbackMinRemainingMs: GENERIC_AUTOMATION_FALLBACK_RESERVE_MS,
       _cancelSignal: input.signal,

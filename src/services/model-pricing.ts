@@ -141,6 +141,7 @@ const MODEL_ALIASES: Record<string, string> = {
   "deepseek-v4-flash-vision-exp-max": "deepseek-v4-flash-vision-exp",
   // 思考深度别名（2026-08-27）：同模型不同档位，同价计费。
   "glm-5.3-flash-high": "glm-5.3-flash",
+  "glm-5.3-flash-max": "glm-5.3-flash",
 };
 
 /** Fallback for models absent from the registry (flagged, never silent). */
