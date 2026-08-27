@@ -57,9 +57,32 @@ test("Mastra factory resolves a gateway model through injected bindings without 
       id: "gateway/fake-model",
       url: "https://gateway.invalid/v1",
       apiKey: "test-key",
+      // 2026-08-27：默认 Connection: close（治 undici 直连 glm 通道长流的零字节黑洞）。
+      headers: { Connection: "close" },
     },
   });
   assert.equal("memory" in (receivedOptions ?? {}), false);
+
+  // MASTRA_GATEWAY_KEEPALIVE=1 恢复连接复用（不注入 headers）。
+  const previous = process.env.MASTRA_GATEWAY_KEEPALIVE;
+  try {
+    process.env.MASTRA_GATEWAY_KEEPALIVE = "1";
+    let keepaliveOptions: Record<string, unknown> | undefined;
+    class KeepaliveAgent extends FakeAgent {
+      constructor(options: Record<string, unknown>) {
+        super(options);
+        keepaliveOptions = options;
+      }
+    }
+    await createMastraAgent({
+      bindings: { Agent: KeepaliveAgent },
+      gateway: { baseUrl: "https://gateway.invalid/v1", apiKey: "test-key", defaultModel: "fake-model" },
+    });
+    assert.equal((keepaliveOptions?.model as Record<string, unknown> | undefined)?.headers, undefined);
+  } finally {
+    if (previous === undefined) delete process.env.MASTRA_GATEWAY_KEEPALIVE;
+    else process.env.MASTRA_GATEWAY_KEEPALIVE = previous;
+  }
 });
 
 test("runMastraTurn creates a real server-side RequestContext for dynamic Mastra bindings", async () => {
