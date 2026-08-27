@@ -19,6 +19,58 @@ export const OWNER_CSS = `
 .select{background:var(--surface-raised);border:1px solid var(--line-strong);color:var(--ink);border-radius:var(--radius-sm);padding:7px 10px;width:100%;outline:none}
 .grid{display:grid;grid-template-columns:minmax(360px,.92fr) minmax(420px,1.08fr);gap:var(--gap);align-items:start}
 .audit-grid{display:grid;grid-template-columns:300px 1fr;gap:var(--gap);align-items:start}
+.span-all{grid-column:1/-1}
+.segmented-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+/* 审计健康总览条 */
+.health-cards-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.health-card{border:1px solid var(--line);border-radius:var(--radius);padding:12px 13px;background:var(--surface-inset)}
+.health-card strong{display:block;font-size:26px;line-height:1;color:var(--ink)}
+.health-card span{display:block;color:var(--muted);font-size:12px;margin-top:7px}
+.health-card em{display:block;color:var(--muted);font-style:normal;font-size:11px;margin-top:4px;opacity:.85}
+.health-card.is-warn{background:var(--warn-soft);border-color:#fde68a}
+.health-card.is-warn strong{color:var(--warn)}
+.health-card.is-ok{background:var(--ok-soft);border-color:#bbf7d0}
+.health-card.is-ok strong{color:var(--ok)}
+.health-cards .empty{padding:14px;text-align:center;color:var(--muted)}
+.health-cov{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+.health-note{color:var(--muted);font-size:11px;margin-top:6px}
+/* 时间线过滤提示 + 自动化汇总条 */
+.audit-note{background:var(--surface-inset);border:1px dashed var(--line-strong);border-radius:var(--radius-sm);color:var(--ink-soft);font-size:12px;padding:7px 10px;margin-bottom:10px}
+.autom-summary{margin-bottom:10px}
+/* 卡片内链路诊断入口徽章 */
+.audit-ids{margin-top:9px}
+.id-chip{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;background:var(--brand-soft);color:var(--brand-strong);border:1px solid #bfd4f5;border-radius:999px;padding:2px 9px;cursor:pointer;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:border-color .12s,background .12s}
+.id-chip:hover{border-color:var(--brand);background:#dbeafe}
+.id-chip b{font-weight:750;margin-right:4px;text-transform:uppercase}
+/* 上下文窗口占用条 */
+.ctxbar{position:relative;height:16px;border-radius:999px;background:var(--surface-inset);border:1px solid var(--line-soft);overflow:hidden;margin-top:9px}
+.ctxbar-fill{height:100%;background:var(--ok);opacity:.45}
+.ctxbar-fill.high{background:var(--warn);opacity:.55}
+.ctxbar span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--ink-soft)}
+/* 运行诊断视图 */
+.diag-entry-row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+.diag-entry-row .field{min-width:210px;flex:1}
+.diag-entry-row button{flex-shrink:0}
+.diag-flow{display:flex;flex-direction:column;gap:8px}
+.diag-stage{border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-inset);overflow:hidden}
+.diag-stage[data-empty="1"]{opacity:.72}
+.diag-stage summary{cursor:pointer;list-style:none;display:flex;gap:8px;align-items:center;padding:9px 12px;font-size:13px;color:var(--ink)}
+.diag-stage summary::-webkit-details-marker{display:none}
+.diag-stage[open] summary{border-bottom:1px solid var(--line-soft)}
+.diag-body{padding:8px 12px;display:flex;flex-direction:column;gap:6px;background:var(--surface-raised)}
+.diag-row{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;background:var(--surface-inset);border:1px solid var(--line-soft);border-radius:var(--radius-sm);padding:6px 9px}
+.diag-row span{white-space:nowrap}
+.diag-row b{color:var(--muted);font-weight:650;margin-right:5px;font-size:11px}
+.diag-na{color:var(--muted);font-size:12px;font-style:italic;padding:2px 0}
+.diag-more{color:var(--muted);font-size:11px;padding:2px 1px}
+.diag-missing,.diag-ok-note{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-radius:var(--radius-sm);padding:10px 12px;font-size:12px}
+.diag-missing{background:var(--warn-soft);border:1px solid #fde68a}
+.diag-missing-title{display:flex;gap:8px;align-items:center;width:100%}
+.diag-missing-item{display:flex;gap:7px;align-items:center;background:rgba(255,255,255,.6);border:1px solid #fde68a;border-radius:var(--radius-sm);padding:4px 9px}
+.diag-missing-item strong{color:var(--warn);font-size:15px}
+.diag-missing-item span{color:var(--ink-soft)}
+.diag-ok-note{background:var(--ok-soft);border:1px solid #bbf7d0;color:var(--ink-soft)}
+.diag-notes{margin-top:10px;color:var(--muted);font-size:11px;line-height:1.7}
 .view.audit-grid{display:none}
 .view.audit-grid.active{display:grid}
 .cost-grid{display:grid;grid-template-columns:1fr;gap:var(--gap);align-items:start}
@@ -113,6 +165,7 @@ export const OWNER_CSS = `
   main.main{padding:18px 14px}
   .topbar{flex-direction:column}
   .owner-stats,.cost-summary,.stats{grid-template-columns:repeat(2,minmax(120px,1fr))}
+  .health-cards-row,.health-cov{grid-template-columns:repeat(2,minmax(0,1fr))}
   .grid,.audit-grid,.cost-grid{grid-template-columns:1fr}
   .audit-item{grid-template-columns:1fr}
   .audit-rail{border-right:0;border-bottom:1px solid var(--line-soft);display:flex;justify-content:space-between;gap:12px}

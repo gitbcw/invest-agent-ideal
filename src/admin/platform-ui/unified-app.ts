@@ -10,6 +10,7 @@ import { INSTANCES_JS } from "./owner/view-instances";
 import { COST_JS } from "./owner/view-cost";
 import { SOURCE_JS } from "./owner/view-source";
 import { AUDIT_JS } from "./owner/view-audit";
+import { DIAGNOSTIC_JS } from "./owner/view-diagnostic";
 import { RULES_JS } from "./owner/view-rules";
 import { OVERVIEW_JS } from "./partner/view-overview";
 import { CUSTOMERS_JS } from "./partner/view-customers";
@@ -74,8 +75,49 @@ function adminViewsHtml(): string {
         <div class="panel"><div class="panel-head"><h2>数据源可靠性（历史）</h2><span class="muted" id="sourceQualityUpdated">未加载</span></div><div class="panel-body" id="sourceQualityPanel"><div class="empty">加载中...</div></div></div>
       </section>
       <section id="view-audit" class="view audit-grid">
-        <div class="panel"><div class="panel-head"><h2>日志审计</h2><span class="muted" id="auditScopeHint">对话审计</span></div><div class="panel-body"><div class="form-grid"><div class="segmented"><button id="auditScopeConversation" class="segment active" onclick="setAuditScope('conversation')">对话审计</button><button id="auditScopePush" class="segment" onclick="setAuditScope('push')">推送审计</button></div><div class="field"><label>用户</label><select id="auditUser" class="select" onchange="onAuditUserChange()"></select></div><div class="field"><label>用户助手</label><select id="auditInstance" class="select" onchange="loadAudit()"></select></div><div class="field"><label>条数</label><select id="auditLimit" class="select" onchange="loadAudit()"><option value="30">30</option><option value="60">60</option><option value="120">120</option></select></div><button class="btn btn-primary" onclick="loadAudit()">刷新审计</button><div class="muted" id="auditHelp">对话审计查看微信用户消息进入 Mastra runtime 后的原始回复、清洗回复和入站提示。</div></div></div></div>
-        <div class="panel"><div class="panel-head"><h2 id="auditTimelineTitle">对话时间线</h2><span class="muted" id="auditUpdated">未加载</span></div><div class="panel-body" id="auditTimeline"><div class="empty">选择用户后加载审计记录</div></div></div>
+        <div class="panel span-all">
+          <div class="panel-head"><h2>运行健康与链路覆盖</h2><span class="muted" id="auditHealthUpdated">平台全局 · 未加载</span></div>
+          <div class="panel-body"><div id="auditHealth" class="health-cards"><div class="empty">正在读取健康数据...</div></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>日志审计</h2><span class="muted" id="auditScopeHint">对话审计</span></div>
+          <div class="panel-body"><div class="form-grid">
+            <div class="segmented segmented-3">
+              <button id="auditScopeConversation" class="segment active" onclick="setAuditScope('conversation')">对话审计</button>
+              <button id="auditScopePush" class="segment" onclick="setAuditScope('push')">推送审计</button>
+              <button id="auditScopeAutomation" class="segment" onclick="setAuditScope('automation')">自动化任务</button>
+            </div>
+            <div class="field"><label>用户</label><select id="auditUser" class="select" onchange="onAuditUserChange()"></select></div>
+            <div class="field"><label>用户助手</label><select id="auditInstance" class="select" onchange="loadAudit()"></select></div>
+            <div class="field"><label>时间范围</label><select id="auditSince" class="select" onchange="loadAudit()"><option value="1d">今天（24 小时）</option><option value="3d">近 3 天</option><option value="7d" selected>近 7 天</option><option value="30d">近 30 天</option><option value="">全部时间</option></select></div>
+            <div class="field"><label>状态</label><select id="auditIssuesOnly" class="select" onchange="loadAudit()"><option value="">全部记录</option><option value="true">仅看异常（错误/超时/失败）</option></select></div>
+            <div class="field"><label>条数</label><select id="auditLimit" class="select" onchange="loadAudit()"><option value="30">30</option><option value="60">60</option><option value="120">120</option></select></div>
+            <button class="btn btn-primary" onclick="loadAudit()">刷新审计</button>
+            <div class="field"><label>页内搜索（在已加载记录里过滤）</label><input id="auditSearch" placeholder="按正文、ID、模型、任务名过滤当前列表…" oninput="onAuditSearchInput()" /></div>
+            <div class="muted" id="auditHelp">对话审计查看微信/Web 用户消息进入 Mastra runtime 后的原始回复、清洗回复和入站提示。点击卡片上的 trace / run 徽章可跳转全链路诊断。</div>
+          </div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2 id="auditTimelineTitle">对话时间线</h2><span class="muted" id="auditUpdated">未加载</span></div>
+          <div class="panel-body" id="auditTimeline"><div class="empty">选择用户后加载审计记录</div></div>
+        </div>
+      </section>
+      <section id="view-diagnostics" class="view cost-grid">
+        <div class="panel">
+          <div class="panel-head"><h2>全链路诊断入口</h2><span class="muted" id="diagUpdated">未查询</span></div>
+          <div class="panel-body"><div class="form-grid">
+            <div class="diag-entry-row">
+              <div class="field"><label>ID 类型</label><select id="diagBy" class="select"><option value="traceId">traceId · Agent 回合</option><option value="messageId">messageId · 渠道消息</option><option value="conversationId">conversationId · 会话</option><option value="runId">runId · 运行（调度为 taskKey）</option><option value="taskId">taskId · 自动化任务定义</option><option value="deliveryId">deliveryId · 投递尝试</option></select></div>
+              <div class="field diag-id-field"><label>ID 值</label><input id="diagId" placeholder="粘贴要追查的 ID…" onkeydown="if(event.key==='Enter')loadDiagnostic()" /></div>
+              <button class="btn btn-primary" onclick="loadDiagnostic()">查链路</button>
+            </div>
+            <div class="muted">从任意入口 ID 反查一次运行的全链路：请求 → 回合 → 工具调用 → 服务操作 → 产物 → 推送 → 投递。只用显式 ID 关联，不做时间邻近猜测；缺失关联显式标为缺口。日志审计时间线里的 trace / run / pushJob 徽章点击即跳入本视图。</div>
+          </div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>诊断结果</h2><span class="muted" id="diagSummary"></span></div>
+          <div class="panel-body" id="diagResult"><div class="empty">输入入口 ID 后查看链路节点</div></div>
+        </div>
       </section>
       <section id="view-rule-alerts" class="view audit-grid">
         <div class="panel"><div class="panel-head"><h2>规则巡检</h2><span class="muted" id="ruleAlertScopeHint">确定性采样</span></div><div class="panel-body"><div class="form-grid"><div class="field"><label>用户</label><select id="ruleAlertUser" class="select" onchange="onRuleAlertUserChange()"></select></div><div class="field"><label>用户助手</label><select id="ruleAlertInstance" class="select" onchange="loadRuleAlerts()"></select></div><div class="field"><label>条数</label><select id="ruleAlertLimit" class="select" onchange="loadRuleAlerts()"><option value="30">30</option><option value="60">60</option><option value="120">120</option></select></div><button class="btn btn-primary" onclick="loadRuleAlerts()">刷新巡检</button><div class="muted">规则巡检按采样当刻价格执行确定性规则；触发事实写入提醒事件，推送由优先级和去重策略决定。</div></div></div></div>
@@ -126,6 +168,7 @@ function dashboardShell(role: "owner" | "partner"): string {
           <div class="nav-group-label">管理视角</div>
           <a id="nav-instances" href="#instances" onclick="setView('instances');return false">用户助手 <span class="chev">›</span></a>
           <a id="nav-audit" href="#audit" onclick="setView('audit');return false">日志审计 <span class="chev">›</span></a>
+          <a id="nav-diagnostics" href="#diagnostics" onclick="setView('diagnostics');return false">运行诊断 <span class="chev">›</span></a>
           <a id="nav-rule-alerts" href="#rule-alerts" onclick="setView('rule-alerts');return false">规则巡检 <span class="chev">›</span></a>
           <a id="nav-source-quality" href="#source-quality" onclick="setView('source-quality');return false">MCP 工具状态 <span class="chev">›</span></a>
         </div>` : "";
@@ -182,7 +225,7 @@ if(!authenticated){
 // 关键：setView 需同时处理运营视图（loadOpsView 驱动）和管理视图（懒加载 init）。
 const DASHBOARD_JS = `
 const OPS_VIEWS=['overview','customers','quality','runtime'];
-const TITLE_MAP={overview:'运营总览',customers:'客户与助手',quality:'产品质量',runtime:'运行与触达',instances:'用户助手',cost:'成本统计','source-quality':'MCP 工具状态',audit:'日志审计','rule-alerts':'规则巡检'};
+const TITLE_MAP={overview:'运营总览',customers:'客户与助手',quality:'产品质量',runtime:'运行与触达',instances:'用户助手',cost:'成本统计','source-quality':'MCP 工具状态',audit:'日志审计',diagnostics:'运行诊断','rule-alerts':'规则巡检'};
 const state={loaded:new Set(),customers:[]};
 const showError=(message)=>{const el=document.getElementById('notice');el.textContent=message;el.classList.add('show');};
 const finishUpdated=(data)=>{const el=document.getElementById('updated');if(el)el.textContent='数据更新时间：'+(data.updatedAt?new Date(data.updatedAt).toLocaleString('zh-CN'):'-');};
@@ -202,6 +245,7 @@ function setView(view){
   if(OPS_VIEWS.includes(name)){if(!state.loaded.has(name))loadOpsView(name);return;}
   if(name==='instances'){if(typeof render==='function')render();}
   if(name==='audit'&&!(AUDIT.items||[]).length&&typeof initAuditFromSelection==='function')initAuditFromSelection();
+  if(name==='diagnostics'&&typeof ensureDiagnosticLoaded==='function')ensureDiagnosticLoaded();
   if(name==='rule-alerts'&&!(RULE_ALERTS.tasks||[]).length&&typeof initRuleAlertsFromSelection==='function')initRuleAlertsFromSelection();
   if(name==='cost'&&!COST.platform&&typeof initCostFromSelection==='function')initCostFromSelection();
   if(name==='source-quality'&&!SOURCE_QUALITY&&typeof loadSourceQuality==='function')loadSourceQuality();
@@ -219,8 +263,8 @@ export function renderPlatformPage(options: { role?: "owner" | "partner"; portal
   const role = options.role || "partner";
   const isAdmin = role === "owner";
   const coreJs = CORE_JS.replace("__PLATFORM_CONFIG__", JSON.stringify({ portalPublicUrl: options.portalPublicUrl || "http://localhost:3100" }));
-  // owner 管理视图 JS（instances/source/audit/rules）仅 owner 注入。
-  const adminOnlyJs = isAdmin ? `${INSTANCES_JS}${SOURCE_JS}${AUDIT_JS}${RULES_JS}` : "";
+  // owner 管理视图 JS（instances/source/audit/diagnostics/rules）仅 owner 注入。
+  const adminOnlyJs = isAdmin ? `${INSTANCES_JS}${SOURCE_JS}${AUDIT_JS}${DIAGNOSTIC_JS}${RULES_JS}` : "";
   // 成本 JS 双方都注入（partner 看总览大盘，owner 看全部）；IS_PARTNER 控制脱敏分支。
   const costJs = `${COST_JS}`;
   // partner 运营视图 JS 双方都注入（owner 也要看运营视图）。

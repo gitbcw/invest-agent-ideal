@@ -16,7 +16,7 @@ let COST_FILTERS={days:'30'};
 let selectedCostInstanceId='';
 let SOURCE_QUALITY=null;
 let MCP_TOOLS=null;
-const VALID_VIEWS=new Set(['overview','customers','quality','runtime','instances','cost','source-quality','audit','rule-alerts']);
+const VALID_VIEWS=new Set(['overview','customers','quality','runtime','instances','cost','source-quality','audit','diagnostics','rule-alerts']);
 let ACTIVE_VIEW='overview';
 let AUDIT_SCOPE='conversation';
 

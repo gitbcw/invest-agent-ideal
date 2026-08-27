@@ -1,6 +1,6 @@
 # 一次运行诊断视图契约
 
-状态：治理基线草案（2026-08-22）；核心链路已实现（2026-08-24，T-363 / WP3）
+状态：治理基线草案（2026-08-22）；核心链路已实现（2026-08-24，T-363 / WP3）；诊断视图 UI 已落地（2026-08-27，Platform「运行诊断」视图，`src/admin/platform-ui/owner/view-diagnostic.ts`）
 
 > **实现状态（2026-08-24，T-363 / WP3）**：本契约的核心关联已落地——
 > - `sandbox_audit_logs` 新增 `trace_id`（叠加列），服务工具 audit 从回合上下文显式携带；
@@ -10,6 +10,7 @@
 > - Platform 推送运行聚合（`aggregatePushRuns`）显式关联优先，时间邻近仅作旧行展示兜底并以 `traceLink=time_proximity` 标记，不作为治理证据；
 > - 样例链回归：`tests/run-diagnostic-chain.test.ts`（Portal 对话链 + scheduler/push 链 + 反向入口 + n.a. 语义 + 缺失计数）。
 > 契约第「验收样例」3、4 号（外部 MCP 降级链、推送过期链）属 WP4/WP5 评估与故障演练范围，尚未纳入回归。
+> UI（2026-08-27）：入口表单（六种 ID 类型）+ 九段阶段流（n.a. 段折叠灰显）+ missingLinks 红色缺口徽章 + notes 脚注；日志审计时间线的 trace/run/pushJob 徽章可一键跳入。健康总览条另消费 `trace-coverage` 的 `health` 字段。
 
 本契约定义“从一次运行复盘整个链路”的最小视图。它补充 [mastra-observability-contract.md](./mastra-observability-contract.md)，不替代 `agent_traces`、conversation、automation、artifact 或 delivery 表的 ownership。
 

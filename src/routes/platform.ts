@@ -2,7 +2,7 @@ import path from "node:path";
 import { createHash, createHmac } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { and, count, desc, eq, gte, not, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, not, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { parse as parseYaml } from "yaml";
 import { renderPlatformPage } from "../admin/platform-page.js";
@@ -23,6 +23,7 @@ import {
   onboardingDrafts,
   platformUsers,
   pushJobs,
+  sandboxAuditLogs,
   scheduledTaskRuns,
   users,
 } from "../db/schema.js";
@@ -152,7 +153,16 @@ async function auditUsers() {
 
 type AuditScope = "all" | "conversation" | "push";
 
-async function loadAutomationRunAudit(input: { userId?: string; instanceId?: string; taskId?: string; status?: string; origin?: string; limit?: number }) {
+// `since=Nd`（N 天前，UTC）→ ISO 时间下限；其余格式原样透传（视为 ISO）。
+function parseAuditSince(raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  const days = /^(\d{1,3})d$/.exec(value);
+  if (days) return new Date(Date.now() - Number(days[1]) * 24 * 60 * 60 * 1000).toISOString();
+  return value;
+}
+
+async function loadAutomationRunAudit(input: { userId?: string; instanceId?: string; taskId?: string; status?: string; origin?: string; limit?: number; sinceIso?: string; issuesOnly?: boolean }) {
   const limit = Math.max(1, Math.min(Number(input.limit || 60), 200));
   const conditions = [];
   if (input.userId) conditions.push(eq(automationTaskRuns.userId, input.userId));
@@ -160,6 +170,9 @@ async function loadAutomationRunAudit(input: { userId?: string; instanceId?: str
   if (input.taskId) conditions.push(eq(automationTaskRuns.taskId, input.taskId));
   if (input.status) conditions.push(eq(automationTaskRuns.status, input.status));
   if (input.origin) conditions.push(eq(automationTaskRuns.origin, input.origin));
+  if (input.sinceIso) conditions.push(gte(automationTaskRuns.createdAt, input.sinceIso));
+  // 自动化「异常」= 失败与取消；succeeded/skipped/running 不算。
+  if (input.issuesOnly) conditions.push(inArray(automationTaskRuns.status, ["failed", "cancelled"]));
   const rows = await db.select({
     runId: automationTaskRuns.runId,
     taskId: automationTaskRuns.taskId,
@@ -218,20 +231,31 @@ async function loadAutomationRunAudit(input: { userId?: string; instanceId?: str
   return { items: rows, summary, limit };
 }
 
-async function loadAuditTimeline(input: { userId?: string; instanceId?: string; limit?: number; scope?: AuditScope }) {
+async function loadAuditTimeline(input: { userId?: string; instanceId?: string; limit?: number; scope?: AuditScope; sinceIso?: string; issuesOnly?: boolean }) {
   const limit = Math.max(1, Math.min(Number(input.limit || 40), 120));
   const scope = input.scope || "all";
   const conditions = [];
   if (input.userId) conditions.push(eq(agentTraces.userId, input.userId));
   if (input.instanceId) conditions.push(eq(agentTraces.instanceId, input.instanceId));
+  if (input.sinceIso) conditions.push(gte(agentTraces.createdAt, input.sinceIso));
+  // 「仅异常」必须是 SQL 级过滤：客户端页内过滤只能筛当前 limit 页，翻不到更早的错误。
+  if (input.issuesOnly) conditions.push(inArray(agentTraces.status, ["error", "timeout"]));
   if (scope === "conversation") conditions.push(sql`${agentTraces.channel} IN ('weixin-mobile', 'web')`);
   if (scope === "push") conditions.push(eq(agentTraces.channel, "scheduler"));
   const pushConditions = [];
   if (input.userId) pushConditions.push(eq(pushJobs.userId, input.userId));
   if (input.instanceId) pushConditions.push(eq(pushJobs.instanceId, input.instanceId));
+  if (input.sinceIso) pushConditions.push(gte(pushJobs.createdAt, input.sinceIso));
+  // 推送终态失败枚举与 push-queue 一致（failed/dead/expired）；retry/sent/pending 不算异常。
+  if (input.issuesOnly) pushConditions.push(inArray(pushJobs.status, ["failed", "dead", "expired"]));
   const taskConditions = [];
   if (input.userId) taskConditions.push(eq(scheduledTaskRuns.userId, input.userId));
   if (input.instanceId) taskConditions.push(eq(scheduledTaskRuns.instanceId, input.instanceId));
+  if (input.sinceIso) taskConditions.push(gte(scheduledTaskRuns.createdAt, input.sinceIso));
+  // 调度运行成功态口径含 success/succeeded/skipped，其余终态视为异常。
+  if (input.issuesOnly) {
+    taskConditions.push(sql`${scheduledTaskRuns.status} IS NOT NULL AND ${scheduledTaskRuns.status} NOT IN ('success', 'succeeded', 'skipped')`);
+  }
   // The rule-alert page owns the full sampling history. Keep general audit focused on
   // actionable scheduler activity while preserving rule hits, errors, and suppression.
   taskConditions.push(not(and(
@@ -414,6 +438,42 @@ async function loadTraceCoverage(input: { userId?: string; instanceId?: string; 
     },
     eligible: { runId: scheduled.length, taskId: automation.length },
     toolCallCoverage: completed.length === 0 ? null : completed.filter((row) => row.toolCalls !== null).length / completed.length,
+  };
+}
+
+// 总览条「今天有没有事」：近 N 天各审计面的异常计数（与时间线 status 过滤同一套口径）。
+async function loadAuditHealth(input: { days?: number }) {
+  const days = Math.max(1, Math.min(Number(input.days || 7), 90));
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const num = (value: unknown) => Number(value ?? 0);
+  const [traceRow] = await db.select({
+    total: count(),
+    error: sql<number>`coalesce(sum(case when ${agentTraces.status} = 'error' then 1 else 0 end), 0)`,
+    timeout: sql<number>`coalesce(sum(case when ${agentTraces.status} = 'timeout' then 1 else 0 end), 0)`,
+  }).from(agentTraces).where(gte(agentTraces.createdAt, since));
+  const [pushRow] = await db.select({
+    total: count(),
+    failed: sql<number>`coalesce(sum(case when ${pushJobs.status} = 'failed' then 1 else 0 end), 0)`,
+    dead: sql<number>`coalesce(sum(case when ${pushJobs.status} = 'dead' then 1 else 0 end), 0)`,
+    expired: sql<number>`coalesce(sum(case when ${pushJobs.status} = 'expired' then 1 else 0 end), 0)`,
+  }).from(pushJobs).where(gte(pushJobs.createdAt, since));
+  const [automationRow] = await db.select({
+    total: count(),
+    failed: sql<number>`coalesce(sum(case when ${automationTaskRuns.status} = 'failed' then 1 else 0 end), 0)`,
+    retryableFailures: sql<number>`coalesce(sum(case when ${automationTaskRuns.status} = 'failed' and ${automationTaskRuns.retryable} = 1 then 1 else 0 end), 0)`,
+  }).from(automationTaskRuns).where(gte(automationTaskRuns.createdAt, since));
+  const [opsRow] = await db.select({
+    total: count(),
+    denied: sql<number>`coalesce(sum(case when ${sandboxAuditLogs.status} = 'denied' then 1 else 0 end), 0)`,
+    error: sql<number>`coalesce(sum(case when ${sandboxAuditLogs.status} = 'error' then 1 else 0 end), 0)`,
+  }).from(sandboxAuditLogs).where(gte(sandboxAuditLogs.createdAt, since));
+  return {
+    days,
+    since,
+    traces: { total: num(traceRow?.total), error: num(traceRow?.error), timeout: num(traceRow?.timeout) },
+    pushes: { total: num(pushRow?.total), failed: num(pushRow?.failed), dead: num(pushRow?.dead), expired: num(pushRow?.expired) },
+    automationRuns: { total: num(automationRow?.total), failed: num(automationRow?.failed), retryableFailures: num(automationRow?.retryableFailures) },
+    serviceOps: { total: num(opsRow?.total), denied: num(opsRow?.denied), error: num(opsRow?.error) },
   };
 }
 
@@ -1627,18 +1687,20 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     };
   }));
 
-  app.get<{ Querystring: { userId?: string; instanceId?: string; limit?: string; scope?: string } }>("/api/platform/audit", safe(async (request) => {
+  app.get<{ Querystring: { userId?: string; instanceId?: string; limit?: string; scope?: string; since?: string; issuesOnly?: string } }>("/api/platform/audit", safe(async (request) => {
     const users = await auditUsers();
     const userId = request.query.userId?.trim();
     const instanceId = request.query.instanceId?.trim();
     const limit = Number(request.query.limit || 40);
     const scope = request.query.scope === "conversation" || request.query.scope === "push" ? request.query.scope : "all";
-    const timeline = await loadAuditTimeline({ userId, instanceId, limit, scope });
+    const sinceIso = parseAuditSince(request.query.since);
+    const issuesOnly = request.query.issuesOnly === "true";
+    const timeline = await loadAuditTimeline({ userId, instanceId, limit, scope, sinceIso, issuesOnly });
     const instances = await listProjectRuntimeContexts({ ownerUserId: userId || undefined });
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
-      filters: { userId: userId || "", instanceId: instanceId || "", limit: timeline.limit, scope: timeline.scope },
+      filters: { userId: userId || "", instanceId: instanceId || "", limit: timeline.limit, scope: timeline.scope, since: request.query.since?.trim() || "", issuesOnly },
       users,
       instances: instances.map((item) => ({
         instanceId: item.instanceId,
@@ -1651,11 +1713,13 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     };
   }));
 
-  app.get<{ Querystring: { userId?: string; instanceId?: string; taskId?: string; status?: string; origin?: string; limit?: string } }>("/api/platform/automation-runs", safe(async (request) => {
+  app.get<{ Querystring: { userId?: string; instanceId?: string; taskId?: string; status?: string; origin?: string; limit?: string; since?: string; issuesOnly?: string } }>("/api/platform/automation-runs", safe(async (request) => {
     const users = await auditUsers();
     const userId = request.query.userId?.trim();
     const instanceId = request.query.instanceId?.trim();
     const instances = await listProjectRuntimeContexts({ ownerUserId: userId || undefined });
+    const sinceIso = parseAuditSince(request.query.since);
+    const issuesOnly = request.query.issuesOnly === "true";
     const audit = await loadAutomationRunAudit({
       userId,
       instanceId,
@@ -1663,11 +1727,13 @@ export function registerPlatformRoutes(app: FastifyInstance) {
       status: request.query.status?.trim(),
       origin: request.query.origin?.trim(),
       limit: Number(request.query.limit || 60),
+      sinceIso,
+      issuesOnly,
     });
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
-      filters: { userId: userId || "", instanceId: instanceId || "", taskId: request.query.taskId?.trim() || "", status: request.query.status?.trim() || "", origin: request.query.origin?.trim() || "", limit: audit.limit },
+      filters: { userId: userId || "", instanceId: instanceId || "", taskId: request.query.taskId?.trim() || "", status: request.query.status?.trim() || "", origin: request.query.origin?.trim() || "", limit: audit.limit, since: request.query.since?.trim() || "", issuesOnly },
       users,
       instances: instances.map((item) => ({ instanceId: item.instanceId, name: item.name, ownerUserId: item.ownerUserId, status: item.status })),
       ...audit,
@@ -1741,15 +1807,16 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     };
   }));
 
-  app.get<{ Querystring: { userId?: string; instanceId?: string; days?: string } }>("/api/platform/audit/trace-coverage", safe(async (request) => {
+  app.get<{ Querystring: { userId?: string; instanceId?: string; days?: string; healthDays?: string } }>("/api/platform/audit/trace-coverage", safe(async (request) => {
     const userId = request.query.userId?.trim();
     const instanceId = request.query.instanceId?.trim();
     return {
       ok: true,
       updatedAt: new Date().toISOString(),
-      filters: { userId: userId || "", instanceId: instanceId || "", days: Number(request.query.days || 30) },
+      filters: { userId: userId || "", instanceId: instanceId || "", days: Number(request.query.days || 30), healthDays: Number(request.query.healthDays || 7) },
       coverage: await loadTraceCoverage({ userId, instanceId, days: Number(request.query.days || 30) }),
       diagnosticCoverage: await loadDiagnosticCoverage(Number(request.query.days || 30)),
+      health: await loadAuditHealth({ days: Number(request.query.healthDays || 7) }),
     };
   }));
 
