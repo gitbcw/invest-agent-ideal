@@ -73,6 +73,26 @@ test("spreadsheet.create delivers via the canonical artifact-card pipeline (G22)
     assert.ok(webInstruction!.includes("附件卡片"));
     assert.ok(webInstruction!.includes("不要放置任何下载链接"));
 
+    // 微信渠道话术分叉：引导去网页端看卡片/保存，而不是让微信用户找卡片。
+    const wechatResult = await callServiceTool("spreadsheet.create", {
+      fileName: "微信渠道表格.xlsx",
+      columns: ["日期"],
+      rows: [["2026-08-27"]],
+    }, {
+      userId,
+      instanceId,
+      projectId,
+      conversationId: "conv-weixin-delivery",
+      channel: "weixin-mobile",
+      permissions: ["read:self", "write:self"],
+    } as any);
+    assert.equal(wechatResult.ok, true);
+    assert.equal(wechatResult.delivery.location, "conversation_artifact_card");
+    assert.equal(wechatResult.delivery.savedToMyFiles, false, "微信渠道同样不自动入库，保存仍由用户在网页端点击");
+    assert.ok(wechatResult.delivery.instruction.includes("网页端"), "wechat guidance must point at the Portal");
+    assert.ok(wechatResult.delivery.instruction.includes("保存到我的文件"));
+    assert.ok(wechatResult.delivery.instruction.includes("不要在正文放置任何下载链接"));
+
     const stagingPath = path.join(tempRoot, "automation-staging");
     await mkdir(stagingPath, { recursive: true });
     const staged = await callServiceTool("spreadsheet.create", {

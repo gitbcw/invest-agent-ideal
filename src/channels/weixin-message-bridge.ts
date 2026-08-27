@@ -7,10 +7,12 @@ import { DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.j
 import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
 import {
   appendConversationMessage,
+  attachArtifactsToAssistantMessage,
   getAssistantMessageByRequestId,
   getConversationMessageByIdempotencyKey,
   type ConversationScope,
 } from "../services/conversation-log.js";
+import { markTurnEnd, markTurnStart } from "../services/conversation-turns.js";
 import { config } from "../lib/config.js";
 import { resolveWeixinAccount } from "./weixin-account-store.js";
 import { storeWeixinAttachment, type IncomingMediaAttachment, type StoredAttachment } from "../lib/attachment-store.js";
@@ -325,68 +327,79 @@ export class InvestAgentMobileBridge {
     if (userContext.instanceId) {
       await resumeAwaitingWeixinDeliveries(userContext.userId, userContext.instanceId);
     }
+    const turnId = idempotencyKey || `wx-turn:${Date.now()}-${randomBytes(4).toString("hex")}`;
+    // 与 web 路径对齐：微信轮也登记活动轮。publishConversationArtifact 依赖
+    // conversation_turn_active 把 turn_id 写到轮内发布的 artifact 上（否则是
+    // 找不回的孤儿记录），落库后的 attachArtifactsToAssistantMessage 再按
+    // turn_id 把附件卡片绑到助手消息——网页端会话历史靠这条链路显示卡片。
+    // 顺带让 T-328 轮内文件守卫（getCurrentTurnStart）在微信渠道同样生效。
+    markTurnStart({ userId: scope.userId, instanceId: scope.instanceId, conversationId, turnId });
     let response: Awaited<ReturnType<InvestAgentMobileBridge["agent"]["handleMessage"]>>;
     try {
-      response = await executeWithRetryPolicy(
-        () => this.agent.handleMessage({
-          id: `wx-${Date.now()}`,
-          from: first.conversationId || "weixin-mobile",
-          timestamp: Date.now(),
-          content: { type: "text", text: userText },
-          context: {
-            channel: "weixin-mobile",
-            conversationId,
-            requestId: idempotencyKey,
-            userId: userContext.userId,
-            projectId: userContext.projectId,
-            instanceId: userContext.instanceId,
-            instanceExpansionPath: userContext.instanceExpansionPath,
-            workspacePath: userContext.workspacePath,
-            attachments,
+      try {
+        response = await executeWithRetryPolicy(
+          () => this.agent.handleMessage({
+            id: `wx-${Date.now()}`,
+            from: first.conversationId || "weixin-mobile",
+            timestamp: Date.now(),
+            content: { type: "text", text: userText },
+            context: {
+              channel: "weixin-mobile",
+              conversationId,
+              requestId: idempotencyKey,
+              userId: userContext.userId,
+              projectId: userContext.projectId,
+              instanceId: userContext.instanceId,
+              instanceExpansionPath: userContext.instanceExpansionPath,
+              workspacePath: userContext.workspacePath,
+              attachments,
+            },
+          }),
+          {
+            executionBudgetMs: Number(process.env.WEIXIN_EXECUTION_BUDGET_MS) || undefined,
+            isRetryableResult: (candidate) => Boolean(executionResponseError(candidate)?.retryable),
           },
-        }),
-        {
-          executionBudgetMs: Number(process.env.WEIXIN_EXECUTION_BUDGET_MS) || undefined,
-          isRetryableResult: (candidate) => Boolean(executionResponseError(candidate)?.retryable),
-        },
-      );
-      const responseError = executionResponseError(response);
-      if (responseError) {
-        const terminal = terminalTaskError(responseError);
+        );
+        const responseError = executionResponseError(response);
+        if (responseError) {
+          const terminal = terminalTaskError(responseError);
+          response = {
+            content: { type: "text", text: terminal.userMessage },
+            finished: true,
+            data: {
+              executionStatus: "failed",
+              executionErrorCode: terminal.code,
+              executionErrorCategory: terminal.category,
+              executionRetryable: false,
+            },
+          };
+        }
+      } catch (error) {
+        const classified = terminalTaskError(classifyTaskError(error));
         response = {
-          content: { type: "text", text: terminal.userMessage },
+          content: { type: "text", text: classified.userMessage },
           finished: true,
           data: {
             executionStatus: "failed",
-            executionErrorCode: terminal.code,
-            executionErrorCategory: terminal.category,
+            executionErrorCode: classified.code,
+            executionErrorCategory: classified.category,
             executionRetryable: false,
           },
         };
       }
-    } catch (error) {
-      const classified = terminalTaskError(classifyTaskError(error));
-      response = {
-        content: { type: "text", text: classified.userMessage },
-        finished: true,
-        data: {
-          executionStatus: "failed",
-          executionErrorCode: classified.code,
-          executionErrorCategory: classified.category,
-          executionRetryable: false,
-        },
-      };
-    }
 
-    const chunks = await this.persistWeixinResponse({ userContext, userText, scope, conversationId, response });
-    if (chunks.length > 1) {
-      setTimeout(() => {
-        this.pushToConversation(conversationId, chunks.slice(1), contextToken).catch((error) => {
-          logger.warn(`微信后续分片发送失败: ${(error as Error).message}`);
-        });
-      }, 1200);
+      const chunks = await this.persistWeixinResponse({ userContext, userText, scope, conversationId, response, turnId });
+      if (chunks.length > 1) {
+        setTimeout(() => {
+          this.pushToConversation(conversationId, chunks.slice(1), contextToken).catch((error) => {
+            logger.warn(`微信后续分片发送失败: ${(error as Error).message}`);
+          });
+        }, 1200);
+      }
+      return { text: chunks[0] };
+    } finally {
+      markTurnEnd({ userId: scope.userId, instanceId: scope.instanceId, conversationId, turnId });
     }
-    return { text: chunks[0] };
   }
 
   private async persistWeixinResponse(input: {
@@ -395,20 +408,37 @@ export class InvestAgentMobileBridge {
     scope: ConversationScope;
     conversationId: string;
     response: Awaited<ReturnType<InvestAgentMobileBridge["agent"]["handleMessage"]>>;
+    turnId: string;
   }): Promise<string[]> {
     const text = input.response.content.text ?? "处理完成，但没有生成文本回复。";
     await rememberWeixinTurn(input.userContext, input.userText, text);
-    appendConversationMessage({
+    // 助手行复用与 user 行相同的 requestId（turnId）。web 路径两行共用同一
+    // requestId，getAssistantMessageByRequestId 的入站去重靠它命中；此前微信
+    // 桥用合成 wx-response:* ID，重复投递检测从未真正生效。
+    const assistantMessage = appendConversationMessage({
       scope: input.scope,
       conversationId: input.conversationId,
       channel: "weixin-mobile",
       role: "assistant",
       content: text,
-      requestId: `wx-response:${input.conversationId}:${Date.now()}`,
+      requestId: input.turnId,
       metadata: input.response.data?.executionStatus === "failed"
         ? { executionStatus: "failed", executionErrorCode: input.response.data.executionErrorCode, executionErrorCategory: input.response.data.executionErrorCategory }
         : { executionStatus: "succeeded" },
     });
+    // 把本轮发布的附件卡片绑到助手消息（web 路径同款）。绑定失败只降级为
+    // "无卡片"——绝不能影响微信文本回复本身。
+    try {
+      attachArtifactsToAssistantMessage({
+        conversationId: input.conversationId,
+        assistantMessageId: assistantMessage.messageId,
+        userId: input.scope.userId,
+        instanceId: input.scope.instanceId,
+        turnId: input.turnId,
+      });
+    } catch (error) {
+      logger.warn(`微信回复附件卡片绑定失败 conversation=${input.conversationId}: ${(error as Error).message}`);
+    }
     if (input.response.data?.executionStatus !== "failed") {
       scheduleConversationWorkingStateRefresh({
         conversationId: input.conversationId,

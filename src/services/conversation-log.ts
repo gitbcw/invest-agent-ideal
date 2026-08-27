@@ -1354,7 +1354,7 @@ function toPublicAttachmentDescriptorWithExpiry(stored: StoredAttachment, now = 
   };
 }
 
-function attachArtifactsToAssistantMessage(input: {
+export function attachArtifactsToAssistantMessage(input: {
   conversationId: string;
   assistantMessageId: string;
   userId: string;

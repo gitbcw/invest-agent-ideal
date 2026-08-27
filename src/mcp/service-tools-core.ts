@@ -44,7 +44,7 @@ import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
-import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId } from "../lib/user-context.js";
+import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId, type UserContext } from "../lib/user-context.js";
 import {
   WorkspaceStore,
   type OnboardingStateYaml,
@@ -88,6 +88,8 @@ export interface ServiceToolContext {
   taskType?: string;
   projectId?: string;
   conversationId?: string;
+  /** 消息渠道（微信/网页等）。in-process Mastra 路径由 UserContext 直接透传。 */
+  channel?: UserContext["channel"];
   runId?: string;
   taskId?: string;
   /** Agent-trace correlation key (runtime message id) for audit linkage. */
@@ -2105,6 +2107,9 @@ async function createSpreadsheetTool(input: Record<string, unknown> | undefined,
   });
   const artifact = published;
   await audit(context, { operation: "spreadsheet.create", resourceType: "conversation_artifact", resourceId: artifact.artifactId, requestBody: { fileName, columns: columns.length, rows: rows.length }, resultSummary: `delivered xlsx artifact=${artifact.artifactId} (unsaved); bytes=${bytes.length}` });
+  // 渠道话术分叉：微信端没有卡片可点，但卡片会出现在网页端同一会话的回复
+  // 下方——让模型把用户引导到网页端查看/保存，而不是提"点卡片上的保存"。
+  const wechatChannel = context.channel === "weixin-mobile";
   return {
     ok: true,
     artifact,
@@ -2114,7 +2119,9 @@ async function createSpreadsheetTool(input: Record<string, unknown> | undefined,
     delivery: {
       location: "conversation_artifact_card",
       savedToMyFiles: false,
-      instruction: "文件已生成为本次回复下方的附件卡片（可预览/下载）。它尚未保存到「我的文件」：请告知用户文件已生成，并说明如需留存可在卡片上点「保存到我的文件」；用户明确要求保存时才说明已入库。不要在正文放置任何下载链接或路径。",
+      instruction: wechatChannel
+        ? "文件已生成为附件卡片，卡片挂在网页端 Portal 本次会话的回复下方（微信端只发送文字）。请告知用户：文件已生成，可在网页端打开本会话查看和下载；如需留存，在网页端卡片上点「保存到我的文件」。不要提微信里能看到卡片，也不要在正文放置任何下载链接或路径。"
+        : "文件已生成为本次回复下方的附件卡片（可预览/下载）。它尚未保存到「我的文件」：请告知用户文件已生成，并说明如需留存可在卡片上点「保存到我的文件」；用户明确要求保存时才说明已入库。不要在正文放置任何下载链接或路径。",
     },
   };
 }
