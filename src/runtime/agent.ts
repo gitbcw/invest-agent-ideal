@@ -134,7 +134,10 @@ function resolvePositiveTimeoutMs(name: string, fallback: number): number {
 // 与 generic-automation-runner 的 GENERIC_AUTOMATION_MAX_TOOL_CALLS 同步调整
 //（2026-08-26：10 -> 30）。此处是硬顶：低于 runner 值会把任务预算压回去。
 const INTERNAL_AUTOMATION_MAX_STEPS = 30;
-const INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS = 480_000;
+// 2026-08-27：480s → 570s（mgreplay 回放实测 glm-5.3-flash 三步 ~480s，最终
+// JSON 步差 ~90s 被掐）。570 + 300 兜底 + 30 提交 = 900s 恰为 15 分钟租约；
+// 兜底仅在 attempt 早期失败时发生，全时长 attempt 后无兜底属预期。
+const INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS = 570_000;
 const INTERNAL_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
 
 /** Service-owned limits for generic automation ACP turns. */

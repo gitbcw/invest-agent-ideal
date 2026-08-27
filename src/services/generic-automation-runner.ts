@@ -119,7 +119,9 @@ const GENERIC_AUTOMATION_CONTEXT_TASK_TYPE = "automation-execution";
 // 10 次预算内对多标的任务结构性无解（13 只持仓 = 13 次调用），agent 只能整列标缺失。
 // 时间侧仍有总截止/租约/单次尝试超时兜底，调高次数不会放大执行时长上限。
 const GENERIC_AUTOMATION_MAX_TOOL_CALLS = 30;
-const GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS = 480_000;
+// 2026-08-27：480s → 570s，与 runtime/agent.ts 的 INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS
+// 同步（glm-5.3-flash 三步实测 ~480s 差 90s 被掐；570+300+30=900 恰满租约）。
+const GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS = 570_000;
 const GENERIC_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
 const GENERIC_AUTOMATION_COMMIT_RESERVE_MS = 30_000;
 

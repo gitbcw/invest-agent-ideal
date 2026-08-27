@@ -41,7 +41,7 @@ test("generic automation internal hints cap max steps and preserve a fallback re
   }), {
     enabled: true,
     maxSteps: 30,
-    attemptTimeoutMs: 480_000,
+    attemptTimeoutMs: 570_000,
     fallbackMinRemainingMs: 300_000,
   });
   assert.deepEqual(resolveInternalAutomationBudget({
