@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyThinkingDepth, THINKING_DEPTH_ROUTING_RULES } from "../src/services/thinking-depth-router.js";
+import { classifyThinkingDepth, THINKING_DEPTH_AUTOMATION_RULES, THINKING_DEPTH_ROUTING_RULES } from "../src/services/thinking-depth-router.js";
 
 const env = { MASTRA_GATEWAY_BASE_URL: "https://gateway.invalid/v1", MASTRA_GATEWAY_API_KEY: "test-key" };
 
@@ -76,4 +76,11 @@ test("three tiers map to gateway depth aliases and the runner wires the automati
   assert.ok(runnerSource.includes("_thinkingDepthHint: thinkingDecision"), "runner must pass the hint through message context");
   const agentSource = await (await import("node:fs/promises")).readFile(new URL("../src/runtime/agent.ts", import.meta.url), "utf8");
   assert.ok(agentSource.includes("_thinkingDepthHint"), "agent must consume the automation hint");
+});
+
+test("automation ruleset v2 puts contract tasks decisively at low (mg 2026-08-27 backfill lesson)", async () => {
+  // 实盘教训：控盘度复盘（update 契约 + 逐股推算字样）被判 high → 570s 超时。
+  // 补丁后最高优先级条款必须压过「需要推算」。
+  assert.ok(THINKING_DEPTH_AUTOMATION_RULES.includes("最高优先级条款"), "precedence clause must exist");
+  assert.ok(THINKING_DEPTH_AUTOMATION_RULES.includes("此条款优先于其他一切条款"), "explicit precedence must be stated");
 });
