@@ -12,7 +12,7 @@ import { buildAgentPromptContext } from "./prompt-context-builder.js";
 import { extractInlineSvgVisuals } from "../services/inline-visuals.js";
 import { classifyTaskError } from "../services/task-execution.js";
 import { OUTPUT_VOLUME_POLICY } from "./spreadsheet-output-policy.js";
-import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
+import { createMastraToolMap, filterServiceToolsByGrant } from "../mastra/tools/mastra-tools.js";
 import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { recordModelFeedback, resolveAutoModel } from "../services/model-health.js";
@@ -312,6 +312,10 @@ export function createRuntimeAgent(): RuntimeAgent {
           projectId: userContext.projectId ?? "invest-agent",
           instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId),
         };
+        // 授权即清单：带 mcpAllowedTools 的轮次（通用自动化）只下发授权的服务
+        // 工具 schema（2026-08-27 glm 卡死定性：90 工具/38.7k 输入 → 思考型
+        // 模型每步思考超时）。外部 MCP 数据面与 workspace/skill 不在此裁剪。
+        const grantedServiceTools = filterServiceToolsByGrant(mastraTools, userContext.mcpAllowedTools);
         // This returns undefined unless a service-owned bootstrap explicitly
         // registered an isolated project root for the authenticated scope.
         const scopedWorkspace = await createRegisteredMastraWorkspace({
@@ -369,7 +373,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             maxSteps,
             ...(message.context?._onProgress ? { onProgress: message.context._onProgress as import("./protocol.js").AgentTurnProgressCallback } : {}),
           } as Parameters<typeof runMastraTurn>[0];
-          const turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: mastraTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
+          const turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: grantedServiceTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
           // W1-P3 自动路由轮内兜底：首字超时（45s）或可重试的上游错误时，沿自动链换下一顺位模型重试。
           // 2026-08-18 加强：从只允许一跳扩展到走完整条自动链（默认最多 3 次兜底），
           // 并把网关 upstream 错误（如 Upstream error: 400）纳入可重试签名。
