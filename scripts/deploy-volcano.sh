@@ -228,6 +228,11 @@ if [ -n "${RELEASE_ID:-}" ]; then
   chmod 600 .deploy/release.json
 fi
 
+# Rollback copies are ~170MB each and accumulate with every deploy; keep the
+# newest 3 (including this deploy's). portal-failed-* is failure forensics and
+# stays until triaged manually.
+( cd "${portal_deploy_root}" && ls -1d portal-previous-* 2>/dev/null | LC_ALL=C sort -r | tail -n +4 | xargs -r rm -rf -- ) || true
+
 trap - EXIT
 EOF
 echo
