@@ -165,7 +165,8 @@ EOF
 write_manifest_and_publish() {
   local git_commit remote_release
   git_commit="${VOLCANO_DR_TOOL_COMMIT:-$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || printf 'unknown')}"
-  remote_release="$("${SSH_BIN}" -o BatchMode=yes "${REMOTE_HOST}" "cd '${REMOTE_RUNTIME_DIR}' && (git rev-parse HEAD 2>/dev/null || sed -n 's/^commit=//p' .deploy/release.json 2>/dev/null | head -n 1 || true)")"
+  # 服务器非 git 仓库；.deploy/release.json 由 deploy-volcano.sh 写出，为 JSON 格式。
+  remote_release="$("${SSH_BIN}" -o BatchMode=yes "${REMOTE_HOST}" "cd '${REMOTE_RUNTIME_DIR}' && (git rev-parse HEAD 2>/dev/null || sed -n 's/.*\"commit\"[[:space:]]*:[[:space:]]*\"\([0-9a-f]\{40\}\)\".*/\1/p' .deploy/release.json 2>/dev/null | head -n 1 || true)")"
   (
     cd "${STAGING_DIR}"
     find . -type f ! -name manifest.sha256 ! -name metadata.txt ! -name COMPLETE -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 > manifest.sha256
