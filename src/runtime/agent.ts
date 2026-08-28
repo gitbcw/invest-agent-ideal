@@ -19,6 +19,11 @@ import { runMastraTurn } from "../mastra/run-turn.js";
 import { recordModelFeedback, resolveAutoModel } from "../services/model-health.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../mastra/external-mcp.js";
+import {
+  applyInteractiveExternalToolDiscovery,
+  applyInteractiveServiceToolDiscovery,
+  interactiveToolDiscoveryEnabled,
+} from "../mastra/tool-discovery.js";
 import { loadConversationHistory } from "../services/conversation-history.js";
 import { isConversationWorkingStateEnabled } from "../services/conversation-working-state.js";
 import { buildConversationCoherenceContext } from "../services/conversation-working-state-store.js";
@@ -358,7 +363,15 @@ export function createRuntimeAgent(): RuntimeAgent {
         // 授权即清单：带 mcpAllowedTools 的轮次（通用自动化）只下发授权的服务
         // 工具 schema（2026-08-27 glm 卡死定性：90 工具/38.7k 输入 → 思考型
         // 模型每步思考超时）。外部 MCP 数据面与 workspace/skill 不在此裁剪。
-        const grantedServiceTools = filterServiceToolsByGrant(mastraTools, userContext.mcpAllowedTools);
+        // T-400 两段式发现（2026-08-28）：无授权的交互轮改走「常驻核心 + 目录 +
+        // 调度壳」（docs/tool-injection-strategy.md），INTERACTIVE_TOOL_DISCOVERY=off
+        // 可一键回退全量。
+        const interactiveDiscovery = interactiveToolDiscoveryEnabled()
+          && !(userContext.mcpAllowedTools && userContext.mcpAllowedTools.length > 0)
+          && channel !== "automation";
+        const grantedServiceTools = interactiveDiscovery
+          ? await applyInteractiveServiceToolDiscovery(mastraTools)
+          : filterServiceToolsByGrant(mastraTools, userContext.mcpAllowedTools);
         // This returns undefined unless a service-owned bootstrap explicitly
         // registered an isolated project root for the authenticated scope.
         const scopedWorkspace = await createRegisteredMastraWorkspace({
@@ -373,6 +386,11 @@ export function createRuntimeAgent(): RuntimeAgent {
           conversationId,
           runId: turnRequestId ?? message.id,
         });
+        // T-400：两段式外部轨——壳必须 delegate 到 observer 包装后的对象（审计
+        // 继承），所以重组发生在 observer 之后。
+        const publicToolsets = interactiveDiscovery
+          ? await applyInteractiveExternalToolDiscovery(observedToolsets)
+          : observedToolsets;
         try {
           // Generic automation runs carry service-owned internal budget hints.
           // They are intentionally ignored for interactive/API messages and
@@ -411,7 +429,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             timeoutMs: initialBudget.timeoutMs,
             userContext,
             requestContext: workspaceScope,
-            toolsets: observedToolsets,
+            toolsets: publicToolsets,
             signal: cancelSignal,
             maxSteps,
             ...(message.context?._onProgress ? { onProgress: message.context._onProgress as import("./protocol.js").AgentTurnProgressCallback } : {}),
