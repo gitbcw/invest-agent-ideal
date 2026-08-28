@@ -189,3 +189,67 @@ test("feedback labels an assistant reply, switches, and revokes (owner 2026-08-2
     .get(targetId) as { rating: string | null };
   assert.equal(raw.rating, null);
 });
+
+test("feedback comment: dislike dialog submit, omit preserves, empty clears, revoke purges (owner 2026-08-28)", async () => {
+  const { conversations } = await fixture;
+  const conversationId = "feedback-comment";
+  const turn = await conversations.chatViaConversationLog({
+    ...scope,
+    conversationId,
+    text: "帮我分析一下持仓",
+    agent: fakeAgent("持仓分析"),
+  });
+  const targetId = turn.assistantMessage.messageId;
+
+  // 点踩弹窗提交：dislike + 文字反馈落库（trim 后写入）。
+  const withComment = conversations.setConversationMessageFeedback({
+    ...scope,
+    conversationId,
+    messageId: targetId,
+    rating: "dislike",
+    comment: "  数据来源不对  ",
+  });
+  assert.equal(withComment.metadata?.userFeedback, "dislike");
+  assert.equal(withComment.metadata?.userFeedbackComment, "数据来源不对");
+
+  // 弹窗跳过（不带 comment）：dislike 幂等，已有评论保留。
+  const kept = conversations.setConversationMessageFeedback({
+    ...scope,
+    conversationId,
+    messageId: targetId,
+    rating: "dislike",
+  });
+  assert.equal(kept.metadata?.userFeedback, "dislike");
+  assert.equal(kept.metadata?.userFeedbackComment, "数据来源不对");
+
+  // 显式空评论 = 清除文字反馈，标注本身保留。
+  const cleared = conversations.setConversationMessageFeedback({
+    ...scope,
+    conversationId,
+    messageId: targetId,
+    rating: "dislike",
+    comment: "   ",
+  });
+  assert.equal(cleared.metadata?.userFeedback, "dislike");
+  assert.equal(cleared.metadata?.userFeedbackComment, undefined);
+
+  // 超长评论截断到 500 字符。
+  const truncated = conversations.setConversationMessageFeedback({
+    ...scope,
+    conversationId,
+    messageId: targetId,
+    rating: "dislike",
+    comment: "x".repeat(600),
+  });
+  assert.equal(truncated.metadata?.userFeedbackComment?.length, 500);
+
+  // 撤销标注（再次点击踩按钮）：rating 与 comment 一并清除。
+  const revoked = conversations.setConversationMessageFeedback({
+    ...scope,
+    conversationId,
+    messageId: targetId,
+    rating: null,
+  });
+  assert.equal(revoked.metadata?.userFeedback, undefined);
+  assert.equal(revoked.metadata?.userFeedbackComment, undefined);
+});

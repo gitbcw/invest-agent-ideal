@@ -13,7 +13,9 @@ import { sendConnectorRequest } from "@/lib/relay/server";
 
 const FeedbackSchema = z.object({
   messageId: z.string().trim().min(1).max(128),
-  rating: z.union([z.literal("like"), z.literal("dislike"), z.null()])
+  rating: z.union([z.literal("like"), z.literal("dislike"), z.null()]),
+  // 点踩弹窗文字反馈（owner 2026-08-28）：缺省 = 不动；null/空 = 清除；否则覆盖。
+  comment: z.string().max(500).nullish()
 });
 
 type Params = { params: { id: string } };
@@ -52,7 +54,8 @@ export async function POST(request: Request, { params }: Params) {
       ...scope,
       conversationId: params.id,
       messageId: parsed.data.messageId,
-      rating: parsed.data.rating
+      rating: parsed.data.rating,
+      ...(parsed.data.comment === undefined ? {} : { comment: parsed.data.comment })
     }
   );
   if (!remote.ok) {

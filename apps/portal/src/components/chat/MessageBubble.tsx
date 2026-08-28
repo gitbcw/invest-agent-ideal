@@ -23,8 +23,12 @@ interface MessageBubbleProps {
   onRetry?: (message: ChatMessageView) => void;
   /** 重新生成（owner 2026-08-26）：最后一条已送达回答不满意时重放该轮。 */
   onRegenerate?: (message: ChatMessageView) => void;
-  /** 【喜欢/不喜欢】标注（owner 2026-08-26）：再次点击同一按钮 = 撤销。 */
-  onFeedback?: (message: ChatMessageView, rating: "like" | "dislike") => void;
+  /**
+   * 【喜欢/不喜欢】标注（owner 2026-08-26）：再次点击同一按钮 = 撤销。
+   * owner 2026-08-28 点踩弹窗：comment 缺省 = 按钮 toggle；显式传入（含 null）
+   * = 设置语义（弹窗提交时 dislike 已生效，不能再走 toggle）。
+   */
+  onFeedback?: (message: ChatMessageView, rating: "like" | "dislike", comment?: string | null) => void;
   onArtifactOpen?: (artifact: ArtifactCardView) => void;
   onArtifactSave?: (artifact: ArtifactCardView) => Promise<{ ok: boolean; message?: string }>;
   onArtifactLegacyPath?: (relativePath: string, messageId: string, conversationId: string) => void;
@@ -60,6 +64,9 @@ export function MessageBubble({
   const [traceDetail, setTraceDetail] = useState<TraceDetailView | null>(null);
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
+  // 点踩反馈弹窗（owner 2026-08-28）：点踩立即生效并弹窗，填不填都可以。
+  const [dislikeDialogOpen, setDislikeDialogOpen] = useState(false);
+  const [dislikeComment, setDislikeComment] = useState("");
   const copyResetTimer = useRef<number | null>(null);
   const animateMessage =
     shouldAnimate && isLastAssistant && message.role === "assistant" && !animationDone && !isWaiting;
@@ -94,6 +101,37 @@ export function MessageBubble({
       copyResetTimer.current = null;
     }, 1600);
   }, [message.content]);
+
+  // 点踩：未标注 → 标记 + 弹反馈框；已标注 → 撤销（toggle 语义在 ChatShell）。
+  const handleDislikeClick = useCallback(() => {
+    const wasActive = message.userFeedback === "dislike";
+    onFeedback?.(message, "dislike");
+    if (!wasActive) {
+      setDislikeComment("");
+      setDislikeDialogOpen(true);
+    }
+  }, [message, onFeedback]);
+
+  // 弹窗提交（owner 2026-08-28）：设置语义——dislike 已在点踩那一下生效，
+  // 这里只补交文字；空文本传 null = 显式无评论。
+  const submitDislikeComment = useCallback(() => {
+    setDislikeDialogOpen(false);
+    if (message.userFeedback !== "dislike") return;
+    onFeedback?.(message, "dislike", dislikeComment.trim() || null);
+  }, [dislikeComment, message, onFeedback]);
+
+  // 标注被撤销（再次点击踩按钮）时自动收起弹窗；Esc 也可关闭。
+  useEffect(() => {
+    if (dislikeDialogOpen && message.userFeedback !== "dislike") setDislikeDialogOpen(false);
+  }, [dislikeDialogOpen, message.userFeedback]);
+  useEffect(() => {
+    if (!dislikeDialogOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDislikeDialogOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dislikeDialogOpen]);
 
   // T-199 历史回看：点开时按需拉取 trace 摘要（工具时间线 + 计量）。
   const handleToggleTrace = useCallback(async () => {
@@ -227,7 +265,7 @@ export function MessageBubble({
         ) : null}
       </div>
       {!isWaiting && !typewriter.isAnimating && message.status === "sent" && message.content ? (
-        <div className="mt-2 flex items-center gap-0.5">
+        <div className="relative mt-2 flex items-center gap-0.5">
           <ActionButton
             onClick={() => void handleCopy()}
             label={copied ? "已复制" : "复制"}
@@ -237,20 +275,76 @@ export function MessageBubble({
           </ActionButton>
           {onFeedback ? (
             <>
-              <ActionButton
-                onClick={() => onFeedback(message, "like")}
-                label={message.userFeedback === "like" ? "已标喜欢" : "喜欢"}
-                active={message.userFeedback === "like"}
-              >
-                <ThumbsUp size={15} aria-hidden="true" />
-              </ActionButton>
-              <ActionButton
-                onClick={() => onFeedback(message, "dislike")}
-                label={message.userFeedback === "dislike" ? "已标不喜欢" : "不喜欢"}
-                active={message.userFeedback === "dislike"}
-              >
-                <ThumbsDown size={15} aria-hidden="true" />
-              </ActionButton>
+              {message.userFeedback !== "dislike" ? (
+                <ActionButton
+                  onClick={() => onFeedback(message, "like")}
+                  label={message.userFeedback === "like" ? "已标喜欢" : "喜欢"}
+                  active={message.userFeedback === "like"}
+                  activeTone="accent"
+                >
+                  <ThumbsUp
+                    size={15}
+                    fill={message.userFeedback === "like" ? "currentColor" : "none"}
+                    aria-hidden="true"
+                  />
+                </ActionButton>
+              ) : null}
+              {message.userFeedback !== "like" ? (
+                <ActionButton
+                  onClick={handleDislikeClick}
+                  label={message.userFeedback === "dislike" ? "已标不喜欢" : "不喜欢"}
+                  active={message.userFeedback === "dislike"}
+                  activeTone="danger"
+                >
+                  <ThumbsDown
+                    size={15}
+                    fill={message.userFeedback === "dislike" ? "currentColor" : "none"}
+                    aria-hidden="true"
+                  />
+                </ActionButton>
+              ) : null}
+              {dislikeDialogOpen ? (
+                <>
+                  {/* 透明遮罩：点击弹窗外任意位置收起，不阻断页面滚动。 */}
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setDislikeDialogOpen(false)}
+                    aria-hidden="true"
+                  />
+                  <div
+                    className="absolute bottom-full left-0 z-50 mb-2 w-80 max-w-[calc(100vw-3rem)] rounded-xl border border-black/10 bg-white p-3 shadow-lg"
+                    role="dialog"
+                    aria-label="不满意反馈"
+                  >
+                    <p className="text-xs font-medium text-[#343541]">告诉我们哪里不满意？（选填）</p>
+                    <textarea
+                      className="mt-2 w-full resize-none rounded-lg border border-black/10 px-2.5 py-2 text-sm text-[#202123] placeholder:text-[#b4b4b8] focus:border-accent-400 focus:outline-none focus:ring-1 focus:ring-accent-300"
+                      rows={3}
+                      maxLength={500}
+                      placeholder="写下具体问题，帮助我们改进…"
+                      value={dislikeComment}
+                      onChange={(e) => setDislikeComment(e.target.value)}
+                      autoFocus
+                    />
+                    <div className="mt-2 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md px-2.5 py-1 text-xs text-[#8a918d] transition hover:bg-black/5 hover:text-[#202123]"
+                        onClick={() => setDislikeDialogOpen(false)}
+                      >
+                        跳过
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md bg-accent-500 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-accent-600"
+                        onClick={submitDislikeComment}
+                      >
+                        提交
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : null}
             </>
           ) : null}
           {isLastAssistant && onRegenerate ? (
@@ -264,16 +358,19 @@ export function MessageBubble({
   );
 }
 
-/** 回复下方常显操作钮（owner 2026-08-26）：图标 + 悬停提示；active 时高亮。 */
+/** 回复下方常显操作钮（owner 2026-08-26）：图标 + 悬停提示；active 时填充高亮。 */
 function ActionButton({
   onClick,
   label,
   active,
+  activeTone = "accent",
   children
 }: {
   onClick: () => void;
   label: string;
   active: boolean;
+  /** active 高亮色调：喜欢走主题色，不喜欢走红色以示负反馈。 */
+  activeTone?: "accent" | "danger";
   children: React.ReactNode;
 }) {
   return (
@@ -282,9 +379,12 @@ function ActionButton({
       onClick={onClick}
       aria-label={label}
       title={label}
+      aria-pressed={active}
       className={`inline-flex h-7 w-7 items-center justify-center rounded-md transition focus:outline-none focus:ring-2 focus:ring-accent-300 ${
         active
-          ? "bg-accent-50 text-accent-600"
+          ? activeTone === "danger"
+            ? "bg-red-50 text-red-600"
+            : "bg-accent-50 text-accent-600"
           : "text-[#b4b4b8] hover:bg-black/5 hover:text-[#202123]"
       }`}
     >

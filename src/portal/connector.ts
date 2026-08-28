@@ -552,8 +552,18 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       const conversationId = String(message.payload?.conversationId || "").trim();
       const feedbackMessageId = String(message.payload?.messageId || "").trim();
       const rating = message.payload?.rating;
-      if (!conversationId || !feedbackMessageId || (rating !== "like" && rating !== "dislike" && rating !== null)) {
-        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "conversationId, messageId and rating (like|dislike|null) are required"));
+      // comment（owner 2026-08-28 点踩弹窗）：缺省 = 不动已有文字反馈；
+      // null = 清除；string = 覆盖。非法类型直接拒。
+      const rawComment = message.payload?.comment;
+      const comment = rawComment === undefined || rawComment === null
+        ? (rawComment as null | undefined)
+        : typeof rawComment === "string"
+          ? rawComment
+          : undefined;
+      if (!conversationId || !feedbackMessageId
+        || (rating !== "like" && rating !== "dislike" && rating !== null)
+        || (rawComment !== undefined && rawComment !== null && typeof rawComment !== "string")) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "conversationId, messageId and rating (like|dislike|null) are required; comment must be a string or null"));
       }
       try {
         return finish(ok(message.type, message.requestId, {
@@ -562,6 +572,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
             conversationId,
             messageId: feedbackMessageId,
             rating,
+            comment,
           }),
         }));
       } catch (error) {
