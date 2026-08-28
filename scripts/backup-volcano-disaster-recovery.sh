@@ -129,9 +129,15 @@ backup_full_data() {
     "${WORKSPACE_BACKUP}"
 
   # 新布局 reviews 在 data/reviews（顶级无 reviews）；runtime-data 同步排除以免重复。
+  # data/projects/*/assets 里会镜像自动化运行目录（嵌套 .codex 沙箱产物），
+  # 与工作区备份同一策略：任意深度排除（对齐 b43edd2/dd072a1 的修复口径）。
+  # runtime.db.pre-*/projects.pre-* 是迁移期服务器侧保险副本：DR 已有每晚
+  # runtime.db 快照，逐晚搬运历史保险副本只会让备份无限膨胀。
   sync_tree "${REMOTE_RUNTIME_DIR}/data/reviews" "${STAGING_DIR}/reviews" '._*'
-  sync_tree "${REMOTE_RUNTIME_DIR}/data" "${STAGING_DIR}/runtime-data" '*.db' '*.db-*' 'test-*' 'cache/' 'backups/' '/reviews/' '.sandbox-secret' '._*'
-  sync_tree "${REMOTE_RUNTIME_DIR}" "${STAGING_DIR}/runtime-code" '.git/' '.env*' '.state/' '.codex/' '.backup/' 'node_modules/' 'data/' 'workspaces/' 'reviews/' 'logs/' 'tmp/'
+  sync_tree "${REMOTE_RUNTIME_DIR}/data" "${STAGING_DIR}/runtime-data" '*.db' '*.db-*' 'test-*' 'cache/' 'backups/' '/reviews/' '.sandbox-secret' '._*' '.sandbox-token' '.codex/auth.json' '.codex/logs_2.sqlite*' '.codex/.tmp/' '.codex/tmp/' 'runtime.db.pre-*' 'projects.pre-*'
+  # .deploy/portal-previous-* 是服务器本地部署回滚副本（每次构建感知部署
+  # +~170MB），属运维残留而非灾备资产；代码基线在 git 与 release snapshot。
+  sync_tree "${REMOTE_RUNTIME_DIR}" "${STAGING_DIR}/runtime-code" '.git/' '.env*' '.state/' '.codex/' '.backup/' '.deploy/' 'node_modules/' 'data/' 'workspaces/' 'reviews/' 'logs/' 'tmp/'
   sync_tree "${REMOTE_PORTAL_DIR}" "${STAGING_DIR}/portal-code" '.git/' '.env*' 'node_modules/' '.next/' 'data/' 'logs/' 'backups/'
 }
 
