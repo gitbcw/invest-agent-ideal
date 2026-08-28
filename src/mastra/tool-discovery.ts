@@ -157,10 +157,10 @@ async function createDiscoveryTools(bindings: MastraBindingsProvider, spec: {
   const call = createTool({
     id: `${spec.serverLabel}.call`,
     description: `${spec.serverLabel} 工具调度：name 填目录中的原始工具名，input 为该工具的参数对象。未知名称返回错误与目录提示。`,
-    inputSchema: {
+    inputSchema: z.object({
       name: z.string().describe("目标工具名（见 catalog 目录）"),
       input: z.record(z.string(), z.any()).optional().describe("目标工具的参数对象"),
-    },
+    }),
     execute: async (raw: Record<string, unknown>) => {
       const name = String(raw?.name ?? "");
       const input = (raw?.input && typeof raw.input === "object" ? raw.input : {}) as Record<string, unknown>;

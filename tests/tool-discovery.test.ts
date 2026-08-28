@@ -125,17 +125,20 @@ test("external track keeps mdt top5 and routes long tail through the shell", asy
 test("catalog shell inputSchema must serialize to a JSON Schema with type object", async () => {
   // OpenAI 兼容网关严格校验 function schema：无 type 的 schema 会被整单 400
   // （2026-08-28 MG 17:30 复盘失败）。壳的 inputSchema 必须是 zod schema，
-  // 空对象字面量 {} 序列化后没有 type 字段。
+  // 空对象字面量 {} 或裸 shape 对象序列化后没有 type 字段。
   const svcResult = await applyInteractiveServiceToolDiscovery({ "portfolio.read": fakeTool("portfolio.read").tool }, fakeBindings);
   const svcCatalog = (svcResult["svc.catalog"] as { inputSchema: z.ZodType }).inputSchema;
   assert.equal(z.toJSONSchema(svcCatalog).type, "object", "svc.catalog inputSchema must serialize with type object");
+  const svcCall = (svcResult["svc.call"] as { inputSchema: z.ZodType }).inputSchema;
+  assert.equal(z.toJSONSchema(svcCall).type, "object", "svc.call inputSchema must serialize with type object");
 
   const extResult = await applyInteractiveExternalToolDiscovery(
     { "market-data-tool": { get_realtime_quote: fakeTool("get_realtime_quote").tool } },
     fakeBindings,
   );
-  const mdtCatalog = ((extResult["market-data-tool"] as Record<string, unknown>)["mdt.catalog"] as { inputSchema: z.ZodType }).inputSchema;
-  assert.equal(z.toJSONSchema(mdtCatalog).type, "object", "mdt.catalog inputSchema must serialize with type object");
+  const mdt = extResult["market-data-tool"] as Record<string, { inputSchema: z.ZodType }>;
+  assert.equal(z.toJSONSchema(mdt["mdt.catalog"].inputSchema).type, "object", "mdt.catalog inputSchema must serialize with type object");
+  assert.equal(z.toJSONSchema(mdt["mdt.call"].inputSchema).type, "object", "mdt.call inputSchema must serialize with type object");
 });
 
 function qsceKeysWithoutDiscoveryTools(qsse: Record<string, unknown>): Record<string, unknown> {
