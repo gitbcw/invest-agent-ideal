@@ -17,8 +17,7 @@ export type ServiceToolClass = "read" | "final-action" | "other-write";
 
 /** 服务 MCP 工具的风险分类单一真相。 */
 export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
-  // ── read: 历史市场观察记录、研究证据、用户状态 ──
-  "market_watch.snapshot": "read",
+  // ── read: 研究证据、用户状态（market_watch.snapshot 已于 2026-08-28 摘除）──
   "file.parse": "read",
   "research.news_search": "read",
   "research.web_search": "read",

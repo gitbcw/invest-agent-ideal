@@ -83,7 +83,7 @@
 | mdt·top5 | get_stock_news / get_realtime_quote / get_stock_profile / get_hist_kline / get_market_summary | 30 天调用画像前五（占外部调用 ~55%） |
 | 目录+壳 | svc.catalog / svc.call / mdt.catalog / mdt.call | 两段式入口 |
 
-长尾走目录的：automation×6、onboarding×4、watch_rules×6、method_changes×2、preferences.apply、写类确认型（portfolio.apply_changes 等，确认流兜底传参错误）、assets 管理类（rename/archive/delete，确认流兜底）、research.web_read、market_watch.snapshot、mdt 其余 31、qsse 4。
+长尾走目录的：automation×6、onboarding×4、watch_rules×6、method_changes×2、preferences.apply、写类确认型（portfolio.apply_changes 等，确认流兜底传参错误）、assets 管理类（rename/archive/delete，确认流兜底）、research.web_read、mdt 其余 31、qsse 4。（market_watch.snapshot 已于 2026-08-28 摘除，不在清单内）
 
 ### 3.3 目录自动生成（零服务端配合、零人工维护）
 

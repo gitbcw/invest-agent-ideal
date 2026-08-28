@@ -12,7 +12,6 @@ import {
 
 // 实际注册的工具名（从 invest-agent-service-tools.ts registerJsonTool 提取）
 const REGISTERED_TOOLS = [
-  "market_watch.snapshot",
   "file.parse",
   "research.news_search", "research.web_search", "research.web_read",
   "assets.list", "assets.version.read",

@@ -1513,10 +1513,10 @@ test("generic automation supports an operator model pin via GENERIC_AUTOMATION_M
 
 test("service tool manifest is trimmed to the mcpAllowedTools grant (glm stall diagnosis 2026-08-27)", async () => {
   const { filterServiceToolsByGrant } = await import("../src/mastra/tools/mastra-tools.js");
-  const full = { "market_watch.snapshot": { id: 1 }, "automation.create": { id: 2 }, "spreadsheet.create": { id: 3 } };
-  const grant = ["market_watch.snapshot", "spreadsheet.create"];
+  const full = { "portfolio.read": { id: 1 }, "automation.create": { id: 2 }, "spreadsheet.create": { id: 3 } };
+  const grant = ["portfolio.read", "spreadsheet.create"];
   const filtered = filterServiceToolsByGrant(full, grant);
-  assert.deepEqual(Object.keys(filtered).sort(), ["market_watch.snapshot", "spreadsheet.create"]);
+  assert.deepEqual(Object.keys(filtered).sort(), ["portfolio.read", "spreadsheet.create"]);
   // 空/缺省 grant 不裁剪（交互轮保持全量）。
   assert.equal(filterServiceToolsByGrant(full, undefined), full);
   assert.equal(filterServiceToolsByGrant(full, []), full);

@@ -18,6 +18,8 @@
 > **WP6/WP8 update**: Only `price_cross` remains an active watch-rule type. The 8 non-price rule types (ma/macd/kdj/rsi/boll/wr/volume/near_plan) are retired — `watch_rules.create` rejects them; future indicator-based screening will use an external quant tool.
 >
 > **WP7 update**: `market_watch_snapshots` writes are frozen; `market_watch.snapshot` reads historical rows only.
+>
+> **2026-08-28 update**: `market_watch.snapshot` is fully retired (unregistered from the manifest, allowlists, and classification table; the service-core branch now returns `MARKET_WATCH_SNAPSHOT_RETIRED`). Reason: the frozen table stopped at 2026-07-31 and the tool kept feeding stale facts to intraday tasks. Intraday market facts must come from the external `market-data-tool` MCP. Historical `market_watch_snapshots` rows remain in the database for audit only.
 
 Implementation:
 
@@ -50,7 +52,7 @@ Codex ACP receives an explicit MCP child-process environment. The wiring must ca
 Read tools:
 
 - Service-owned `market.*` facade tools are retired and archived under `docs/archive/service-market-data-retirement-2026-07-31/`. ACP market/provider facts should come from the external `market-data-tool` MCP discovered through the normal MCP manifest.
-- `market_watch.snapshot`（当前 user/instance 最近一次 scheduler 盘中历史快照及有效变化标记；只读历史审计/比较输入，不是实时行情来源）
+- `market_watch.snapshot` 已于 2026-08-28 摘除：快照表冻结在 2026-07-31，工具只会返回过期事实并被盘中任务误用作行情来源。历史行仅存数据库供审计，无工具读取入口。
 - `research.news_search`：当结构化服务数据或个股证据不足时，按关键词检索公开财经新闻；返回媒体、发布时间、链接、抓取时间和 warning，仅作为二级证据，不能填充缺失行情或财报字段。
 - `research.web_search`：通用公开网页检索，用于专业数据和财经新闻工具未覆盖的长尾问题；返回排名、标题、摘要、URL、provider、抓取时间和 warning。摘要只用于发现来源，必须继续读取原文核验。provider 链按确定性顺序：配置 `DOUBAO_SEARCH_API_KEY`（且未用 `DOUBAO_SEARCH_ENABLED=false` 关闭）时优先使用豆包搜索 Custom，无可用结果或失败时回退到自建 SearXNG JSON 后端（`EXTERNAL_WEB_SEARCH_SEARXNG_URL`）；两者都未配置时使用低置信度搜狗结果页。回退只用于发现来源，不表示 SearXNG “验证”或“修正”了豆包结果；MCP 输出、审计和遥测中始终保留实际命中的 provider 身份。
 - `research.web_read`：读取搜索所得的公开 HTTP(S) 页面并返回清洗正文；拒绝凭据 URL、本机/内网/保留地址和非文本内容，逐跳校验重定向，并限制超时、响应大小和最大字符数。它不是任意 HTTP 代理或文件下载器。

@@ -58,7 +58,6 @@ import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handler
 import { researchReadCapability } from "../services/external-evidence-search.js";
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
-import { latestMarketWatchSnapshot } from "../services/market-watch-snapshot.js";
 import { parseAttachmentWithMineru, isMineruAvailable } from "../services/mineru-parse.js";
 import { readAttachmentBytes } from "../services/file-retention.js";
 import {
@@ -238,16 +237,10 @@ async function dispatchServiceTool(
       };
     }
     case "market_watch.snapshot": {
-      const result = await latestMarketWatchSnapshot(context.userId, context.instanceId);
-      await audit(context, {
-        operation: "market_watch.snapshot",
-        resourceType: "market_watch_snapshot",
-        resourceId: result?.id,
-        resultSummary: result
-          ? `window=${result.windowKey}; capturedAt=${result.capturedAt}`
-          : "no scheduler snapshot available",
-      });
-      return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
+      // 2026-08-28 摘除：读取入口只返回 WP7 冻结前（≤2026-07-31）的历史行，
+      // 会误导盘中任务把过期事实当行情。保留此分支仅为了给旧调用方一个
+      // 明确错误而不是 unknown tool。
+      throw new Error("MARKET_WATCH_SNAPSHOT_RETIRED: 快照读取已下线，实时行情请使用外部 market-data MCP 工具");
     }
     case "research.news_search": {
       const query = stringInput(input?.query);

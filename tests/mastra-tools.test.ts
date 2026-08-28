@@ -67,7 +67,7 @@ test("unknown or missing context fails closed", async () => {
 
 test("registry has schema parity with current service classification", () => {
   const ids = new Set(TOOL_SPECS.map((spec) => spec.id));
-  assert.equal(ids.size, 45);
+  assert.equal(ids.size, 44);
   assert.deepEqual([...ids].sort(), Object.keys(SERVICE_TOOL_CLASSIFICATION).sort());
   assert.ok(ids.has("assets.version.commit"));
   assert.ok(ids.has("automation.create"));
@@ -100,7 +100,8 @@ test("Mastra map is constructed through the official createTool binding", async 
     Agent: class { stream() { throw new Error("not used"); } },
     createTool: (options) => { created.push(options); return options; },
   });
-  assert.equal(Object.keys(tools).length, 45);
-  assert.equal(created.length, 45);
-  assert.equal(created[0].id, "market_watch.snapshot");
+  assert.equal(Object.keys(tools).length, 44);
+  assert.equal(created.length, 44);
+  assert.equal(created[0].id, "file.parse");
+  assert.ok(!Object.keys(tools).includes("market_watch.snapshot"), "retired snapshot tool must stay unregistered");
 });

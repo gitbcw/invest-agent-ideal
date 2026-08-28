@@ -89,12 +89,10 @@ const automationStatusFields = {
  * transport；这里的 research 工具仅保留 service-core 的受控 read wrapper。
  */
 export const TOOL_SPECS: readonly ToolSpec[] = [
-  // ── read: 行情 / 研究 / 文件 ──
-  {
-    id: "market_watch.snapshot",
-    description: "Read the latest scheduler-captured market-watch facts and change marker for the current user and instance.",
-    inputSchema: {},
-  },
+  // ── read: 研究 / 文件 ──
+  // market_watch.snapshot 已于 2026-08-28 摘除：快照写入 WP7 起冻结（表停在
+  // 2026-07-31），该工具只会返回过期事实并误导盘中任务的数据源选择。实时
+  // 行情一律走外部 market-data MCP。
   {
     id: "file.parse",
     description: "Parse a user-uploaded document attachment (PDF/Word/PPT/Excel/CSV/image) into Markdown text via MinerU. Pass the attachment_id shown in the attachment context of the conversation. Returns the parsed document content as Markdown. The file is uploaded to and parsed by the MinerU cloud service (servers in China). Use this instead of writing your own parsing code. If MINERU_API_TOKEN is not configured, this tool returns an error explaining it is unavailable.",

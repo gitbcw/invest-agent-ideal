@@ -81,7 +81,7 @@ db/         schema + drizzle
 | --- | --- | --- |
 | 服务核心·事务/确认（15） | portfolio.apply_changes、watchlist.add、plans.set、plans.watch_conditions、method_changes.propose/apply、preferences.apply、watch_rules.create、confirmations.request、onboarding.confirm_portfolio、onboarding.draft.get/upsert_step/request_confirmation、artifacts.publish、reviews.save | 类①；D14 A 批 + C5（reviews.save 为任务完成契约本体） |
 | 服务核心·调度绑定（6） | automation.create/get/list/update/activate/pause | 类①；任务系统是调度权威 |
-| 服务核心·数据读取（8） | portfolio.read、watchlist.read、plans.read、conversation.history、confirmations.pending、market_watch.snapshot、assets.list、assets.version.read | 类②；快照/资产索引为 service-owned 数据，行情事实本身已由外部 market-data-tool MCP 承接 |
+| 服务核心·数据读取（7） | portfolio.read、watchlist.read、plans.read、conversation.history、confirmations.pending、assets.list、assets.version.read | 类②；资产索引为 service-owned 数据，行情事实本身已由外部 market-data-tool MCP 承接。market_watch.snapshot 原属此组，2026-08-28 摘除（快照表冻结在 2026-07-31，详见 service-tools-mcp.md） |
 | 服务核心·资产写侧（6） | assets.version.commit、assets.conversation.save、assets.attachment.save、assets.rename、assets.archive、assets.delete | 类①；资产生命周期 + 审计 |
 | 外部代理薄壳（3） | research.news_search/web_search/web_read | 类③样板：case 层校验/scope/审计 + 委托外部 |
 | 外部代理薄壳·实质达成（1） | file.parse | 类③；实现已是"服务读附件字节 + MinerU 外部解析"，维持现状，不做 MCP 协议化改造（无行为收益） |

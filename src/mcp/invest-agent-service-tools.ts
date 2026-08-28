@@ -96,12 +96,8 @@ async function main() {
     version: "1.0.0",
   });
 
-  registerJsonTool(
-    { server, callServiceTool, context },
-    "market_watch.snapshot",
-    "Read the latest scheduler-captured market-watch facts and change marker for the current user and instance.",
-    {}
-  );
+  // market_watch.snapshot 已摘除（2026-08-28）：WP7 起快照写入冻结，读取只会
+  // 返回 2026-07-31 前的历史行；实时行情走外部 market-data MCP。
 
   registerJsonTool(
     { server, callServiceTool, context },

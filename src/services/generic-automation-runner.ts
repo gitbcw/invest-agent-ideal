@@ -105,7 +105,8 @@ class AutomationExecutionFailure extends Error {
  * conversation confirmations, or patrol watch rules.
  */
 export const GENERIC_AUTOMATION_TOOL_ALLOWLIST = [
-  "market_watch.snapshot",
+  // market_watch.snapshot 已摘除（2026-08-28）：冻结的历史快照会被盘中任务
+  // 误当作行情事实；实时行情由外部 market-data MCP 工具集提供。
   "file.parse",
   "research.news_search",
   "research.web_search",
