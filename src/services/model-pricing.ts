@@ -139,7 +139,9 @@ const MODEL_ALIASES: Record<string, string> = {
   "deepseek-v4-pro-max": "deepseek-v4-pro",
   "deepseek-v4-flash-vision-exp-none": "deepseek-v4-flash-vision-exp",
   "deepseek-v4-flash-vision-exp-max": "deepseek-v4-flash-vision-exp",
-  // 思考深度别名（2026-08-27）：同模型不同档位，同价计费。
+  // 思考深度别名：同模型不同档位，同价计费。glm-5.3-flash-max 档位已于
+  // 2026-08-28 裁撤（Z.ai bench 性价比差 + 实盘零命中），别名保留仅为
+  // 历史 trace 行重算时的计价兼容，新流量不再产生该模型。
   "glm-5.3-flash-high": "glm-5.3-flash",
   "glm-5.3-flash-max": "glm-5.3-flash",
 };

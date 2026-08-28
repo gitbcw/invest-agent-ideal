@@ -10,24 +10,30 @@ import { logger } from "../lib/logger.js";
  * 断本身交给模型。规则集是给裁判模型读的——bad case 反哺 = 修订本规则集 +
  * 提交部署，裁判行为随之进化，代码不动。裁判成本 ~¥0.0014/次（flash low），
  * 失败一律 fail-open 回 low（宁可快，用户会追问）。
+ *
+ * 2026-08-28 裁撤 max 档（owner 依据 Z.ai Code Bench v1.0 官方数据）：Flash
+ * High→Max 准确率仅 +约1pp（28.0%→29.0%）而平均输出 token 从 ≈70K 翻到
+ * ≈140K（比 GLM-5.3 Max ≈75K 还啰嗦）；实盘 8-27 上线至 8-28 max 零命中。
+ * 路由收窄为两档，裁判仍输出 max 时降档收敛到 high（保留高深度意图）。
  */
 
-export type ThinkingDepth = "low" | "high" | "max";
+export type ThinkingDepth = "low" | "high";
 export interface ThinkingDepthDecision {
   depth: ThinkingDepth;
   reason: string;
 }
 
 export const THINKING_DEPTH_ROUTER_MODEL = "glm-5.3-flash";
-/** 深度 → 网关模型别名（new-api 双/三渠道：zai / zai-high / zai-max）。 */
+/** 深度 → 网关模型别名（new-api 双渠道：zai / zai-high）。 */
 export const THINKING_DEPTH_MODELS: Record<ThinkingDepth, string> = {
   low: "glm-5.3-flash",
   high: "glm-5.3-flash-high",
-  max: "glm-5.3-flash-max",
 };
 
-/** 交互轮规则集 v2（2026-08-27）：源自 14 天真实交互分类（docs/model-evaluation-2026-08-27-glm-qwen.md）。 */
-export const THINKING_DEPTH_ROUTING_RULES = `你是思考深度路由器。判断这条用户消息需要哪种思考深度，只输出一个 JSON 对象：{"depth":"low"或"high"或"max","reason":"不超过20字的理由"}，不要输出其他内容。
+/** 交互轮规则集 v3（2026-08-28）：v2 基础上裁撤 max 档（Z.ai Code Bench：Flash
+ * High→Max 仅 +约1pp 而 token 近乎翻倍；实盘零命中），极限深度请求归 high。
+ * v2 源自 14 天真实交互分类（docs/model-evaluation-2026-08-27-glm-qwen.md）。 */
+export const THINKING_DEPTH_ROUTING_RULES = `你是思考深度路由器。判断这条用户消息需要哪种思考深度，只输出一个 JSON 对象：{"depth":"low"或"high","reason":"不超过20字的理由"}，不要输出其他内容。
 
 low（默认档；执行、查询、格式化产出类）：
 - 确认/取消/选项（如"确认""A""1""继续"）与纯寒暄问候
@@ -43,17 +49,15 @@ high（需要多步推理、权衡、推算或批判性判断）：
 - 需要推算的技术问题：指标交叉位置预估、参数推算
 - 政策/文章内容映射到行业与个股的筛选推理
 - 多约束权衡的开放决策问题（该不该买卖、如何配置）需要论据链
-
-max（极少使用；用户明确要求极限深度时）：
-- 用户明说"穷尽分析""最深入""不要怕慢"等极限深度要求
-- 绝大多数深度需求 high 已足够；交互中 max 意味着等待 1-3 分钟，从严判定
+- 用户明说"穷尽分析""最深入""不要怕慢"等极限深度要求（也选 high）
 
 拿不准时选 low（宁可快，用户会追问）。`;
 
-/** 自动化任务规则集 v1（2026-08-27）：judge 对象是任务指令（每轮运行重复判定，
- * 规则集修订下一次运行即生效）。核心实验教训（论文 F1）：严格表格契约类任务
- * 思考越深输出违约率越高（列数/文件名错误），low 是契约任务最优解。 */
-export const THINKING_DEPTH_AUTOMATION_RULES = `你是自动化任务的思考深度路由器。下面是一条自动化任务的定义（指令），判断它需要哪种思考深度，只输出一个 JSON 对象：{"depth":"low"或"high"或"max","reason":"不超过20字的理由"}，不要输出其他内容。
+/** 自动化任务规则集 v2（2026-08-28）：v1 基础上裁撤 max 档，研究设计类归 high。
+ * judge 对象是任务指令（每轮运行重复判定，规则集修订下一次运行即生效）。
+ * 核心实验教训（论文 F1）：严格表格契约类任务思考越深输出违约率越高
+ * （列数/文件名错误），low 是契约任务最优解。 */
+export const THINKING_DEPTH_AUTOMATION_RULES = `你是自动化任务的思考深度路由器。下面是一条自动化任务的定义（指令），判断它需要哪种思考深度，只输出一个 JSON 对象：{"depth":"low"或"high","reason":"不超过20字的理由"}，不要输出其他内容。
 
 low（默认档；产出有严格格式契约的任务）：
 - 【最高优先级条款】凡任务输出策略为 update 或 create（写入工作簿、追加表格行、产出文件或结构化 JSON）的，一律判 low——即使任务描述含「推算/加权/评分/估算」等字样：数值推算由工具完成，模型只负责调用工具与整理结果；深度思考只留给叙述型产出任务。此条款优先于其他一切条款（2026-08-27 实盘教训：控盘度复盘被判 high 后 570s 超时）
@@ -61,16 +65,12 @@ low（默认档；产出有严格格式契约的任务）：
 - 结构化数据采集与表尾追加（表格类复盘、扫描表、台账）
 - 按既有模板/既定规则的复盘、选股、盯盘快照
 - 简报/摘要推送（早报、盘中快报、涨跌汇总）
-- 实验事实：表格契约类任务思考越深，耗时越长且列数/格式违约率越高（实测 high/max 连续违约或超时、low 一次通过）
+- 实验事实：表格契约类任务思考越深，耗时越长且列数/格式违约率越高（实测 deep 思考连续违约或超时、low 一次通过）
 
 high（产出以分析叙述为主的任务）：
 - 周报/月报中的深度复盘、趋势研判、逻辑归因（有叙述性章节的）
 - 策略验证报告、假设检验、多空论证类任务
-- 需要跨信息源综合并给出判断依据链的任务
-
-max（极少使用；研究设计类）：
-- 多源交叉研究、复杂策略设计、开放性问题探索类自动化
-- 从严判定：max 意味着单步耗时 2-4 分钟且总时长可能超出预算
+- 需要跨信息源综合并给出判断依据链的任务（含多源交叉研究、复杂策略设计）
 
 拿不准时选 low。`;
 
@@ -114,8 +114,12 @@ export async function classifyThinkingDepth(input: {
     const match = content.match(/\{[\s\S]*\}/);
     if (!match) return { depth: "low", reason: "router-unparsed" };
     const parsed = JSON.parse(match[0]) as { depth?: unknown; reason?: unknown };
-    if (parsed.depth === "high" || parsed.depth === "low" || parsed.depth === "max") {
+    if (parsed.depth === "high" || parsed.depth === "low") {
       return { depth: parsed.depth, reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 60) : "router" };
+    }
+    // max 已裁撤（2026-08-28）：裁判违规输出 max 时降档到 high，保留高深度意图。
+    if (parsed.depth === "max") {
+      return { depth: "high", reason: `max-collapsed-high:${typeof parsed.reason === "string" ? parsed.reason.slice(0, 40) : "router"}` };
     }
     return { depth: "low", reason: "router-unparsed-depth" };
   } catch (error) {

@@ -35,10 +35,13 @@ test("thinking depth router fails open to low on every failure mode", async () =
   assert.equal((await classifyThinkingDepth({ text: "  ", env, fetchImpl: okFetch('{"depth":"high"}') })).depth, "low");
 });
 
-test("routing ruleset stays versioned and model-readable (owner 2026-08-27)", async () => {
+test("routing ruleset stays versioned and model-readable (owner 2026-08-27; max cut 2026-08-28)", async () => {
   assert.ok(THINKING_DEPTH_ROUTING_RULES.includes("拿不准时选 low"), "fail-toward-low must stay explicit");
   assert.ok(THINKING_DEPTH_ROUTING_RULES.includes("high"), "high tier must be defined");
-  assert.ok(THINKING_DEPTH_ROUTING_RULES.includes("max"), "max tier must be defined");
+  // 2026-08-28 裁撤 max 档（Z.ai bench：Flash High→Max 仅 +约1pp 而 token 近乎
+  // 翻倍；实盘零命中）——规则集不得再向裁判提供 max 输出选项。
+  assert.ok(!/"depth":"low"或"high"或"max"/.test(THINKING_DEPTH_ROUTING_RULES), "ruleset must not offer max to the judge");
+  assert.ok(THINKING_DEPTH_ROUTING_RULES.includes("极限深度要求"), "extreme-depth requests must be redirected to high");
   const source = await (await import("node:fs/promises")).readFile(new URL("../src/runtime/agent.ts", import.meta.url), "utf8");
   assert.ok(source.includes("classifyThinkingDepth"), "agent must consult the router for interactive glm turns");
   assert.ok(source.includes('selectedModel === "glm-5.3-flash"'), "router only engages on the glm base model");
@@ -68,14 +71,25 @@ test("automation-mode routing judges task instructions with the automation rules
   assert.equal(contract.depth, "low");
 });
 
-test("three tiers map to gateway depth aliases and the runner wires the automation hint", async () => {
+test("two tiers map to gateway depth aliases, judge max collapses to high (max cut 2026-08-28)", async () => {
   const { THINKING_DEPTH_MODELS } = await import("../src/services/thinking-depth-router.js");
-  assert.deepEqual(THINKING_DEPTH_MODELS, { low: "glm-5.3-flash", high: "glm-5.3-flash-high", max: "glm-5.3-flash-max" });
+  assert.deepEqual(THINKING_DEPTH_MODELS, { low: "glm-5.3-flash", high: "glm-5.3-flash-high" });
+  // 裁撤 max 后裁判违规输出 max 时降档收敛到 high，保留高深度意图。
+  const collapsed = await classifyThinkingDepth({ text: "穷尽分析一下", env, fetchImpl: okFetch('{"depth":"max","reason":"极限深度"}') });
+  assert.equal(collapsed.depth, "high");
+  assert.ok(collapsed.reason.startsWith("max-collapsed-high"));
   const runnerSource = await (await import("node:fs/promises")).readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
   assert.ok(runnerSource.includes('mode: "automation"'), "runner must classify task instructions in automation mode");
   assert.ok(runnerSource.includes("_thinkingDepthHint: thinkingDecision"), "runner must pass the hint through message context");
   const agentSource = await (await import("node:fs/promises")).readFile(new URL("../src/runtime/agent.ts", import.meta.url), "utf8");
   assert.ok(agentSource.includes("_thinkingDepthHint"), "agent must consume the automation hint");
+});
+
+test("retired glm-5.3-flash-max alias stays priced for historical trace recompute", async () => {
+  const { computeModelCost } = await import("../src/services/model-pricing.js");
+  const cost = computeModelCost("glm-5.3-flash-max", { inputTokens: 1_000_000, outputTokens: 1_000_000 });
+  assert.equal(cost.source, "priced");
+  assert.equal(cost.amount, 3.6);
 });
 
 test("automation ruleset v2 puts contract tasks decisively at low (mg 2026-08-27 backfill lesson)", async () => {

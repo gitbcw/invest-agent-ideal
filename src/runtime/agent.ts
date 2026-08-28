@@ -273,8 +273,10 @@ export function createRuntimeAgent(): RuntimeAgent {
           logger.info(`思考深度路由 user=${userId} depth=${thinkingRouter.depth} reason=${thinkingRouter.reason}`);
         } else if (channel === "automation" && selectedModel === "glm-5.3-flash") {
           const hint = message.context?._thinkingDepthHint as { depth?: unknown; reason?: unknown } | undefined;
+          // max 已裁撤（2026-08-28）：旧 hint 残值 max 降档到 high。
           if (hint && (hint.depth === "high" || hint.depth === "max" || hint.depth === "low")) {
-            const hintDecision: ThinkingDepthDecision = { depth: hint.depth, reason: typeof hint.reason === "string" ? hint.reason.slice(0, 60) : "runner-hint" };
+            const depth = hint.depth === "max" ? "high" : hint.depth;
+            const hintDecision: ThinkingDepthDecision = { depth, reason: hint.depth === "max" ? "max-collapsed-high" : (typeof hint.reason === "string" ? hint.reason.slice(0, 60) : "runner-hint") };
             thinkingRouter = hintDecision;
             if (hintDecision.depth !== "low") selectedModel = THINKING_DEPTH_MODELS[hintDecision.depth];
             logger.info(`思考深度路由(automation) task=${String(message.context?.taskId ?? "")} depth=${hintDecision.depth} reason=${hintDecision.reason}`);
