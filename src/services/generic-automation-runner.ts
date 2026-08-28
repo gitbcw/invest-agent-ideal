@@ -307,10 +307,20 @@ export async function runGenericAutomationTaskNow(input: {
         // 自纠重试（owner 2026-08-27 B 方案）：验证器报错回喂模型，在其上一轮
         // 输出基础上修复后重新提交，一次机会。只救 AUTOMATION_RUN_INVALID_RESULT
         //（巨型 JSON 括号失配、列数不符等契约违规）；超时/租约/权限类不重试。
+        // 无 executionDeadlineAt 意味着预算无限（scheduled 路径不设截止），不是
+        // 拒绝重试的理由——原 Number.isFinite 判断曾把生产 scheduled 轮的全部
+        // 重试都挡掉（T-376）。
         if (!(validationError instanceof AutomationTaskError) || validationError.code !== "AUTOMATION_RUN_INVALID_RESULT") throw validationError;
         const previousReply = response.content?.text?.trim() ?? "";
         const remainingMs = executionDeadlineAt ? Date.parse(executionDeadlineAt) - Date.now() : Number.POSITIVE_INFINITY;
-        if (!previousReply || !Number.isFinite(remainingMs) || remainingMs < GENERIC_AUTOMATION_REPAIR_MIN_REMAINING_MS) throw validationError;
+        if (!previousReply || Number.isNaN(remainingMs) || remainingMs < GENERIC_AUTOMATION_REPAIR_MIN_REMAINING_MS) {
+          // T-376（dyk 8-25 / mg 8-26·8-27 连续失败）：shouldNotify 是服务层可
+          // 自决的投递开关，缺省不推送与 wechat_on_condition 的 exception_only
+          // 语义一致。重试不可行时不再让整轮数据工作被判失败，宽容归一化收尾。
+          if (isShouldNotifyValidationError(validationError)) {
+            result = await normalizeStructuredResult(response, task, resolved, input.scope, stagingPath, { lenientShouldNotify: true });
+          } else throw validationError;
+        } else {
         logger.warn(`自动化自纠重试 task=${task.taskId} code=${validationError.code} 剩余预算=${Math.round(remainingMs / 1000)}s 报错=${validationError.message.slice(0, 140)}`);
         const repairResponse = await (input.executor || defaultExecutor)({
           scope: input.scope,
@@ -329,7 +339,16 @@ export async function runGenericAutomationTaskNow(input: {
         });
         assertAgentSucceeded(repairResponse);
         await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
-        result = await normalizeStructuredResult(repairResponse, task, resolved, input.scope, stagingPath);
+        try {
+          result = await normalizeStructuredResult(repairResponse, task, resolved, input.scope, stagingPath);
+        } catch (retryError) {
+          // T-376：重试后仍缺 shouldNotify 时宽容缺省不推送，run 落 suppressed
+          // 而非 failed；其他契约违规维持失败闭环。
+          if (isShouldNotifyValidationError(retryError)) {
+            result = await normalizeStructuredResult(repairResponse, task, resolved, input.scope, stagingPath, { lenientShouldNotify: true });
+          } else throw retryError;
+        }
+        }
       }
       const output = await commitOutput(input.scope, task, run, result, resolved);
       if (resolved.monthlyRollover && output && result.stagedOutput?.operation === "create") {
@@ -550,7 +569,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item, index) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, stagedPath: `inputs/${index + 1}-${item.descriptor.fileName}`, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
         `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
         input.repairContext
-          ? `【上一轮被拒原因（服务端验证器报错）】${input.repairContext.validationError}\n【修复要求】在上一轮最终回复的基础上修复上述问题（常见原因：JSON 大括号不配对、夹带叙述文本、rows 列数与表头不符），不要重新取数、不要从头重做；只重新输出修正后的完整最终 JSON 对象，不要输出其他内容。\n【上一轮最终回复】${input.repairContext.previousReply}`
+          ? `【上一轮被拒原因（服务端验证器报错）】${input.repairContext.validationError}\n【修复要求】在上一轮最终回复的基础上修复上述问题（常见原因：JSON 大括号不配对、夹带叙述文本、rows 列数与表头不符、shouldNotify 缺失或不是 boolean），不要重新取数、不要从头重做；只重新输出修正后的完整最终 JSON 对象，不要输出其他内容。\n【上一轮最终回复】${input.repairContext.previousReply}`
           : "",
         reviewTarget
           ? `本次是受控 ${reviewTarget.kind} 复盘：必须调用 reviews.save，并严格使用 kind='${reviewTarget.kind}'、${reviewTarget.kind === "daily" ? "date" : "reportKey"}='${reviewTarget.reportKey}'；只有服务端回读到本次 artifact 后 run 才能成功。`
@@ -575,6 +594,9 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
               // summary doubles as the WeChat push body for delivery-enabled
               // tasks (a0f7997 covered the legacy scheduler prompts only).
               "本任务的结果会推送微信：summary 会直接作为微信消息正文发送给用户，必须使用适合微信阅读且可由微信渲染的简洁 Markdown；使用 `**重点**` 和清晰分段，并按内容需要使用列表或短标题，不要写成无格式的连续纯文本；禁止输出 Markdown 表格（微信不渲染表格）。若按任务约定本轮不推送（如输出 NO_PUSH），summary 简要说明原因即可。",
+              ...(input.task.revision.delivery.mode === "wechat_on_condition"
+                ? ["本任务按条件推送：最终 JSON 必须显式包含 shouldNotify 字段且只能是 boolean——true 表示本轮应把 summary 作为微信消息推送给用户，false 表示本轮不推送、仅留档。省略该字段或给非 boolean 值会导致本轮运行被判无效。"]
+                : []),
             ]),
       ].join("\n"),
     },
@@ -716,7 +738,32 @@ function clipPathForError(filePath: string): string {
   return filePath.length > 200 ? `${filePath.slice(0, 197)}...` : filePath;
 }
 
-async function normalizeStructuredResult(response: AgentResponse, task: AutomationTaskRecord, resolved: ResolvedBindings, scope: AutomationScope, stagingPath: string): Promise<{
+function isShouldNotifyValidationError(error: unknown): boolean {
+  // AutomationTaskError.message 的实际格式是 `${code}:${message}`，匹配子串而非前缀。
+  return error instanceof AutomationTaskError && error.code === "AUTOMATION_RUN_INVALID_RESULT" && error.message.includes("shouldNotify must be boolean");
+}
+
+/** wechat_on_condition 任务必须由模型显式表态是否推送（exception_only 语义）。
+ * strict 轮抛 AUTOMATION_RUN_INVALID_RESULT 以触发自纠重试；lenient 轮是 T-376
+ * 兜底（重试不可用或重试后仍无效）：字符串 "true"/"false" 宽松转换，其余一律
+ * 缺省不推送——宁可少推一条消息，不让已完成的数据工作被判 failed。 */
+function resolveShouldNotify(data: Record<string, unknown>, delivery: AutomationTaskRecord["revision"]["delivery"], lenient: boolean, taskId: string): boolean {
+  if (delivery.mode !== "wechat_on_condition") return delivery.mode === "wechat_summary";
+  const raw = data.shouldNotify;
+  if (typeof raw === "boolean") return raw;
+  if (!lenient) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "shouldNotify must be boolean");
+  if (typeof raw === "string") {
+    const lowered = raw.trim().toLowerCase();
+    if (lowered === "true" || lowered === "false") {
+      logger.warn(`automation shouldNotify lenient coerce task=${taskId} raw=${raw.slice(0, 20)}`);
+      return lowered === "true";
+    }
+  }
+  logger.warn(`automation shouldNotify missing/invalid -> suppressed task=${taskId} raw=${String(raw).slice(0, 40)}`);
+  return false;
+}
+
+async function normalizeStructuredResult(response: AgentResponse, task: AutomationTaskRecord, resolved: ResolvedBindings, scope: AutomationScope, stagingPath: string, options?: { lenientShouldNotify?: boolean }): Promise<{
   summary: string;
   shouldNotify: boolean;
   outputSkipped?: boolean;
@@ -726,11 +773,7 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
   const summaryValue = typeof data.summary === "string" ? data.summary : response.content.text;
   const summary = String(summaryValue || "").trim().slice(0, 12_000);
   const delivery = task.revision.delivery;
-  let shouldNotify = delivery.mode === "wechat_summary";
-  if (delivery.mode === "wechat_on_condition") {
-    if (typeof data.shouldNotify !== "boolean") throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "shouldNotify must be boolean");
-    shouldNotify = data.shouldNotify;
-  }
+  const shouldNotify = resolveShouldNotify(data, delivery, options?.lenientShouldNotify === true, task.taskId);
   const stagedRaw = data.stagedOutput;
   if (task.revision.output.mode === "none") {
     // The domain output (e.g. a saved review) may already be persisted by the

@@ -816,6 +816,84 @@ test("generic runner pushes idempotently and does not commit malformed output", 
   assert.equal((await (await import("../src/services/user-assets.js")).listUserAssets({ ...scope, search: "坏输出" })).length, 0);
 });
 
+test("wechat_on_condition runs survive a missing shouldNotify instead of failing (T-376: dyk 8-25 / mg 8-26·8-27 regression)", async () => {
+  const { automation } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  // 提示词把 shouldNotify 标成可选 shape，strict 校验又要求必填 boolean：模型
+  // 省略字段时连续 3 天把整轮数据工作判 failed。修复后：自纠重试一次（无
+  // executionDeadlineAt 的 scheduled 路径预算无限，不得拒绝重试），仍缺则
+  // 宽容缺省不推送，run 成功落 suppressed。
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-shouldnotify-missing",
+    name: "条件推送缺字段",
+    instruction: "观察市场并判断是否提醒。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "wechat_on_condition", conditionVersion: 1 },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  let calls = 0;
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-shouldnotify-missing-once",
+    executor: async () => {
+      calls += 1;
+      return { content: { type: "text" as const, text: JSON.stringify({ summary: "无显著异动。" }) }, finished: true, data: { summary: "无显著异动。" } };
+    },
+  });
+  assert.equal(calls, 2, "strict failure must trigger exactly one repair attempt even without an execution deadline");
+  assert.equal(result.run.status, "succeeded", "missing shouldNotify must not fail the run");
+  assert.equal(result.run.deliveryStatus, "suppressed");
+
+  const repairable = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-shouldnotify-repair",
+    name: "条件推送可修复",
+    instruction: "观察市场并判断是否提醒。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "wechat_on_condition", conditionVersion: 1 },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: repairable.taskId, expectedRevision: 1 });
+  const repaired = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: repairable.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-shouldnotify-repair-once",
+    executor: async (input) => input.repairContext
+      ? { content: { type: "text" as const, text: JSON.stringify({ summary: "推送摘要", shouldNotify: true }) }, finished: true, data: { summary: "推送摘要", shouldNotify: true } }
+      : { content: { type: "text" as const, text: JSON.stringify({ summary: "推送摘要" }) }, finished: true, data: { summary: "推送摘要" } },
+  });
+  assert.equal(repaired.run.status, "succeeded", "a repair round that supplies boolean shouldNotify must push");
+  assert.equal(repaired.run.deliveryStatus, "pending");
+  assert.ok(repaired.run.pushJobId);
+
+  const silent = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-run-shouldnotify-string",
+    name: "条件推送字符串",
+    instruction: "观察市场并判断是否提醒。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "wechat_on_condition", conditionVersion: 1 },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: silent.taskId, expectedRevision: 1 });
+  const lenient = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: silent.taskId,
+    origin: "scheduled",
+    idempotencyKey: "generic-run-shouldnotify-string-once",
+    // 空文本使自纠重试不可行（无上一轮回复可回喂）：非 boolean 的字符串
+    // "true" 必须被宽容转换为推送意图，而不是把 run 判失败。
+    executor: async () => ({ content: { type: "text" as const, text: "" }, finished: true, data: { summary: "字符串表态", shouldNotify: "true" } }),
+  });
+  assert.equal(lenient.run.status, "succeeded", "a string shouldNotify with no repairable reply must fall back leniently");
+  assert.equal(lenient.run.deliveryStatus, "pending");
+});
+
 test("mode=none runs ignore an unexpected stagedOutput instead of failing (daily-review 2026-08-19 regression)", async () => {
   const { automation } = await fixture;
   const runner = await import("../src/services/generic-automation-runner.js");
