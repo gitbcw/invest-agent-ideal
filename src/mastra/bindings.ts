@@ -29,6 +29,8 @@ export interface MastraBindings {
   Workspace?: MastraWorkspaceConstructor;
   LocalFilesystem?: MastraLocalFilesystemConstructor;
   RequestContext?: MastraRequestContextConstructor;
+  /** T-402：ToolCallFilter 构造器（@mastra/core/processors），供旧工具结果剔除。 */
+  ToolCallFilter?: new (options?: { exclude?: string[]; filterAfterToolSteps?: number; preserveModelOutput?: boolean }) => unknown;
 }
 
 export type MastraBindingsProvider =
@@ -60,12 +62,16 @@ async function loadDefaultBindings(): Promise<MastraBindings> {
   if (typeof RequestContext !== "function") {
     throw new Error("MASTRA_BINDINGS_INVALID: @mastra/core/request-context did not export RequestContext");
   }
+  const processorsModule = await import("@mastra/core/processors");
+  const ToolCallFilter = (processorsModule as unknown as { ToolCallFilter?: unknown }).ToolCallFilter;
+  // 增强能力缺失时静默降级（该 processor 不挂），不让 Agent 构造整体失败。
   return {
     Agent: Agent as MastraAgentConstructor,
     createTool: createTool as MastraCreateTool,
     Workspace: Workspace as MastraWorkspaceConstructor,
     LocalFilesystem: LocalFilesystem as MastraLocalFilesystemConstructor,
     RequestContext: RequestContext as MastraRequestContextConstructor,
+    ...(typeof ToolCallFilter === "function" ? { ToolCallFilter: ToolCallFilter as MastraBindings["ToolCallFilter"] } : {}),
   };
 }
 

@@ -49,7 +49,11 @@ test("Mastra factory resolves a gateway model through injected bindings without 
   });
 
   assert.ok(agent instanceof FakeAgent);
-  assert.deepEqual(receivedOptions, {
+  const { inputProcessors, ...restOptions } = receivedOptions as Record<string, unknown> & { inputProcessors?: unknown[] };
+  // T-402：budget 截断 processor 恒注入（fake bindings 无 ToolCallFilter，历史
+  // 剔除层跳过）；其余构造参数保持原契约。
+  assert.ok(Array.isArray(inputProcessors) && inputProcessors.length >= 1, "budget processor is always attached");
+  assert.deepEqual(restOptions, {
     id: "fake-agent",
     name: "Fake Agent",
     instructions: "You are an investment decision assistant.",
