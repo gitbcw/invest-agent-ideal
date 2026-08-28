@@ -137,7 +137,9 @@ backup_full_data() {
   sync_tree "${REMOTE_RUNTIME_DIR}/data" "${STAGING_DIR}/runtime-data" '*.db' '*.db-*' 'test-*' 'cache/' 'backups/' '/reviews/' '.sandbox-secret' '._*' '.sandbox-token' '.codex/auth.json' '.codex/logs_2.sqlite*' '.codex/.tmp/' '.codex/tmp/' 'runtime.db.pre-*' 'projects.pre-*'
   # .deploy/portal-previous-* 是服务器本地部署回滚副本（每次构建感知部署
   # +~170MB），属运维残留而非灾备资产；代码基线在 git 与 release snapshot。
-  sync_tree "${REMOTE_RUNTIME_DIR}" "${STAGING_DIR}/runtime-code" '.git/' '.env*' '.state/' '.codex/' '.backup/' '.deploy/' 'node_modules/' 'data/' 'workspaces/' 'reviews/' 'logs/' 'tmp/'
+  # apps/=portal 单应用，由 portal-code 通道单独备份（排除 .next/ 等），
+  # runtime-code 再备一份只会重复且带入构建产物。
+  sync_tree "${REMOTE_RUNTIME_DIR}" "${STAGING_DIR}/runtime-code" '.git/' '.env*' '.state/' '.codex/' '.backup/' '.deploy/' 'apps/' 'node_modules/' 'data/' 'workspaces/' 'reviews/' 'logs/' 'tmp/'
   sync_tree "${REMOTE_PORTAL_DIR}" "${STAGING_DIR}/portal-code" '.git/' '.env*' 'node_modules/' '.next/' 'data/' 'logs/' 'backups/'
 }
 
