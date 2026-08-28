@@ -2018,6 +2018,28 @@ async function transformSpreadsheetToolInner(input: Record<string, unknown> | un
   return { ok: true, outputPath, bytes: output.length, ...(ignoredChangeKeys.length ? { ignoredChangeKeys } : {}) };
 }
 
+// 微信端交付文件时话术需要告知用户会话在网页端的位置；会话可能被用户
+// 归入标签分组（分组在侧栏默认折叠），只说「去网页端查看」用户找不到。
+// 只读查询 portal 元数据表（与 runtime 共库）；任何失败都退回通用话术，
+// 不允许影响交付工具本身。
+function resolveWebConversationLocationHint(conversationId: string | null | undefined): string {
+  if (!conversationId) return "本会话在网页端左侧会话列表中";
+  try {
+    const meta = sqlite
+      .prepare("SELECT label_id FROM portal_conversation_meta WHERE conversation_id = ?")
+      .get(conversationId) as { label_id: string | null } | undefined;
+    if (meta?.label_id) {
+      const label = sqlite
+        .prepare("SELECT name FROM conversation_labels WHERE label_id = ?")
+        .get(meta.label_id) as { name: string } | undefined;
+      if (label?.name) return `本会话位于网页端左侧「${label.name}」分组（分组默认折叠，需点开展开）`;
+    }
+  } catch {
+    // portal 表不可读时退回通用定位
+  }
+  return "本会话在网页端左侧会话列表中";
+}
+
 async function createSpreadsheetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const value = input ?? {};
   const fileName = stringInput(value.fileName);
@@ -2120,7 +2142,7 @@ async function createSpreadsheetTool(input: Record<string, unknown> | undefined,
       location: "conversation_artifact_card",
       savedToMyFiles: false,
       instruction: wechatChannel
-        ? "文件已生成为附件卡片，卡片挂在网页端 Portal 本次会话的回复下方（微信端只发送文字）。请告知用户：文件已生成，可在网页端打开本会话查看和下载；如需留存，在网页端卡片上点「保存到我的文件」。不要提微信里能看到卡片，也不要在正文放置任何下载链接或路径。"
+        ? `文件已生成为附件卡片，卡片挂在网页端 Portal 本次会话的回复下方（微信端只发送文字）。请告知用户：文件已生成，可在网页端打开本会话查看和下载；${resolveWebConversationLocationHint(context.conversationId)}。如需留存，在网页端卡片上点「保存到我的文件」。不要提微信里能看到卡片，也不要在正文放置任何下载链接或路径。`
         : "文件已生成为本次回复下方的附件卡片（可预览/下载）。它尚未保存到「我的文件」：请告知用户文件已生成，并说明如需留存可在卡片上点「保存到我的文件」；用户明确要求保存时才说明已入库。不要在正文放置任何下载链接或路径。",
     },
   };

@@ -72,6 +72,19 @@ export function Sidebar({
 }: SidebarProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [expandedLabelIds, setExpandedLabelIds] = useState<Record<string, boolean>>({});
+  // 折叠分组红点：分组内最新会话 updatedAt 晚于「上次展开时间」时提示。
+  // 初始全 0（红点亮），mount 后从 localStorage 读回真实值，避免 hydration 不一致。
+  const [folderSeenAt, setFolderSeenAt] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    const next: Record<string, number> = {};
+    for (const key of ["default", ...labels.map((label) => label.label_id)]) {
+      const raw = window.localStorage.getItem(`portal-folder-seen:${username}:${key}`);
+      const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+      next[key] = Number.isFinite(parsed) ? parsed : 0;
+    }
+    setFolderSeenAt(next);
+  }, [labels, username]);
   const [labelDraft, setLabelDraft] = useState("");
   const [creatingLabel, setCreatingLabel] = useState(false);
   const [renamingLabelId, setRenamingLabelId] = useState<string | null>(null);
@@ -106,7 +119,26 @@ export function Sidebar({
   }
 
   function toggleLabel(labelId: string) {
+    const willExpand = !(expandedLabelIds[labelId] ?? labelId === "default");
+    if (willExpand) markFolderSeen(labelId);
     setExpandedLabelIds((current) => ({ ...current, [labelId]: !current[labelId] }));
+  }
+
+  function markFolderSeen(labelId: string) {
+    setFolderSeenAt((current) => ({ ...current, [labelId]: Date.now() }));
+    try {
+      window.localStorage.setItem(`portal-folder-seen:${username}:${labelId}`, String(Date.now()));
+    } catch {
+      // localStorage 不可用时红点状态退化为会话内提示，可接受
+    }
+  }
+
+  function folderHasUpdate(labelId: string): boolean {
+    const items = conversations.filter((item) => item.labelId === labelId);
+    if (items.length === 0) return false;
+    if (items.some((item) => item.conversationId === activeId)) return false;
+    const seenAt = folderSeenAt[labelId] ?? 0;
+    return items.some((item) => new Date(item.updatedAt).getTime() > seenAt);
   }
 
   function submitCreateLabel() {
@@ -278,7 +310,7 @@ export function Sidebar({
               return <section key={label.label_id} className="group rounded-md">
                 <div className="flex h-8 items-center gap-1 rounded-md px-1 hover:bg-[#e8ece9]" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropConversationToLabel(label.label_id, event)}>
                   <button type="button" className="flex h-7 min-w-0 flex-1 items-center gap-1.5 px-1 text-left text-xs text-[#343b36]" onClick={() => toggleLabel(label.label_id)} aria-expanded={expanded}>
-                    <Tag size={13} /><span className="max-w-[120px] truncate">{label.name}</span><span className="shrink-0 text-[#8a918d]">{conversations.filter((item) => item.labelId === label.label_id).length}</span>{expanded ? <ChevronDown size={14} className="shrink-0" /> : <ChevronRight size={14} className="shrink-0" />}
+                    <Tag size={13} /><span className="max-w-[120px] truncate">{label.name}</span><span className="shrink-0 text-[#8a918d]">{conversations.filter((item) => item.labelId === label.label_id).length}</span>{!expanded && folderHasUpdate(label.label_id) ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#e5484d]" title="分组内有更新的会话" aria-label="分组内有更新的会话" /> : null}{expanded ? <ChevronDown size={14} className="shrink-0" /> : <ChevronRight size={14} className="shrink-0" />}
                   </button>
                   <button type="button" className="hidden h-6 w-6 items-center justify-center rounded text-[#737b76] hover:bg-black/5 group-hover:flex" aria-label={`重命名标签 ${label.name}`} onClick={() => { setRenamingLabelId(label.label_id); setRenameDraft(label.name); }}><Pencil size={12} /></button>
                   <button type="button" className="hidden h-6 w-6 items-center justify-center rounded text-[#737b76] hover:bg-black/5 group-hover:flex" aria-label={`删除标签 ${label.name}`} onClick={() => onDeleteLabel(label)}><Trash2 size={12} /></button>
