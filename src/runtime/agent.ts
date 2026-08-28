@@ -266,7 +266,13 @@ export function createRuntimeAgent(): RuntimeAgent {
         // low/high/max，非 low 换网关深度别名。自动化轮由 runner 用任务指令预判
         // 并经 context._thinkingDepthHint 传入（指令稳定但规则集会进化，故每轮
         // 重判）。规则迭代 = 修订规则集文档 + 部署，不写代码分支。
-        if (selectedModel === "glm-5.3-flash"
+        // T-396 修复（2026-08-28）：channel="automation" 的 userChannel 兜底是
+        // "api"，会落进下面的交互裁判分支，用交互规则集对执行文本二次裁判并
+        // 覆盖 runner 判定——8-27 实盘翻转（同一持仓复盘任务 low/high/low/high）
+        // 全部发生在这一层，runner 层判定与确定性守卫从未生效（hint 分支不可达）。
+        // 修复：automation 消息只认 runner hint，不再进交互裁判。
+        if (channel !== "automation"
+          && selectedModel === "glm-5.3-flash"
           && (userChannel === "web" || userChannel === "weixin-mobile" || userChannel === "dashboard" || userChannel === "api")) {
           thinkingRouter = await classifyThinkingDepth({ text });
           if (thinkingRouter.depth !== "low") selectedModel = THINKING_DEPTH_MODELS[thinkingRouter.depth];

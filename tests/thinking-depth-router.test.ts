@@ -97,4 +97,22 @@ test("automation ruleset v2 puts contract tasks decisively at low (mg 2026-08-27
   // 补丁后最高优先级条款必须压过「需要推算」。
   assert.ok(THINKING_DEPTH_AUTOMATION_RULES.includes("最高优先级条款"), "precedence clause must exist");
   assert.ok(THINKING_DEPTH_AUTOMATION_RULES.includes("此条款优先于其他一切条款"), "explicit precedence must be stated");
+  // T-396：临时例句锚定已移除——根因是 runtime 层规则集错配（已修），不是规则集缺陷。
+  assert.ok(!THINKING_DEPTH_AUTOMATION_RULES.includes("临时补丁"), "temporary anchor sentence must stay removed");
+});
+
+test("automation messages must not enter the interactive judge (T-396 runtime ruleset mismatch fix)", async () => {
+  // 2026-08-27 实盘根因：channel="automation" 的 userChannel 兜底为 "api"，
+  // 执行文本被交互规则集二次裁判并覆盖 runner 判定（hint 分支不可达死代码），
+  // 同一任务 low/high/low/high 翻转全部发生在这一层。修复后 automation 消息
+  // 只认 runner hint；交互裁判仅服务真人消息。
+  const source = await (await import("node:fs/promises")).readFile(new URL("../src/runtime/agent.ts", import.meta.url), "utf8");
+  assert.ok(
+    source.includes('channel !== "automation"'),
+    "interactive judge branch must exclude channel=automation messages",
+  );
+  assert.ok(
+    source.includes("else if (channel === \"automation\""),
+    "automation hint branch must stay reachable",
+  );
 });
