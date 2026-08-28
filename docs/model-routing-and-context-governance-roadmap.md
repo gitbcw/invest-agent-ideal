@@ -29,6 +29,7 @@ GPT 综述给出的框架（与 OpenAI/Anthropic/Google/Microsoft 公开工程�
 
 - 2026-08-27 上线**裁判模型路由 v2**（`src/services/thinking-depth-router.ts`，commit b28cc28）：glm-flash(low) 读版本化规则集判 low/high/max，交互轮与自动化轮分别有规则集，决策落 trace，fail-open low。
 - 2026-08-28 **裁撤 max 档**（规则集交互 v3 / 自动化 v2，两档化）：依据 Z.ai Code Bench v1.0 官方数据（卡片 tool-glm-53-flash-三档…），Flash High→Max 准确率仅 +约1pp（28.0%→29.0%）而平均输出 token 从 ≈70K 翻到 ≈140K（比 GLM-5.3 Max ≈75K 更啰嗦）；实盘 8-27 上线至 8-28 max 零命中。裁判违规输出 max 时代码降档收敛到 high，计价别名保留供历史 trace 重算。
+- 2026-08-28 **T-396 裁判翻转根因定位与修复**（commit 8c45c32）：8-27 实盘「同一持仓复盘任务 low/high/low/high 翻转」的根因**不是裁判模型不确定性，而是 runtime 层规则集错配**——automation 消息的 userChannel 兜底为 "api"，落进交互裁判分支，用交互规则集对执行文本二次裁判并覆盖 runner 判定；runner 层判定与确定性守卫（f497eeb）从未生效（hint 分支不可达死代码）。生产日志证据：automation 行判定始终 low，翻转全部发生在 runtime 层 user= 行（同日 4 high/5 low）。修复后交互裁判只服务真人消息，automation 只认 runner hint。裁判 temperature=0 下仍存在**条件性非确定**（8-27 摇摆 vs 8-28 连发 12×全稳，本机/生产位置一致，来源为上游时段性状态，调用方不可消除），故采纳**分层确定性**：契约任务（update/create）由守卫确定 low（守卫由「T-396 过渡机制」转正为确定性层，无移除条件——符合 0.5-4「规则判断交给代码」）；非契约自动化走 automation 规则集（v2.1 移除临时例句）；交互轮走交互规则集（真人消息短、翻转代价低：误 low 用户会追问）。评测工具：`scripts/thinking-router-determinism-probe.ts`（连发/间隔/生产位置/规则集覆盖四模式）+ 生产案例集（data/experiments/，gitignored）；规则集修订时跑一轮回归，跨时段翻转靠生产路由日志监测。
 - 抽检：交互 13/13、生产自动化任务 3/3、叙述型 2/2 判对；规则集随 bad case 进化（改文档即生效，不碰代码）。
 - 依据：两天的 eval 基线（120 层1样本 + 层2无限制对照），论文 F1-F8。
 - **现状即「第二阶段动态 Router」的深度维度单旋钮版**。
