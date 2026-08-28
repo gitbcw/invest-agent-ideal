@@ -15,8 +15,10 @@ import { syncConversationDetail } from "@/lib/conversation-detail-sync";
 
 const GetSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().optional()
-});
+  cursor: z.string().optional(),
+  /** before: 配合 nextBeforeCursor 向更早方向翻页。缺省时首屏取最新 limit 条。 */
+  before: z.string().optional()
+}).refine((value) => !value.before || !value.cursor, "before 与 cursor 互斥");
 
 type Params = { params: { id: string } };
 
@@ -26,7 +28,8 @@ export async function GET(request: Request, { params }: Params) {
   const url = new URL(request.url);
   const parsed = GetSchema.safeParse({
     limit: url.searchParams.get("limit") ?? undefined,
-    cursor: url.searchParams.get("cursor") ?? undefined
+    cursor: url.searchParams.get("cursor") ?? undefined,
+    before: url.searchParams.get("before") ?? undefined
   });
   if (!parsed.success) {
     return badRequest("参数错误", { issues: parsed.error.issues });
@@ -83,6 +86,8 @@ export async function GET(request: Request, { params }: Params) {
       conversationId: params.id,
       limit: parsed.data.limit,
       cursor: parsed.data.cursor,
+      before: parsed.data.before,
+      latest: !parsed.data.cursor && !parsed.data.before,
       userId: session.sub,
       assistantId: session.assistantId,
       instanceId: session.instanceId
@@ -98,6 +103,7 @@ export async function GET(request: Request, { params }: Params) {
       title: refreshedConversation.title_override || refreshedConversation.title,
       messages: messages.items.map(mapMessageRow),
       nextCursor: messages.nextCursor,
+      nextBeforeCursor: messages.nextBeforeCursor,
       processing: processingStartedAt !== null,
       processingStartedAt
     });

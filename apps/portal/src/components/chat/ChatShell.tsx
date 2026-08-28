@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { nanoid } from "nanoid";
 import { Folder, FolderOpen } from "lucide-react";
@@ -20,6 +21,7 @@ import {
 import {
   fetchAssistantStatus,
   fetchConversation,
+  fetchConversationMessagesBefore,
   fetchConversations,
   fetchConversationLabels,
   createConversationLabel,
@@ -341,16 +343,32 @@ export function ChatShell({ initialUser }: ChatShellProps) {
           ?? storedProcessingStartedAt
           ?? Date.now()
         : null;
-      updateConversationView(conversationId, (current) => ({
-        ...current,
-        waiting: processing ? current.waiting : false,
-        messages: processing && current.waiting
-          ? current.messages
-          : withProcessingPlaceholder(conversationId, withProcessedDurations(data.messages.map(toView)), processing),
-        waitingStartedAt: processing && current.waiting
-          ? current.waitingStartedAt ?? processingStartedAt
-          : processingStartedAt
-      }));
+      updateConversationView(conversationId, (current) => {
+        // 首屏只拉最新一页；用户已「加载更早」的消息在刷新（轮询/重进）时
+        // 保留，按 messageId 去重后拼在最新窗口前面，避免又翻一遍。
+        // 只保留严格早于最新窗口的消息——在途/失败的本地乐观消息交给
+        // 服务端窗口或 POST 回调处理，否则会与新窗口重复。
+        const freshMessages = withProcessingPlaceholder(conversationId, withProcessedDurations(data.messages.map(toView)), processing);
+        const freshIds = new Set(freshMessages.map((message) => message.messageId));
+        const freshEarliest = freshMessages.length > 0
+          ? new Date(freshMessages[0].createdAt).getTime()
+          : Number.POSITIVE_INFINITY;
+        const earlierMessages = current.messages.filter((message) =>
+          !freshIds.has(message.messageId)
+          && new Date(message.createdAt).getTime() < freshEarliest
+        );
+        return {
+          ...current,
+          waiting: processing ? current.waiting : false,
+          messages: processing && current.waiting
+            ? current.messages
+            : [...earlierMessages, ...freshMessages],
+          beforeCursor: current.beforeCursor ?? data.beforeCursor,
+          waitingStartedAt: processing && current.waiting
+            ? current.waitingStartedAt ?? processingStartedAt
+            : processingStartedAt
+        };
+      });
       return { processing };
     } catch (err) {
       if (err instanceof PortalApiError && (err.code === "NOT_FOUND" || err.code === "FORBIDDEN")) {
@@ -387,6 +405,29 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       }
     }
   }, [readProcessingStartedAt, refreshConversations, setConversationProcessing, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]);
+
+  const loadEarlierMessages = useCallback(async (conversationId: string) => {
+    const view = conversationViewsRef.current[conversationId];
+    const before = view?.beforeCursor;
+    if (!before || view?.loadingEarlier) return;
+    updateConversationView(conversationId, (current) => ({ ...current, loadingEarlier: true }));
+    try {
+      const page = await fetchConversationMessagesBefore(conversationId, before);
+      updateConversationView(conversationId, (current) => {
+        const existingIds = new Set(current.messages.map((message) => message.messageId));
+        const older = page.items.map(toView).filter((message) => !existingIds.has(message.messageId));
+        return {
+          ...current,
+          messages: [...older, ...current.messages],
+          beforeCursor: page.beforeCursor,
+          loadingEarlier: false
+        };
+      });
+    } catch (err) {
+      updateConversationView(conversationId, (current) => ({ ...current, loadingEarlier: false }));
+      setFatalError((err as Error).message);
+    }
+  }, [setFatalError, updateConversationView]);
 
   const selectConversation = useCallback(async (conversationId: string) => {
     setFatalError(null);
@@ -872,10 +913,13 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   );
 
   // ---- 【喜欢/不喜欢】标注（owner 2026-08-26）：再次点击同一按钮撤销 ----
+  // comment（owner 2026-08-28 点踩弹窗）：undefined = 按钮点击走 toggle；
+  // 显式传入（含 null）= 设置语义——弹窗提交时 dislike 已在点踩那一下生效，
+  // 若再走 toggle 会被当成撤销。
   const handleFeedback = useCallback(
-    (feedbackMessage: ChatMessageView, rating: "like" | "dislike") => {
+    (feedbackMessage: ChatMessageView, rating: "like" | "dislike", comment?: string | null) => {
       if (!activeId) return;
-      const next = feedbackMessage.userFeedback === rating ? null : rating;
+      const next = comment === undefined && feedbackMessage.userFeedback === rating ? null : rating;
       // 乐观更新；失败静默回滚（下次刷新以 runtime 为准）。
       const previous = feedbackMessage.userFeedback;
       updateConversationView(activeId, (current) => ({
@@ -884,7 +928,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
           ? { ...m, userFeedback: next ?? undefined }
           : m)
       }));
-      void sendFeedback(activeId, feedbackMessage.messageId, next)
+      void sendFeedback(activeId, feedbackMessage.messageId, next, next === null ? undefined : comment)
         .then((updated) => {
           updateConversationView(activeId, (current) => ({
             ...current,
@@ -1093,6 +1137,18 @@ export function ChatShell({ initialUser }: ChatShellProps) {
                 <div className="py-12 text-center text-sm text-[#8e8ea0]">加载消息...</div>
               ) : null}
               <div className="space-y-1">
+                {!loadingMessages && activeView.beforeCursor ? (
+                  <div className="pb-2 text-center">
+                    <button
+                      type="button"
+                      className="rounded-md px-3 py-1.5 text-xs text-[#6b7280] transition hover:bg-black/5 hover:text-[#202123] disabled:opacity-60"
+                      disabled={activeView.loadingEarlier}
+                      onClick={() => { if (activeId) void loadEarlierMessages(activeId); }}
+                    >
+                      {activeView.loadingEarlier ? "加载中..." : "加载更早消息"}
+                    </button>
+                  </div>
+                ) : null}
                 {messages.map((message, idx) => {
                   const isLast =
                     idx === messages.length - 1 && message.role === "assistant";
@@ -1100,9 +1156,16 @@ export function ChatShell({ initialUser }: ChatShellProps) {
                     isLast &&
                     waiting &&
                     (message.status === "pending" || message.content === "");
+                  const showDateDivider = idx === 0
+                    || localDayKey(messages[idx - 1].createdAt) !== localDayKey(message.createdAt);
                   return (
+                    <Fragment key={message.messageId}>
+                      {showDateDivider ? (
+                        <div className="flex items-center justify-center py-3">
+                          <span className="rounded-full bg-black/[0.04] px-3 py-1 text-xs text-[#6e766f]">{localDayLabel(message.createdAt)}</span>
+                        </div>
+                      ) : null}
                       <MessageBubble
-                      key={message.messageId}
                       message={message}
                       isLastAssistant={isLast && message.role === "assistant"}
                       shouldAnimate={message.messageId === animatingAssistantMessageId}
@@ -1119,6 +1182,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
                       deletedArtifactIds={deletedArtifactIds}
                       liveSteps={isWaiting && message.role === "assistant" && message.status === "pending" ? liveSteps[message.conversationId] : undefined}
                     />
+                    </Fragment>
                   );
                 })}
               </div>
@@ -1256,8 +1320,19 @@ function withProcessingPlaceholder(
   ];
 }
 
-function latestUserTimestamp(messages: Array<{ role: string; createdAt: string }>): number | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+/** 日期分割线：按本地日历日跨日分组，长会话的时间脉络一眼可辨。 */
+function localDayKey(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function localDayLabel(iso: string): string {
+  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  const d = new Date(iso);
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${weekdays[d.getDay()]}`;
+}
+
+function latestUserTimestamp(messages: Array<{ role: string; createdAt: string }>): number | null {  for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index].role !== "user") continue;
     const timestamp = Date.parse(messages[index].createdAt);
     return Number.isFinite(timestamp) ? timestamp : null;

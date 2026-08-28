@@ -44,12 +44,14 @@ const SendSchema = z.object({
 
 type Params = { params: { id: string } };
 
-export async function GET(request: Request, { params }: Params) {
+export async function GET(request: Request, { params }: { params: { id: string } }) {
   const session = await getCurrentSession();
   if (!session) return unauthorized();
   const url = new URL(request.url);
   const limit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
   const cursor = url.searchParams.get("cursor") ?? undefined;
+  const before = url.searchParams.get("before") ?? undefined;
+  if (before && cursor) return badRequest("before 与 cursor 互斥");
   const db = openDatabase();
   const repo = new ConversationMirrorRepository(db);
   const conv = repo.getConversation(params.id, {
@@ -63,11 +65,17 @@ export async function GET(request: Request, { params }: Params) {
       conversationId: params.id,
       limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 50,
       cursor,
+      before,
+      latest: !cursor && !before,
       userId: session.sub,
       assistantId: session.assistantId,
       instanceId: session.instanceId
     });
-    return ok({ items: messages.items.map(mapMessageRow), nextCursor: messages.nextCursor });
+    return ok({
+      items: messages.items.map(mapMessageRow),
+      nextCursor: messages.nextCursor,
+      nextBeforeCursor: messages.nextBeforeCursor
+    });
   } catch (error) {
     if (error instanceof InvalidConversationMessageCursorError) {
       return badRequest("消息游标无效");

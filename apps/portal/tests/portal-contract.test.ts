@@ -11,7 +11,7 @@ import { openPinnedTab, openPreviewTab, pinTab } from "../src/components/chat/wo
 import { isVisibleWorkspaceFile } from "../src/components/chat/LibraryTree";
 import type { WorkspaceFileItem } from "../src/lib/protocol";
 import type { ConversationMessage } from "../src/lib/protocol";
-import { cancelConversation, fetchConversation, PortalApiError } from "../src/components/chat/api";
+import { cancelConversation, fetchConversation, fetchConversationMessagesBefore, PortalApiError } from "../src/components/chat/api";
 import { openDatabaseAt } from "../src/lib/db";
 import { ConversationMirrorRepository } from "../src/lib/db/conversations";
 import { syncConversationDetail } from "../src/lib/conversation-detail-sync";
@@ -509,7 +509,7 @@ test("Portal timeout relation leaves a Relay buffer over the execution budget", 
   assert.doesNotThrow(() => validatePortalTimeoutRelation(1_200_000, 1_215_000));
 });
 
-test("fetchConversation consumes every message page", async () => {
+test("fetchConversation loads the latest page only and exposes beforeCursor", async () => {
   const originalFetch = globalThis.fetch;
   const originalWindow = globalThis.window;
   const allMessages = Array.from({ length: 205 }, (_, index) =>
@@ -519,38 +519,71 @@ test("fetchConversation consumes every message page", async () => {
     configurable: true,
     value: { location: { origin: "http://portal.test" } }
   });
+  let detailRequests = 0;
   globalThis.fetch = async (input) => {
     const url = new URL(String(input));
-    if (url.pathname === "/api/conversations/conversation-a") {
-      return Response.json({
-        ok: true,
-        data: {
-          conversationId: "conversation-a",
-          title: "Conversation A",
-          messages: allMessages.slice(0, 100),
-          nextCursor: "page-2",
-          processing: true,
-          processingStartedAt: "2026-08-10T03:00:00.000Z"
-        }
-      });
-    }
-    const cursor = url.searchParams.get("cursor");
-    const start = cursor === "page-2" ? 100 : 200;
+    assert.equal(url.pathname, "/api/conversations/conversation-a");
+    detailRequests += 1;
+    assert.equal(url.searchParams.get("before"), null);
     return Response.json({
       ok: true,
       data: {
-        items: allMessages.slice(start, start + 100),
-        nextCursor: start === 100 ? "page-3" : null
+        conversationId: "conversation-a",
+        title: "Conversation A",
+        // 首屏语义：接口返回最新 100 条 + 更早方向的入口
+        messages: allMessages.slice(105),
+        nextBeforeCursor: "before-cursor-a",
+        processing: true,
+        processingStartedAt: "2026-08-10T03:00:00.000Z"
       }
     });
   };
 
   try {
     const result = await fetchConversation("conversation-a");
-    assert.equal(result.messages.length, 205);
+    assert.equal(detailRequests, 1);
+    assert.equal(result.messages.length, 100);
     assert.equal(result.messages.at(-1)?.messageId, "message-204");
+    assert.equal(result.beforeCursor, "before-cursor-a");
     assert.equal(result.processing, true);
     assert.equal(result.processingStartedAt, "2026-08-10T03:00:00.000Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow
+    });
+  }
+});
+
+test("fetchConversationMessagesBefore pages towards older messages", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const allMessages = Array.from({ length: 40 }, (_, index) =>
+    makeMessage(`message-${String(index).padStart(3, "0")}`, "conversation-a", new Date(index * 1000).toISOString())
+  );
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { location: { origin: "http://portal.test" } }
+  });
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    assert.equal(url.searchParams.get("before"), "before-cursor-a");
+    return Response.json({
+      ok: true,
+      data: {
+        items: allMessages.slice(0, 20),
+        nextBeforeCursor: null
+      }
+    });
+  };
+
+  try {
+    const result = await fetchConversationMessagesBefore("conversation-a", "before-cursor-a");
+    assert.equal(result.items.length, 20);
+    assert.equal(result.items[0].messageId, "message-000");
+    assert.equal(result.items.at(-1)?.messageId, "message-019");
+    assert.equal(result.beforeCursor, null);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "window", {

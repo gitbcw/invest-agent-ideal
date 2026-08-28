@@ -488,12 +488,41 @@ export class ConversationMirrorRepository {
     conversationId: string;
     limit: number;
     cursor?: string;
+    /** latest: 取最新 limit 条（首屏）；before: 从该 cursor 向更早方向翻页。
+     *  两者都返回 ASC 窗口 + nextBeforeCursor（更早方向的入口），与旧
+     *  cursor（向未来方向）互斥。 */
+    latest?: boolean;
+    before?: string;
     userId?: string;
     assistantId?: string;
     instanceId?: string;
-  }): { items: ConversationMessageMirrorRow[]; nextCursor: string | null } {
+  }): { items: ConversationMessageMirrorRow[]; nextCursor: string | null; nextBeforeCursor: string | null } {
+    if (input.latest && input.before) throw new InvalidConversationMessageCursorError();
     const where: string[] = ["conversation_id = @conversationId", "status != 'superseded'"];
     const params: Record<string, unknown> = { conversationId: input.conversationId, limit: input.limit + 1 };
+    if (input.latest || input.before) {
+      if (input.before) {
+        const cursor = decodeMessageCursor(input.before);
+        where.push("(created_at < @cursorCreatedAt OR (created_at = @cursorCreatedAt AND message_id < @cursorMessageId))");
+        params.cursorCreatedAt = cursor.createdAt;
+        params.cursorMessageId = cursor.messageId;
+      }
+      const sql = `SELECT * FROM conversation_messages
+                   WHERE ${where.join(" AND ")}
+                   ORDER BY created_at DESC, message_id DESC
+                   LIMIT @limit`;
+      const rows = this.db.prepare(sql).all(params) as ConversationMessageMirrorRow[];
+      const items = rows.slice(0, input.limit).reverse();
+      const hasEarlier = rows.length > input.limit;
+      const first = items[0];
+      return {
+        items,
+        nextCursor: null,
+        nextBeforeCursor: hasEarlier && first
+          ? encodeMessageCursor({ createdAt: first.created_at, messageId: first.message_id })
+          : null
+      };
+    }
     if (input.cursor) {
       const cursor = decodeMessageCursor(input.cursor);
       where.push("(created_at > @cursorCreatedAt OR (created_at = @cursorCreatedAt AND message_id > @cursorMessageId))");
@@ -510,7 +539,7 @@ export class ConversationMirrorRepository {
     const nextCursor = rows.length > input.limit && last
       ? encodeMessageCursor({ createdAt: last.created_at, messageId: last.message_id })
       : null;
-    return { items, nextCursor };
+    return { items, nextCursor, nextBeforeCursor: null };
   }
 
   // ─── Processing state (computed from runtime messages) ───────────────

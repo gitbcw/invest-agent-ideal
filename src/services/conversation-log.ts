@@ -179,14 +179,17 @@ function parseMetadata(value: unknown): Record<string, unknown> | undefined {
  * 用户对 assistant 回答的【喜欢/不喜欢】标注（owner 2026-08-26）：写入
  * conversation_messages.metadata.userFeedback，随现有会话同步链路分发；
  * 后台分析用 json_extract(metadata, '$.userFeedback') 即可全量取出。
- * rating=null 表示撤销标注（再次点击同一按钮）。
+ * rating=null 表示撤销标注（再次点击同一按钮），同时清除文字反馈。
+ * comment 为可选文字反馈（metadata.userFeedbackComment）；undefined = 不动，
+ * null/空串 = 清除，非空 = 覆盖（点踩弹窗提交，owner 2026-08-28）。
  */
 export function setConversationMessageFeedback(input: Partial<ConversationScope> & {
   conversationId: string;
   messageId: string;
   rating: "like" | "dislike" | null;
+  comment?: string | null;
 }): ConversationMessageRecord {
-  const { conversationId, messageId, rating, ...scopeFields } = input;
+  const { conversationId, messageId, rating, comment, ...scopeFields } = input;
   const scope = normalizeConversationScope(scopeFields);
   const message = getConversationMessage(messageId);
   if (!message
@@ -200,8 +203,17 @@ export function setConversationMessageFeedback(input: Partial<ConversationScope>
     .prepare(`SELECT metadata FROM conversation_messages WHERE message_id = ?`)
     .get(messageId) as { metadata?: string } | undefined;
   const metadata = parseMetadata(rawRow?.metadata) ?? {};
-  if (rating === null) delete metadata.userFeedback;
-  else metadata.userFeedback = rating;
+  if (rating === null) {
+    delete metadata.userFeedback;
+    delete metadata.userFeedbackComment;
+  } else {
+    metadata.userFeedback = rating;
+  }
+  if (comment !== undefined) {
+    const trimmed = typeof comment === "string" ? comment.trim().slice(0, 500) : "";
+    if (trimmed) metadata.userFeedbackComment = trimmed;
+    else delete metadata.userFeedbackComment;
+  }
   sqlite.prepare(`UPDATE conversation_messages SET metadata = ? WHERE message_id = ?`)
     .run(metadataJson(metadata), messageId);
   // Portal 镜像读 metadata_json（同库异列，由 Portal schema 负责 ensure）；
@@ -327,9 +339,13 @@ function refreshSession(input: {
   fallbackTitle?: string;
 }) {
   const row = sqlite.prepare(`
-    SELECT title, message_count AS messageCount FROM conversation_sessions WHERE conversation_id = ?
-  `).get(input.conversationId) as { title?: string; messageCount?: number } | undefined;
-  const shouldRetitle = !row?.title || row.title === "新对话";
+    SELECT title, message_count AS messageCount, channel FROM conversation_sessions WHERE conversation_id = ?
+  `).get(input.conversationId) as { title?: string; messageCount?: number; channel?: string } | undefined;
+  // 微信渠道是跨月长期单会话，首轮标题（如“你好”）很快失去辨识度——标题
+  // 随最新用户话题滚动。其余渠道保持首轮标题惯例。assistant 消息不带候选
+  // 标题时不得把已有标题重置为“新对话”。
+  const rollingRetitle = row?.channel === "weixin-mobile" && Boolean(input.fallbackTitle);
+  const shouldRetitle = !row?.title || row.title === "新对话" || rollingRetitle;
   sqlite.prepare(`
     UPDATE conversation_sessions
     SET

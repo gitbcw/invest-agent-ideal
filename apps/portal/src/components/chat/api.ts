@@ -159,6 +159,8 @@ export async function fetchConversation(
   conversationId: string;
   title: string;
   messages: ConversationMessage[];
+  /** 更早一页的入口；null 表示已到最早。 */
+  beforeCursor: string | null;
   processing: boolean;
   processingStartedAt: string | null;
 }> {
@@ -171,7 +173,7 @@ export async function fetchConversation(
       conversationId: string;
       title: string;
       messages: ConversationMessage[];
-      nextCursor?: string | null;
+      nextBeforeCursor?: string | null;
       processing?: boolean;
       processingStartedAt?: string | null;
     };
@@ -184,43 +186,33 @@ export async function fetchConversation(
       res.status
     );
   }
-  const messages = [...json.data.messages];
-  const messageIds = new Set(messages.map((message) => message.messageId));
-  const seenCursors = new Set<string>();
-  let cursor = json.data.nextCursor ?? null;
-
-  for (let page = 0; cursor && page < 100; page += 1) {
-    if (seenCursors.has(cursor)) throw new Error("会话历史分页游标重复");
-    seenCursors.add(cursor);
-    const pageUrl = new URL(`/api/conversations/${conversationId}/messages`, window.location.origin);
-    pageUrl.searchParams.set("limit", "100");
-    pageUrl.searchParams.set("cursor", cursor);
-    const pageResponse = await fetch(pageUrl, { credentials: "same-origin" });
-    const pageJson = await jsonOrThrow<{
-      ok: boolean;
-      data?: { items: ConversationMessage[]; nextCursor?: string | null };
-      error?: { message: string };
-    }>(pageResponse);
-    if (!pageJson.ok || !pageJson.data) {
-      throw new Error(pageJson.error?.message ?? "会话历史加载失败");
-    }
-    for (const message of pageJson.data.items) {
-      if (!messageIds.has(message.messageId)) {
-        messageIds.add(message.messageId);
-        messages.push(message);
-      }
-    }
-    cursor = pageJson.data.nextCursor ?? null;
-  }
-  if (cursor) throw new Error("会话历史过长,未能完整加载");
-
   return {
     conversationId: json.data.conversationId,
     title: json.data.title,
-    messages,
+    messages: [...json.data.messages],
+    beforeCursor: json.data.nextBeforeCursor ?? null,
     processing: Boolean(json.data.processing),
     processingStartedAt: json.data.processingStartedAt ?? null
   };
+}
+
+export async function fetchConversationMessagesBefore(
+  conversationId: string,
+  beforeCursor: string
+): Promise<{ items: ConversationMessage[]; beforeCursor: string | null }> {
+  const url = new URL(`/api/conversations/${conversationId}`, window.location.origin);
+  url.searchParams.set("limit", "100");
+  url.searchParams.set("before", beforeCursor);
+  const res = await fetch(url, { credentials: "same-origin" });
+  const json = await jsonOrThrow<{
+    ok: boolean;
+    data?: { items: ConversationMessage[]; nextBeforeCursor?: string | null };
+    error?: { message: string };
+  }>(res);
+  if (!json.ok || !json.data) {
+    throw new Error(json.error?.message ?? "会话历史加载失败");
+  }
+  return { items: json.data.items, beforeCursor: json.data.nextBeforeCursor ?? null };
 }
 
 export async function sendMessage(
@@ -288,17 +280,25 @@ export async function regenerateMessage(
   return json.data;
 }
 
-/** 【喜欢/不喜欢】标注（owner 2026-08-26）：rating=null 撤销；返回最新消息记录。 */
+/**
+ * 【喜欢/不喜欢】标注（owner 2026-08-26）：rating=null 撤销；返回最新消息记录。
+ * comment（owner 2026-08-28 点踩弹窗）：undefined = 不动；null/空串 = 清除；否则覆盖。
+ */
 export async function sendFeedback(
   conversationId: string,
   messageId: string,
-  rating: "like" | "dislike" | null
+  rating: "like" | "dislike" | null,
+  comment?: string | null
 ): Promise<import("@/lib/protocol").ConversationMessage> {
   const res = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/feedback`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ messageId, rating })
+    body: JSON.stringify({
+      messageId,
+      rating,
+      ...(comment === undefined ? {} : { comment })
+    })
   });
   const json = await jsonOrThrow<{
     ok: boolean;

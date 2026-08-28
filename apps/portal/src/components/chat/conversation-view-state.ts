@@ -6,6 +6,9 @@ export interface ConversationViewState {
   waiting: boolean;
   waitingStartedAt: number | null;
   animatingAssistantMessageId: string | null;
+  /** 更早一页消息的入口；null 表示已加载到最早或未加载。 */
+  beforeCursor: string | null;
+  loadingEarlier: boolean;
 }
 
 export const EMPTY_CONVERSATION_VIEW: ConversationViewState = {
@@ -13,7 +16,9 @@ export const EMPTY_CONVERSATION_VIEW: ConversationViewState = {
   loading: false,
   waiting: false,
   waitingStartedAt: null,
-  animatingAssistantMessageId: null
+  animatingAssistantMessageId: null,
+  beforeCursor: null,
+  loadingEarlier: false
 };
 
 export function updateConversationViewRecord(
