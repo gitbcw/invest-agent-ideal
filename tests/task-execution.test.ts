@@ -65,3 +65,50 @@ test("execution policy waits for the result and stops at the execution deadline"
     /TASK_EXECUTION_TIMEOUT/,
   );
 });
+
+test("retry policy backs off before retrying transient results (T-395 busy must not retry instantly)", async () => {
+  const sleeps: number[] = [];
+  const sleepImpl = async (ms: number) => { sleeps.push(ms); };
+  let attempts = 0;
+  const result = await executeWithRetryPolicy(
+    async () => {
+      attempts += 1;
+      if (attempts === 1) return { data: { executionStatus: "failed", executionRetryable: true } };
+      return { data: { ok: true } };
+    },
+    {
+      executionBudgetMs: 60_000,
+      isRetryableResult: (candidate: { data?: { executionStatus?: string; executionRetryable?: boolean } }) =>
+        candidate.data?.executionStatus === "failed" && candidate.data?.executionRetryable === true,
+      retryDelayForResult: () => 20_000,
+      sleepImpl,
+    },
+  );
+  assert.deepEqual(result, { data: { ok: true } });
+  assert.equal(attempts, 2);
+  assert.deepEqual(sleeps, [20_000], "retryable transient result must wait out the backoff before retrying");
+});
+
+test("retry policy backoff that would exceed the budget fails fast instead of running once more", async () => {
+  const sleeps: number[] = [];
+  let attempts = 0;
+  await assert.rejects(
+    executeWithRetryPolicy(
+      async () => {
+        attempts += 1;
+        return { data: { executionStatus: "failed", executionRetryable: true } };
+      },
+      {
+        executionBudgetMs: 5,
+        isRetryableResult: () => true,
+        retryDelayForResult: () => 20_000,
+        // 真睡：退避（被裁剪到剩余预算）耗尽 deadline 后，第二次 operation 直接超时。
+        sleepImpl: async (ms: number) => { sleeps.push(ms); await new Promise((resolve) => setTimeout(resolve, 6)); },
+      },
+    ),
+    /TASK_EXECUTION_TIMEOUT/,
+  );
+  assert.equal(attempts, 1, "no extra operation run when the backoff alone exhausts the budget");
+  assert.equal(sleeps.length, 1, "backoff runs once and is capped to the remaining budget");
+  assert.ok(sleeps[0] <= 5, "backoff must be capped to the remaining budget, not the full delay");
+});

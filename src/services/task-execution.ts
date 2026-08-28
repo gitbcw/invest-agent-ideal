@@ -58,19 +58,35 @@ export async function executeWithRetryPolicy<T>(
   options: {
     executionBudgetMs?: number;
     isRetryableResult?: (result: T) => boolean;
+    /** 结果可重试时的退避等待（T-395）：返回 0 立即重试（旧行为）；busy 类必须
+     * 退避——立即重试时相邻 turn 仍在占用，必败。退避裁剪到剩余预算，预算耗尽
+     * 直接按超时抛出，不再空跑 operation。异常路径（throw）不退避。 */
+    retryDelayForResult?: (result: T) => number;
+    sleepImpl?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<T> {
   const deadlineAt = resolveTaskTiming({ executionBudgetMs: options.executionBudgetMs }).executionDeadlineAt;
+  const sleep = options.sleepImpl ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let attempt = 0;
   while (true) {
+    let delayMs = 0;
     try {
       const result = await awaitWithExecutionDeadline(operation, deadlineAt);
       if (attempt >= 1 || !options.isRetryableResult?.(result)) return result;
       attempt += 1;
+      delayMs = options.retryDelayForResult?.(result) ?? 0;
     } catch (error) {
       const classified = classifyTaskError(error);
       if (attempt >= 1 || !classified.retryable) throw error;
       attempt += 1;
+    }
+    if (delayMs > 0) {
+      const remainingMs = Date.parse(deadlineAt) - Date.now();
+      if (remainingMs <= 0) {
+        // 退避本身会耗尽预算：直接按超时抛出，不再空跑一次 operation。
+        throw new Error("TASK_EXECUTION_TIMEOUT");
+      }
+      await sleep(Math.min(delayMs, remainingMs));
     }
   }
 }

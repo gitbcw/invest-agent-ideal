@@ -1161,6 +1161,11 @@ async function chatViaConversationLogOnce(input: {
           executionErrorCategory: responseError.category,
           executionRetryable: responseError.retryable,
         } : {}),
+        // T-395：busy 提示行不是失败行（executionStatus 不落 failed），但错误码
+        // 仍随 metadata 留档，巡查/回看可辨「这条输入从未被执行」的原因。
+        ...(!responseError && typeof response.data?.executionErrorCode === "string"
+          ? { executionErrorCode: response.data.executionErrorCode }
+          : {}),
       };
     })(),
     });
@@ -1215,23 +1220,40 @@ async function chatViaConversationLogOnce(input: {
       {
         executionBudgetMs: Number(process.env.PORTAL_EXECUTION_BUDGET_MS) || undefined,
         isRetryableResult: (candidate) => Boolean(executionResponseError(candidate)?.retryable),
+        // T-395：busy 2ms 立即重试必败（相邻 turn 仍在占用），退避后再试；
+        // 其他可重试失败保持立即重试（快速可恢复场景不等 20s）。
+        retryDelayForResult: (candidate) => (executionResponseError(candidate)?.code === "MASTRA_TURN_BUSY"
+          ? Number(process.env.PORTAL_TURN_RETRY_BACKOFF_MS) || 20_000
+          : 0),
       },
     );
     if (control.cancelRequested) throw new Error("TASK_CANCELLED");
     const responseError = executionResponseError(response);
-    automationFailure = Boolean(responseError);
+    // T-395：busy 表示这条输入从未被执行（相邻 turn 仍占用会话），不是任务失败——
+    // 不落 failed 行，改落可「重新生成」的提示行（2026-08-25 mg 实盘：排队 8 分钟的
+    // 消息在上一轮超时终态放行后撞 busy，立即重试再败，被落为「暂时性故障」误导用户）。
+    const isBusyResponse = responseError?.code === "MASTRA_TURN_BUSY";
+    automationFailure = Boolean(responseError) && !isBusyResponse;
     if (responseError && !automationConversation) {
       const terminal = terminalTaskError(responseError);
-      response = {
-        content: { type: "text", text: terminal.userMessage },
-        finished: true,
-        data: {
-          executionStatus: "failed",
-          executionErrorCode: terminal.code,
-          executionErrorCategory: terminal.category,
-          executionRetryable: false,
-        },
-      };
+      response = isBusyResponse
+        ? {
+          content: { type: "text", text: "上一条消息还在处理中，这条消息还没有执行；等上一条完成后，点这条回复下的「重新生成」即可重新执行。" },
+          finished: true,
+          // 不带 executionStatus=failed：persistResponse 按正常 assistant 行落库，
+          // 保留错误码供排查（不参与 executionResponseError 判定）。
+          data: { executionErrorCode: "MASTRA_TURN_BUSY", executionErrorNote: "input-not-executed" },
+        }
+        : {
+          content: { type: "text", text: terminal.userMessage },
+          finished: true,
+          data: {
+            executionStatus: "failed",
+            executionErrorCode: terminal.code,
+            executionErrorCategory: terminal.category,
+            executionRetryable: false,
+          },
+        };
     }
     if (automationConversation) await automationConversation.complete(response);
   } catch (error) {
