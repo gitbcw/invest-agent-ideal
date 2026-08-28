@@ -22,6 +22,7 @@ import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../
 import {
   applyInteractiveExternalToolDiscovery,
   applyInteractiveServiceToolDiscovery,
+  automationToolDiscoveryEnabled,
   interactiveToolDiscoveryEnabled,
 } from "../mastra/tool-discovery.js";
 import { loadConversationHistory } from "../services/conversation-history.js";
@@ -369,6 +370,12 @@ export function createRuntimeAgent(): RuntimeAgent {
         const interactiveDiscovery = interactiveToolDiscoveryEnabled()
           && !(userContext.mcpAllowedTools && userContext.mcpAllowedTools.length > 0)
           && channel !== "automation";
+        // T-401 自动化外部轨（owner 2026-08-28 裁决）：automation 轮服务轨仍走
+        // 授权即清单（白名单已最小），但外部 MCP 全量 schema（~40 工具 ≈9-10k
+        // token，占盯盘轮基准输入 15.3k 的六成，terra 重负载首字超时的主因）
+        // 收敛为「top5 常驻 + 目录 + 调度壳」。AUTOMATION_TOOL_DISCOVERY=off
+        // 一键回退全量；服务轨与交互轮开关互不影响。
+        const automationExternalDiscovery = channel === "automation" && automationToolDiscoveryEnabled();
         const grantedServiceTools = interactiveDiscovery
           ? await applyInteractiveServiceToolDiscovery(mastraTools)
           : filterServiceToolsByGrant(mastraTools, userContext.mcpAllowedTools);
@@ -387,8 +394,9 @@ export function createRuntimeAgent(): RuntimeAgent {
           runId: turnRequestId ?? message.id,
         });
         // T-400：两段式外部轨——壳必须 delegate 到 observer 包装后的对象（审计
-        // 继承），所以重组发生在 observer 之后。
-        const publicToolsets = interactiveDiscovery
+        // 继承），所以重组发生在 observer 之后。T-401：automation 通道外部轨
+        // 同走两段式（服务轨仍走白名单，见上）。
+        const publicToolsets = interactiveDiscovery || automationExternalDiscovery
           ? await applyInteractiveExternalToolDiscovery(observedToolsets)
           : observedToolsets;
         try {

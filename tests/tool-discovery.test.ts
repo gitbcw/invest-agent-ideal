@@ -6,6 +6,7 @@ import {
   INTERACTIVE_CORE_SERVICE_TOOLS,
   applyInteractiveExternalToolDiscovery,
   applyInteractiveServiceToolDiscovery,
+  automationToolDiscoveryEnabled,
   interactiveToolDiscoveryEnabled,
 } from "../src/mastra/tool-discovery.js";
 import { TOOL_SPECS } from "../src/mastra/tools/registry.js";
@@ -128,4 +129,36 @@ test("discovery switch defaults on and honours INTERACTIVE_TOOL_DISCOVERY=off", 
   assert.equal(interactiveToolDiscoveryEnabled({}), true);
   assert.equal(interactiveToolDiscoveryEnabled({ INTERACTIVE_TOOL_DISCOVERY: "on" }), true);
   assert.equal(interactiveToolDiscoveryEnabled({ INTERACTIVE_TOOL_DISCOVERY: "off" }), false);
+});
+
+test("automation external-track switch is independent of the interactive switch", () => {
+  // 默认开；两个开关互不牵连（automation 回退不影响交互轮，反之亦然）。
+  assert.equal(automationToolDiscoveryEnabled({}), true);
+  assert.equal(automationToolDiscoveryEnabled({ AUTOMATION_TOOL_DISCOVERY: "off" }), false);
+  assert.equal(automationToolDiscoveryEnabled({ INTERACTIVE_TOOL_DISCOVERY: "off" }), true);
+  assert.equal(
+    automationToolDiscoveryEnabled({ AUTOMATION_TOOL_DISCOVERY: "off", INTERACTIVE_TOOL_DISCOVERY: "on" }),
+    false,
+  );
+});
+
+test("automation dispatch path reuses the same external-track transformation (T-401)", async () => {
+  // T-401 在 agent.ts 挂点对 automation 通道复用 applyInteractiveExternalToolDiscovery；
+  // 这里锁定该函数对 market-watch 场景的行为契约：盯盘核心工具常驻、长尾进目录、
+  // 壳 delegate 可用。挂点本身的通道判定是单行布尔，由上方开关测试 + 交互轨
+  // 测试共同覆盖，不再造重型 handleMessage 集成测试。
+  const core = EXTERNAL_CORE_TOOLS["market-data-tool"] as readonly string[];
+  const watchTools = ["get_realtime_quote", "get_market_summary", "get_stock_news"];
+  for (const name of watchTools) {
+    assert.ok(core.includes(name), `market-watch staple must stay resident: ${name}`);
+  }
+  const full: Record<string, unknown> = {};
+  for (const name of [...core, "get_dragon_tiger_list"]) {
+    full[name] = fakeTool(name, `${name}：查询数据。`, ["date"]).tool;
+  }
+  const result = await applyInteractiveExternalToolDiscovery({ "market-data-tool": full }, fakeBindings);
+  const mdt = result["market-data-tool"] as Record<string, unknown>;
+  for (const name of watchTools) assert.ok(mdt[name], `resident tool must stay in manifest: ${name}`);
+  assert.equal(mdt["get_dragon_tiger_list"], undefined, "long tail must leave the automation manifest");
+  assert.ok(mdt["mdt.catalog"] && mdt["mdt.call"], "catalog + shell injected for automation track");
 });

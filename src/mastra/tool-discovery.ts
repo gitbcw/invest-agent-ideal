@@ -10,8 +10,10 @@
  * - 外部 MCP 轨：mdt top5 + qsse 全部长尾化；壳 delegate 到 observer 包装后的
  *   全量 Tool（external_mcp_tool_calls 审计零新代码）。
  * 目录从 Tool 对象/TOOL_SPECS 自动生成，新工具上线即自动可见，零人工维护。
- * 授权轮（mcpAllowedTools 非空）与 automation 通道不走本模块（各自已有清单机制）。
- * 回退：INTERACTIVE_TOOL_DISCOVERY=off 一键恢复全量。
+ * 授权轮（mcpAllowedTools 非空）服务轨不走本模块（授权即清单）；automation
+ * 通道服务轨同样走清单，但其外部轨自 T-401 起也走两段式发现。
+ * 回退：INTERACTIVE_TOOL_DISCOVERY=off（交互轮）/ AUTOMATION_TOOL_DISCOVERY=off
+ * （automation 外部轨）各自一键恢复全量。
  */
 import { z } from "zod/v4";
 import { getMastraBindings, type MastraBindingsProvider } from "./bindings.js";
@@ -66,6 +68,15 @@ function serverLabel(serverId: string): string {
 
 export function interactiveToolDiscoveryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.INTERACTIVE_TOOL_DISCOVERY !== "off";
+}
+
+/**
+ * T-401 自动化外部轨两段式开关（owner 2026-08-28 裁决）：automation 轮的
+ * 外部 MCP 工具面同样收敛为「top5 常驻 + 目录 + 调度壳」。服务工具轨不
+ * 受影响（授权即清单白名单已是最小面）。独立于交互轮开关，可单独回退。
+ */
+export function automationToolDiscoveryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AUTOMATION_TOOL_DISCOVERY !== "off";
 }
 
 /** 目录行摘要：描述首句（首个句号/分号/换行截断）。 */
