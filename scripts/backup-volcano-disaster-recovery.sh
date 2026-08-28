@@ -128,6 +128,10 @@ backup_full_data() {
   VOLCANO_BACKUP_LABEL="${BACKUP_LABEL}" \
     "${WORKSPACE_BACKUP}"
 
+  # 共创期最小灾备裁决（2026-08-28 用户拍板）：只备不可再生的用户数据。
+  # 代码/构建产物可由 git + 构建流程重建，不进每晚灾备——代码的灾备
+  # 责任移交给 git 远端（push 即备份）。数据量 ×10 或正式上线时再评估
+  # link-dest 去重 / GFS 分层保留 / Litestream 持续复制。
   # 新布局 reviews 在 data/reviews（顶级无 reviews）；runtime-data 同步排除以免重复。
   # data/projects/*/assets 里会镜像自动化运行目录（嵌套 .codex 沙箱产物），
   # 与工作区备份同一策略：任意深度排除（对齐 b43edd2/dd072a1 的修复口径）。
@@ -135,12 +139,6 @@ backup_full_data() {
   # runtime.db 快照，逐晚搬运历史保险副本只会让备份无限膨胀。
   sync_tree "${REMOTE_RUNTIME_DIR}/data/reviews" "${STAGING_DIR}/reviews" '._*'
   sync_tree "${REMOTE_RUNTIME_DIR}/data" "${STAGING_DIR}/runtime-data" '*.db' '*.db-*' 'test-*' 'cache/' 'backups/' '/reviews/' '.sandbox-secret' '._*' '.sandbox-token' '.codex/auth.json' '.codex/logs_2.sqlite*' '.codex/.tmp/' '.codex/tmp/' 'runtime.db.pre-*' 'projects.pre-*'
-  # .deploy/portal-previous-* 是服务器本地部署回滚副本（每次构建感知部署
-  # +~170MB），属运维残留而非灾备资产；代码基线在 git 与 release snapshot。
-  # apps/=portal 单应用，由 portal-code 通道单独备份（排除 .next/ 等），
-  # runtime-code 再备一份只会重复且带入构建产物。
-  sync_tree "${REMOTE_RUNTIME_DIR}" "${STAGING_DIR}/runtime-code" '.git/' '.env*' '.state/' '.codex/' '.backup/' '.deploy/' 'apps/' 'node_modules/' 'data/' 'workspaces/' 'reviews/' 'logs/' 'tmp/'
-  sync_tree "${REMOTE_PORTAL_DIR}" "${STAGING_DIR}/portal-code" '.git/' '.env*' 'node_modules/' '.next/' 'data/' 'logs/' 'backups/'
 }
 
 backup_encrypted_sensitive_state() {
