@@ -220,7 +220,8 @@ main() {
     backup_encrypted_sensitive_state
   fi
   write_manifest_and_publish
-  if [[ "${MODE}" = "hourly" ]]; then prune_snapshots 48; else prune_snapshots 14; fi
+  # 共创期裁决（2026-08-28 用户）：滚动保留 7 天，不依赖深历史回滚。
+  if [[ "${MODE}" = "hourly" ]]; then prune_snapshots 48; else prune_snapshots 7; fi
   log "published ${MODE} disaster-recovery backup ${BACKUP_LABEL}"
 }
 
