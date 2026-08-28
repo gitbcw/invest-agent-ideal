@@ -60,7 +60,7 @@ set -euo pipefail
 test ! -d workspaces
 printf '%s %s %s\\n' "\${RELEASE_ID}" "\${RELEASE_COMMIT}" "\${RELEASE_OPERATION}" > "\${FAKE_DEPLOY_LOG}"
 `);
-run("git", ["init", "-b", "feat/mastra-migration"]);
+run("git", ["init", "-b", "main"]);
 run("git", ["config", "user.email", "smoke@example.invalid"]);
 run("git", ["config", "user.name", "Release Smoke"]);
 run("git", ["add", "."]);
@@ -68,9 +68,9 @@ run("git", ["commit", "-m", "fixture"]);
 run("git", ["init", "--bare", origin], { cwd: fixture });
 // Point the bare origin HEAD at the baseline branch so clones check it out
 // (init.defaultBranch on the host may still be another branch).
-run("git", ["symbolic-ref", "HEAD", "refs/heads/feat/mastra-migration"], { cwd: origin });
+run("git", ["symbolic-ref", "HEAD", "refs/heads/main"], { cwd: origin });
 run("git", ["remote", "add", "origin", origin]);
-run("git", ["push", "-u", "origin", "feat/mastra-migration"]);
+run("git", ["push", "-u", "origin", "main"]);
 
 const env = {
   ...process.env,
@@ -135,8 +135,8 @@ writeFileSync(dirtyProbe, "dirty\n");
 expectRejected(["create"], /clean worktree/, { env });
 rmSync(dirtyProbe);
 run("git", ["switch", "-c", "release-smoke-feature"]);
-expectRejected(["create"], /requires branch feat\/mastra-migration/, { env });
-run("git", ["switch", "feat/mastra-migration"]);
+expectRejected(["create"], /requires branch main/, { env });
+run("git", ["switch", "main"]);
 
 run("git", ["commit", "--allow-empty", "-m", "unpublished"]);
 run(process.execPath, [snapshotScript, "create"], { env });
@@ -163,7 +163,7 @@ rewriteChecksums(legacyV2EmergencyPath);
 run(process.execPath, [snapshotScript, "verify", legacyV2EmergencyId], { env });
 
 run("git", ["remote", "set-url", "origin", join(fixture, "missing-origin.git")]);
-run("git", ["update-ref", "-d", "refs/remotes/origin/feat/mastra-migration"]);
+run("git", ["update-ref", "-d", "refs/remotes/origin/main"]);
 run("git", ["commit", "--allow-empty", "-m", "remote unavailable"]);
 run(process.execPath, [snapshotScript, "create"], { env });
 const unavailableReleaseId = releaseNames().find((name) => ![
@@ -186,13 +186,13 @@ run(process.execPath, [
 ], { cwd: standaloneVerifier, env });
 
 run("git", ["remote", "set-url", "origin", origin]);
-run("git", ["push", "origin", "feat/mastra-migration"]);
+run("git", ["push", "origin", "main"]);
 const remoteClone = join(fixture, "remote-clone");
 run("git", ["clone", origin, remoteClone], { cwd: fixture });
 run("git", ["config", "user.email", "remote-smoke@example.invalid"], { cwd: remoteClone });
 run("git", ["config", "user.name", "Remote Smoke"], { cwd: remoteClone });
 run("git", ["commit", "--allow-empty", "-m", "remote ahead"] , { cwd: remoteClone });
-run("git", ["push", "origin", "feat/mastra-migration"], { cwd: remoteClone });
+run("git", ["push", "origin", "main"], { cwd: remoteClone });
 run(process.execPath, [snapshotScript, "create"], { env });
 const behindReleaseId = releaseNames().find((name) => ![
   releaseId, legacyId, legacyV2NormalId, aheadReleaseId, legacyV2EmergencyId, unavailableReleaseId,
@@ -215,9 +215,9 @@ writeFileSync(join(remoteClone, "force-push.txt"), "force-push\n");
 run("git", ["add", "force-push.txt"], { cwd: remoteClone });
 run("git", ["commit", "-m", "force-pushed baseline"], { cwd: remoteClone });
 const forcePushedCommit = run("git", ["rev-parse", "HEAD"], { cwd: remoteClone }).trim();
-run("git", ["push", "--force", "origin", "HEAD:feat/mastra-migration"], { cwd: remoteClone });
-run("git", ["fetch", "--no-tags", "origin", "+refs/heads/feat/mastra-migration:refs/remotes/origin/feat/mastra-migration"]);
-assert.equal(run("git", ["rev-parse", "refs/remotes/origin/feat/mastra-migration"]).trim(), forcePushedCommit);
+run("git", ["push", "--force", "origin", "HEAD:main"], { cwd: remoteClone });
+run("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
+assert.equal(run("git", ["rev-parse", "refs/remotes/origin/main"]).trim(), forcePushedCommit);
 
 const nonCanonicalRepo = join(fixture, "noncanonical-repo");
 const nonCanonicalScript = join(nonCanonicalRepo, "scripts", "release-snapshot.mjs");

@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const canonicalRepositoryRoot = "/Users/combo/MyFile/projects/invest-agent-ideal-mastra";
-const baselineBranch = process.env.INVEST_AGENT_RELEASE_BRANCH ?? "feat/mastra-migration";
+const baselineBranch = process.env.INVEST_AGENT_RELEASE_BRANCH ?? "main";
 const releaseRoot = resolve(
   process.env.INVEST_AGENT_RELEASE_ROOT
     ?? "/Users/combo/MyFile/my-data/backups/invest-agent/releases",
@@ -349,9 +349,9 @@ function resolveRelease(releaseId) {
 function verifyRelease(releaseId) {
   const releaseDir = resolveRelease(releaseId);
   const manifest = JSON.parse(readFileSync(join(releaseDir, "manifest.json"), "utf8"));
-  // Releases created before the feat/mastra-migration cutover record
-  // branch "main"; both identities remain verifiable.
-  if (manifest.releaseId !== releaseId || !["main", baselineBranch].includes(manifest.branch) || !isCommit(manifest.commit)) {
+  // Manifests record the branch identity of their era: "main" (old system and
+  // post-2026-08-28 promotion) or "feat/mastra-migration" (migration era).
+  if (manifest.releaseId !== releaseId || !["main", "feat/mastra-migration"].includes(manifest.branch) || !isCommit(manifest.commit)) {
     fail("invalid release manifest identity");
   }
   if (manifest.schemaVersion === 2) {

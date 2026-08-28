@@ -61,9 +61,9 @@ autossh -M 0 -N \
 
 ## 2. 版本基线
 
-  - `feat/mastra-migration` 是当前维护与生产发布基线；旧 `main` runtime 已停止。
+  - `main` 是当前维护与生产发布基线（2026-08-28 由 `feat/mastra-migration` 晋升）；旧系统线归档为 `legacy/pre-mastra`。
 - `codex/volcano-snapshot-*`、冻结标签和历史 reconciliation 分支只用于审计、比较和回滚，不继续修复、不整体 merge 回 `main`。
-- 普通发布从 `/Users/combo/MyFile/projects/invest-agent-ideal-mastra` 的已审阅、已提交 `feat/mastra-migration` 执行，且 `HEAD` 必须解析为已提交的 Git 对象。
+- 普通发布从 `/Users/combo/MyFile/projects/invest-agent-ideal-mastra` 的已审阅、已提交 `main` 执行，且 `HEAD` 必须解析为已提交的 Git 对象。
 - 火山云运行代码始终以最近一次从该分支已提交 worktree 完成的发布为准；`111`、`dyk`、`mg` 的历史 Workspace 备份与迁移证据见 `docs/workspace-compatibility.md`。兼容模型 v2 起，`ready` 允许存在尚未采用的 `template_updates`。
 - GitHub push、PR、生产部署是三个独立授权动作。生产快照不要求提交已进入 `origin/main`；脚本仅尽力刷新远端，并把本地相对 `origin/main` 的 `equal`、`ahead`、`behind`、`diverged` 或 `unavailable` 关系记录为非阻塞审计证据。
 
@@ -71,14 +71,14 @@ autossh -M 0 -N \
 
 ### 3.0 发布快照与标准入口
 
-正式发布不再直接从调用者当前目录运行底层部署脚本。先从已提交的 `feat/mastra-migration` 创建代码发布快照，再从快照的临时干净目录发布：
+正式发布不再直接从调用者当前目录运行底层部署脚本。先从已提交的 `main` 创建代码发布快照，再从快照的临时干净目录发布：
 
 ```bash
 npm run release:snapshot -- create
 npm run release:deploy -- <release-id>
 ```
 
-快照 manifest 以 `committed-local-feat/mastra-migration` 记录发布基线，同时记录远端刷新结果和关系。GitHub 不可达、本地领先、落后或分叉不会阻塞发布；规范仓库路径、干净工作树、目标分支、已提交 `HEAD` 和完整验证仍是硬门禁。
+快照 manifest 以 `committed-local-main` 记录发布基线，同时记录远端刷新结果和关系。GitHub 不可达、本地领先、落后或分叉不会阻塞发布；规范仓库路径、干净工作树、目标分支、已提交 `HEAD` 和完整验证仍是硬门禁。
 
 完成本手册第 8 节验收并保存证据后，才允许把版本标为 known-good：
 
@@ -124,7 +124,7 @@ npm run release:snapshot -- accept <release-id> --confirm=mark-known-good-v1
 
 ## 4. 发布前检查
 
-1. 在规范仓库记录目标 `feat/mastra-migration` 提交，确认发布 worktree 干净；尽力刷新远端并记录关系，不以远端状态阻塞发布。
+1. 在规范仓库记录目标 `main` 提交，确认发布 worktree 干净；尽力刷新远端并记录关系，不以远端状态阻塞发布。
 2. 本地运行：
 
 ```bash
