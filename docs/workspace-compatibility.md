@@ -114,7 +114,7 @@ npm run smoke:workspace-compatibility -- <user> <instance>
 1. 从干净、已审核的发布分支或 tag 构建并完成本地测试。
 2. 对生产真实用户逐个记录只读预检结果。
 3. 只读记录每个 Workspace 的 `template_updates`；差异本身不阻塞发布，也不触发修改。
-4. 选择没有定时任务命中的维护窗口，使用 `scripts/deploy-volcano.sh` 进行普通代码发布；该脚本保留服务器根 `.codex` 运行态，但必须同步 `templates/workspace/.codex`。
+4. 选择没有定时任务命中的维护窗口，使用 `scripts/deploy-volcano.sh` 进行普通代码发布；该脚本保留服务器根 `.codex` 运行态。（`templates/workspace/.codex` 模板已随 legacy workspace skills 裁撤移出发布代码，不再同步。）
 5. 只有已经明确批准采用的具体模板文件才逐用户执行 `workspace:adopt-template`，然后用新 ACP 会话做对应单点验收。
 6. 没有批准模板采用时，保持真实 Workspace 原样，仅验收服务/MCP 变更。
 

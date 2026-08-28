@@ -106,7 +106,7 @@ npm run release:snapshot -- accept <release-id> --confirm=mark-known-good-v1
 - 项目根 `.codex` 生产运行态
 - 日志和其他运行资产
 
-`templates/workspace/.codex` 属于发布代码，必须同步。禁止给 rsync 增加 `--delete-excluded`。
+模板工作区下的 `.codex` 模板目录已随 legacy workspace skills 裁撤（7b71ba2，2026-08-23）移出发布代码，不再同步；真实 Workspace 内的既有 `.codex` 副本属用户资产，由 workspaces 排除保护。禁止给 rsync 增加 `--delete-excluded`。
 
 发布同步必须排除 `apps/portal/.next`，不能让源码 rsync 删除正在服务的 Portal 构建。远端安装阶段必须显式安装 Portal 依赖并执行 `apps/portal` 的 `next build`；构建前停止 `mastra-portal` 并把旧 `.next` 移到 `.deploy/portal-previous-*`。只有 `BUILD_ID`、服务端清单、路由清单和 `_error.js` 齐全后才能启动新进程；构建或验收失败时必须恢复旧 `.next` 并重新拉起旧版本。
 
