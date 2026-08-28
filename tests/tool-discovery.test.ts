@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { z } from "zod/v4";
 
 import {
   EXTERNAL_CORE_TOOLS,
@@ -119,6 +120,22 @@ test("external track keeps mdt top5 and routes long tail through the shell", asy
   assert.equal(Object.keys(qsceKeysWithoutDiscoveryTools(qsse)).length, 0, "qsse has no resident core tools");
   assert.ok(qsse["qsse.catalog"]);
   assert.ok(qsse["qsse.call"]);
+});
+
+test("catalog shell inputSchema must serialize to a JSON Schema with type object", async () => {
+  // OpenAI 兼容网关严格校验 function schema：无 type 的 schema 会被整单 400
+  // （2026-08-28 MG 17:30 复盘失败）。壳的 inputSchema 必须是 zod schema，
+  // 空对象字面量 {} 序列化后没有 type 字段。
+  const svcResult = await applyInteractiveServiceToolDiscovery({ "portfolio.read": fakeTool("portfolio.read").tool }, fakeBindings);
+  const svcCatalog = (svcResult["svc.catalog"] as { inputSchema: z.ZodType }).inputSchema;
+  assert.equal(z.toJSONSchema(svcCatalog).type, "object", "svc.catalog inputSchema must serialize with type object");
+
+  const extResult = await applyInteractiveExternalToolDiscovery(
+    { "market-data-tool": { get_realtime_quote: fakeTool("get_realtime_quote").tool } },
+    fakeBindings,
+  );
+  const mdtCatalog = ((extResult["market-data-tool"] as Record<string, unknown>)["mdt.catalog"] as { inputSchema: z.ZodType }).inputSchema;
+  assert.equal(z.toJSONSchema(mdtCatalog).type, "object", "mdt.catalog inputSchema must serialize with type object");
 });
 
 function qsceKeysWithoutDiscoveryTools(qsse: Record<string, unknown>): Record<string, unknown> {

@@ -151,7 +151,7 @@ async function createDiscoveryTools(bindings: MastraBindingsProvider, spec: {
   const catalog = createTool({
     id: `${spec.serverLabel}.catalog`,
     description: `${spec.serverLabel} 长尾工具目录（一次返回全部，无搜索）。${CATALOG_HINT}`,
-    inputSchema: {},
+    inputSchema: z.object({}),
     execute: async () => spec.catalogText(),
   });
   const call = createTool({
