@@ -48,7 +48,17 @@ const RETRY_DELAYS_MS = [
 
 const USER_ACTIVE_DEFER_MS = 2 * 60 * 1000;
 const PUSH_PROCESSING_LEASE_MS = 2 * 60 * 1000;
-const DEFERABLE_SOURCES = new Set(["scheduler", "onboarding_commit"]);
+// automation（typed 自动化任务）与 scheduler/onboarding 一样可安全滞留：撞上
+// context_expired 等"等用户来消息"类失败时挂起为 awaiting_user 等会话恢复，
+// 而不是烧完重试判死。8-06 引入 automation source 时漏同步本清单与
+// weixin-delivery 的 resume 过滤器（T-414：mg 持仓复盘推送 ret=-2 5 连败）。
+const DEFERABLE_SOURCES = new Set(["scheduler", "onboarding_commit", "automation"]);
+// automation 推送默认业务有效期：awaiting_user 只恢复"明确未过期"的 job
+// （resumeAwaitingWeixinDeliveries 的 gt(expiresAt, now) 谓词），无窗口会永远滞留。
+const envAutomationValidityMs = Number(process.env.AUTOMATION_PUSH_VALIDITY_MS);
+const AUTOMATION_PUSH_VALIDITY_MS = Number.isFinite(envAutomationValidityMs) && envAutomationValidityMs > 0
+  ? envAutomationValidityMs
+  : 24 * 60 * 60 * 1000;
 
 export async function enqueuePushJob(input: PushJobInput) {
   if (input.idempotencyKey) {
@@ -66,7 +76,9 @@ export async function enqueuePushJob(input: PushJobInput) {
     source: input.source || "scheduler",
     idempotencyKey: input.idempotencyKey,
     messageKind: input.messageKind,
-    expiresAt: input.expiresAt,
+    expiresAt: input.expiresAt ?? (input.source === "automation"
+      ? new Date(Date.now() + AUTOMATION_PUSH_VALIDITY_MS).toISOString()
+      : undefined),
     originTaskKey: input.originTaskKey,
     originRunId: input.originRunId,
     retryPolicy: input.retryPolicy,

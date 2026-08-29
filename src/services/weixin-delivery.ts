@@ -99,7 +99,7 @@ export async function resumeAwaitingWeixinDeliveries(userId: string, instanceId:
     .where(and(
       eq(pushJobs.userId, userId),
       eq(pushJobs.instanceId, instanceId),
-      inArray(pushJobs.source, ["scheduler", "onboarding_commit"]),
+      inArray(pushJobs.source, ["scheduler", "onboarding_commit", "automation"]),
       eq(pushJobs.status, "awaiting_user"),
       gt(pushJobs.expiresAt, now),
     ));

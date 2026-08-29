@@ -167,3 +167,49 @@ test("restoring a conversation automatically requeues an unexpired awaiting-user
   assert.equal(sends, 1);
   assert.equal((await getPushJob(job.id))?.status, "sent");
 });
+
+test("automation push hitting context_expired parks as awaiting_user with a default validity window", async () => {
+  const { enqueuePushJob, getPushJob, processDuePushJobs } = await import("../src/services/push-queue.js");
+  const job = await enqueuePushJob({
+    userId: "automation-awaiting-user",
+    instanceId: "invest-agent-automation-awaiting",
+    source: "automation",
+    messageKind: "automation_summary",
+    message: "复盘推送等待用户回到微信会话",
+  });
+  assert.ok(job.expiresAt, "automation enqueue gets a default business validity window");
+  assert.ok(Date.parse(job.expiresAt) > Date.now());
+
+  const result = await processDuePushJobs(async () => ({ ok: false as const, reason: "context_expired" as const }));
+  assert.equal(result.awaitingUser, 1);
+  assert.equal(result.dead, 0);
+  const saved = await getPushJob(job.id);
+  assert.equal(saved?.status, "awaiting_user");
+  assert.equal(saved?.terminalReason, null);
+});
+
+test("automation awaiting_user job resumes and sends after the user conversation returns", async () => {
+  const { enqueuePushJob, getPushJob, processDuePushJobs } = await import("../src/services/push-queue.js");
+  const { resumeAwaitingWeixinDeliveries } = await import("../src/services/weixin-delivery.js");
+  const job = await enqueuePushJob({
+    userId: "automation-resume-user",
+    instanceId: "invest-agent-automation-resume",
+    source: "automation",
+    messageKind: "automation_summary",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    message: "会话恢复后补投的复盘推送",
+  });
+  const parked = await processDuePushJobs(async () => ({ ok: false as const, reason: "context_expired" as const }));
+  assert.equal(parked.awaitingUser, 1);
+
+  const result = await resumeAwaitingWeixinDeliveries("automation-resume-user", "invest-agent-automation-resume");
+  assert.deepEqual(result, { resumed: 1, expired: 0 });
+
+  let sends = 0;
+  await processDuePushJobs(async () => {
+    sends += 1;
+    return { ok: true as const, reason: "sent" as const };
+  });
+  assert.equal(sends, 1);
+  assert.equal((await getPushJob(job.id))?.status, "sent");
+});
