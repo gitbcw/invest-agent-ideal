@@ -1538,3 +1538,35 @@ test("contract tasks (update/create output) bypass the judge with a deterministi
   assert.ok(runnerSource.includes("contractOutputMode"), "deterministic guard must exist");
   assert.ok(runnerSource.includes("确定性守卫"), "guard must be marked as the T-396 interim mechanism");
 });
+
+test("market-watch prompts deterministically inject the holdings universe (dyk 2026-08-31)", async () => {
+  // 事故回放：某轮盯盘简报跳过 portfolio.read，凭板块先验自选了
+  // 平安银行(000001)/国城矿业(000688)当用户持仓行情推送。个股宇宙改为
+  // 服务端注入后，模型拿到的是与 portfolio.read 同源的权威代码清单。
+  const backend = await import("../src/lib/data-backend.js");
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const watchScope = { userId: "watch-universe-user", projectId: "invest-agent", instanceId: "watch-universe-instance" };
+  await backend.portfolioBackend.upsertActive(watchScope.userId, watchScope.instanceId, { name: "招商银行", code: "600036" });
+  await backend.portfolioBackend.upsertActive(watchScope.userId, watchScope.instanceId, { name: "紫金矿业", code: "601899" });
+  await backend.watchlistBackend.add(watchScope.userId, watchScope.instanceId, { name: "宁德时代", code: "300750" });
+
+  const fact = await runner.buildMarketWatchUniverseFact(watchScope);
+  assert.match(fact, /招商银行\(600036\)/);
+  assert.match(fact, /紫金矿业\(601899\)/);
+  assert.match(fact, /观察仓：宁德时代\(300750\)/);
+  assert.match(fact, /只能是上述清单内的标的/);
+  assert.match(fact, /禁止自行挑选清单外个股/);
+
+  // 空仓用户：显式「无」而不是静默省略，堵住模型自选补位的口子。
+  const emptyFact = await runner.buildMarketWatchUniverseFact({ userId: "watch-universe-empty", projectId: "invest-agent", instanceId: "watch-universe-none" });
+  assert.match(emptyFact, /持仓：无/);
+  assert.match(emptyFact, /观察仓：无/);
+  assert.match(emptyFact, /禁止自行挑选/);
+
+  // 接线断言：只有 scheduled-market-watch 任务注入，其他任务不注入。
+  const source = await import("node:fs/promises");
+  const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.ok(runnerSource.includes('input.task.taskType === MARKET_WATCH_TASK_TYPE'), "injection must be gated on task type");
+  assert.ok(runnerSource.includes('const MARKET_WATCH_TASK_TYPE = "scheduled-market-watch"'), "gate must target scheduled-market-watch only");
+  assert.ok(runnerSource.includes("...(marketWatchUniverse ? [marketWatchUniverse] : [])"), "fact must land in the prompt lines");
+});

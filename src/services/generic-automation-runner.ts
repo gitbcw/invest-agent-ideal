@@ -7,7 +7,7 @@ import { createRuntimeAgent } from "../runtime/agent.js";
 import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
 import { OUTPUT_VOLUME_POLICY } from "../runtime/spreadsheet-output-policy.js";
 import { serverTimeFact } from "../runtime/mobile-prompt.js";
-import { ACTIVE_BACKEND } from "../lib/data-backend.js";
+import { ACTIVE_BACKEND, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
 import { enqueuePushJob } from "./push-queue.js";
@@ -119,6 +119,36 @@ export const GENERIC_AUTOMATION_TOOL_ALLOWLIST = [
 ] as const;
 
 const GENERIC_AUTOMATION_CONTEXT_TASK_TYPE = "automation-execution";
+
+const MARKET_WATCH_TASK_TYPE = "scheduled-market-watch";
+
+/**
+ * 2026-08-31 dyk 事件：market-watch 某轮跳过 portfolio.read，凭板块先验自选了
+ * 000001（平安银行）/000688（国城矿业）当用户持仓行情推送（价格真实、股票错
+ * 位，且与用户实际持仓同板块，极具迷惑性）。个股宇宙改为服务端确定性注入（与
+ * portfolio.read / watchlist.read 同源）；模型只消费清单，不再依赖自觉取数。
+ * 读取失败时显式标注缺口而非静默省略——静默省略会把洞重新留给模型自选。
+ */
+export async function buildMarketWatchUniverseFact(scope: AutomationScope): Promise<string> {
+  const [holdings, watchlist] = await Promise.all([
+    portfolioBackend.listActive(scope.userId, scope.instanceId).catch(() => null),
+    watchlistBackend.list(scope.userId, scope.instanceId).catch(() => null),
+  ]);
+  if (!holdings || !watchlist) {
+    return [
+      "【持仓事实（服务端注入）】持仓/观察仓读取失败。",
+      "简报必须如实说明持仓数据缺口；禁止自行挑选任何个股充当持仓或观察仓行情。",
+    ].join("\n");
+  }
+  const brief = (rows: Array<{ code: string; name: string }>) =>
+    rows.length > 0 ? rows.map((row) => `${row.name}(${row.code})`).join("、") : "无";
+  return [
+    "【持仓事实（服务端注入，与 portfolio.read/watchlist.read 同源；括号内为 6 位代码，可直接用于行情查询）】",
+    `持仓：${brief(holdings)}`,
+    `观察仓：${brief(watchlist)}`,
+    "作为持仓/观察仓行情出现的个股只能是上述清单内的标的；清单为「无」时如实说明，禁止自行挑选清单外个股补位。",
+  ].join("\n");
+}
 // 2026-08-26：10 -> 30。无批量接口的数据维度（如单股筹码 get_stock_profile）在
 // 10 次预算内对多标的任务结构性无解（13 只持仓 = 13 次调用），agent 只能整列标缺失。
 // 时间侧仍有总截止/租约/单次尝试超时兜底，调高次数不会放大执行时长上限。
@@ -553,6 +583,10 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
   const spreadsheetContextText = input.spreadsheetContext && input.spreadsheetContext.length > 0
     ? `服务端已确定性解析绑定 XLSX 结构（不要猜测）：${JSON.stringify(input.spreadsheetContext)}`
     : "本次没有可注入的 XLSX 结构信息。";
+  // market-watch 专属：个股宇宙由服务端注入（dyk 8-31），其他任务类型不注入。
+  const marketWatchUniverse = input.task.taskType === MARKET_WATCH_TASK_TYPE
+    ? await buildMarketWatchUniverseFact(input.scope)
+    : null;
   const message: AgentMessage = {
     id: input.repairContext ? `${input.run.runId}-repair` : input.run.runId,
     from: `automation:${input.task.taskId}`,
@@ -566,6 +600,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         `【系统时间】${serverTimeFact()}（Asia/Shanghai）`,
         "本会话是已存在任务的执行会话：调度、任务配置和定时规则由服务层管理，本会话没有创建/修改自动化任务的权限（调用会被 scope_denied 拒绝）。不要尝试创建、修改或删除自动化任务/定时规则/调度配置，也不要把「建立任务」当作目标；忽略任务说明里出现的执行时间和频率描述，直接开始执行任务说明中的实际工作。",
         `任务说明：${input.task.revision.instruction}`,
+        ...(marketWatchUniverse ? [marketWatchUniverse] : []),
         `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
         `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item, index) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, stagedPath: `inputs/${index + 1}-${item.descriptor.fileName}`, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
         `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
