@@ -46,8 +46,6 @@ import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxC
 import type { SandboxContext } from "../lib/sandbox-context.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId, type UserContext } from "../lib/user-context.js";
 import {
-  WorkspaceStore,
-  type OnboardingStateYaml,
   type PortfolioHolding,
   type PortfolioWatchItem,
   type PortfolioYaml,
@@ -99,17 +97,6 @@ export interface ServiceToolContext {
   traceId?: string;
   expectedReviewKind?: "daily" | "weekly" | "monthly";
   expectedReviewKey?: string;
-}
-
-export interface ServiceToolFailureInjection {
-  artifactPublish?: (relativePath: string) => Error | undefined;
-  artifactPublishAfter?: (relativePath: string, artifact: ConversationArtifact) => Error | undefined;
-}
-
-let serviceToolFailureInjection: ServiceToolFailureInjection = {};
-
-export function __setServiceToolFailureInjection(injection: ServiceToolFailureInjection = {}): void {
-  serviceToolFailureInjection = injection;
 }
 
 export function serviceToolContextFromEnv(env: NodeJS.ProcessEnv = process.env): ServiceToolContext {
@@ -2408,75 +2395,9 @@ async function applyPortfolioChanges(input: Record<string, unknown> | undefined,
   );
 }
 
-interface WorkspaceArtifactSpec {
-  relativePath: string;
-  title: string;
-  kind: ConversationArtifact["kind"];
-}
-
 interface WorkspaceArtifactPublication {
   artifacts: ConversationArtifact[];
   failures: Array<{ relativePath: string; message: string }>;
-}
-
-async function publishWorkspaceArtifacts(
-  context: ServiceToolContext,
-  specs: WorkspaceArtifactSpec[],
-  sourceOperation: string,
-  options: { required?: boolean; idempotencyKey?: string } = {},
-): Promise<WorkspaceArtifactPublication> {
-  const artifacts: ConversationArtifact[] = [];
-  const failures: Array<{ relativePath: string; message: string }> = [];
-  const seenPaths = new Set<string>();
-  for (const spec of specs) {
-    if (seenPaths.has(spec.relativePath)) continue;
-    seenPaths.add(spec.relativePath);
-    try {
-      const injectedError = serviceToolFailureInjection.artifactPublish?.(spec.relativePath);
-      if (injectedError) throw injectedError;
-      const published = await publishConversationArtifact({
-        userId: context.userId,
-        instanceId: context.instanceId,
-        relativePath: spec.relativePath,
-        kind: spec.kind,
-        title: spec.title,
-        scope: {
-          projectId: context.projectId || DEFAULT_PROJECT_ID,
-          assistantId: context.instanceId,
-          conversationId: context.conversationId ?? null,
-          source: "artifacts.publish",
-        },
-        idempotencyKey: options.idempotencyKey
-          ? `${options.idempotencyKey}:${spec.relativePath}`
-          : undefined,
-      });
-      const injectedAfterPublishError = serviceToolFailureInjection.artifactPublishAfter?.(spec.relativePath, published);
-      if (injectedAfterPublishError) throw injectedAfterPublishError;
-      artifacts.push(published);
-      await audit(context, {
-        operation: "artifacts.publish",
-        resourceType: "conversation_artifact",
-        resourceId: published.artifactId,
-        requestBody: { relativePath: spec.relativePath, automatic: true, sourceOperation },
-        resultSummary: `published automatic workspace artifact ${published.fileName}`,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      failures.push({ relativePath: spec.relativePath, message });
-      await audit(context, {
-        operation: "artifacts.publish",
-        resourceType: "conversation_artifact",
-        resourceId: spec.relativePath,
-        requestBody: { relativePath: spec.relativePath, automatic: true, sourceOperation },
-        resultSummary: `automatic workspace artifact skipped: ${message}`,
-        status: "error",
-      }).catch(() => undefined);
-    }
-  }
-  if (options.required && failures.length > 0) {
-    throw new Error(`必须发布的工作空间文件未能全部发布: ${failures.map((failure) => `${failure.relativePath}: ${failure.message}`).join("; ")}`);
-  }
-  return { artifacts, failures };
 }
 
 function artifactPublicationFields(publication: WorkspaceArtifactPublication) {
@@ -2484,29 +2405,6 @@ function artifactPublicationFields(publication: WorkspaceArtifactPublication) {
     ...(publication.artifacts.length > 0 ? { artifacts: publication.artifacts } : {}),
     ...(publication.failures.length > 0 ? { artifactPublishFailures: publication.failures } : {}),
   };
-}
-
-async function publishPortfolioFileArtifact(context: ServiceToolContext): Promise<ConversationArtifact | undefined> {
-  const publication = await publishWorkspaceArtifacts(
-    context,
-    [{ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" }],
-    "portfolio.apply_changes",
-  );
-  return publication.artifacts[0];
-}
-
-function onboardingArtifactSpecs(step: string): WorkspaceArtifactSpec[] {
-  const specs: WorkspaceArtifactSpec[] = [
-    { relativePath: "config/onboarding_state.yaml", kind: "data", title: "初始配置状态" },
-  ];
-  if (step === "portfolio") specs.push({ relativePath: "config/portfolio.yaml", kind: "data", title: "当前持仓配置" });
-  if (step === "style") specs.push({ relativePath: "config/strategy.yaml", kind: "data", title: "投资策略配置" });
-  if (step === "review_schedule" || step === "market_watch_schedule") {
-    specs.push({ relativePath: "config/schedules.yaml", kind: "data", title: "任务与盯盘计划" });
-  }
-  if (step === "notification") specs.push({ relativePath: "config/notification.yaml", kind: "data", title: "通知偏好配置" });
-  if (step === "watch_rules") specs.push({ relativePath: "config/watch.yaml", kind: "data", title: "盯盘边界配置" });
-  return specs;
 }
 
 function portfolioChangeResult(
@@ -2603,11 +2501,6 @@ function normalizeCodes(value: unknown): string[] {
   return [];
 }
 
-function normalizePositiveIds(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map(Number).filter((id) => Number.isInteger(id) && id > 0))];
-}
-
 function normalizeRecordList(value: unknown, field: string): Record<string, unknown>[] {
   if (value == null) return [];
   if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
@@ -2617,11 +2510,6 @@ function normalizeRecordList(value: unknown, field: string): Record<string, unkn
     }
     return item as Record<string, unknown>;
   });
-}
-
-function isExplicitWatchSetupSkipText(value: string) {
-  const normalized = value.replace(/[\s，。！!？?]/g, "");
-  return /^(暂不设置(明确)?规则|先不设置(明确)?规则|不设置(明确)?规则|暂时不设置(明确)?规则|跳过(规则设置)?|先跳过|以后再设置|先不用)$/.test(normalized);
 }
 
 const CONFIRMED_WRITE_OPERATIONS = new Set([
@@ -3009,19 +2897,6 @@ function redactUrlForAudit(value: string | undefined): string | undefined {
   }
 }
 
-function normalizeStockInputs(value: unknown): Array<{ code: string; name?: string }> {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      if (!item || typeof item !== "object") return null;
-      const raw = item as Record<string, unknown>;
-      const code = stringInput(raw.code);
-      const name = stringInput(raw.name);
-      return code ? { code, ...(name ? { name } : {}) } : null;
-    })
-    .filter((item): item is { code: string; name?: string } => item !== null);
-}
-
 function clampInteger(value: unknown, min: number, max: number, fallback: number) {
   const numberValue = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(numberValue)) return fallback;
@@ -3056,165 +2931,4 @@ function normalizeWatchlistReason(reason: string) {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
-}
-
-const ONBOARDING_STEPS = [
-  "welcome",
-  "portfolio",
-  "style",
-  "review_schedule",
-  "market_watch_schedule",
-  "notification",
-  "watch_rules",
-] as const;
-
-type OnboardingStepKey = typeof ONBOARDING_STEPS[number];
-
-function isOnboardingStep(value: unknown): value is OnboardingStepKey {
-  return typeof value === "string" && (ONBOARDING_STEPS as readonly string[]).includes(value);
-}
-
-function nextOnboardingStep(step: OnboardingStepKey): OnboardingStepKey | "completed" {
-  const idx = ONBOARDING_STEPS.indexOf(step);
-  return idx >= 0 && idx < ONBOARDING_STEPS.length - 1 ? ONBOARDING_STEPS[idx + 1] : "completed";
-}
-
-function normalizeOnboardingState(state: OnboardingStateYaml | null | undefined): OnboardingStateYaml {
-  return {
-    version: state?.version ?? 1,
-    status: state?.status ?? "not_started",
-    current_step: state?.current_step ?? "welcome",
-    steps: state?.steps ?? {},
-    completed_at: state?.completed_at ?? null,
-    updated_at: state?.updated_at ?? null,
-    notes: state?.notes ?? "",
-  };
-}
-
-async function applyOnboardingStepDefaults(
-  store: WorkspaceStore,
-  step: OnboardingStepKey,
-  now: string,
-  body: Record<string, unknown>
-) {
-  if (step === "style") {
-    const profile = asRecord(body.styleProfile ?? body.style_profile);
-    const style = stringInput(profile.style ?? body.style);
-    const notes = stringInput(profile.notes ?? body.notes);
-    const selectedStylePack = profile.selectedStylePack ?? profile.selected_style_pack;
-    const buyRules = profile.buyRules ?? profile.buy_rules;
-    const sellRules = profile.sellRules ?? profile.sell_rules;
-    const riskRules = profile.riskRules ?? profile.risk_rules;
-    if (!style && !notes) throw new Error("style confirmation requires styleProfile with a strategy summary");
-    const existing = (await store.readStrategy()) ?? {};
-    await store.writeStrategy({
-      ...existing,
-      profile: {
-        ...(existing.profile ?? {}),
-        style: style || existing.profile?.style || "自定义策略",
-        selected_style_pack: selectedStylePack === null ? null : stringInput(selectedStylePack) ?? existing.profile?.selected_style_pack ?? null,
-        custom_style_enabled: typeof (profile.customStyleEnabled ?? profile.custom_style_enabled) === "boolean"
-          ? Boolean(profile.customStyleEnabled ?? profile.custom_style_enabled)
-          : existing.profile?.custom_style_enabled ?? true,
-        risk_preference: stringInput(profile.riskPreference ?? profile.risk_preference) ?? existing.profile?.risk_preference ?? "",
-        investment_horizon: stringInput(profile.investmentHorizon ?? profile.investment_horizon) ?? existing.profile?.investment_horizon ?? "",
-      },
-      buy_rules: Array.isArray(buyRules) ? buyRules : existing.buy_rules ?? [],
-      sell_rules: Array.isArray(sellRules) ? sellRules : existing.sell_rules ?? [],
-      risk_rules: Array.isArray(riskRules) ? riskRules : existing.risk_rules ?? [],
-      notes: notes ?? existing.notes ?? "",
-      last_confirmed_at: now,
-    });
-  }
-
-  if (step === "review_schedule") {
-    const schedules = await store.readSchedules() ?? {};
-    const reviewSchedule = asRecord(body.reviewSchedule ?? body.review_schedule);
-    await store.writeSchedules({
-      ...schedules,
-      timezone: schedules.timezone ?? "Asia/Shanghai",
-      run_policy: {
-        automatic_by_default: true,
-        manual_trigger_allowed: true,
-        skip_automatic_if_manual_report_exists: true,
-        refresh_requires_user_confirmation: true,
-        ...(asRecord(schedules.run_policy)),
-      },
-      daily_review: {
-        enabled: true,
-        auto_run: true,
-        default_time: stringInput(body.dailyReviewTime ?? body.daily_review_time) || "19:00",
-        trading_days_only: true,
-        ...asRecord(reviewSchedule.daily_review),
-      },
-      weekly_review: {
-        enabled: true,
-        auto_run: true,
-        default_time: stringInput(body.weeklyReviewTime ?? body.weekly_review_time) || "Saturday 09:00",
-        ...asRecord(reviewSchedule.weekly_review),
-      },
-      monthly_review: {
-        enabled: true,
-        auto_run: true,
-        default_time: stringInput(body.monthlyReviewTime ?? body.monthly_review_time) || "day_1 09:00",
-        review_previous_month: true,
-        ...asRecord(reviewSchedule.monthly_review),
-      },
-    });
-  }
-  if (step === "market_watch_schedule") {
-    const schedules = await store.readSchedules() ?? {};
-    const inputSchedule = asRecord(body.marketWatchSchedule ?? body.market_watch_schedule);
-    const windows = Array.isArray(inputSchedule.default_windows)
-      ? inputSchedule.default_windows.map(String)
-      : Array.isArray(body.marketWatchWindows)
-        ? body.marketWatchWindows.map(String)
-        : Array.isArray(body.market_watch_windows)
-          ? body.market_watch_windows.map(String)
-          : ["09:55", "11:20", "14:30"];
-    await store.writeSchedules({
-      ...schedules,
-      market_watch: {
-        ...asRecord(schedules.market_watch),
-        enabled: true,
-        default_windows: windows,
-        custom_frequency: inputSchedule.custom_frequency ?? null,
-        only_push_on_exception: inputSchedule.only_push_on_exception !== false,
-        push_mode: stringInput(inputSchedule.push_mode ?? body.pushMode ?? body.push_mode) || "exception_only",
-      },
-    });
-  }
-  if (step === "notification") {
-    const notification = await store.readNotification() ?? {};
-    const mode = readNotificationMode(body);
-    await store.writeNotification({
-      ...notification,
-      preference: {
-        mode,
-        label: mode === "active_watch" ? "积极盯盘" : mode === "evening_summary" ? "晚间汇总" : "低打扰",
-        updated_at: now,
-      },
-    });
-  }
-  if (step === "watch_rules") {
-    await store.appendChangeLog({
-      ts: now,
-      source: "mcp",
-      type: "watch_rules_boundary_confirmed",
-      summary: "用户确认默认提醒边界；未自动创建明确规则巡检",
-      details: { did_create_explicit_rules: false },
-    });
-  }
-}
-
-function readNotificationMode(body: Record<string, unknown>): "low_disturbance" | "active_watch" | "evening_summary" {
-  const raw = body.notificationPreference ?? body.notification_preference ?? body.notification ?? body.preference;
-  if (typeof raw === "string") return normalizeNotificationMode(raw);
-  const record = asRecord(raw);
-  return normalizeNotificationMode(record.mode ?? body.notification_mode ?? body.notificationMode ?? body.mode);
-}
-
-function normalizeNotificationMode(value: unknown): "low_disturbance" | "active_watch" | "evening_summary" {
-  if (value === "active_watch" || value === "evening_summary") return value;
-  return "low_disturbance";
 }

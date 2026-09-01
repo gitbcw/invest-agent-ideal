@@ -19,7 +19,7 @@ test("preferences.apply updates confirmed schedule and notification settings", a
     const { db, initDb } = await import("../src/db/index.js");
     const { conversationMessages, conversationSessions, pendingSandboxConfirmations, sandboxAuditLogs } = await import("../src/db/schema.js");
     const { MastraUserPreferenceStore } = await import("../src/services/user-preferences.js");
-    const { callServiceTool, __setServiceToolFailureInjection } = await import("../src/mcp/service-tools-core.js");
+    const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
     const { findArtifactsForTurn } = await import("../src/services/conversation-artifacts.js");
     const { markTurnStart, markTurnEnd } = await import("../src/services/conversation-turns.js");
 

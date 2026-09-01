@@ -127,17 +127,6 @@ async function saveReviewTemplate(template: ReviewTemplate): Promise<void> {
 }
 
 /** 解析复盘操作 */
-function parseAction(message: string): { action: string; date?: string } {
-  const dateMatch = message.match(/(\d{4}-\d{2}-\d{2})/);
-  if (dateMatch) return { action: "query", date: dateMatch[1] };
-  if (message.includes("周复盘")) return { action: "weekly" };
-  if (message.includes("月复盘")) return { action: "monthly" };
-  if (message.includes("日复盘") || message.includes("复盘") || message.includes("总结")) {
-    return { action: "daily" };
-  }
-  return { action: "daily" };
-}
-
 interface StockPlanItem {
   code: string;
   name: string;
@@ -227,15 +216,6 @@ function retiredMarketSource(label: string): MarketSourceMeta {
   };
 }
 
-async function reviewKlines(
-  _code: string,
-  _count: number,
-  _userId: string,
-  _options: { startDate?: string; endDate?: string } = {},
-): Promise<StockKline[]> {
-  return [];
-}
-
 async function reviewKlinesResult(
   code: string,
   _count: number,
@@ -249,43 +229,8 @@ async function reviewKlinesResult(
   };
 }
 
-async function reviewQuote(_code: string, _userId: string): Promise<StockQuote | undefined> {
-  return undefined;
-}
-
 async function reviewQuoteResult(_code: string, _userId: string): Promise<{ items: StockQuote[]; warnings: string[] }> {
   return { items: [], warnings: ["service_market_data_retired"] };
-}
-
-async function reviewMarketIndexLines(input: {
-  userId: string;
-  today: string;
-  isHistorical: boolean;
-}): Promise<string[]> {
-  try {
-    if (input.isHistorical) {
-      const indexCodes = [
-        { code: "000001", name: "上证指数", prefix: "sh" },
-        { code: "399001", name: "深证成指", prefix: "sz" },
-        { code: "399006", name: "创业板指", prefix: "sz" },
-        { code: "000300", name: "沪深300", prefix: "sh" },
-      ];
-      const lines: string[] = [];
-      for (const idx of indexCodes) {
-        const klines = await reviewKlines(idx.prefix + idx.code, 5, input.userId, { endDate: input.today });
-        const dayK = klines.find((k) => k.date === input.today) ?? klines[klines.length - 1];
-        if (dayK) {
-          const prevK = klines[klines.indexOf(dayK) - 1];
-          const pct = prevK ? ((dayK.close - prevK.close) / prevK.close * 100) : 0;
-          lines.push(`${idx.name} ${dayK.close} ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`);
-        }
-      }
-      return lines;
-    }
-    return ["大盘指数数据已交由外部数据 MCP 获取，服务层不再预取。"];
-  } catch {
-    return ["大盘指数数据获取失败"];
-  }
 }
 
 async function reviewMarketIndexData(input: {
@@ -389,23 +334,6 @@ export interface DailyReviewContext {
   dataLimits: string[];
 }
 
-export async function handleReview(message: string): Promise<string> {
-  const { action, date } = parseAction(message);
-
-  switch (action) {
-    case "daily":
-      return generateDailyReview();
-    case "weekly":
-      return generateWeeklyReview();
-    case "monthly":
-      return "月复盘功能开发中...";
-    case "query":
-      return queryReview(date!);
-    default:
-      return generateDailyReview();
-  }
-}
-
 export async function buildDailyReviewContext(options: { targetDate?: string; userId?: string; instanceId?: string } = {}): Promise<DailyReviewContext> {
   const userId = options.userId ?? DEFAULT_USER_ID;
   const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
@@ -418,8 +346,6 @@ export async function buildDailyReviewContext(options: { targetDate?: string; us
     .select()
     .from(alertEvents)
     .where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceId), eq(alertEvents.eventDate, today)));
-  await updateAlertFeedback(userId, todayAlerts);
-
   const allCodes = new Map<string, { name: string; pool: "holding" | "watchlist" }>();
   for (const p of positions) {
     if (isReviewStockCode(p.code)) allCodes.set(p.code, { name: p.name, pool: "holding" });
@@ -620,11 +546,6 @@ function buildWeixinReviewSummary(date: string, content: string): string {
 
   lines.push("", "完整复盘已保存。需要展开可以回复「查看今日复盘」。");
   return lines.join("\n").slice(0, 1200);
-}
-
-export function buildReviewPushSummary(content: string, date = localDateString()): string {
-  const dateMatch = content.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
-  return buildWeixinReviewSummary(dateMatch?.[1] ?? date, content);
 }
 
 function extractSection(content: string, heading: RegExp): string {
@@ -1342,8 +1263,6 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
     .select()
     .from(alertEvents)
     .where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceId), eq(alertEvents.eventDate, today)));
-  await updateAlertFeedback(userId, todayAlerts);
-
   const allCodes = new Map<string, { name: string; pool: "holding" | "watchlist" }>();
   for (const p of positions) {
     if (isReviewStockCode(p.code)) allCodes.set(p.code, { name: p.name, pool: "holding" });
@@ -1530,118 +1449,6 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
 }
 
 /** 生成周复盘 */
-export async function generateWeeklyReview(options: { userId?: string; instanceId?: string } = {}): Promise<string> {
-  const userId = options.userId ?? DEFAULT_USER_ID;
-  const instanceId = options.instanceId ?? DEFAULT_INSTANCE_ID;
-  const { weekStart: weekStartStr, weekEnd: weekEndStr } = weekRangeForDate();
-  const weekKey = `${weekStartStr}_weekly`;
-  const reviewDir = userId === DEFAULT_USER_ID ? REVIEWS_DIR : join(REVIEWS_DIR, userId);
-  const filePath = join(reviewDir, `${weekKey}.md`);
-
-  if (existsSync(filePath)) {
-    return readFileSync(filePath, "utf-8");
-  }
-
-  ensureDir();
-  if (userId !== DEFAULT_USER_ID) mkdirSync(reviewDir, { recursive: true });
-
-  const watchItems = await watchlistBackend.list(userId, instanceId);
-  const weekAlerts = await db
-    .select()
-    .from(alertEvents)
-    .where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceId), gte(alertEvents.eventDate, weekStartStr), lte(alertEvents.eventDate, weekEndStr)))
-    .orderBy(desc(alertEvents.createdAt));
-  const viewpointSummary = await getWeeklyViewpointSummary(userId, instanceId, weekStartStr, weekEndStr);
-  const viewpointSummaryText = formatWeeklyViewpointSummary(viewpointSummary);
-
-  // 收集每只自选股的周度分析
-  const weeklyData: string[] = [];
-  for (const item of watchItems) {
-    try {
-      const klines = await reviewKlines(item.code, 30, userId);
-      // 取本周 K 线
-      const weekKlines = klines.filter(k => k.date >= weekStartStr && k.date <= weekEndStr);
-      if (weekKlines.length === 0) continue;
-
-      const firstClose = weekKlines[0].close;
-      const lastClose = weekKlines[weekKlines.length - 1].close;
-      const weekChange = ((lastClose - firstClose) / firstClose * 100).toFixed(2);
-      const maxHigh = Math.max(...weekKlines.map(k => k.high));
-      const minLow = Math.min(...weekKlines.map(k => k.low));
-      const totalVol = weekKlines.reduce((s, k) => s + k.volume, 0);
-
-      const indicator = klines.length >= 30 ? indicatorCapability.analyzeIndicators(klines) : null;
-
-      weeklyData.push(`| ${item.name}(${item.code}) | ${firstClose} → ${lastClose} | ${weekChange}% | ${maxHigh} | ${minLow} | ${(totalVol / 10000).toFixed(0)}万手 | ${indicator?.trend.trendDesc || "-"} |`);
-    } catch {
-      weeklyData.push(`| ${item.name}(${item.code}) | 数据获取失败 | - | - | - | - | - |`);
-    }
-  }
-
-  const md = [
-    `# ${weekStartStr} ~ ${weekEndStr} 周复盘`,
-    "",
-    `> 生成时间: ${new Date().toISOString()}`,
-    "",
-    "## 本周自选股表现",
-    "",
-    "| 股票 | 周初→周末 | 涨跌幅 | 最高 | 最低 | 总成交量 | 趋势 |",
-    "|------|----------|--------|------|------|---------|------|",
-    ...weeklyData,
-    "",
-    "## 本周提醒反馈",
-    "",
-    formatAlertSummary(weekAlerts),
-    "",
-    "## 本周观点追踪回测",
-    "",
-    viewpointSummaryText,
-    "",
-    "---",
-    "*本复盘由确定性回退路径生成，仅供参考，不构成投资建议*",
-  ].join("\n");
-
-  writeFileSync(filePath, md, "utf-8");
-  await mirrorReviewToWorkspace(userId, "weekly", weekKey, md);
-  logger.info(`周复盘已生成: ${filePath}`);
-
-  return md;
-}
-
-async function updateAlertFeedback(
-  userId: string,
-  alerts: Array<{
-    id: number;
-    stockCode: string;
-    eventType: string;
-    signalKey: string;
-    price: number | null;
-    status: string;
-    feedback: string | null;
-  }>
-) {
-  for (const event of alerts) {
-    if (event.status !== "pending" || event.price == null) continue;
-
-    const current = (await reviewQuote(event.stockCode, userId))?.price;
-    if (!current) continue;
-
-    const change = ((current - event.price) / event.price) * 100;
-    let status = "待验证";
-
-    if (event.signalKey.includes("down") || event.signalKey.includes("dead")) {
-      status = change < -1 ? "命中" : change > 1 ? "误报" : "待验证";
-    } else if (event.signalKey.includes("near-support")) {
-      status = change > 1 ? "命中" : change < -1 ? "误报" : "待验证";
-    } else {
-      status = change > 1 ? "命中" : change < -1 ? "误报" : "待验证";
-    }
-
-    await db.update(alertEvents).set({ status }).where(eq(alertEvents.id, event.id));
-    event.status = status;
-  }
-}
-
 function formatAlertSummary(
   alerts: Array<{
     eventDate: string;
@@ -1741,17 +1548,6 @@ function formatDailyAlertsByPriority(
 }
 
 /** 查询历史复盘 */
-function queryReview(date: string, userId = DEFAULT_USER_ID): string {
-  const baseDir = userId === DEFAULT_USER_ID ? REVIEWS_DIR : join(REVIEWS_DIR, userId);
-  const mdPath = join(baseDir, `${date}.md`);
-  const txtPath = join(baseDir, `${date}.txt`);
-  const filePath = existsSync(mdPath) ? mdPath : txtPath;
-  if (!existsSync(filePath)) {
-    return `未找到 ${date} 的复盘记录`;
-  }
-  return readFileSync(filePath, "utf-8");
-}
-
 function estimateLevels(klines: Array<{ high: number; low: number }>): {
   support: number | null;
   resistance: number | null;
@@ -1790,29 +1586,6 @@ async function saveDailyPlan(userId: string, instanceId: string, date: string, c
     content,
     data,
   });
-}
-
-export interface ReviewToolInput {
-  operation: "generate_daily" | "generate_weekly" | "query";
-  date?: string;
-  userId?: string;
-  instanceId?: string;
-}
-
-export async function handleReviewTool(input: ReviewToolInput): Promise<string> {
-  const userId = input.userId ?? DEFAULT_USER_ID;
-  const instanceId = input.instanceId ?? DEFAULT_INSTANCE_ID;
-  switch (input.operation) {
-    case "generate_daily":
-      return generateDailyReview({ force: true, targetDate: input.date, userId, instanceId });
-    case "generate_weekly":
-      return generateWeeklyReview({ userId, instanceId });
-    case "query":
-      if (!input.date) return "请指定要查询的日期，格式 YYYY-MM-DD。";
-      return queryReview(input.date, userId);
-    default:
-      return "不支持的复盘操作。";
-  }
 }
 
 /** 输出预案建议：无预案的建议新建，有预案的建议调整 */
