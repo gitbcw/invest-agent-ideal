@@ -388,6 +388,9 @@ export async function buildDailyReviewContext(options: { targetDate?: string; us
       const trend = indicator?.trend.trendDesc ?? "-";
       const macd = indicator?.trend.macdSignal ? indicator.trend.macdSignal.replace(/^MACD\s*/, "") : "-";
       const volume = indicator?.volume.status ?? "-";
+      // T-450 尾巴：实时行情 facade 已随行情服务退役恒为空，"现价- +0.00%"
+      // 是纯占位且 +0.00% 伪装成涨跌为 0；缺价时保留技术面并明示缺价。
+      const quoteMissing = price === undefined && changePercent === undefined && !isHistorical;
       const dir = (changePercent ?? 0) >= 0 ? "+" : "";
       stocks.push({
         code,
@@ -398,7 +401,9 @@ export async function buildDailyReviewContext(options: { targetDate?: string; us
         trend,
         macd,
         volume,
-        description: `${meta.name}(${code}) ${isHistorical ? "收盘" : "现价"}${price ?? "-"} ${dir}${(changePercent ?? 0).toFixed(2)}% 趋势${trend} MACD${macd} 量能${volume}`,
+        description: quoteMissing
+          ? `${meta.name}(${code}) 实时行情未接入（走外部数据 MCP；此处仅技术面） 趋势${trend} MACD${macd} 量能${volume}`
+          : `${meta.name}(${code}) ${isHistorical ? "收盘" : "现价"}${price ?? "-"} ${dir}${(changePercent ?? 0).toFixed(2)}% 趋势${trend} MACD${macd} 量能${volume}`,
         support: levels.support,
         resistance: levels.resistance,
         observe,
@@ -1254,100 +1259,26 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
 
   ensureDir();
 
-  // 1. 收集数据
-  const template = await getReviewTemplate();
-  if (userId !== DEFAULT_USER_ID) mkdirSync(join(REVIEWS_DIR, userId), { recursive: true });
-  const watchItems = await watchlistBackend.list(userId, instanceId);
-  const positions = await portfolioBackend.listActive(userId, instanceId);
-  const todayAlerts = await db
-    .select()
-    .from(alertEvents)
-    .where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceId), eq(alertEvents.eventDate, today)));
-  const allCodes = new Map<string, { name: string; pool: "holding" | "watchlist" }>();
-  for (const p of positions) {
-    if (isReviewStockCode(p.code)) allCodes.set(p.code, { name: p.name, pool: "holding" });
-  }
-  for (const w of watchItems) {
-    if (isReviewStockCode(w.code) && !allCodes.has(w.code)) {
-      allCodes.set(w.code, { name: w.name, pool: "watchlist" });
-    }
-  }
-
-  const isHistorical = !!options.targetDate;
-
-  // 2. 大盘指数
-  const sourceQuality: DailyReviewSourceQualityItem[] = [];
-  const marketIndexLines = await reviewMarketIndexData({ userId, today, isHistorical, sourceQuality });
-
-  // 3. 自选股行情（纯文字）
-  const stockDescriptions: string[] = [];
-  const planItems: StockPlanItem[] = [];
-
-  for (const [code, meta] of allCodes) {
-    try {
-      const klineResult = await reviewKlinesResult(code, 120, userId, { endDate: isHistorical ? today : undefined });
-      collectSourceQuality(sourceQuality, `${meta.name}(${code})日K`, klineResult.source);
-      const klines = klineResult.items as StockKline[];
-      const indicator = klines.length >= 30 ? indicatorCapability.analyzeIndicators(klines) : null;
-      const levels = estimateLevels(klines);
-
-      // 历史日期从 K 线取目标日收盘价；实时日期走服务层行情 facade。
-      let price: number | undefined;
-      let changePercent: number | undefined;
-
-      if (isHistorical) {
-        const dayK = klines.find(k => k.date === today) ?? klines[klines.length - 1];
-        const prevK = dayK ? klines[klines.indexOf(dayK) - 1] : undefined;
-        if (dayK) price = dayK.close;
-        if (dayK && prevK) changePercent = (dayK.close - prevK.close) / prevK.close * 100;
-      } else {
-        const quoteResult = await reviewQuoteResult(code, userId);
-        const quote = quoteResult.items[0];
-        collectSourceQuality(sourceQuality, `${meta.name}(${code})实时行情`, quote?.source, quoteResult.warnings.join(";") || "missing_quote");
-        price = quote?.price;
-        changePercent = quote?.changePercent;
-      }
-
-      const observe = buildObserveRules(price, levels.support, levels.resistance, indicator?.summary);
-
-      const trend = indicator?.trend.trendDesc ?? "-";
-      const macd = indicator?.trend.macdSignal ? indicator.trend.macdSignal.replace(/^MACD\s*/, "") : "-";
-      const vol = indicator?.volume.status ?? "-";
-      const dir = (changePercent ?? 0) >= 0 ? "+" : "";
-      stockDescriptions.push(
-        `${meta.name}(${code}) ${isHistorical ? "收盘" : "现价"}${price ?? "-"} ${dir}${(changePercent ?? 0).toFixed(2)}% 趋势${trend} MACD${macd} 量能${vol}`
-      );
-
-      planItems.push({
-        code,
-        name: meta.name,
-        pool: meta.pool,
-        support: levels.support,
-        resistance: levels.resistance,
-        observe,
-        risks: ["量价判断仅作参考", "重大公告需人工确认"],
-        confidence: klines.length >= 60 ? "medium" : "low",
-      });
-    } catch {
-      collectSourceQuality(sourceQuality, `${meta.name}(${code})行情`, null, "获取失败");
-      stockDescriptions.push(`${meta.name}(${code}) 行情获取失败`);
-      planItems.push({
-        code, name: meta.name, pool: meta.pool,
-        support: null, resistance: null,
-        observe: ["行情获取失败"], risks: ["数据缺失"], confidence: "low",
-      });
-    }
-  }
-
-  // 4.5 信息面数据（新闻/研报/公告）
-  let infoFilterText = "暂无重大信息。";
-  if (template.sections.info_filter.enabled) {
-    try {
-      infoFilterText = "个股公告/新闻证据已交由外部数据 MCP 获取，服务层不再预取。";
-    } catch {
-      infoFilterText = "信息面数据获取失败，请人工确认。";
-    }
-  }
+  // 1. 数据收集统一走 buildDailyReviewContext（T-450 尾巴：此前两处各持
+  // 一份 ~90 行逐字重复的收集循环，任何字段增删都要双写）。
+  const context = await buildDailyReviewContext(options);
+  const template = context.template;
+  const marketIndexLines = context.marketIndex;
+  const todayAlerts = context.alerts;
+  const infoFilterText = context.infoFilter;
+  const stockDescriptions = context.stocks.map((stock) => stock.description);
+  const planItems: StockPlanItem[] = context.stocks.map((stock) => ({
+    code: stock.code,
+    name: stock.name,
+    pool: stock.pool,
+    support: stock.support,
+    resistance: stock.resistance,
+    observe: stock.observe,
+    risks: stock.risks,
+    confidence: stock.confidence,
+  }));
+  const holdingDescriptions = context.holdings.map((stock) => stock.description);
+  const watchStocks = context.watchlist;
 
   // 5. AI 综合分析
   const focusBlock = template.focusPoints.length > 0
@@ -1371,29 +1302,22 @@ export async function generateDailyReview(options: { force?: boolean; targetDate
   parts.push(...buildDailySourceQualitySection({
     generatedAt,
     today,
-    isHistorical,
-    hasStocks: allCodes.size > 0,
+    isHistorical: context.isHistorical,
+    hasStocks: context.stocks.length > 0,
     missingStockNames: planItems.filter((item) => item.confidence === "low" && item.observe.includes("行情获取失败")).map((item) => item.name),
     infoFilterText,
-    sourceQuality: compactSourceQuality(sourceQuality),
+    sourceQuality: context.sourceQuality,
   }));
 
   if (s.holdings.enabled) {
     parts.push(`【${s.holdings.label}】`);
-    const holdingStocks = stockDescriptions.filter((_, i) => [...allCodes.values()][i]?.pool === "holding");
-    parts.push(...(holdingStocks.length > 0 ? holdingStocks : ["无持仓"]), "");
+    parts.push(...(holdingDescriptions.length > 0 ? holdingDescriptions : ["无持仓"]), "");
   }
 
-  if (s.watchlist.enabled) {
-    const watchOnly = watchItems.filter(w => !allCodes.has(w.code) || allCodes.get(w.code)?.pool === "watchlist");
-    if (watchOnly.length > 0) {
-      parts.push(`【${s.watchlist.label}】`);
-      for (const w of watchOnly) {
-        const desc = stockDescriptions.find(d => d.includes(w.code));
-        if (desc) parts.push(desc);
-      }
-      parts.push("");
-    }
+  if (s.watchlist.enabled && watchStocks.length > 0) {
+    parts.push(`【${s.watchlist.label}】`);
+    parts.push(...watchStocks.map((stock) => stock.description));
+    parts.push("");
   }
 
   if (s.info_filter.enabled && infoFilterText !== "暂无重大信息。") {
