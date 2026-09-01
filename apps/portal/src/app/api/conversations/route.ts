@@ -41,31 +41,35 @@ export async function GET(request: Request) {
 
   // 1. connector 在线 -> 先用 connector 返回的列表同步 mirror。
   // 用户级重命名/归档/删除/置顶只保存在 portal mirror 上,最终列表从本地视图生成。
-  const remote = await sendConnectorRequest<ConversationListResult>(
-    session.assistantId,
-    PORTAL_TYPES.CONVERSATION_LIST,
-    {
-      userId: session.sub,
-      assistantId: session.assistantId,
-      instanceId: session.instanceId,
-      channel: parsed.data.channel,
-      limit: 50
-    }
-  );
-
-  if (remote.ok) {
-    for (const conv of remote.data.items) {
-      repo.upsertConversation({
-        conversationId: conv.conversationId,
+  // 带搜索词的请求只查本地 mirror LIKE（T-448）：搜索不需要远端同步往返，
+  // 且这是搜索输入防抖后的高频路径。
+  if (!parsed.data.query) {
+    const remote = await sendConnectorRequest<ConversationListResult>(
+      session.assistantId,
+      PORTAL_TYPES.CONVERSATION_LIST,
+      {
         userId: session.sub,
         assistantId: session.assistantId,
         instanceId: session.instanceId,
-        channel: conv.channel,
-        title: conv.title,
-        lastMessagePreview: conv.lastMessagePreview,
-        createdAt: conv.createdAt,
-        updatedAt: conv.updatedAt
-      });
+        channel: parsed.data.channel,
+        limit: 50
+      }
+    );
+
+    if (remote.ok) {
+      for (const conv of remote.data.items) {
+        repo.upsertConversation({
+          conversationId: conv.conversationId,
+          userId: session.sub,
+          assistantId: session.assistantId,
+          instanceId: session.instanceId,
+          channel: conv.channel,
+          title: conv.title,
+          lastMessagePreview: conv.lastMessagePreview,
+          createdAt: conv.createdAt,
+          updatedAt: conv.updatedAt
+        });
+      }
     }
   }
 

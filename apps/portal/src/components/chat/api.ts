@@ -154,7 +154,16 @@ export async function deleteConversation(conversationId: string): Promise<void> 
 }
 
 export async function fetchConversation(
-  conversationId: string
+  conversationId: string,
+  options?: {
+    /**
+     * "first" syncs only the newest remote page before serving — for the
+     * 1s processing poll, which must not re-walk the whole conversation
+     * history on every tick. Default "full" keeps the open-conversation
+     * behavior of syncing every page.
+     */
+    syncDepth?: "first" | "full";
+  }
 ): Promise<{
   conversationId: string;
   title: string;
@@ -166,6 +175,7 @@ export async function fetchConversation(
 }> {
   const url = new URL(`/api/conversations/${conversationId}`, window.location.origin);
   url.searchParams.set("limit", "100");
+  if (options?.syncDepth) url.searchParams.set("sync", options.syncDepth);
   const res = await fetch(url, { credentials: "same-origin" });
   const json = await jsonOrThrow<{
     ok: boolean;

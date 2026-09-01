@@ -84,6 +84,10 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  // T-448: the search box is typed into; a request per keystroke (plus the
+  // effect re-run below rebuilding the 15s interval) made list typing janky.
+  // Queries run against the debounced value only.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [activeArtifact, setActiveArtifact] = useState<ArtifactCardView | null>(null);
   const [artifactLightbox, setArtifactLightbox] = useState<ArtifactCardView | null>(null);
   const [artifactPanelClosed, setArtifactPanelClosed] = useState(true);
@@ -252,7 +256,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const refreshConversations = useCallback(async () => {
     setLoadingConversations(true);
     try {
-      const res = await fetchConversations({ limit: 20, query: searchQuery, archived: false });
+      const res = await fetchConversations({ limit: 20, query: debouncedSearch, archived: false });
       setConversations(res.items);
       setHasNextConversations(Boolean(res.nextCursor));
       cursorRef.current = res.nextCursor;
@@ -261,15 +265,22 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     } finally {
       setLoadingConversations(false);
     }
-  }, [searchQuery]);
+  }, [debouncedSearch]);
 
   const refreshLabels = useCallback(async () => {
     try { setLabels(await fetchConversationLabels()); } catch (err) { setFatalError((err as Error).message); }
   }, []);
 
+  // Search debounce: typing updates the input immediately; the list query
+  // fires 300ms after the last keystroke.
   useEffect(() => {
-    void refreshConversations();
-    void refreshLabels();
+    const timer = window.setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Session/heartbeat loop must survive search changes: it no longer depends
+  // on refreshConversations (whose identity changes with the search query).
+  useEffect(() => {
     void ensureSessionMatchesPage().then((ok) => {
       if (ok) void refreshStatus();
     });
@@ -279,7 +290,12 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       });
     }, 15_000);
     return () => window.clearInterval(id);
-  }, [ensureSessionMatchesPage, refreshConversations, refreshLabels, refreshStatus]);
+  }, [ensureSessionMatchesPage, refreshStatus]);
+
+  useEffect(() => {
+    void refreshConversations();
+    void refreshLabels();
+  }, [refreshConversations, refreshLabels]);
 
   const handleCreateLabel = useCallback(async (name: string) => {
     try { await createConversationLabel(name); await refreshLabels(); } catch (err) { setFatalError((err as Error).message); }
@@ -305,7 +321,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   }, [refreshConversations]);
 
   // ---- 选择会话 / 加载消息 ----
-  const loadConversation = useCallback(async (conversationId: string, showLoading = false): Promise<{ processing: boolean }> => {
+  const loadConversation = useCallback(async (conversationId: string, showLoading = false, syncDepth: "full" | "first" = "full"): Promise<{ processing: boolean }> => {
     if (showLoading) {
       updateConversationView(conversationId, (current) => ({ ...current, loading: true }));
     }
@@ -313,7 +329,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     const wasProcessing = processingConversationsRef.current[conversationId] === true;
     const storedProcessingStartedAt = readProcessingStartedAt(conversationId);
     try {
-      const data = await fetchConversation(conversationId);
+      const data = await fetchConversation(conversationId, { syncDepth });
       const locallyWaiting = conversationViewsRef.current[conversationId]?.waiting === true;
       // Server processing is authoritative. A browser marker can help recover
       // a request after a remount, but it must never resurrect a terminal turn.
@@ -348,7 +364,16 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         // 保留，按 messageId 去重后拼在最新窗口前面，避免又翻一遍。
         // 只保留严格早于最新窗口的消息——在途/失败的本地乐观消息交给
         // 服务端窗口或 POST 回调处理，否则会与新窗口重复。
-        const freshMessages = withProcessingPlaceholder(conversationId, withProcessedDurations(data.messages.map(toView)), processing);
+        // T-448: 未变的消息复用旧引用，1s 轮询 tick 只重渲真正变化的气泡
+        //（配合 MessageBubble 的 memo），而不是整个消息列表。
+        const currentById = new Map(current.messages.map((message) => [message.messageId, message]));
+        const freshMessages = withProcessingPlaceholder(
+          conversationId,
+          withProcessedDurations(data.messages.map(toView)).map((message) =>
+            reuseUnchangedMessage(message, currentById.get(message.messageId))
+          ),
+          processing
+        );
         const freshIds = new Set(freshMessages.map((message) => message.messageId));
         const freshEarliest = freshMessages.length > 0
           ? new Date(freshMessages[0].createdAt).getTime()
@@ -453,7 +478,10 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
-      const result = await loadConversation(conversationId);
+      // Shallow sync per tick: the poll only waits for the newest message,
+      // and a full remote walk every second amplified writes on the shared
+      // portal db (T-448).
+      const result = await loadConversation(conversationId, false, "first");
       const stillWaiting = conversationViewsRef.current[conversationId]?.waiting === true;
       if (!cancelled && (result.processing || stillWaiting)) timer = window.setTimeout(() => void poll(), 1_000);
     };
@@ -953,14 +981,14 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const handleLoadMore = useCallback(async () => {
     if (!cursorRef.current) return;
     try {
-      const res = await fetchConversations({ limit: 20, cursor: cursorRef.current, query: searchQuery, archived: false });
+      const res = await fetchConversations({ limit: 20, cursor: cursorRef.current, query: debouncedSearch, archived: false });
       setConversations((prev) => [...prev, ...res.items]);
       cursorRef.current = res.nextCursor;
       setHasNextConversations(Boolean(res.nextCursor));
     } catch (err) {
       setFatalError((err as Error).message);
     }
-  }, [searchQuery]);
+  }, [debouncedSearch]);
 
   const handleRenameConversation = useCallback(async (conversation: ConversationListItem, nextTitle: string) => {
     if (!nextTitle || nextTitle === conversation.title) return;
@@ -1274,6 +1302,34 @@ function deriveLocalTitle(text: string, attachments: ComposerAttachment[]) {
   const clean = text.replace(/\s+/g, " ").trim();
   if (clean) return clean.slice(0, 24);
   return attachmentOnlyText(attachments) || "新的对话";
+}
+
+/**
+ * T-448: keep the previous message object when nothing observable changed, so
+ * a poll tick produces a stable reference for unchanged rows and the memoized
+ * MessageBubble skips re-rendering them. Card arrays compare by length: rows
+ * with the same messageId are immutable history except for the in-flight
+ * assistant row, whose content/status changes are compared above.
+ */
+function reuseUnchangedMessage(fresh: ChatMessageView, current: ChatMessageView | undefined): ChatMessageView {
+  if (!current) return fresh;
+  if (
+    current.messageId === fresh.messageId &&
+    current.role === fresh.role &&
+    current.content === fresh.content &&
+    current.status === fresh.status &&
+    current.createdAt === fresh.createdAt &&
+    current.traceId === fresh.traceId &&
+    current.userFeedback === fresh.userFeedback &&
+    current.processedDurationMs === fresh.processedDurationMs &&
+    current.executionDurationMs === fresh.executionDurationMs &&
+    (current.attachments?.length ?? 0) === (fresh.attachments?.length ?? 0) &&
+    (current.artifacts?.length ?? 0) === (fresh.artifacts?.length ?? 0) &&
+    (current.inlineVisuals?.length ?? 0) === (fresh.inlineVisuals?.length ?? 0)
+  ) {
+    return current;
+  }
+  return fresh;
 }
 
 function withProcessedDurations(messages: ChatMessageView[]): ChatMessageView[] {

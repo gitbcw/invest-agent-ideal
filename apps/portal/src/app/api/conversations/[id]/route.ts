@@ -17,7 +17,12 @@ const GetSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
   /** before: 配合 nextBeforeCursor 向更早方向翻页。缺省时首屏取最新 limit 条。 */
-  before: z.string().optional()
+  before: z.string().optional(),
+  /**
+   * sync=first: 处理中轮询只同步远端最新一页（T-448），打开会话的默认
+   * full 保持全量翻页语义。
+   */
+  sync: z.enum(["full", "first"]).default("full")
 }).refine((value) => !value.before || !value.cursor, "before 与 cursor 互斥");
 
 type Params = { params: { id: string } };
@@ -29,7 +34,8 @@ export async function GET(request: Request, { params }: Params) {
   const parsed = GetSchema.safeParse({
     limit: url.searchParams.get("limit") ?? undefined,
     cursor: url.searchParams.get("cursor") ?? undefined,
-    before: url.searchParams.get("before") ?? undefined
+    before: url.searchParams.get("before") ?? undefined,
+    sync: url.searchParams.get("sync") ?? undefined
   });
   if (!parsed.success) {
     return badRequest("参数错误", { issues: parsed.error.issues });
@@ -55,6 +61,7 @@ export async function GET(request: Request, { params }: Params) {
     userId: session.sub,
     assistantId: session.assistantId,
     instanceId: session.instanceId,
+    syncDepth: parsed.data.sync,
     requestPage: (cursor, limit) => sendConnectorRequest<ConversationGetResult>(
       session.assistantId,
       PORTAL_TYPES.CONVERSATION_GET,

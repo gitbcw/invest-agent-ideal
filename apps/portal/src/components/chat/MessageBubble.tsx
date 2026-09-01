@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, RefreshCw, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { ArtifactCard } from "./ArtifactCard";
@@ -42,7 +42,7 @@ interface MessageBubbleProps {
   liveSteps?: WorkStepView[];
 }
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   isLastAssistant,
   shouldAnimate,
@@ -356,7 +356,7 @@ export function MessageBubble({
       ) : null}
     </div>
   );
-}
+});
 
 /** 回复下方常显操作钮（owner 2026-08-26）：图标 + 悬停提示；active 时填充高亮。 */
 function ActionButton({

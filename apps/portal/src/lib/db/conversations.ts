@@ -461,9 +461,16 @@ export class ConversationMirrorRepository {
       input.channel, input.role, input.content, input.status,
       input.traceId ?? null, input.requestId ?? null, input.createdAt, metadataJson
     );
+    // T-448: the conversation_sessions.updated_at touch used to run per
+    // message, so a full-history sync pass fired one redundant UPDATE per
+    // row on the shared portal db. Callers that need the session stamped
+    // now do it once per page via touchConversation / touchConversationPreview.
+  }
+
+  touchConversation(conversationId: string, updatedAt: string): void {
     this.db.prepare(
       `UPDATE conversation_sessions SET updated_at = ? WHERE conversation_id = ?`
-    ).run(input.createdAt, input.conversationId);
+    ).run(updatedAt, conversationId);
   }
 
   removeMessage(input: ConversationScope & { messageId: string; conversationId: string; updatedAt: string }): void {

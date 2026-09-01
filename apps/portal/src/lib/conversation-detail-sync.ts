@@ -23,9 +23,15 @@ export async function syncConversationDetail(input: {
   requestPage: (cursor: string | undefined, limit: number) => Promise<RemoteConversationPage>;
   pageSize?: number;
   maxPages?: number;
+  /**
+   * "first" (T-448): the 1s processing poll only waits for the newest
+   * messages, and the full history is already mirrored — syncing one page
+   * keeps the poll from re-walking every page on every tick. "full" is the
+   * open-conversation behavior and the default.
+   */
+  syncDepth?: "first" | "full";
 }): Promise<ConversationDetailSyncResult> {
   const pageSize = input.pageSize ?? 100;
-  const maxPages = input.maxPages ?? 100;
   const scope = {
     userId: input.userId,
     assistantId: input.assistantId,
@@ -33,6 +39,10 @@ export async function syncConversationDetail(input: {
   };
   const existing = input.repo.getConversation(input.conversationId, scope);
   const pending = input.repo.getReconciliation({ ...scope, conversationId: input.conversationId });
+  // A pending reconciliation (failed-turn recovery) needs the full walk to
+  // detect the closed turn; the shallow first-page sync only applies to a
+  // healthy conversation on the processing poll.
+  const maxPages = input.syncDepth === "first" && !pending ? 1 : (input.maxPages ?? 100);
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
   let pendingUserRequestId: string | undefined;
@@ -139,6 +149,17 @@ export async function syncConversationDetail(input: {
         }
         throw error;
       }
+    }
+    // One session-stamp per page instead of one per message (T-448).
+    if (lastMessage) {
+      input.repo.touchConversation(input.conversationId, lastMessage.createdAt);
+    }
+
+    if (input.syncDepth === "first" && !pending) {
+      // The newest page is mirrored; older history is already in the mirror
+      // from the open-conversation full sync, so a single page is complete
+      // for the processing poll's purpose.
+      return { complete: true, reconciled: true };
     }
 
     if (!remote.data.nextCursor) {
