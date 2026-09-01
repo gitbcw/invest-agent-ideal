@@ -21,6 +21,7 @@ import { reviewViewpoints } from "../db/schema.js";
 import { ensureWorkspace } from "./workspace.js";
 import { WorkspaceStore } from "./workspace-store.js";
 import { ACTIVE_BACKEND, type BackendKind } from "./data-backend.js";
+import { upsertReviewMemoryRecord } from "./review-memory-store.js";
 
 export type ViewpointStatus = "open" | "validated" | "invalidated" | "pending";
 
@@ -301,7 +302,16 @@ export const mastraReviewViewpointBackend: ReviewViewpointBackend = {
       for (const draft of input.viewpoints) {
         const payload = { viewpoint_id: draft.viewpointId, source_date: input.sourceDate, view: draft.view, reason: draft.reason, action: draft.action, validation: draft.validation, expected_review_date: draft.expectedReviewDate, status: "open", resolution: null, resolved_at: null, invalidation_signals: draft.invalidationSignals ?? [], confidence: draft.confidence ?? "unknown", task_type: "daily_review", decision_type: "viewpoint", created_at: now, updated_at: now };
         const recordId = `viewpoint-${input.userId}-${input.instanceId}-${input.sourceDate}-${draft.viewpointId}`;
-        sqlite.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(recordId, input.userId, projectId, input.instanceId, "review_viewpoint_service_state", `${input.sourceDate}:${draft.viewpointId}`, JSON.stringify(payload), "service-owned://review-viewpoints", `service:${now}`, "service-owned", now);
+        upsertReviewMemoryRecord({
+          userId: input.userId,
+          projectId,
+          instanceId: input.instanceId,
+          recordType: "review_viewpoint_service_state",
+          businessKey: `${input.sourceDate}:${draft.viewpointId}`,
+          recordId,
+          payload,
+          sourcePath: "service-owned://review-viewpoints",
+        });
         recordsOut.push(mastraViewpointFromPayload(payload, input.userId, input.instanceId, recordId)!);
       }
       return recordsOut;

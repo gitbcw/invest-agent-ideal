@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { sqlite } from "../db/index.js";
 import { beijingDateKey } from "./market-calendar.js";
 import type { PlanBackend, PlanRow, PortfolioBackend, PortfolioRow, TradeActionRow, WatchlistBackend, WatchlistRow } from "./data-backend.js";
+import { upsertReviewMemoryRecord } from "./review-memory-store.js";
 
 type Scope = { userId: string; instanceId: string };
 type Projection = {
@@ -137,22 +138,18 @@ function mutateProjection(scope: Scope, mutate: (projection: Projection) => void
 }
 
 function appendTradeAction(action: TradeActionRow): void {
-  const now = new Date().toISOString();
-  sqlite.prepare(
-    "INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-  ).run(
-    `service-event-${randomUUID()}`,
-    action.userId,
-    projectId(),
-    action.instanceId,
-    "service_event",
-    `trade:${action.code}:${action.createdAt}:${randomUUID()}`,
-    JSON.stringify({ event_type: "action_confirmed", ...action }),
-    "service-owned://trade-actions",
-    `service:${now}`,
-    "service-owned",
-    now,
-  );
+  // Trade confirmations are an event stream: each confirmation carries a fresh
+  // UUID in its business key, so the shared upsert always takes the insert path.
+  upsertReviewMemoryRecord({
+    userId: action.userId,
+    projectId: projectId(),
+    instanceId: action.instanceId,
+    recordType: "service_event",
+    businessKey: `trade:${action.code}:${action.createdAt}:${randomUUID()}`,
+    recordId: `service-event-${randomUUID()}`,
+    payload: { event_type: "action_confirmed", ...action },
+    sourcePath: "service-owned://trade-actions",
+  });
 }
 
 function holdingRow(row: Record<string, any>): PortfolioRow {

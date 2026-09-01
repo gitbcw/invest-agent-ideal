@@ -16,6 +16,7 @@ import { ensureWorkspace } from "./workspace.js";
 import { WorkspaceStore, type DailyPlanYaml } from "./workspace-store.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "./user-context.js";
 import { ACTIVE_BACKEND, type BackendKind } from "./data-backend.js";
+import { upsertReviewMemoryRecord } from "./review-memory-store.js";
 
 export interface DailyPlanRecord {
   planDate: string;
@@ -138,7 +139,6 @@ function fromYaml(yaml: DailyPlanYaml): DailyPlanRecord {
 
 export const mastraDailyPlanBackend: DailyPlanBackend = {
   async upsert(userId, instanceId, plan) {
-    const now = new Date().toISOString();
     const payload = JSON.stringify({
       plan_date: plan.planDate,
       generated_at: plan.generatedAt,
@@ -147,20 +147,16 @@ export const mastraDailyPlanBackend: DailyPlanBackend = {
       data: plan.data ?? null,
     });
     const projectId = process.env.MASTRA_PROJECT_ID?.trim() || DEFAULT_PROJECT_ID;
-    sqlite.transaction(() => {
-      const existing = sqlite.prepare(
-        "SELECT record_id AS recordId FROM mastra_review_memory_records WHERE user_id = ? AND project_id = ? AND instance_id = ? AND record_type = 'daily_plan' AND business_key = ? LIMIT 1",
-      ).get(userId, projectId, instanceId, plan.planDate) as { recordId?: string } | undefined;
-      if (existing?.recordId) {
-        sqlite.prepare(
-          "UPDATE mastra_review_memory_records SET payload_json = ?, source_path = ?, source_checksum = ?, migration_batch_id = ?, created_at = ? WHERE record_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
-        ).run(payload, "service-owned://daily-plans", `service:${now}`, "service-owned", now, existing.recordId, userId, projectId, instanceId);
-      } else {
-        sqlite.prepare(
-          "INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_line,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        ).run(`daily-plan-${userId}-${instanceId}-${plan.planDate}`, userId, projectId, instanceId, "daily_plan", plan.planDate, payload, "service-owned://daily-plans", null, `service:${now}`, "service-owned", now);
-      }
-    })();
+    upsertReviewMemoryRecord({
+      userId,
+      projectId,
+      instanceId,
+      recordType: "daily_plan",
+      businessKey: plan.planDate,
+      recordId: `daily-plan-${userId}-${instanceId}-${plan.planDate}`,
+      payload,
+      sourcePath: "service-owned://daily-plans",
+    });
   },
 
   async get(userId, instanceId, planDate) {

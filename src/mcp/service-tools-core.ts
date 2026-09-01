@@ -58,6 +58,7 @@ import { setPlanWatchConditions, type PlanWatchConditionInput } from "../handler
 import { researchReadCapability } from "../services/external-evidence-search.js";
 import { createWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, validateWatchRule } from "../services/watch-rules.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
+import { deleteReviewMemoryRecordsByPrefix, upsertReviewMemoryRecord } from "../lib/review-memory-store.js";
 import { parseAttachmentWithMineru, isMineruAvailable } from "../services/mineru-parse.js";
 import { readAttachmentBytes } from "../services/file-retention.js";
 import {
@@ -1746,16 +1747,48 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
   const publishedAt = new Date().toISOString();
   {
     const projectId = context.projectId || DEFAULT_PROJECT_ID;
-    for (const [index, record] of decisionRecords.entries()) {
-      const payload = { ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index };
-      db.$client.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_line,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-        .run(`decision-${context.userId}-${context.instanceId}-${resourceId}-${index}-${publishedAt}`, context.userId, projectId, context.instanceId, "service_event", `decision:${resourceId}:${index}:${publishedAt}`, JSON.stringify(payload), "service-owned://reviews", null, `service:${publishedAt}`, "service-owned", publishedAt);
-    }
-    for (const [index, record] of sourceEvents.entries()) {
-      const payload = { ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index };
-      db.$client.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_line,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-        .run(`source-event-${context.userId}-${context.instanceId}-${resourceId}-${index}-${publishedAt}`, context.userId, projectId, context.instanceId, "service_event", `source-event:${resourceId}:${index}:${publishedAt}`, JSON.stringify(payload), "service-owned://reviews", null, `service:${publishedAt}`, "service-owned", publishedAt);
-    }
+    // Idempotent memory writes: keys are stable per review resource, and the
+    // whole decision/source set for this resource is replaced in one
+    // transaction, so a retried task run (or a same-day resave with fewer
+    // records) can neither duplicate rows nor leave stale rows behind.
+    sqlite.transaction(() => {
+      deleteReviewMemoryRecordsByPrefix(
+        { userId: context.userId, projectId, instanceId: context.instanceId },
+        "service_event",
+        `decision:${resourceId}:`,
+      );
+      deleteReviewMemoryRecordsByPrefix(
+        { userId: context.userId, projectId, instanceId: context.instanceId },
+        "service_event",
+        `source-event:${resourceId}:`,
+      );
+      for (const [index, record] of decisionRecords.entries()) {
+        const payload = { ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index };
+        upsertReviewMemoryRecord({
+          userId: context.userId,
+          projectId,
+          instanceId: context.instanceId,
+          recordType: "service_event",
+          businessKey: `decision:${resourceId}:${index}`,
+          recordId: `decision-${context.userId}-${context.instanceId}-${resourceId}-${index}`,
+          payload,
+          sourcePath: "service-owned://reviews",
+        });
+      }
+      for (const [index, record] of sourceEvents.entries()) {
+        const payload = { ...record, source_review_date: resourceId, source_review_conversation_id: context.conversationId ?? null, recorded_at: record.recorded_at ?? publishedAt, record_index: index };
+        upsertReviewMemoryRecord({
+          userId: context.userId,
+          projectId,
+          instanceId: context.instanceId,
+          recordType: "service_event",
+          businessKey: `source-event:${resourceId}:${index}`,
+          recordId: `source-event-${context.userId}-${context.instanceId}-${resourceId}-${index}`,
+          payload,
+          sourcePath: "service-owned://reviews",
+        });
+      }
+    })();
   }
   await audit(context, {
     operation: "reviews.save",

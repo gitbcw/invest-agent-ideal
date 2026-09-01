@@ -18,6 +18,7 @@ import { ensureWorkspace } from "./workspace.js";
 import { WorkspaceStore } from "./workspace-store.js";
 import { ACTIVE_BACKEND, type BackendKind } from "./data-backend.js";
 import { sqlite } from "../db/index.js";
+import { upsertReviewMemoryRecord } from "./review-memory-store.js";
 
 export type MethodChangeStatus = "proposed" | "confirmed" | "rejected";
 
@@ -223,10 +224,16 @@ export const mastraMethodChangeBackend: MethodChangeBackend = {
       affected_resource: input.affectedResource || "methodology_profile", status: "proposed",
       decision_note: input.decisionNote ?? null, confirmed_at: null, created_at: now, updated_at: now,
     };
-    sqlite.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(
-      `method-change-${id}`, input.userId, process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent", input.instanceId,
-      "method_change_service_migration", `service:${id}:${now}`, JSON.stringify(payload), "service-owned://method-changes", `service:${now}`, "service-owned", now,
-    );
+    upsertReviewMemoryRecord({
+      userId: input.userId,
+      projectId: process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent",
+      instanceId: input.instanceId,
+      recordType: "method_change_service_migration",
+      businessKey: `service:${id}:${now}`,
+      recordId: `method-change-${id}`,
+      payload,
+      sourcePath: "service-owned://method-changes",
+    });
     return payloadToMethod(payload);
   },
   async get(userId, instanceId, id) {
@@ -242,7 +249,16 @@ export const mastraMethodChangeBackend: MethodChangeBackend = {
     if (existingLedger?.recordId) {
       sqlite.prepare("UPDATE mastra_review_memory_records SET payload_json = ?, source_path = ?, source_checksum = ?, migration_batch_id = ?, created_at = ? WHERE record_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?").run(JSON.stringify(payload), "service-owned://method-changes", `service:${now}`, "service-owned", now, existingLedger.recordId, input.userId, projectId, input.instanceId);
     } else {
-      sqlite.prepare("INSERT INTO mastra_review_memory_records (record_id,user_id,project_id,instance_id,record_type,business_key,payload_json,source_path,source_checksum,migration_batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(`method-change-${input.id}-${now}`, input.userId, projectId, input.instanceId, "method_change_service_migration", `service:${input.id}:${now}`, JSON.stringify(payload), "service-owned://method-changes", `service:${now}`, "service-owned", now);
+      upsertReviewMemoryRecord({
+        userId: input.userId,
+        projectId,
+        instanceId: input.instanceId,
+        recordType: "method_change_service_migration",
+        businessKey: `service:${input.id}:${now}`,
+        recordId: `method-change-${input.id}-${now}`,
+        payload,
+        sourcePath: "service-owned://method-changes",
+      });
     }
     return payloadToMethod(payload);
   },
