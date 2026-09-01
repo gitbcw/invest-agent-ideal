@@ -8,7 +8,6 @@ import { listSchedulableScopes, registerPush, triggerScheduledMarketWatchNow, tr
 import { weixinMobileManager } from "./channels/weixin-mobile.js";
 import { registerPortalRoutes } from "./routes/portal.js";
 import { registerSandboxRoutes } from "./routes/sandbox.js";
-import { registerWatchRuleRoutes } from "./routes/watch-rules.js";
 import { registerExternalMcpObserverRoutes } from "./routes/external-mcp-observer.js";
 import { assertPlatformPartnerKeySafety, autoStartPlatformWeixinListeners, projectWeixinManagerForInstance, registerPlatformRoutes } from "./routes/platform.js";
 import { ensureBuiltInIndicatorDefinitions } from "./handlers/indicator-definitions.js";
@@ -35,19 +34,19 @@ function isOfflineMode() {
   return process.env.INVEST_AGENT_OFFLINE_MODE === "true";
 }
 
-async function sendPushJob(job: { userId: string; backend: PushBackend; message: string; instanceId?: string }): Promise<WeixinDeliveryResult> {
+async function sendPushJob(job: { userId: string; backend: PushBackend; message: string; instanceId?: string; sentChunks?: number | null }): Promise<WeixinDeliveryResult> {
   if (isOfflineMode()) {
     return { ok: false, reason: "wechat_api_error", errorMessage: "offline mode blocks external delivery" };
   }
   if (job.instanceId) {
     try {
       const projectManager = await projectWeixinManagerForInstance(job.instanceId);
-      return await projectManager.pushTextDetailed(job.message, { userId: job.userId, instanceId: job.instanceId });
+      return await projectManager.pushTextDetailed(job.message, { userId: job.userId, instanceId: job.instanceId, skipChunks: job.sentChunks ?? 0 });
     } catch (error) {
       logger.warn(`项目实例微信推送失败，尝试全局通道: ${(error as Error).message}`);
     }
   }
-  return weixinMobileManager.pushTextDetailed(job.message, { userId: job.userId, instanceId: job.instanceId });
+  return weixinMobileManager.pushTextDetailed(job.message, { userId: job.userId, instanceId: job.instanceId, skipChunks: job.sentChunks ?? 0 });
 }
 
 function startPushQueueWorker() {
@@ -116,7 +115,6 @@ export async function createServer() {
   registerPortalRoutes(app);
   registerSandboxRoutes(app);
   registerPlatformRoutes(app);
-  registerWatchRuleRoutes(app);
   registerExternalMcpObserverRoutes(app);
 
   if (!isOfflineMode()) startPushQueueWorker();

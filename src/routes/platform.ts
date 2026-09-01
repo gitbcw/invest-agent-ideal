@@ -62,6 +62,7 @@ import {
   type PlatformPermission,
 } from "../lib/platform-auth.js";
 import { hashPlatformPassword, verifyPlatformPassword } from "../lib/platform-password.js";
+import { weixinErrorCode } from "../channels/weixin-shared.js";
 
 const projectWeixinManagers = new Map<string, WeixinMobileManager>();
 function readSourceQualityReports(limit = 14) {
@@ -1068,8 +1069,13 @@ function partnerOnboardingStatus(input: {
 
 function partnerFailureCategory(status: string | null | undefined, message: string | null | undefined) {
   if (status === "sent") return null;
+  // T-452: 微信错误分类走结构化 code（历史 job 的错误串由 weixinErrorCode
+  // 兜底解析）；context_expired 不再被吞成 session_expired——两者处置语义
+  // 不同（重新扫码 vs 挂起等待用户消息）。
+  const weixinCode = weixinErrorCode(message);
+  if (weixinCode === "context_expired") return "context_expired";
+  if (weixinCode === "session_expired") return "session_expired";
   const text = String(message || "").toLowerCase();
-  if (text.includes("context") || text.includes("session")) return "session_expired";
   if (text.includes("wechat") || text.includes("微信")) return "wechat_delivery_error";
   if (text.includes("timeout") || text.includes("超时")) return "timeout";
   if (status === "awaiting_user") return "awaiting_user";

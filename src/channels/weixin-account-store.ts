@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../lib/config.js";
+import { DEFAULT_WEIXIN_BASE_URL } from "./weixin-shared.js";
 
 export interface WeixinAccountRecord {
   token?: string;
@@ -11,7 +12,6 @@ export interface WeixinAccountRecord {
   lastContextToken?: string;
 }
 
-const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 
 export function resolveStateDir(stateDir = config.weixin.stateDir) {
   return stateDir;
@@ -116,7 +116,7 @@ export function saveWeixinAccount(accountId: string, update: WeixinAccountRecord
   const existing = loadWeixinAccount(accountId, stateDir) ?? {};
   const next = {
     token: update.token?.trim() || existing.token,
-    baseUrl: update.baseUrl?.trim() || existing.baseUrl || DEFAULT_BASE_URL,
+    baseUrl: update.baseUrl?.trim() || existing.baseUrl || DEFAULT_WEIXIN_BASE_URL,
     userId: update.userId?.trim() || existing.userId,
     lastConversationId: update.lastConversationId?.trim() || existing.lastConversationId,
     lastConversationAt: update.lastConversationAt?.trim() || existing.lastConversationAt,
@@ -134,7 +134,7 @@ export function resolveWeixinAccount(accountId?: string, stateDir = config.weixi
       accountId: "",
       configured: false,
       token: undefined,
-      baseUrl: DEFAULT_BASE_URL,
+      baseUrl: DEFAULT_WEIXIN_BASE_URL,
     };
   }
 
@@ -143,7 +143,7 @@ export function resolveWeixinAccount(accountId?: string, stateDir = config.weixi
     accountId: resolvedId,
     configured: Boolean(account?.token),
     token: account?.token,
-    baseUrl: account?.baseUrl || DEFAULT_BASE_URL,
+    baseUrl: account?.baseUrl || DEFAULT_WEIXIN_BASE_URL,
     lastConversationId: account?.lastConversationId,
     lastConversationAt: account?.lastConversationAt,
     lastContextToken: account?.lastContextToken,

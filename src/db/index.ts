@@ -1185,6 +1185,7 @@ export function initDb() {
   ensureColumn("stock_plans", "linked_alert_rule_ids", "TEXT");
   ensureColumn("stock_plans", "plan_type", "TEXT NOT NULL DEFAULT 'manual'");
   ensureColumn("stock_plans", "strategy_key", "TEXT");
+  ensureColumn("push_jobs", "sent_chunks", "INTEGER");
   dropColumnIfExists("portfolio", "quantity");
   backfillHistoricalInstanceAssignments();
   migrateConversationIdempotencyScope();

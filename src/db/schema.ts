@@ -642,6 +642,8 @@ export const pushJobs = sqliteTable("push_jobs", {
   retryPolicy: text("retry_policy"),
   terminalReason: text("terminal_reason"),
   message: text("message").notNull(),
+  /** 已成功发出的分片数（T-452）：整体重试时跳过这些分片，避免用户收到重复消息。 */
+  sentChunks: integer("sent_chunks"),
   status: text("status").notNull().default("pending"),
   attempts: integer("attempts").notNull().default(0),
   maxAttempts: integer("max_attempts").notNull().default(5),

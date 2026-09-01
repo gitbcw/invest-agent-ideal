@@ -21,6 +21,7 @@ import { InvestAgentMobileBridge } from "./weixin-message-bridge.js";
 import { fetchWeixinQRCode, isLoginFresh, pollWeixinQRStatus, type WeixinLoginSession } from "./weixin-login-flow.js";
 import type { IncomingMediaAttachment } from "../lib/attachment-store.js";
 import type { WeixinDeliveryResult } from "../services/weixin-delivery.js";
+import { DEFAULT_WEIXIN_BASE_URL, splitWeixinText, weixinErrorCode } from "./weixin-shared.js";
 
 type WeixinBackend = "mastra";
 type LoginStage = "idle" | "waiting_scan" | "scanned" | "connected" | "error";
@@ -50,12 +51,10 @@ interface WeixinConnectState {
   }>;
 }
 
-const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 const MAX_QR_REFRESH_COUNT = 3;
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
 const WEIXIN_MESSAGE_STATE_FINISH = 2;
-const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 2000;
 
 type WeixinListenerMessage =
   | {
@@ -160,41 +159,6 @@ async function resolvePushConversation(params: {
   };
 }
 
-function splitWeixinText(text: string, limit = WEIXIN_TEXT_CHUNK_LIMIT): string[] {
-  const clean = String(text || "").trim();
-  if (!clean) return ["处理完成"];
-  if (clean.length <= limit) return [clean];
-
-  const chunks: string[] = [];
-  let rest = clean;
-  while (rest.length > limit) {
-    let cut = findWeixinChunkCut(rest, limit);
-    if (cut <= 0) cut = limit;
-    const chunk = rest.slice(0, cut).trim();
-    if (chunk) chunks.push(chunk);
-    rest = rest.slice(cut).trimStart();
-  }
-  if (rest.trim()) chunks.push(rest.trim());
-  return chunks;
-}
-
-function findWeixinChunkCut(text: string, limit: number) {
-  const slice = text.slice(0, limit);
-  const boundaries = [
-    slice.lastIndexOf("\n\n"),
-    slice.lastIndexOf("\n"),
-    slice.lastIndexOf("。"),
-    slice.lastIndexOf("！"),
-    slice.lastIndexOf("？"),
-    slice.lastIndexOf("；"),
-    slice.lastIndexOf(";"),
-    slice.lastIndexOf(". "),
-    slice.lastIndexOf(" "),
-  ].filter((index) => index > Math.floor(limit * 0.55));
-  const best = boundaries.length > 0 ? Math.max(...boundaries) : -1;
-  if (best < 0) return limit;
-  return best + (slice[best] === "\n" || slice[best] === " " ? 0 : 1);
-}
 
 export class WeixinMobileManager {
   private state: WeixinConnectState = {
@@ -285,7 +249,7 @@ export class WeixinMobileManager {
       });
     }
 
-    const qr = await fetchWeixinQRCode(DEFAULT_BASE_URL, "3");
+    const qr = await fetchWeixinQRCode(DEFAULT_WEIXIN_BASE_URL, "3");
     this.loginSession = {
       sessionKey: randomUUID(),
       qrcode: qr.qrcode,
@@ -470,7 +434,10 @@ export class WeixinMobileManager {
     return (await this.pushTextDetailed(message, options)).ok;
   }
 
-  async pushTextDetailed(message: string, options: { userId?: string; instanceId?: string } = {}): Promise<WeixinDeliveryResult> {
+  async pushTextDetailed(
+    message: string,
+    options: { userId?: string; instanceId?: string; skipChunks?: number } = {}
+  ): Promise<WeixinDeliveryResult> {
     const accounts = listWeixinAccountIds(this.stateDir)
       .map((accountId) => resolveWeixinAccount(accountId, this.stateDir))
       .filter((account) => account.configured && account.accountId && account.token);
@@ -492,22 +459,31 @@ export class WeixinMobileManager {
         continue;
       }
 
+      const chunks = splitWeixinText(sanitizeWeixinCustomerText(message));
+      // T-452: a retried job skips the chunks that already reached the user,
+      // so a mid-message failure never re-delivers earlier chunks.
+      const skip = Math.max(0, Math.min(options.skipChunks ?? 0, chunks.length));
       logger.info(
-        `微信主动推送命中 account=${account.accountId} user=${options.userId || DEFAULT_USER_ID} instance=${options.instanceId || "-"} conversation=${target.conversationId} contextToken=${target.contextToken ? "yes" : "no"} chunks=${splitWeixinText(sanitizeWeixinCustomerText(message)).length}`
+        `微信主动推送命中 account=${account.accountId} user=${options.userId || DEFAULT_USER_ID} instance=${options.instanceId || "-"} conversation=${target.conversationId} contextToken=${target.contextToken ? "yes" : "no"} chunks=${chunks.length} skip=${skip}`
       );
 
-      const chunks = splitWeixinText(sanitizeWeixinCustomerText(message));
+      const bridge = this.buildBridge(account.accountId);
+      let delivered = skip;
       try {
-        await this.buildBridge(account.accountId).pushToConversation(
-          target.conversationId,
-          chunks,
-          target.contextToken,
-          account.baseUrl,
-          account.token
-        );
+        for (let index = skip; index < chunks.length; index += 1) {
+          await bridge.pushToConversation(
+            target.conversationId,
+            [chunks[index]],
+            target.contextToken,
+            account.baseUrl,
+            account.token
+          );
+          delivered = index + 1;
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (message.includes("errcode=-14") || message.toLowerCase().includes("session timeout")) {
+        const code = weixinErrorCode(error);
+        if (code === "session_expired") {
           this.stopAccountListener(account.accountId);
           this.withState({
             accountId: account.accountId,
@@ -518,16 +494,14 @@ export class WeixinMobileManager {
             lastError: message,
           });
         }
-        const contextExpired = message.includes("ret=-2");
         return {
           ok: false,
-          reason: contextExpired
-            ? "context_expired"
-            : message.includes("errcode=-14") || message.toLowerCase().includes("session timeout")
-              ? "session_expired"
-              : "wechat_api_error",
+          reason: code,
           errorMessage: message,
           conversationId: target.conversationId,
+          // Absolute progress for this job: chunks that already reached the
+          // user before the failing one, across attempts.
+          sentChunks: delivered,
         };
       }
       this.withState({
@@ -537,7 +511,7 @@ export class WeixinMobileManager {
         pushReady: true,
         lastError: undefined,
       });
-      return { ok: true, reason: "sent", conversationId: target.conversationId };
+      return { ok: true, reason: "sent", conversationId: target.conversationId, sentChunks: chunks.length };
     }
 
     const latest = accounts[accounts.length - 1];
@@ -567,7 +541,7 @@ export class WeixinMobileManager {
   private async pollUntilConnected() {
     while (this.loginSession && isLoginFresh(this.loginSession)) {
       try {
-        const result = await pollWeixinQRStatus(DEFAULT_BASE_URL, this.loginSession.qrcode);
+        const result = await pollWeixinQRStatus(DEFAULT_WEIXIN_BASE_URL, this.loginSession.qrcode);
 
         if (result.status === "scaned") {
           this.withState({
@@ -594,7 +568,7 @@ export class WeixinMobileManager {
             return;
           }
 
-          const qr = await fetchWeixinQRCode(DEFAULT_BASE_URL, "3");
+          const qr = await fetchWeixinQRCode(DEFAULT_WEIXIN_BASE_URL, "3");
           this.loginSession.qrcode = qr.qrcode;
           this.loginSession.qrcodeUrl = qr.qrcode_img_content;
           this.loginSession.startedAt = Date.now();
@@ -622,7 +596,7 @@ export class WeixinMobileManager {
             accountId,
             {
               token: result.bot_token,
-              baseUrl: result.baseurl || DEFAULT_BASE_URL,
+              baseUrl: result.baseurl || DEFAULT_WEIXIN_BASE_URL,
               userId: result.ilink_user_id,
             },
             this.stateDir

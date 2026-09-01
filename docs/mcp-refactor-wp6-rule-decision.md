@@ -39,7 +39,7 @@
 | `volume_ratio` | active | HTTP API + MCP 工具 | 日 volume 序列 ~period+2 根 | ~33 行 | 中（**手算**，绕过 indicatorCapability，逻辑重复） |
 | `near_plan_level` | **beta** | HTTP API + MCP 工具 | **当前价 + 预案价位**（无 K 线） | ~40 行 | 低（levelValue>0 防除零；依赖两个 backend） |
 
-**用户可见入口统一**：全部通过 `watch_rules.*` MCP 工具（Agent 驱动，带确认门）+ `GET/POST /api/watch-rules*` HTTP API。**无 UI/Portal 页面**。无面向用户的规则类型说明文档（权威规范是 `WATCH_RULE_CATALOG` 本身，通过 `watch_rules.catalog` 暴露）。
+**用户可见入口统一**：全部通过 `watch_rules.*` MCP 工具（Agent 驱动，带确认门）+ `GET/POST /api/watch-rules*` HTTP API。（2026-09-01 更新：HTTP 适配层已随 T-452 退役，sandbox 通道与 MCP 工具独占。）**无 UI/Portal 页面**。无面向用户的规则类型说明文档（权威规范是 `WATCH_RULE_CATALOG` 本身，通过 `watch_rules.catalog` 暴露）。
 
 **生产消费者**：`scheduler/alert-check.ts` 的 `runAlertCheck` 巡检（`rule-alert-check` 任务每分钟扫描）。所有规则类型都已被 `buildStage2AlertItem` 覆盖。
 

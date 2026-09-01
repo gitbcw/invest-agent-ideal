@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createRuntimeAgent, type RuntimeAgent } from "../runtime/agent.js";
 import { sanitizeCustomerText } from "../lib/customer-output.js";
 import { logger } from "../lib/logger.js";
+import { DEFAULT_WEIXIN_BASE_URL, splitWeixinText, WeixinPushError } from "./weixin-shared.js";
 import { resolveOrCreateChannelUser } from "../lib/user-identity.js";
 import { DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { rememberWeixinTurn } from "../lib/weixin-conversation-memory.js";
@@ -24,9 +25,7 @@ import { scheduleConversationWorkingStateRefresh } from "../services/conversatio
 const WEIXIN_MESSAGE_ITEM_TEXT = 1;
 const WEIXIN_MESSAGE_TYPE_BOT = 2;
 const WEIXIN_MESSAGE_STATE_FINISH = 2;
-const WEIXIN_TEXT_CHUNK_LIMIT = Number(process.env.WEIXIN_TEXT_CHUNK_LIMIT) || 2000;
 const WEIXIN_INBOUND_BATCH_WINDOW_MS = Number(process.env.WEIXIN_INBOUND_BATCH_WINDOW_MS) || 1200;
-const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 
 export interface WeixinProjectBinding {
   projectId: string;
@@ -69,41 +68,6 @@ function generateWeixinClientId() {
   return `invest-agent:${Date.now()}-${randomBytes(4).toString("hex")}`;
 }
 
-function splitWeixinText(text: string, limit = WEIXIN_TEXT_CHUNK_LIMIT): string[] {
-  const clean = String(text || "").trim();
-  if (!clean) return ["处理完成"];
-  if (clean.length <= limit) return [clean];
-
-  const chunks: string[] = [];
-  let rest = clean;
-  while (rest.length > limit) {
-    let cut = findWeixinChunkCut(rest, limit);
-    if (cut <= 0) cut = limit;
-    const chunk = rest.slice(0, cut).trim();
-    if (chunk) chunks.push(chunk);
-    rest = rest.slice(cut).trimStart();
-  }
-  if (rest.trim()) chunks.push(rest.trim());
-  return chunks;
-}
-
-function findWeixinChunkCut(text: string, limit: number) {
-  const slice = text.slice(0, limit);
-  const boundaries = [
-    slice.lastIndexOf("\n\n"),
-    slice.lastIndexOf("\n"),
-    slice.lastIndexOf("。"),
-    slice.lastIndexOf("！"),
-    slice.lastIndexOf("？"),
-    slice.lastIndexOf("；"),
-    slice.lastIndexOf(";"),
-    slice.lastIndexOf(". "),
-    slice.lastIndexOf(" "),
-  ].filter((index) => index > Math.floor(limit * 0.55));
-  const best = boundaries.length > 0 ? Math.max(...boundaries) : -1;
-  if (best < 0) return limit;
-  return best + (slice[best] === "\n" || slice[best] === " " ? 0 : 1);
-}
 
 export async function sendWeixinTextMessage(params: {
   baseUrl: string;
@@ -146,7 +110,7 @@ export async function sendWeixinTextMessage(params: {
 
   if (!response.ok) {
     const text = await response.text().catch(() => "(unreadable)");
-    throw new Error(`微信主动推送失败: ${response.status} ${text.slice(0, 300)}`);
+    throw new WeixinPushError("wechat_api_error", `微信主动推送失败: ${response.status} ${text.slice(0, 300)}`);
   }
 
   const responseText = await response.text().catch(() => "");
@@ -154,12 +118,12 @@ export async function sendWeixinTextMessage(params: {
   const errcode = responseBody ? Number(responseBody.errcode ?? responseBody.errorCode ?? 0) : 0;
   if (Number.isFinite(errcode) && errcode !== 0) {
     const errmsg = String(responseBody?.errmsg ?? responseBody?.message ?? responseText.slice(0, 300) ?? "unknown");
-    throw new Error(`微信主动推送失败: errcode=${errcode} ${errmsg.slice(0, 300)}`);
+    throw new WeixinPushError(errcode === -14 ? "session_expired" : "wechat_api_error", `微信主动推送失败: errcode=${errcode} ${errmsg.slice(0, 300)}`);
   }
   const ret = responseBody && responseBody.ret !== undefined ? Number(responseBody.ret) : 0;
   if (Number.isFinite(ret) && ret !== 0) {
     const errmsg = String(responseBody?.errmsg ?? responseBody?.message ?? responseText.slice(0, 300) ?? "unknown");
-    throw new Error(`微信主动推送失败: ret=${ret} ${errmsg.slice(0, 300)}`);
+    throw new WeixinPushError(ret === -2 ? "context_expired" : "wechat_api_error", `微信主动推送失败: ret=${ret} ${errmsg.slice(0, 300)}`);
   }
   logger.info(
     `微信主动推送已提交 to=${params.to} contextToken=${params.contextToken ? "yes" : "no"} status=${response.status} body=${responseText.slice(0, 300)}`
@@ -456,7 +420,7 @@ export class InvestAgentMobileBridge {
     const chunks = Array.isArray(text) ? text : splitWeixinText(text);
     const account = !token || !baseUrl || !contextToken ? resolveWeixinAccount(this.accountId, this.stateDir) : undefined;
     const resolvedToken = token || account?.token;
-    const resolvedBaseUrl = baseUrl || account?.baseUrl || DEFAULT_BASE_URL;
+    const resolvedBaseUrl = baseUrl || account?.baseUrl || DEFAULT_WEIXIN_BASE_URL;
     const resolvedContextToken = contextToken || account?.lastContextToken;
     if (!resolvedToken) {
       throw new Error("缺少微信 token，无法发送消息");

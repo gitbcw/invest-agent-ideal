@@ -36,6 +36,8 @@ export type PushSender = (job: {
   channel: PushChannel;
   backend: PushBackend;
   message: string;
+  /** 该 job 此前已成功发出的分片数；发送方应跳过这些分片（T-452）。 */
+  sentChunks: number;
 }) => Promise<boolean | WeixinDeliveryResult>;
 
 const RETRY_DELAYS_MS = [
@@ -164,6 +166,7 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
         channel: job.channel as PushChannel,
         backend: job.backend as PushBackend,
         message: job.message,
+        sentChunks: job.sentChunks ?? 0,
       });
       const result: WeixinDeliveryResult = typeof senderResult === "boolean"
         ? { ok: senderResult, reason: senderResult ? "sent" : "wechat_api_error" }
@@ -192,7 +195,7 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
         continue;
       }
       if (isWaitingExternal(result.reason) && DEFERABLE_SOURCES.has(job.source)) {
-        await markAwaitingUser(job.id, attempts, result.errorMessage || result.reason);
+        await markAwaitingUser(job.id, attempts, result.errorMessage || result.reason, result.sentChunks ?? job.sentChunks ?? 0);
         awaitingUser += 1;
         continue;
       }
@@ -203,6 +206,9 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
         expiresAt: job.expiresAt,
         errorClass: classifyDeliveryFailure(result.reason),
         errorMessage: result.errorMessage || result.reason,
+        sentChunks: typeof result.sentChunks === "number"
+          ? result.sentChunks
+          : (job.sentChunks ?? 0),
       });
       if (outcome === "dead") dead += 1;
       else if (outcome === "expired") expired += 1;
@@ -300,6 +306,7 @@ async function markFailed(input: {
   expiresAt: string | null;
   errorClass: DeliveryErrorClass;
   errorMessage: string;
+  sentChunks?: number;
 }): Promise<"retry" | "dead" | "expired"> {
   const now = Date.now();
   const dead = input.errorClass === "permanent" || input.attempts >= input.maxAttempts;
@@ -316,6 +323,7 @@ async function markFailed(input: {
       nextRetryAt: expired ? input.expiresAt as string : nextRetryAt,
       lastAttemptAt: new Date(now).toISOString(),
       lastError: input.errorMessage.slice(0, 1200),
+      sentChunks: input.sentChunks ?? 0,
       terminalReason,
       updatedAt: new Date(now).toISOString(),
     })
@@ -323,7 +331,7 @@ async function markFailed(input: {
   return expired ? "expired" : dead ? "dead" : "retry";
 }
 
-async function markAwaitingUser(id: string, attempts: number, errorMessage: string) {
+async function markAwaitingUser(id: string, attempts: number, errorMessage: string, sentChunks = 0) {
   const now = new Date().toISOString();
   await db
     .update(pushJobs)
@@ -332,6 +340,7 @@ async function markAwaitingUser(id: string, attempts: number, errorMessage: stri
       attempts,
       lastAttemptAt: now,
       lastError: errorMessage.slice(0, 1200),
+      sentChunks,
       updatedAt: now,
     })
     .where(eq(pushJobs.id, id));

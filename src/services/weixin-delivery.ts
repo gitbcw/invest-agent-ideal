@@ -16,6 +16,8 @@ export type WeixinDeliveryResult = {
   reason: WeixinDeliveryReason;
   errorMessage?: string;
   conversationId?: string;
+  /** 本 job 已成功发出的分片数（T-452）：失败返回时 >0 = 部分成功，重试应跳过。 */
+  sentChunks?: number;
 };
 
 export async function recordWeixinDeliveryAttempt(input: {

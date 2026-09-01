@@ -40,28 +40,6 @@ try {
   }
   assert.deepEqual(duplicates, [], `duplicate routes registered: ${duplicates.join(", ")}`);
 
-  const watchRuleRoutes = inventory.filter(
-    (r) => r.url === "/api/watch-rules" || r.url.startsWith("/api/watch-rules/"),
-  );
-  const expected = [
-    "GET /api/watch-rules/catalog",
-    "GET /api/watch-rules",
-    "POST /api/watch-rules/validate",
-    "POST /api/watch-rules",
-    "PATCH /api/watch-rules/:id",
-    "DELETE /api/watch-rules/:id",
-    "POST /api/watch-rules/:id/dry-run",
-    "GET /api/watch-rules/default-scope",
-  ].sort();
-  const actual = watchRuleRoutes.map((r) => `${r.method} ${r.url}`).sort();
-  assert.deepEqual(actual, expected, "watch-rule HTTP adapter should expose canonical route set");
-
-  for (const key of expected) {
-    const [method, url] = key.split(" ");
-    const count = inventory.filter((r) => r.method === method && r.url === url).length;
-    assert.equal(count, 1, `${key} must be registered exactly once, got ${count}`);
-  }
-
   const retiredRoutes = [
     "GET /api/sandbox/dashboard",
     "GET /api/weixin/status",

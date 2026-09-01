@@ -45,7 +45,7 @@ Codex ACP receives an explicit MCP child-process environment. The wiring must ca
 - Holding removal and watchlist transition are exposed only as part of the revision-bound `portfolio.apply_changes` transaction. Other deletion, disabling, active push, and forced scheduler triggers are not exposed in the first write batch.
 - When a required MCP capability is unavailable, the Agent reports the capability or data gap. It must not discover or call hidden HTTP routes, tokens, ports, or local files as a fallback.
 - MCP and HTTP adapters reuse the same deterministic service functions; neither adapter owns independent product semantics.
-- Core workspace mutations use a cross-process resource lock shared by MCP child processes, the onboarding worker, compatibility HTTP adapters, and Platform admin write routes (`/api/watch-rules` create/update/delete). The lock covers confirmation/revision validation through durable write and audit, while unrelated resources and read-only research remain concurrent. Portfolio, watchlist, and stock-plan writes currently share one `portfolio` resource because they are physically stored in the same workspace YAML file.
+- Core workspace mutations use a cross-process resource lock shared by MCP child processes, the onboarding worker, compatibility HTTP adapters, and Platform admin write routes. The lock covers confirmation/revision validation through durable write and audit, while unrelated resources and read-only research remain concurrent. Portfolio, watchlist, and stock-plan writes currently share one `portfolio` resource because they are physically stored in the same workspace YAML file.
 
 ## Current Tools
 

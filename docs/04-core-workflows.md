@@ -119,7 +119,7 @@
 运行约束：
 
 - 明确规则提醒由 stage2 watch_rules 驱动,即服务层 `alert_rules.relation_to_plan=stage2_watch_rule` 的规则实例。
-- legacy `alerts` 表已于 2026-07-16 DROP(详见 `docs/table-ownership.md` 与 `drop_legacy_alerts_table_v1` 迁移);旧 `/api/alerts/set|toggle|remove` 与 Dashboard 入口同步移除。新规则走 `/api/watch-rules*` 或 MCP `watch_rules.*`。
+- legacy `alerts` 表已于 2026-07-16 DROP(详见 `docs/table-ownership.md` 与 `drop_legacy_alerts_table_v1` 迁移);旧 `/api/alerts/set|toggle|remove` 与 Dashboard 入口同步移除。新规则走 MCP `watch_rules.*`（`/api/watch-rules*` HTTP 适配层已于 2026-09-01 退役，T-452）。
 - `market-watch` 是固定时间盘中简报;`rule-alert-check` 是按 interval 独立采样的明确规则巡检。
 
 步骤：
