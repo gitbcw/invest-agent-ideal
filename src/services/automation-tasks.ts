@@ -2163,24 +2163,41 @@ export async function finishAutomationTaskRun(input: FinishAutomationTaskRunInpu
 }
 
 function latestRunsByTask(scope: AutomationScope): Map<string, NonNullable<AutomationTaskSummary["latestRun"]>> {
+  // automation_task_runs grows without bound, so the summary path must not
+  // scan every run (with RUN_SELECT's correlated subqueries) to find one row
+  // per task. The window ranks runs with the same created_at DESC, run_id DESC
+  // tiebreak the old full-scan loop used.
   const rows = sqlite.prepare(`
-    SELECT ${RUN_SELECT}
-    FROM automation_task_runs
-    WHERE user_id = ? AND project_id = ? AND instance_id = ?
-    ORDER BY created_at DESC, run_id DESC
-  `).all(scope.userId, scope.projectId, scope.instanceId) as DbRunRow[];
+    SELECT r.task_id AS taskId, r.run_id AS runId, r.origin, r.status,
+           r.finished_at AS finishedAt, r.result_summary AS resultSummary,
+           r.error_message AS errorMessage, r.attempt
+    FROM (
+      SELECT task_id, run_id, origin, status, finished_at, result_summary, error_message, attempt,
+             ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at DESC, run_id DESC) AS rn
+      FROM automation_task_runs
+      WHERE user_id = ? AND project_id = ? AND instance_id = ?
+    ) r
+    WHERE r.rn = 1
+  `).all(scope.userId, scope.projectId, scope.instanceId) as Array<{
+    taskId: string;
+    runId: string;
+    origin: string;
+    status: string;
+    finishedAt: string | null;
+    resultSummary: string | null;
+    errorMessage: string | null;
+    attempt: number | null;
+  }>;
   const latest = new Map<string, NonNullable<AutomationTaskSummary["latestRun"]>>();
   for (const row of rows) {
-    if (latest.has(row.taskId)) continue;
-    const run = runRecordFromRow(row);
     latest.set(row.taskId, {
-      runId: run.runId,
-      status: run.status,
-      origin: run.origin,
-      finishedAt: run.finishedAt,
-      resultSummary: run.resultSummary,
-      errorMessage: run.errorMessage,
-      attempt: run.attempt,
+      runId: row.runId,
+      status: parseRunStatus(row.status),
+      origin: parseRunOrigin(row.origin),
+      finishedAt: row.finishedAt,
+      resultSummary: row.resultSummary,
+      errorMessage: row.errorMessage,
+      attempt: row.attempt !== null && Number.isInteger(row.attempt) && row.attempt > 0 ? row.attempt : 1,
     });
   }
   return latest;

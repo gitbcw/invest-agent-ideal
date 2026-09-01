@@ -1076,6 +1076,21 @@ function partnerFailureCategory(status: string | null | undefined, message: stri
   return status ? "delivery_failed" : null;
 }
 
+// Overview and customers both fan out one snapshot per project on every
+// request; a short shared TTL keeps the two polling pages from recomputing
+// the same per-customer aggregates (and re-hitting the weixin manager state)
+// within one dashboard refresh window.
+const PARTNER_SNAPSHOT_TTL_MS = 30_000;
+const partnerSnapshotCache = new Map<string, { snapshot: Awaited<ReturnType<typeof partnerCustomerSnapshot>>; expiresAt: number }>();
+
+async function cachedPartnerCustomerSnapshot(project: AiProjectRuntimeContext) {
+  const cached = partnerSnapshotCache.get(project.instanceId);
+  if (cached && cached.expiresAt > Date.now()) return cached.snapshot;
+  const snapshot = await partnerCustomerSnapshot(project);
+  partnerSnapshotCache.set(project.instanceId, { snapshot, expiresAt: Date.now() + PARTNER_SNAPSHOT_TTL_MS });
+  return snapshot;
+}
+
 async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
   const todayStart = shanghaiDayStartIso(shanghaiDateKey());
   const sevenDaysAgo = shanghaiDayStartIso(shanghaiDateOffset(-7));
@@ -1115,27 +1130,68 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
         notification: existsSync(path.join(workspacePath!, "config", "notification.yaml")),
       };
 
-  const [draftRows, traceRows, messageRows, pushRows, reviewRows, ruleRows, bindingRows, delivery, weixinState] = await Promise.all([
+  // Counters are aggregated in SQL instead of pulling bounded row pages back
+  // for JS filtering (the old shape fetched 300 traces + 300 messages + 100
+  // push rows per customer on every snapshot). Only the row sets that need
+  // per-row logic keep fetching: today/7d traces (response elapsed series,
+  // success gate, repeat-confirmation detection) stay narrow-columned.
+  const [draftRows, traceAgg, traceDetailRows, messageAgg, pushAgg, latestPush, reviewRows, ruleRows, bindingRows, delivery, weixinState] = await Promise.all([
     db.select({ status: onboardingDrafts.status, updatedAt: onboardingDrafts.updatedAt })
       .from(onboardingDrafts)
       .where(eq(onboardingDrafts.instanceId, project.instanceId))
       .orderBy(desc(onboardingDrafts.updatedAt))
       .limit(1),
+    sqlite.prepare(`
+      SELECT
+        COUNT(*) AS traceCount30d,
+        SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS traceCountToday,
+        SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS traceCount7d,
+        SUM(CASE WHEN created_at >= ? AND (status = 'timeout' OR (elapsed_ms IS NOT NULL AND elapsed_ms >= 30000)) THEN 1 ELSE 0 END) AS timeoutCount7d,
+        SUM(CASE WHEN created_at >= ? AND (status = 'error' OR status = 'failed') THEN 1 ELSE 0 END) AS errorCount7d,
+        MAX(created_at) AS latestTraceAt
+      FROM agent_traces
+      WHERE instance_id = ? AND created_at >= ?
+    `).get(todayStart, sevenDaysAgo, sevenDaysAgo, sevenDaysAgo, project.instanceId, thirtyDaysAgo) as {
+      traceCount30d: number | null;
+      traceCountToday: number | null;
+      traceCount7d: number | null;
+      timeoutCount7d: number | null;
+      errorCount7d: number | null;
+      latestTraceAt: string | null;
+    },
     db.select({ status: agentTraces.status, elapsedMs: agentTraces.elapsedMs, userText: agentTraces.userText, createdAt: agentTraces.createdAt })
       .from(agentTraces)
-      .where(and(eq(agentTraces.instanceId, project.instanceId), gte(agentTraces.createdAt, thirtyDaysAgo)))
-      .orderBy(desc(agentTraces.createdAt))
-      .limit(300),
-    db.select({ createdAt: conversationMessages.createdAt })
-      .from(conversationMessages)
-      .where(and(eq(conversationMessages.instanceId, project.instanceId), gte(conversationMessages.createdAt, thirtyDaysAgo)))
-      .orderBy(desc(conversationMessages.createdAt))
-      .limit(300),
+      .where(and(eq(agentTraces.instanceId, project.instanceId), gte(agentTraces.createdAt, sevenDaysAgo)))
+      .orderBy(desc(agentTraces.createdAt)),
+    sqlite.prepare(`
+      SELECT
+        SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS messageCount7d,
+        COUNT(*) AS messageCount30d,
+        MAX(created_at) AS latestMessageAt
+      FROM conversation_messages
+      WHERE instance_id = ? AND created_at >= ?
+    `).get(sevenDaysAgo, project.instanceId, thirtyDaysAgo) as {
+      messageCount7d: number | null;
+      messageCount30d: number | null;
+      latestMessageAt: string | null;
+    },
+    sqlite.prepare(`
+      SELECT
+        SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS pushCount7d,
+        SUM(CASE WHEN created_at >= ? AND status = 'sent' THEN 1 ELSE 0 END) AS pushSentCountToday,
+        SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS pushAttemptCountToday
+      FROM push_jobs
+      WHERE instance_id = ? AND created_at >= ?
+    `).get(sevenDaysAgo, todayStart, todayStart, project.instanceId, thirtyDaysAgo) as {
+      pushCount7d: number | null;
+      pushSentCountToday: number | null;
+      pushAttemptCountToday: number | null;
+    },
     db.select({ status: pushJobs.status, sentAt: pushJobs.sentAt, createdAt: pushJobs.createdAt, lastError: pushJobs.lastError })
       .from(pushJobs)
       .where(and(eq(pushJobs.instanceId, project.instanceId), gte(pushJobs.createdAt, thirtyDaysAgo)))
       .orderBy(desc(pushJobs.createdAt))
-      .limit(100),
+      .limit(1),
     db.select({ planDate: dailyPlans.planDate, generatedAt: dailyPlans.generatedAt })
       .from(dailyPlans)
       .where(eq(dailyPlans.instanceId, project.instanceId))
@@ -1159,14 +1215,13 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
       : ACTIVE_BACKEND === "mastra" && (mastraOnboardingStatus === "collecting" || mastraOnboardingStatus === "confirmed")
         ? "drafting"
         : partnerOnboardingStatus({ draftStatus, files });
-  const traceToday = traceRows.filter((row) => row.createdAt >= todayStart);
-  const trace7d = traceRows.filter((row) => row.createdAt >= sevenDaysAgo);
-  const message7d = messageRows.filter((row) => row.createdAt >= sevenDaysAgo);
-  const push7d = pushRows.filter((row) => row.createdAt >= sevenDaysAgo);
-  const latestTraceAt = traceRows[0]?.createdAt || null;
-  const latestMessageAt = messageRows[0]?.createdAt || null;
+  const traceToday = traceDetailRows.filter((row) => row.createdAt >= todayStart);
+  const trace7d = traceDetailRows;
+  const traceCount7d = Number(traceAgg.traceCount7d || 0);
+  const messageCount7d = Number(messageAgg.messageCount7d || 0);
+  const latestTraceAt = traceAgg.latestTraceAt || null;
+  const latestMessageAt = messageAgg.latestMessageAt || null;
   const lastActiveAt = [latestTraceAt, latestMessageAt, project.updatedAt].filter(Boolean).sort().reverse()[0] || null;
-  const latestPush = pushRows[0] || null;
   const wechatBound = Number(bindingRows[0]?.count || 0) > 0;
   const pushReachable = Boolean(wechatBound && delivery?.hasConversation && weixinState?.stage === "connected");
   const missingSetupSteps = [
@@ -1175,7 +1230,7 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
     !files.reviewSchedule ? "review_schedule" : null,
     !files.notification ? "notification_preference" : null,
   ].filter(Boolean) as string[];
-  const failureCategory = partnerFailureCategory(latestPush?.status, latestPush?.lastError);
+  const failureCategory = partnerFailureCategory(latestPush[0]?.status, latestPush[0]?.lastError);
   const health = onboardingStatus === "exception"
     ? "blocked"
     : project.status !== "active" || (wechatBound && !pushReachable)
@@ -1191,21 +1246,21 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
     wechatBound,
     pushReachable,
     lastInboundAt: delivery?.lastInboundAt || null,
-    lastOutboundAt: latestPush?.sentAt || latestPush?.createdAt || null,
+    lastOutboundAt: latestPush[0]?.sentAt || latestPush[0]?.createdAt || null,
     lastActiveAt,
     conversationCountToday: traceToday.length,
-    traceCount7d: trace7d.length,
-    conversationCount7d: Math.max(trace7d.length, message7d.length),
-    conversationCount30d: Math.max(traceRows.length, messageRows.length),
+    traceCount7d,
+    conversationCount7d: Math.max(traceCount7d, messageCount7d),
+    conversationCount30d: Math.max(Number(traceAgg.traceCount30d || 0), Number(messageAgg.messageCount30d || 0)),
     responseElapsedToday: traceToday.map((row) => row.elapsedMs).filter((value): value is number => typeof value === "number" && value >= 0),
     successfulTraceCountToday: traceToday.filter(traceIsSuccessful).length,
-    traceCountToday: traceToday.length,
+    traceCountToday: Number(traceAgg.traceCountToday || 0),
     reviewCount30d: reviewRows.filter((row) => row.planDate >= shanghaiDateOffset(-30)).length,
     lastReviewAt: reviewRows[0]?.generatedAt || reviewRows[0]?.planDate || null,
-    pushCount7d: push7d.length,
-    pushSentCountToday: pushRows.filter((row) => row.createdAt >= todayStart && row.status === "sent").length,
-    pushAttemptCountToday: pushRows.filter((row) => row.createdAt >= todayStart).length,
-    lastPushStatus: latestPush?.status || "none",
+    pushCount7d: Number(pushAgg.pushCount7d || 0),
+    pushSentCountToday: Number(pushAgg.pushSentCountToday || 0),
+    pushAttemptCountToday: Number(pushAgg.pushAttemptCountToday || 0),
+    lastPushStatus: latestPush[0]?.status || "none",
     failureCategory,
     notificationPreference: ACTIVE_BACKEND === "mastra"
       ? (() => {
@@ -1221,8 +1276,8 @@ async function partnerCustomerSnapshot(project: AiProjectRuntimeContext) {
     strategyConfigured: files.strategy,
     reviewScheduleConfigured: files.reviewSchedule,
     notificationConfigured: files.notification,
-    timeoutCount7d: trace7d.filter((row) => row.status === "timeout" || (typeof row.elapsedMs === "number" && row.elapsedMs >= 30_000)).length,
-    errorCount7d: trace7d.filter((row) => row.status === "error" || row.status === "failed").length,
+    timeoutCount7d: Number(traceAgg.timeoutCount7d || 0),
+    errorCount7d: Number(traceAgg.errorCount7d || 0),
     repeatConfirmationCount7d: repeatedConfirmationCount(trace7d),
     repeatConfirmationAffected: repeatedConfirmationCount(trace7d) > 0 ? 1 : 0,
   };
@@ -1444,7 +1499,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
 
   app.get("/api/platform/partner/overview", safe(async (_request) => {
     const projects = await listProjectRuntimeContexts();
-    const snapshots = await Promise.all(projects.map(partnerCustomerSnapshot));
+    const snapshots = await Promise.all(projects.map(cachedPartnerCustomerSnapshot));
     const todayDate = shanghaiDateKey();
     const todayStart = shanghaiDayStartIso(todayDate);
     const sevenDaysAgo = shanghaiDayStartIso(shanghaiDateOffset(-7));
@@ -1510,7 +1565,7 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     const limit = Math.max(1, Math.min(Number(query.limit || 50), 50));
     const offset = decodePartnerCursor(query.cursor);
     const projects = await listProjectRuntimeContexts();
-    const snapshots = await Promise.all(projects.map(partnerCustomerSnapshot));
+    const snapshots = await Promise.all(projects.map(cachedPartnerCustomerSnapshot));
     const filtered = snapshots.filter((item) => {
       if (query.status && item.assistantStatus !== query.status) return false;
       if (query.onboarding && item.onboardingStatus !== query.onboarding) return false;
