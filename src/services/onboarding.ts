@@ -427,7 +427,11 @@ function mergePortfolioDraft(existing: Record<string, any>, body: Record<string,
   const merge = (current: unknown, input: unknown) => {
     const result = Array.isArray(current) ? [...current] : [];
     for (const item of normalizePortfolioAssets(input)) {
-      const index = result.findIndex((value: any) => value?.code === item.code || value?.name === item.name);
+      // Strict code-first match, same as the confirm channel: a same-name
+      // different-code row must append, never overwrite an existing holding.
+      const index = result.findIndex((value: any) =>
+        (item.code && value?.code === item.code) || (!item.code && value?.name === item.name)
+      );
       const next = { ...(index >= 0 ? result[index] : {}), ...item };
       if (index >= 0) result[index] = next;
       else result.push(next);
@@ -803,4 +807,150 @@ function stringValue(value: unknown): string | undefined {
 function numericValue(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+// ============ onboarding.confirm_portfolio 共享执行体 ============
+// MCP service tool 与 sandbox HTTP 路由共用这一份合并与状态推进逻辑；
+// 通道各自负责确认机制接线、资源锁（callServiceTool dispatcher 与
+// sandboxMutationSafe 均已统一拿 onboarding-state+portfolio 锁）与审计。
+
+export interface OnboardingConfirmedAssetInput {
+  name: string;
+  code: string | null;
+  notes?: string;
+}
+
+export function normalizeOnboardingAssetName(value: unknown): string {
+  return typeof value === "string" ? value.trim().slice(0, 80) : "";
+}
+
+export function normalizeOnboardingAssetCode(value: unknown): string | null {
+  const code = typeof value === "string" ? value.trim() : "";
+  return code ? code.slice(0, 32) : null;
+}
+
+export function normalizeOnboardingAssetList(value: unknown): OnboardingConfirmedAssetInput[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: OnboardingConfirmedAssetInput[] = [];
+  for (const raw of value) {
+    const item = typeof raw === "string" ? { name: raw } : record(raw);
+    const name = normalizeOnboardingAssetName(
+      item.name ?? item.stockName ?? item.stock_name ?? item.label ?? item.title
+    );
+    const code = normalizeOnboardingAssetCode(
+      item.code ?? item.stockCode ?? item.stock_code ?? item.symbol
+    );
+    if (!name && !code) continue;
+    const key = `${code ?? ""}::${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const notes = typeof item.notes === "string" ? item.notes.trim().slice(0, 240) : undefined;
+    result.push({ name: name || code || "未命名标的", code, notes });
+  }
+  return result;
+}
+
+export function findOnboardingAssetsMissingCode(kind: "holding" | "watchlist", items: OnboardingConfirmedAssetInput[]) {
+  return items
+    .filter((item) => !item.code || !/^\d{6}$/.test(item.code))
+    .map((item) => ({
+      kind,
+      name: item.name,
+      code: item.code,
+      reason: item.code ? "证券代码必须是 6 位数字" : "缺少证券代码",
+    }));
+}
+
+function matchesConfirmedAsset(existing: { code?: unknown; name?: unknown }, item: OnboardingConfirmedAssetInput): boolean {
+  return (item.code && existing.code === item.code) || (!item.code && existing.name === item.name);
+}
+
+/**
+ * Shared executor for onboarding.confirm_portfolio. Merge semantics is strictly
+ * code-first: an item carrying a code merges only into a row with the same
+ * code, so a same-name different-code confirmation appends instead of
+ * overwriting the existing holding/watch entry. Name matching only applies to
+ * items without a code, which callers must reject before reaching here.
+ */
+export async function applyOnboardingPortfolioConfirmation(input: {
+  userId: string;
+  instanceId: string;
+  projectId?: string;
+  holdings: OnboardingConfirmedAssetInput[];
+  watchlist: OnboardingConfirmedAssetInput[];
+  notes?: string;
+}): Promise<{
+  state: OnboardingStateYaml;
+  holdings: Array<Record<string, any>>;
+  watchlist: Array<Record<string, any>>;
+}> {
+  const now = new Date().toISOString();
+  const mastraStore = openMastraOnboardingStore({ userId: input.userId, instanceId: input.instanceId, projectId: input.projectId });
+  const store = mastraStore.store;
+  const portfolio = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
+  const holdings = Array.isArray(portfolio.holdings) ? [...portfolio.holdings] : [];
+  const watchItems = Array.isArray(portfolio.watchlist) ? [...portfolio.watchlist] : [];
+
+  for (const item of input.holdings) {
+    const idx = holdings.findIndex((existing) => matchesConfirmedAsset(existing, item));
+    const next = {
+      ...(idx >= 0 ? holdings[idx] : {}),
+      name: item.name,
+      code: item.code,
+      asset_type: (idx >= 0 ? holdings[idx].asset_type : null) ?? null,
+      market: (idx >= 0 ? holdings[idx].market : null) ?? null,
+      account: (idx >= 0 ? holdings[idx].account : null) ?? null,
+      currency: (idx >= 0 ? holdings[idx].currency : "CNY") ?? "CNY",
+      cost: (idx >= 0 ? holdings[idx].cost : null) ?? null,
+      shares: (idx >= 0 ? holdings[idx].shares : null) ?? null,
+      market_value: (idx >= 0 ? holdings[idx].market_value : null) ?? null,
+      weight: (idx >= 0 ? holdings[idx].weight : null) ?? null,
+      notes: item.notes || (idx >= 0 ? holdings[idx].notes : "") || "User confirmed holding name only; details can be completed later.",
+    };
+    if (idx >= 0) holdings[idx] = next;
+    else holdings.push(next);
+  }
+
+  for (const item of input.watchlist) {
+    const idx = watchItems.findIndex((existing) => matchesConfirmedAsset(existing, item));
+    const next = {
+      ...(idx >= 0 ? watchItems[idx] : {}),
+      name: item.name,
+      code: item.code,
+      asset_type: (idx >= 0 ? watchItems[idx].asset_type : null) ?? null,
+      market: (idx >= 0 ? watchItems[idx].market : null) ?? null,
+      trigger: (idx >= 0 ? watchItems[idx].trigger : "") ?? "",
+      evidence_needed: Array.isArray(idx >= 0 ? watchItems[idx].evidence_needed : null)
+        ? watchItems[idx].evidence_needed
+        : [],
+      notes: item.notes || (idx >= 0 ? watchItems[idx].notes : "") || "User confirmed watch name only; trigger can be completed later.",
+    };
+    if (idx >= 0) watchItems[idx] = next;
+    else watchItems.push(next);
+  }
+
+  await store.writePortfolio({
+    ...portfolio,
+    holdings,
+    watchlist: watchItems,
+    accounts: Array.isArray(portfolio.accounts) ? portfolio.accounts : [],
+    last_confirmed_at: now,
+    last_confirmed_by: "user",
+  });
+  const current = normalizeOnboardingState(await store.readOnboardingState());
+  const steps = { ...(current.steps ?? {}) };
+  steps.welcome = { done: true, completed_at: steps.welcome?.completed_at ?? now };
+  steps.portfolio = { done: true, completed_at: steps.portfolio?.completed_at ?? now };
+  const nextState: OnboardingStateYaml = {
+    ...current,
+    status: "in_progress",
+    current_step: "style",
+    steps,
+    updated_at: now,
+    notes: input.notes ?? current.notes ?? "",
+  };
+  await store.writeOnboardingState(nextState);
+  sqlite.transaction(() => mastraStore.persist())();
+  return { state: nextState, holdings, watchlist: watchItems };
 }

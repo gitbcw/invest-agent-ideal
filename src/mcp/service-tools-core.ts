@@ -62,7 +62,10 @@ import { parseAttachmentWithMineru, isMineruAvailable } from "../services/mineru
 import { readAttachmentBytes } from "../services/file-retention.js";
 import {
   applyConfirmedOnboardingStep,
+  applyOnboardingPortfolioConfirmation,
+  findOnboardingAssetsMissingCode,
   isOnboardingStep as isSharedOnboardingStep,
+  normalizeOnboardingAssetList,
   normalizeOnboardingState as normalizeSharedOnboardingState,
   openMastraOnboardingStore,
   validateOnboardingStepPayload,
@@ -1087,73 +1090,16 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
     throw new Error(`持仓和观察仓写入前必须补齐 6 位证券代码: ${JSON.stringify(missingCodes)}`);
   }
 
-  const now = new Date().toISOString();
-  const mastraStore = openMastraOnboardingStore({ userId: context.userId, instanceId: context.instanceId, projectId: context.projectId });
-  const store: any = mastraStore.store;
-  const portfolio = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
-  const holdings = Array.isArray(portfolio.holdings) ? [...portfolio.holdings] : [];
-  const watchItems = Array.isArray(portfolio.watchlist) ? [...portfolio.watchlist] : [];
-
-  for (const item of holdingInputs) {
-    const idx = holdings.findIndex((existing: any) => existing.code === item.code || existing.name === item.name);
-    const next = {
-      ...(idx >= 0 ? holdings[idx] : {}),
-      name: item.name,
-      code: item.code,
-      asset_type: idx >= 0 ? (holdings[idx] as any).asset_type ?? null : null,
-      market: idx >= 0 ? (holdings[idx] as any).market ?? null : null,
-      account: idx >= 0 ? (holdings[idx] as any).account ?? null : null,
-      currency: idx >= 0 ? (holdings[idx] as any).currency ?? "CNY" : "CNY",
-      cost: idx >= 0 ? (holdings[idx] as any).cost ?? null : null,
-      shares: idx >= 0 ? (holdings[idx] as any).shares ?? null : null,
-      market_value: idx >= 0 ? (holdings[idx] as any).market_value ?? null : null,
-      weight: idx >= 0 ? (holdings[idx] as any).weight ?? null : null,
-      notes: item.notes || (idx >= 0 ? (holdings[idx] as any).notes : "") || "User confirmed holding name only; details can be completed later.",
-    };
-    if (idx >= 0) holdings[idx] = next as any;
-    else holdings.push(next as any);
-  }
-
-  for (const item of watchInputs) {
-    const idx = watchItems.findIndex((existing: any) => existing.code === item.code || existing.name === item.name);
-    const next = {
-      ...(idx >= 0 ? watchItems[idx] : {}),
-      name: item.name,
-      code: item.code,
-      asset_type: idx >= 0 ? (watchItems[idx] as any).asset_type ?? null : null,
-      market: idx >= 0 ? (watchItems[idx] as any).market ?? null : null,
-      trigger: idx >= 0 ? (watchItems[idx] as any).trigger ?? "" : "",
-      evidence_needed: Array.isArray(idx >= 0 ? (watchItems[idx] as any).evidence_needed : null)
-        ? (watchItems[idx] as any).evidence_needed
-        : [],
-      notes: item.notes || (idx >= 0 ? (watchItems[idx] as any).notes : "") || "User confirmed watch name only; trigger can be completed later.",
-    };
-    if (idx >= 0) watchItems[idx] = next as any;
-    else watchItems.push(next as any);
-  }
-
-  await store.writePortfolio({
-    ...portfolio,
-    holdings: holdings as any,
-    watchlist: watchItems as any,
-    accounts: Array.isArray(portfolio.accounts) ? portfolio.accounts : [],
-    last_confirmed_at: now,
-    last_confirmed_by: "user",
+  // Shared executor (services/onboarding.ts) enforces the strict code-first
+  // merge; this channel only wires confirmation, audit, and the response.
+  const { state: nextState, holdings, watchlist: watchItems } = await applyOnboardingPortfolioConfirmation({
+    userId: context.userId,
+    instanceId: context.instanceId,
+    projectId: context.projectId,
+    holdings: holdingInputs,
+    watchlist: watchInputs,
+    notes: stringInput(input?.notes),
   });
-  const state = normalizeSharedOnboardingState(await store.readOnboardingState());
-  const steps = { ...(state.steps ?? {}) };
-  steps.welcome = { done: true, completed_at: steps.welcome?.completed_at ?? now };
-  steps.portfolio = { done: true, completed_at: steps.portfolio?.completed_at ?? now };
-  const nextState: OnboardingStateYaml = {
-    ...state,
-    status: "in_progress",
-    current_step: "style",
-    steps,
-    updated_at: now,
-    notes: stringInput(input?.notes) ?? state.notes ?? "",
-  };
-  await store.writeOnboardingState(nextState);
-  sqlite.transaction(() => mastraStore.persist())();
   await confirmation.consume();
   await audit(context, {
     operation: "onboarding.confirm_portfolio",
@@ -3073,35 +3019,6 @@ function requirePositiveInteger(value: unknown, label: string) {
 
 function normalizeWatchlistReason(reason: string) {
   return reason.replace(/观察池/g, "自选池").trim();
-}
-
-function normalizeOnboardingAssetList(value: unknown): Array<{ name: string; code: string; notes?: string }> {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const result: Array<{ name: string; code: string; notes?: string }> = [];
-  for (const raw of value) {
-    const item = typeof raw === "string" ? { name: raw } : asRecord(raw);
-    const name = stringInput(item.name ?? item.stockName ?? item.stock_name ?? item.label ?? item.title) || "";
-    const code = stringInput(item.code ?? item.stockCode ?? item.stock_code ?? item.symbol) || "";
-    if (!name && !code) continue;
-    const key = `${code}::${name}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const notes = stringInput(item.notes);
-    result.push({ name: name || code || "未命名标的", code, notes });
-  }
-  return result;
-}
-
-function findOnboardingAssetsMissingCode(kind: "holding" | "watchlist", items: Array<{ name: string; code: string }>) {
-  return items
-    .filter((item) => !/^\d{6}$/.test(item.code))
-    .map((item) => ({
-      kind,
-      name: item.name,
-      code: item.code || null,
-      reason: item.code ? "证券代码必须是 6 位数字" : "缺少证券代码",
-    }));
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -18,7 +18,10 @@ import { enqueuePushJob, getPushJob, processDuePushJobs, type PushBackend } from
 import { createWatchRule, deleteWatchRule, dryRunWatchRuleById, listWatchRuleCatalog, listWatchRules, updateWatchRule, validateWatchRule } from "../services/watch-rules.js";
 import {
   applyConfirmedOnboardingStep,
+  applyOnboardingPortfolioConfirmation,
+  findOnboardingAssetsMissingCode,
   isOnboardingStep as isSharedOnboardingStep,
+  normalizeOnboardingAssetList,
   normalizeOnboardingState as normalizeSharedOnboardingState,
   OnboardingContractError,
   openMastraOnboardingStore,
@@ -723,48 +726,6 @@ function buildNotificationPreference(mode: NotificationPreferenceMode) {
   };
 }
 
-function normalizeOnboardingAssetName(value: unknown): string {
-  return typeof value === "string" ? value.trim().slice(0, 80) : "";
-}
-
-function normalizeOnboardingAssetCode(value: unknown): string | null {
-  const code = typeof value === "string" ? value.trim() : "";
-  return code ? code.slice(0, 32) : null;
-}
-
-function normalizeOnboardingAssetList(value: unknown): Array<{ name: string; code: string | null; notes?: string }> {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const result: Array<{ name: string; code: string | null; notes?: string }> = [];
-  for (const raw of value) {
-    const item = typeof raw === "string" ? { name: raw } : asRecord(raw);
-    const name = normalizeOnboardingAssetName(
-      item.name ?? item.stockName ?? item.stock_name ?? item.label ?? item.title
-    );
-    const code = normalizeOnboardingAssetCode(
-      item.code ?? item.stockCode ?? item.stock_code ?? item.symbol
-    );
-    if (!name && !code) continue;
-    const key = `${code || ""}::${name}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const notes = typeof item.notes === "string" ? item.notes.trim().slice(0, 240) : undefined;
-    result.push({ name: name || code || "未命名标的", code, notes });
-  }
-  return result;
-}
-
-function findOnboardingAssetsMissingCode(kind: "holding" | "watchlist", items: Array<{ name: string; code: string | null }>) {
-  return items
-    .filter((item) => !item.code || !/^\d{6}$/.test(item.code))
-    .map((item) => ({
-      kind,
-      name: item.name,
-      code: item.code,
-      reason: item.code ? "证券代码必须是 6 位数字" : "缺少证券代码",
-    }));
-}
-
 function marketWatchPolicyForPreference(mode: NotificationPreferenceMode) {
   if (mode === "active_watch") {
     return {
@@ -1083,78 +1044,16 @@ export function registerSandboxRoutes(app: FastifyInstance) {
       });
     }
 
-    const now = new Date().toISOString();
-    const mastraStoreResult = openMastraOnboardingStore({ userId: ctx.userId, instanceId: ctx.instanceId, projectId: ctx.projectId });
-    const store: any = mastraStoreResult.store;
-    const portfolio = (await store.readPortfolio()) ?? { holdings: [], watchlist: [], accounts: [] };
-    const holdings = Array.isArray(portfolio.holdings) ? [...portfolio.holdings] : [];
-    const watchItems = Array.isArray(portfolio.watchlist) ? [...portfolio.watchlist] : [];
-
-    for (const item of holdingInputs) {
-      const idx = holdings.findIndex((existing: any) =>
-        (item.code && existing.code === item.code) || (!item.code && existing.name === item.name)
-      );
-      const next = {
-        ...(idx >= 0 ? holdings[idx] : {}),
-        name: item.name,
-        code: item.code,
-        asset_type: (idx >= 0 ? (holdings[idx] as any).asset_type : null) ?? null,
-        market: (idx >= 0 ? (holdings[idx] as any).market : null) ?? null,
-        account: (idx >= 0 ? (holdings[idx] as any).account : null) ?? null,
-        currency: (idx >= 0 ? (holdings[idx] as any).currency : "CNY") ?? "CNY",
-        cost: (idx >= 0 ? (holdings[idx] as any).cost : null) ?? null,
-        shares: (idx >= 0 ? (holdings[idx] as any).shares : null) ?? null,
-        market_value: (idx >= 0 ? (holdings[idx] as any).market_value : null) ?? null,
-        weight: (idx >= 0 ? (holdings[idx] as any).weight : null) ?? null,
-        notes: item.notes || (idx >= 0 ? (holdings[idx] as any).notes : "") || "User confirmed holding name only; details can be completed later.",
-      };
-      if (idx >= 0) holdings[idx] = next as any;
-      else holdings.push(next as any);
-    }
-
-    for (const item of watchInputs) {
-      const idx = watchItems.findIndex((existing: any) =>
-        (item.code && existing.code === item.code) || (!item.code && existing.name === item.name)
-      );
-      const next = {
-        ...(idx >= 0 ? watchItems[idx] : {}),
-        name: item.name,
-        code: item.code,
-        asset_type: (idx >= 0 ? (watchItems[idx] as any).asset_type : null) ?? null,
-        market: (idx >= 0 ? (watchItems[idx] as any).market : null) ?? null,
-        trigger: (idx >= 0 ? (watchItems[idx] as any).trigger : "") ?? "",
-        evidence_needed: Array.isArray(idx >= 0 ? (watchItems[idx] as any).evidence_needed : null)
-          ? (watchItems[idx] as any).evidence_needed
-          : [],
-        notes: item.notes || (idx >= 0 ? (watchItems[idx] as any).notes : "") || "User confirmed watch name only; trigger can be completed later.",
-      };
-      if (idx >= 0) watchItems[idx] = next as any;
-      else watchItems.push(next as any);
-    }
-
-    await store.writePortfolio({
-      ...portfolio,
-      holdings: holdings as any,
-      watchlist: watchItems as any,
-      accounts: Array.isArray(portfolio.accounts) ? portfolio.accounts : [],
-      last_confirmed_at: now,
-      last_confirmed_by: "user",
+    // Shared executor (services/onboarding.ts) enforces the strict code-first
+    // merge; this route only wires validation shape, audit, and the response.
+    const { state: nextState, holdings, watchlist: watchItems } = await applyOnboardingPortfolioConfirmation({
+      userId: ctx.userId,
+      instanceId: ctx.instanceId,
+      projectId: ctx.projectId,
+      holdings: holdingInputs,
+      watchlist: watchInputs,
+      notes: request.body?.notes,
     });
-
-    const current = normalizeSharedOnboardingState(await store.readOnboardingState());
-    const steps = { ...(current.steps ?? {}) };
-    steps.welcome = { done: true, completed_at: steps.welcome?.completed_at ?? now };
-    steps.portfolio = { done: true, completed_at: steps.portfolio?.completed_at ?? now };
-    const nextState: OnboardingStateYaml = {
-      ...current,
-      status: "in_progress",
-      current_step: "style",
-      steps,
-      updated_at: now,
-      notes: request.body?.notes ?? current.notes ?? "",
-    };
-    await store.writeOnboardingState(nextState);
-    sqlite.transaction(() => mastraStoreResult.persist())();
     // (E8) workspace change-log append retired; the audit entry is the record.
     await audit(ctx, {
       operation: "onboarding.confirm_portfolio",
