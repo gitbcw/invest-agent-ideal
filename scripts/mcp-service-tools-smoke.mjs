@@ -108,7 +108,6 @@ try {
       "confirmations.pending",
       "confirmations.request",
       "conversation.history",
-      "market_watch.snapshot",
       "research.news_search",
       "research.web_search",
       "research.web_read",

@@ -29,8 +29,6 @@ import { recoverInterruptedConversationTaskRuns } from "./services/conversation-
 
 const agent = createRuntimeAgent();
 
-/** 待推送消息队列（OpenClaw 轮询取走） */
-let pendingAlerts: string[] = [];
 let pushQueueInterval: ReturnType<typeof setInterval> | null = null;
 
 function isOfflineMode() {
@@ -44,9 +42,7 @@ async function sendPushJob(job: { userId: string; backend: PushBackend; message:
   if (job.instanceId) {
     try {
       const projectManager = await projectWeixinManagerForInstance(job.instanceId);
-      const projectResult = await projectManager.pushTextDetailed(job.message, { userId: job.userId, instanceId: job.instanceId });
-      if (projectResult.ok) return projectResult;
-      return projectResult;
+      return await projectManager.pushTextDetailed(job.message, { userId: job.userId, instanceId: job.instanceId });
     } catch (error) {
       logger.warn(`项目实例微信推送失败，尝试全局通道: ${(error as Error).message}`);
     }
@@ -203,13 +199,6 @@ export async function createServer() {
       return agent.handleMessage(message);
     }
   );
-
-  // 待推送提醒 — OpenClaw 轮询取走
-  app.get("/agent/alerts", async () => {
-    const alerts = [...pendingAlerts];
-    pendingAlerts = [];
-    return { alerts };
-  });
 
   // O1 onboarding wizard completion: silently apply the default usage mode for
   // scopes that own no typed scheduled tasks, and return the notify copy the

@@ -164,7 +164,7 @@ async function main() {
     {
       query: z.string().max(200).optional(),
       statuses: z.array(z.enum(["paused", "active", "needs_attention", "archived"])).max(4).optional(),
-      frequencies: z.array(z.enum(["daily", "trading_days", "weekdays", "weekly"])).max(4).optional(),
+      frequencies: z.array(z.enum(["daily", "trading_days", "weekdays", "weekly", "monthly"])).max(5).optional(),
       deliveryModes: z.array(z.enum(["none", "wechat_summary", "wechat_on_condition"])).max(3).optional(),
       outputModes: z.array(z.enum(["none", "agent", "create", "update"])).max(4).optional(),
       cursor: z.string().optional(),

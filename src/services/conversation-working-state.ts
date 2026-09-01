@@ -306,8 +306,6 @@ export function projectCurrentDecisions(
   return projected;
 }
 
-export const currentConversationDecisions = projectCurrentDecisions;
-
 /** Validate a V1 checkpoint without mutating it. */
 export function validateConversationWorkingState(
   input: unknown,
@@ -556,8 +554,6 @@ export function assertConversationWorkingState(
   return result.state;
 }
 
-export const parseConversationWorkingState = assertConversationWorkingState;
-
 /**
  * Result-shaped parser used by metadata readers. Unlike the throwing parser,
  * this form lets a corrupt checkpoint degrade to the next older checkpoint.
@@ -689,8 +685,6 @@ export function formatConversationWorkingStatePromptSlice(
   return clipUtf8(lines.join("\n"), maxBytes);
 }
 
-export const formatWorkingStatePromptSlice = formatConversationWorkingStatePromptSlice;
-
 /** Check the instance-scoped rollout flag. Empty or missing means disabled. */
 export function isConversationWorkingStateEnabled(
   instanceId: string,
@@ -702,5 +696,3 @@ export function isConversationWorkingStateEnabled(
   const entries = raw.split(",").map((item) => item.trim()).filter(Boolean);
   return entries.includes("*") || entries.includes(instanceId);
 }
-
-export const isCoherenceStateEnabled = isConversationWorkingStateEnabled;

@@ -618,8 +618,8 @@ async function listAutomationTool(input: Record<string, unknown> | undefined, co
       status === "paused" || status === "active" || status === "needs_attention" || status === "archived")
     : undefined;
   const frequencies = Array.isArray(value.frequencies)
-    ? value.frequencies.filter((frequency): frequency is "daily" | "trading_days" | "weekdays" | "weekly" =>
-      frequency === "daily" || frequency === "trading_days" || frequency === "weekdays" || frequency === "weekly")
+    ? value.frequencies.filter((frequency): frequency is "daily" | "trading_days" | "weekdays" | "weekly" | "monthly" =>
+      frequency === "daily" || frequency === "trading_days" || frequency === "weekdays" || frequency === "weekly" || frequency === "monthly")
     : undefined;
   const deliveryModes = Array.isArray(value.deliveryModes)
     ? value.deliveryModes.filter((mode): mode is "none" | "wechat_summary" | "wechat_on_condition" =>

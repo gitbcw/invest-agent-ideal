@@ -319,10 +319,18 @@ function shouldRunRuleAlertCheckTask(scope: SchedulableScope, intervalMinutes: n
   const slot = intervalSlot(now, interval);
   if (!slot) return null;
   const dateKey = beijingDateKey(now);
+  pruneRuleAlertFiredKeys(dateKey);
   const key = `${dateKey}:rule-alert-check:${scope.userId}:${scope.instanceId}:${slot}`;
   if (ruleAlertFiredKeys.has(key)) return null;
   ruleAlertFiredKeys.add(key);
   return { taskKey: key, scheduledFor: `${dateKey}:${slot}`, slot };
+}
+
+/** Fired keys are date-scoped; drop stale days so the set never grows unbounded. */
+function pruneRuleAlertFiredKeys(todayKey: string): void {
+  for (const key of ruleAlertFiredKeys) {
+    if (!key.startsWith(`${todayKey}:`)) ruleAlertFiredKeys.delete(key);
+  }
 }
 
 export async function triggerScheduledMarketWatchNow(

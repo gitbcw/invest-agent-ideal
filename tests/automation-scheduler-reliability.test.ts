@@ -326,7 +326,6 @@ test("scheduler admission caps process-wide concurrency and leaves later due wor
       listCalls += 1;
       return listCalls >= 3 ? due.slice(1) : due;
     },
-    reconcileScheduledAutomationTaskRuns: async () => 0,
     recoverExpiredAutomationTaskRuns: async () => 0,
     runAutomationTaskNow: async (input: { taskId: string }) => {
       calls.push(input.taskId);
@@ -370,7 +369,6 @@ test("stale scheduled queue slots terminalize as expired without invoking the mo
   let modelCalls = 0;
   const dependencies = {
     listDueAutomationTasks: async () => [dueTask],
-    reconcileScheduledAutomationTaskRuns: async () => 0,
     recoverExpiredAutomationTaskRuns: async () => 0,
     expireStaleScheduledAutomationTaskRun: async (input: { taskId: string; queueDelayMs: number; maxQueueDelayMs: number }) => {
       expiredInputs.push(input);

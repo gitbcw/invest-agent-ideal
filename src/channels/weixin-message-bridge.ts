@@ -471,14 +471,6 @@ export class InvestAgentMobileBridge {
       });
     }
   }
-
-  clearSession(conversationId?: string): void {
-    if (conversationId) {
-      const batch = this.inboundBatches.get(conversationId);
-      if (batch?.timer) clearTimeout(batch.timer);
-      this.inboundBatches.delete(conversationId);
-    }
-  }
 }
 
 function weixinInboundMessageKey(accountId: string, messageId?: string) {

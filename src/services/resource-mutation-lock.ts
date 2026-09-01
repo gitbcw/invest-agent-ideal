@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { config } from "../lib/config.js";
+import { logger } from "../lib/logger.js";
 
 export interface ResourceMutationScope {
   userId: string;
@@ -148,6 +149,15 @@ export async function withResourceMutationLock<T>(
     for (const key of keys) releases.push(await acquireResourceLock(scope, key, options));
     return await operation();
   } finally {
-    for (const release of releases.reverse()) await release();
+    // Release every lock even if one release fails: an abandoned lock
+    // directory blocks that resource until process restart because
+    // clearAbandonedLock refuses to recycle locks with a live owner pid.
+    for (const release of releases.reverse()) {
+      try {
+        await release();
+      } catch (error) {
+        logger.warn(`resource mutation lock release failed key may remain locked:`, error);
+      }
+    }
   }
 }

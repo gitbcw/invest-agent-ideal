@@ -2,7 +2,6 @@ import { logger } from "../lib/logger.js";
 import {
   expireStaleScheduledAutomationTaskRun,
   listDueAutomationTasks,
-  reconcileScheduledAutomationTaskRuns,
   recoverExpiredAutomationTaskRuns,
 } from "../services/automation-tasks.js";
 import { runAutomationTaskNow } from "../services/automation-runner.js";
@@ -36,7 +35,6 @@ function queueDelayMs(scheduledFor: string, now: Date): number {
 export interface AutomationSchedulerDependencies {
   expireStaleScheduledAutomationTaskRun?: typeof expireStaleScheduledAutomationTaskRun;
   listDueAutomationTasks: typeof listDueAutomationTasks;
-  reconcileScheduledAutomationTaskRuns?: typeof reconcileScheduledAutomationTaskRuns;
   recoverExpiredAutomationTaskRuns: typeof recoverExpiredAutomationTaskRuns;
   runAutomationTaskNow: typeof runAutomationTaskNow;
 }
@@ -44,7 +42,6 @@ export interface AutomationSchedulerDependencies {
 const defaultDependencies: AutomationSchedulerDependencies = {
   expireStaleScheduledAutomationTaskRun,
   listDueAutomationTasks,
-  reconcileScheduledAutomationTaskRuns,
   recoverExpiredAutomationTaskRuns,
   runAutomationTaskNow,
 };
@@ -56,8 +53,8 @@ const defaultDependencies: AutomationSchedulerDependencies = {
 export async function runAutomationSchedulerTick(now = new Date(), dependencies: AutomationSchedulerDependencies = defaultDependencies) {
   const recovered = await dependencies.recoverExpiredAutomationTaskRuns(now, 100);
   if (recovered > 0) logger.warn(`automation scheduler recovered expired runs count=${recovered}`);
-  const reconciled = await (dependencies.reconcileScheduledAutomationTaskRuns || reconcileScheduledAutomationTaskRuns)(now, 100);
-  if (reconciled > 0) logger.warn(`automation scheduler reconciled scheduled cursors count=${reconciled}`);
+  // Scheduled-cursor reconciliation happens inside listDueAutomationTasks, so
+  // the tick must not run it a second time on the same minute.
   const due = await dependencies.listDueAutomationTasks(now, 100);
   let started = 0;
   const maxConcurrency = automationMaxConcurrency();

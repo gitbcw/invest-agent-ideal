@@ -590,7 +590,7 @@ export async function listUserAssets(input: AssetScope & {
     "SELECT " + ASSET_COLUMNS + " FROM user_assets WHERE " + clauses.join(" AND ") +
     " ORDER BY updated_at DESC, asset_id DESC LIMIT ?",
   ).all(...params, limit) as AssetRow[];
-  return Promise.all(rows.map((row) => hydrate(row, scope)));
+  return hydrateMany(rows, scope);
 }
 
 export async function getUserAsset(input: AssetScope & { assetId: string }): Promise<UserAssetDescriptor | null> {
@@ -818,6 +818,24 @@ async function hydrate(row: AssetRow, scope: AssetScope): Promise<UserAssetDescr
   const version = row.currentVersionId
     ? sqlite.prepare("SELECT " + VERSION_COLUMNS + " FROM user_asset_versions WHERE version_id = ?").get(row.currentVersionId) as VersionRow | undefined
     : undefined;
+  return descriptorFrom(row, version, scope);
+}
+
+/** Batched hydration for list paths: one version query for the whole page. */
+async function hydrateMany(rows: AssetRow[], scope: AssetScope): Promise<UserAssetDescriptor[]> {
+  const versionIds = [...new Set(rows.map((row) => row.currentVersionId).filter((id): id is string => Boolean(id)))];
+  const versionById = new Map<string, VersionRow>();
+  if (versionIds.length > 0) {
+    const placeholders = versionIds.map(() => "?").join(", ");
+    const versions = sqlite.prepare(
+      "SELECT " + VERSION_COLUMNS + " FROM user_asset_versions WHERE version_id IN (" + placeholders + ")",
+    ).all(...versionIds) as VersionRow[];
+    for (const version of versions) versionById.set(version.versionId, version);
+  }
+  return rows.map((row) => descriptorFrom(row, row.currentVersionId ? versionById.get(row.currentVersionId) : undefined, scope));
+}
+
+function descriptorFrom(row: AssetRow, version: VersionRow | undefined, scope: AssetScope): UserAssetDescriptor {
   if (version) assertScope(version, scope);
   return {
     assetId: row.assetId, userId: row.userId, projectId: row.projectId, instanceId: row.instanceId,

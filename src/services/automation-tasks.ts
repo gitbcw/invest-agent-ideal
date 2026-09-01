@@ -1171,10 +1171,6 @@ export async function archiveAutomationTask(input: AutomationTaskLookup & { expe
   return setAutomationTaskStatus(input, "archived");
 }
 
-/** Readable aliases for Portal adapters that use enable/disable wording. */
-export const enableAutomationTask = activateAutomationTask;
-export const disableAutomationTask = pauseAutomationTask;
-
 export async function listAutomationTasks(input: AutomationScope, query: AutomationListQuery = {}): Promise<AutomationTaskSummary[]> {
   return (await listAutomationTaskPage(input, query)).items;
 }
@@ -2582,16 +2578,19 @@ export function nextAutomationRunAt(schedule: AutomationSchedule | Record<string
   // Monthly needs a horizon beyond one month; everything else fits in 8 days.
   const horizonMinutes = normalized.frequency === "monthly" ? 40 * 24 * 60 : 8 * 24 * 60;
   const triggerTimes = new Set([normalized.time, ...(normalized.windows ?? [])]);
+  // Constructing an Intl.DateTimeFormat is expensive; the timezone never
+  // changes inside the scan, so build the formatter once outside the loop.
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: normalized.timezone,
+    weekday: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
   for (let index = 0; index <= horizonMinutes; index += 1) {
     const candidate = new Date(start + index * 60_000);
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: normalized.timezone,
-      weekday: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    }).formatToParts(candidate);
+    const parts = formatter.formatToParts(candidate);
     const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
     const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(String(values.weekday));
     if (!triggerTimes.has(`${values.hour}:${values.minute}`)) continue;

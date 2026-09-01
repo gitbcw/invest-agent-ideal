@@ -13,65 +13,37 @@
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { logger } from "../lib/logger.js";
 import type { PushCallback } from "./index.js";
-import { db, sqlite } from "../db/index.js";
+import { db } from "../db/index.js";
 import { settings } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
+import { DEFAULT_PROJECT_ID } from "../lib/user-context.js";
 import { resolveWorkspacePath } from "../lib/workspace.js";
 import { ACTIVE_BACKEND } from "../lib/data-backend.js";
-import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
-import { readSchedules, entryHitsNow, beijingNow, beijingDateKey, type SchedulesYaml } from "../lib/schedules-loader.js";
+import { beijingDateKey } from "../lib/schedules-loader.js";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { runScheduledReviewTask } from "../runtime/scheduled-tasks.js";
 import {
   claimScheduledTaskRun,
   finishScheduledTaskRun,
-  getScheduledTaskRunState,
   reconcileExpiredScheduledTaskRuns,
-  type ScheduledTaskRunState,
 } from "../services/scheduled-task-runs.js";
-import { formatUnknownError } from "../lib/errors.js";
 import { resolveScheduledMessageExpiry, scheduledMessageIdempotencyKey, type ScheduledMessageKind } from "../services/scheduled-message-policy.js";
 
 const PUSH_TIME_KEY = "review_push_time";
 const DEFAULT_HOUR = 21;
 const DEFAULT_MINUTE = 30;
-const REVIEW_PREPARE_LEAD_MINUTES = normalizePositiveInteger(process.env.REVIEW_PREPARE_LEAD_MINUTES, 12);
-const REVIEW_PREPARE_LEASE_MS = 15 * 60 * 1000;
 const REVIEW_FINAL_LEASE_MS = 25 * 60 * 1000;
-const REVIEW_HANDOFF_POLL_MS = 1_000;
-const REVIEW_HANDOFF_SETTLE_BUFFER_MS = 5_000;
 
 type ReviewKind = "daily" | "weekly" | "monthly";
 
 let reviewIntervalId: ReturnType<typeof setInterval> | null = null;
 let lastScheduledTaskReconcileAt = 0;
 
-let fallbackHour = DEFAULT_HOUR;
-let fallbackMinute = DEFAULT_MINUTE;
-
 export interface ReviewScope {
   userId: string;
   instanceId: string;
   projectId?: string;
-}
-
-interface PreparedReviewPush {
-  kind: ReviewKind;
-  userId: string;
-  instanceId: string;
-  projectId: string;
-  dateKey: string;
-  text: string;
-  preparedAt: string;
-}
-
-function normalizePositiveInteger(value: unknown, fallback: number) {
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n) || n < 1) return fallback;
-  return Math.floor(n);
 }
 
 /** 从 settings 表读取 DEFAULT_USER_ID 的兜底日复盘时间(workspace 不存在时使用)。 */
@@ -88,21 +60,6 @@ export async function getReviewPushTime(): Promise<{ hour: number; minute: numbe
   return { hour: DEFAULT_HOUR, minute: DEFAULT_MINUTE };
 }
 
-/** 设置 DEFAULT_USER_ID 兜底日复盘时间。 */
-export async function setReviewPushTime(hour: number, minute: number): Promise<string> {
-  if (!Number.isFinite(hour) || !Number.isFinite(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return "时间格式无效，小时 0-23，分钟 0-59";
-  }
-  const value = `${hour}:${String(minute).padStart(2, "0")}`;
-  await db.insert(settings).values({ key: PUSH_TIME_KEY, value })
-    .onConflictDoUpdate({ target: settings.key, set: { value } });
-
-  fallbackHour = hour;
-  fallbackMinute = minute;
-  logger.info(`复盘推送时间已更新为 ${value}`);
-  return `复盘推送时间已更新为 ${value}`;
-}
-
 function hasWorkspace(userId: string): boolean {
   if (ACTIVE_BACKEND === "mastra") return true;
   return existsSync(join(resolveWorkspacePath(userId), "AGENTS.md"));
@@ -111,40 +68,6 @@ function hasWorkspace(userId: string): boolean {
 async function hasExistingDailyReview(scope: ReviewScope, dateKey: string): Promise<boolean> {
   const row = await dailyPlanBackend.get(scope.userId, scope.instanceId, dateKey).catch(() => null);
   return Boolean(row);
-}
-
-const TYPED_REVIEW_TASK: Record<ReviewKind, string> = {
-  daily: "scheduled-daily-review",
-  weekly: "scheduled-weekly-review",
-  monthly: "scheduled-monthly-review",
-};
-
-function hasActiveTypedTask(scope: ReviewScope, taskType: string): boolean {
-  try {
-    return Boolean(sqlite.prepare(
-      "SELECT 1 AS one FROM automation_tasks WHERE user_id=? AND project_id=? AND instance_id=? AND task_type=? AND status='active' LIMIT 1",
-    ).get(scope.userId, scope.projectId ?? "invest-agent", scope.instanceId, taskType));
-  } catch {
-    return false;
-  }
-}
-
-
-
-function addMinutes(date: Date, minutes: number) {
-  return new Date(date.getTime() + minutes * 60 * 1000);
-}
-
-function preparedReviewPath(scope: ReviewScope, kind: ReviewKind, dateKey: string): string | Promise<string> {
-  const safeInstance = (scope.instanceId || DEFAULT_INSTANCE_ID).replace(/[^a-zA-Z0-9_-]/g, "-");
-  return resolveRegisteredMastraProjectRoot({
-    userId: scope.userId,
-    projectId: scope.projectId ?? DEFAULT_PROJECT_ID,
-    instanceId: scope.instanceId,
-  }).then((root) => {
-    if (!root) throw new Error("MASTRA_PROJECT_SCOPE_UNAVAILABLE");
-    return join(root, ".agent-project", "staging", "scheduled-reviews", safeInstance, `${dateKey}-${kind}.json`);
-  });
 }
 
 async function shouldSkipFallbackDailyGeneration(kind: ReviewKind, scope: ReviewScope, dateKey: string, manualReason?: string) {
@@ -259,26 +182,16 @@ export async function triggerReviewNow(
   }
 }
 
-function isAfterDailyReviewScanStart(now: Date): boolean {
-  const bj = beijingNow(now);
-  const timeNum = bj.getHours() * 100 + bj.getMinutes();
-  return timeNum >= 1500;
-}
-
 /**
  * P4b (E4): scheduled reviews fire exclusively as typed automation tasks
  * driven by the automation scheduler. The preference-driven minute loop is
  * retired; this entry keeps the reconcile heartbeat (expired scheduled-task
- * run cleanup) and initializes the manual fallback push time.
+ * run cleanup).
  */
 export async function startReviewScheduler(
   _pushFn: PushCallback,
   _getScopes?: () => Promise<ReviewScope[]>,
 ) {
-  const { hour: initHour, minute: initMinute } = await getReviewPushTime();
-  fallbackHour = initHour;
-  fallbackMinute = initMinute;
-
   stopReviewScheduler();
 
   reviewIntervalId = setInterval(async () => {
@@ -304,7 +217,5 @@ export function stopReviewScheduler() {
 }
 
 export const __test__ = {
-  addMinutes,
-  preparedReviewPath,
   resolveReviewText,
 };

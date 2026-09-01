@@ -131,7 +131,7 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   {
     id: "automation.list",
     description: "List automation tasks in the current service scope.",
-    inputSchema: { query: z.string().max(200).optional(), statuses: z.array(z.enum(["paused", "active", "needs_attention", "archived"])).max(4).optional(), frequencies: z.array(z.enum(["daily", "trading_days", "weekdays", "weekly"])).max(4).optional(), deliveryModes: z.array(z.enum(["none", "wechat_summary", "wechat_on_condition"])).max(3).optional(), outputModes: z.array(z.enum(["none", "agent", "create", "update"])).max(4).optional(), cursor: z.string().optional(), limit: z.number().int().min(1).max(100).optional() },
+    inputSchema: { query: z.string().max(200).optional(), statuses: z.array(z.enum(["paused", "active", "needs_attention", "archived"])).max(4).optional(), frequencies: z.array(z.enum(["daily", "trading_days", "weekdays", "weekly", "monthly"])).max(5).optional(), deliveryModes: z.array(z.enum(["none", "wechat_summary", "wechat_on_condition"])).max(3).optional(), outputModes: z.array(z.enum(["none", "agent", "create", "update"])).max(4).optional(), cursor: z.string().optional(), limit: z.number().int().min(1).max(100).optional() },
     annotations: { readOnlyHint: true },
   },
   { id: "automation.get", description: "Get one same-scope automation task.", inputSchema: { taskId: z.string().min(1) }, annotations: { readOnlyHint: true } },

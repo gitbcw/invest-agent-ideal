@@ -984,54 +984,50 @@ async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, 
   if (!result.stagedOutput || task.revision.output.mode === "none") return null;
   const bytes = Buffer.from(result.stagedOutput.base64, "base64");
   const idempotencyKey = `automation:${run.runId}:output`;
-  try {
-    const isCreate = task.revision.output.mode === "create" || result.stagedOutput.operation === "create";
-    const target = task.revision.output.mode === "update"
-      ? resolved.output
-      : result.stagedOutput.assetId
-        ? resolved.agentUpdateTargets.get(result.stagedOutput.assetId)
-        : undefined;
-    const descriptor = isCreate
-      ? await createUserAsset({
-          ...scope,
-          name: task.revision.output.mode === "create" ? task.revision.output.titleTemplate || task.revision.name : task.revision.name,
-          fileName: result.stagedOutput.fileName,
-          mimeType: result.stagedOutput.mimeType,
-          bytes,
-          source: "automation",
-          taskId: task.taskId,
-          runId: run.runId,
-          leaseToken: run.leaseToken,
-          idempotencyKey,
-          finalizeRun: ({ assetId, versionId, checksum }) => finalizeAutomationTaskRunInTransaction({
-            ...scope, runId: run.runId, leaseToken: run.leaseToken, status: "succeeded",
-            resultSummary: result.summary, outputAssetId: assetId, outputVersionId: versionId,
-            outputChecksum: checksum, traceId: run.runId,
-          }),
-        })
-      : await uploadUserAssetVersion({
-          ...scope,
-          assetId: target!.assetId,
-          fileName: result.stagedOutput.fileName,
-          mimeType: result.stagedOutput.mimeType,
-          bytes,
-          expectedVersionId: target!.versionId,
-          source: "automation",
-          taskId: task.taskId,
-          runId: run.runId,
-          leaseToken: run.leaseToken,
-          idempotencyKey,
-          finalizeRun: ({ assetId, versionId, checksum }) => finalizeAutomationTaskRunInTransaction({
-            ...scope, runId: run.runId, leaseToken: run.leaseToken, status: "succeeded",
-            resultSummary: result.summary, outputAssetId: assetId, outputVersionId: versionId,
-            outputChecksum: checksum, traceId: run.runId,
-          }),
-        });
-    if (!descriptor.currentVersion) throw new AutomationTaskError("ASSET_SUBMISSION_FAILED", "output version missing");
-    return { assetId: descriptor.assetId, versionId: descriptor.currentVersion.versionId, checksum: descriptor.currentVersion.checksum };
-  } catch (error) {
-    throw error;
-  }
+  const isCreate = task.revision.output.mode === "create" || result.stagedOutput.operation === "create";
+  const target = task.revision.output.mode === "update"
+    ? resolved.output
+    : result.stagedOutput.assetId
+      ? resolved.agentUpdateTargets.get(result.stagedOutput.assetId)
+      : undefined;
+  const descriptor = isCreate
+    ? await createUserAsset({
+        ...scope,
+        name: task.revision.output.mode === "create" ? task.revision.output.titleTemplate || task.revision.name : task.revision.name,
+        fileName: result.stagedOutput.fileName,
+        mimeType: result.stagedOutput.mimeType,
+        bytes,
+        source: "automation",
+        taskId: task.taskId,
+        runId: run.runId,
+        leaseToken: run.leaseToken,
+        idempotencyKey,
+        finalizeRun: ({ assetId, versionId, checksum }) => finalizeAutomationTaskRunInTransaction({
+          ...scope, runId: run.runId, leaseToken: run.leaseToken, status: "succeeded",
+          resultSummary: result.summary, outputAssetId: assetId, outputVersionId: versionId,
+          outputChecksum: checksum, traceId: run.runId,
+        }),
+      })
+    : await uploadUserAssetVersion({
+        ...scope,
+        assetId: target!.assetId,
+        fileName: result.stagedOutput.fileName,
+        mimeType: result.stagedOutput.mimeType,
+        bytes,
+        expectedVersionId: target!.versionId,
+        source: "automation",
+        taskId: task.taskId,
+        runId: run.runId,
+        leaseToken: run.leaseToken,
+        idempotencyKey,
+        finalizeRun: ({ assetId, versionId, checksum }) => finalizeAutomationTaskRunInTransaction({
+          ...scope, runId: run.runId, leaseToken: run.leaseToken, status: "succeeded",
+          resultSummary: result.summary, outputAssetId: assetId, outputVersionId: versionId,
+          outputChecksum: checksum, traceId: run.runId,
+        }),
+      });
+  if (!descriptor.currentVersion) throw new AutomationTaskError("ASSET_SUBMISSION_FAILED", "output version missing");
+  return { assetId: descriptor.assetId, versionId: descriptor.currentVersion.versionId, checksum: descriptor.currentVersion.checksum };
 }
 
 /** After a rollover create commits, switch the task's output binding to the

@@ -508,10 +508,9 @@ export function createRuntimeAgent(): RuntimeAgent {
               }
             }
           }
-          const postProcessed = await postProcessAgentReply({ reply: mastraResult.text, userContext, originalText: text });
           const extractedVisuals = userChannel === "web"
-            ? extractInlineSvgVisuals(postProcessed.finalReply)
-            : { text: postProcessed.finalReply, visuals: [] };
+            ? extractInlineSvgVisuals(mastraResult.text)
+            : { text: mastraResult.text, visuals: [] };
           const deduped = dedupeRepeatedCustomerText(extractedVisuals.text);
           const cleaned = userChannel === "weixin-mobile" ? sanitizeWeixinCustomerText(deduped) : sanitizeCustomerText(deduped);
           await recordAgentTrace({
@@ -520,7 +519,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             taskId: typeof message.context?.taskId === "string" ? message.context.taskId : undefined,
             userId, projectId: userContext.projectId, instanceId: userContext.instanceId,
             conversationId, messageId: message.id, channel, userText: text,
-            promptText: promptContext.promptText, replyTextRaw: postProcessed.finalReply,
+            promptText: promptContext.promptText, replyTextRaw: mastraResult.text,
             replyTextSanitized: cleaned, mode,
             status: "success", elapsedMs: Date.now() - startedAt, usage: mastraResult.usage,
             agentBackend: "mastra", agentModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
@@ -595,14 +594,6 @@ export function createRuntimeAgent(): RuntimeAgent {
       }
     },
   };
-}
-
-async function postProcessAgentReply(input: {
-  reply: string;
-  userContext: UserContext;
-  originalText: string;
-}) {
-  return { finalReply: input.reply };
 }
 
 const MAX_INLINE_IMAGES_PER_TURN = 4;

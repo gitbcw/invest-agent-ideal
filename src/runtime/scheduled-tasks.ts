@@ -343,10 +343,6 @@ async function runStructuredReviewPrompt(
       "若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。仅在 reviews.save 返回成功后，才可给出最终回复，且最终回复必须逐字使用该次成功保存的 pushBrief。",
     );
   }
-  // WP4: 新路径 (context=null) 不注入预聚合数据,开放研究交还 Mastra runtime
-  if (context) {
-    promptLines.push(`复盘上下文 JSON：${JSON.stringify(context)}`);
-  }
   const promptContext = await buildAgentPromptContext({
     userText: promptLines.join("\n"),
     userContext,

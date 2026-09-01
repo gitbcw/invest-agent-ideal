@@ -1255,6 +1255,9 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_conversation_sessions_channel_time ON conversation_sessions(channel, updated_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_time ON conversation_messages(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_scope_time ON conversation_messages(instance_id, user_id, created_at);
+    -- Confirmation-bound write tools look up the latest user-role message by
+    -- scope; without role in the index every lookup back-filters assistant rows.
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_scope_role_time ON conversation_messages(instance_id, user_id, role, created_at);
     CREATE INDEX IF NOT EXISTS idx_conversation_task_runs_status_deadline ON conversation_task_runs(status, execution_deadline_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_messages_idempotency ON conversation_messages(user_id, instance_id, conversation_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_conversation_tasks_scope_status ON conversation_tasks(instance_id, user_id, conversation_id, status, created_at);
