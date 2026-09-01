@@ -67,10 +67,13 @@ function lineAt(content, index) {
 }
 
 function checkMcpInventory() {
-  const source = readFileSync(path.join(root, "src/mcp/invest-agent-service-tools.ts"), "utf8");
-  const implementation = new Set(
-    [...source.matchAll(/registerJsonTool\(\s*\{[\s\S]*?\}\s*,\s*"([^"]+)"/g)].map((match) => match[1])
-  );
+  // Single source of truth since T-451: the MCP server registers whatever
+  // tool-specs.ts declares (minus the Mastra-only spreadsheet bridge pair).
+  const specsSource = readFileSync(path.join(root, "src/mastra/tools/tool-specs.ts"), "utf8");
+  const allIds = [...specsSource.matchAll(/^\s*id: "([a-z_.]+)",?$/gm)].map((match) => match[1]);
+  if (allIds.length < 30) errors.push("src/mastra/tools/tool-specs.ts: tool id extraction looks broken");
+  const mcpExcluded = new Set(["spreadsheet.create", "spreadsheet.transform"]);
+  const implementation = new Set(allIds.filter((name) => !mcpExcluded.has(name)));
   const docs = readFileSync(path.join(root, "docs/service-tools-mcp.md"), "utf8");
   const section = docs.match(/## Current Tools([\s\S]*?)## Verification/)?.[1] ?? "";
   const documented = new Set([...section.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]));
