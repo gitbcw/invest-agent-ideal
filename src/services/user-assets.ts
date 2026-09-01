@@ -650,6 +650,25 @@ export async function readUserAssetVersion(input: AssetScope & { assetId: string
   return { descriptor: versionFromRow(row), bytes: await readAndVerify(scope, row) };
 }
 
+/**
+ * Metadata-only probe for list paths: returns the persisted size_bytes of a
+ * scoped backing version without reading or hashing the file. Callers that
+ * need content-integrity guarantees must still use readUserAssetVersion.
+ */
+export function userAssetVersionSizeBytes(input: AssetScope & { assetId: string; versionId: string }): number | null {
+  const scope = normalizeScope(input);
+  const assetId = normalizeOpaqueId(input.assetId, "assetId");
+  const versionId = normalizeOpaqueId(input.versionId, "versionId");
+  const row = sqlite.prepare(
+    "SELECT asset_id AS assetId, user_id AS userId, project_id AS projectId, instance_id AS instanceId, size_bytes AS sizeBytes " +
+      "FROM user_asset_versions WHERE version_id = ?",
+  ).get(versionId) as { assetId: string; userId: string; projectId: string; instanceId: string; sizeBytes: number } | undefined;
+  if (!row) return null;
+  if (row.userId !== scope.userId || row.projectId !== scope.projectId || row.instanceId !== scope.instanceId) return null;
+  if (row.assetId !== assetId) return null;
+  return row.sizeBytes;
+}
+
 export async function renameUserAsset(input: AssetScope & { assetId: string; name: string }): Promise<UserAssetDescriptor> {
   const scope = normalizeScope(input);
   const assetId = normalizeOpaqueId(input.assetId, "assetId");

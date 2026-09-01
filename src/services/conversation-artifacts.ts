@@ -20,6 +20,7 @@ import {
   getUserAsset,
   readUserAssetVersion,
   uploadUserAssetVersion,
+  userAssetVersionSizeBytes,
   type UserAssetDescriptor,
 } from "./user-assets.js";
 
@@ -1343,12 +1344,21 @@ export async function listCuratedArtifactLibrary(input: {
          deleted_at AS deletedAt
        FROM conversation_artifacts
        WHERE user_id = ? AND instance_id = ?
+         AND deleted_at IS NULL
+         AND source IN ('artifacts.publish', 'reviews.save', 'workspace_backfill')
+         AND (retention_class IS NULL OR retention_class = 'durable_library')
+         AND (visibility IS NULL OR visibility = 'library')
+         ${cursor ? "AND (updated_at < ? OR (updated_at = ? AND artifact_id < ?))" : ""}
        ORDER BY updated_at DESC, artifact_id DESC`
     )
-    .all(input.userId, input.instanceId) as LibraryRow[];
+    .all(...(cursor
+      ? [input.userId, input.instanceId, cursor.u, cursor.u, cursor.a]
+      : [input.userId, input.instanceId])) as LibraryRow[];
 
   // Rows arrive newest-first, so grouping in iteration order keeps each
   // path's versions sorted newest -> oldest for the fallback walk below.
+  // The SQL WHERE clause is a pre-filter (source/visibility/retention/cursor)
+  // for row volume; the checks inside the loop remain the authoritative gate.
   const versionsByPath = new Map<string, LibraryRow[]>();
   for (const row of rows) {
     const versions = versionsByPath.get(row.relativePath);
@@ -1490,14 +1500,13 @@ async function isLibraryFileValid(
 
   // A service-owned review is represented by a scoped backing version rather
   // than a user workspace file. Prefer it even if a user happens to have a
-  // file at the same display path.
+  // file at the same display path. This is a list path over the whole library:
+  // probe the persisted size instead of reading and hashing every backing
+  // file — a corrupted backing file surfaces when the item is opened, not by
+  // silently hiding it from the library.
   if (assetId && versionId) {
-    try {
-      const backing = await readUserAssetVersion({ userId, projectId, instanceId, assetId, versionId });
-      return backing.bytes.length <= maxBytes;
-    } catch {
-      return false;
-    }
+    const sizeBytes = userAssetVersionSizeBytes({ userId, projectId, instanceId, assetId, versionId });
+    return sizeBytes !== null && sizeBytes <= maxBytes;
   }
 
   if (!realReportsPath) return false;
