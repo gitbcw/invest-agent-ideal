@@ -16,6 +16,7 @@ import {
   ClipboardCheck,
   CircleAlert,
   Clock3,
+  Copy,
   FileSpreadsheet,
   FilePlus2,
   Filter,
@@ -513,7 +514,7 @@ function TaskListView({
     if (
       action === "archive" &&
       !window.confirm(
-        `归档 ${items.length} 个任务？归档后不会删除历史记录，可在筛选中找回。`,
+        `归档 ${items.length} 个任务？归档后任务停止执行且不可恢复启用（历史记录保留，可在筛选中勾选「显示已归档」查看）。`,
       )
     )
       return;
@@ -588,7 +589,7 @@ function TaskListView({
   ) {
     if (
       action === "archive" &&
-      !window.confirm("归档这个任务？历史运行记录会保留。")
+      !window.confirm("归档这个任务？归档后停止执行且不可恢复启用，历史运行记录会保留。")
     )
       return;
     try {
@@ -1032,6 +1033,7 @@ function TaskRow({
         </button>
         {menuOpen ? (
           <div className="absolute right-0 top-10 z-20 w-36 rounded-xl border border-[#dfe6df] bg-white p-1.5 text-sm shadow-lg">
+            {task.status === "archived" ? <Link href={`/automations/new?copy=${encodeURIComponent(task.taskId)}`} className="block rounded-lg px-3 py-2 hover:bg-[#f1f5f1]">复制为新建任务</Link> : null}
             {task.status !== "archived" ? <Link href={`/automations/new?edit=${encodeURIComponent(task.taskId)}`} className="block rounded-lg px-3 py-2 hover:bg-[#f1f5f1]">编辑任务</Link> : null}
             {task.status !== "archived" ? <button type="button" className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[#f1f5f1]" onClick={() => onAction(task.status === "active" ? "pause" : "activate")}>{task.status === "active" ? "暂停执行" : "启用执行"}</button> : null}
             {task.status !== "archived" ? <button type="button" className="block w-full rounded-lg px-3 py-2 text-left text-[#a04c42] hover:bg-[#fff5f3]" onClick={() => onAction("archive")}>归档任务</button> : null}
@@ -1577,9 +1579,9 @@ function TemplateCard({ template }: { template: AutomationTemplate }) {
 function EditorView({ onError }: { onError: (message: string) => void }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [query, setQuery] = useState<{ template?: string; edit?: string }>({});
+  const [query, setQuery] = useState<{ template?: string; edit?: string; copy?: string }>({});
   const [state, setState] = useState<EditorState>(() => emptyEditor());
-  const [loading, setLoading] = useState(Boolean(getQuery("edit")));
+  const [loading, setLoading] = useState(Boolean(getQuery("edit") || getQuery("copy")));
   const [saving, setSaving] = useState(false);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
   const [myFiles, setMyFiles] = useState<UserAsset[]>([]);
@@ -1592,6 +1594,7 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const template = findAutomationTemplate(query.template);
   const editing = Boolean(query.edit);
+  const copying = Boolean(query.copy);
   const legacyTask = Boolean(
     state.existingTask?.sourceAsset &&
     !state.existingTask.revision.inputs?.length,
@@ -1653,16 +1656,26 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
       setQuery({
         template: getQuery("template") || undefined,
         edit: getQuery("edit") || undefined,
+        copy: getQuery("copy") || undefined,
       }),
     [pathname],
   );
   useEffect(() => {
     let cancelled = false;
-    if (query.edit) {
-      fetchAutomation(query.edit)
+    const loadId = query.edit || query.copy;
+    if (loadId) {
+      fetchAutomation(loadId)
         .then((task) => {
           if (!cancelled) {
-            setState(editorFromTask(task));
+            setState(
+              query.copy
+                ? {
+                    ...editorFromTask(task),
+                    existingTask: undefined,
+                    name: `${task.revision.name}（副本）`,
+                  }
+                : editorFromTask(task),
+            );
             setLoading(false);
           }
         })
@@ -1681,7 +1694,7 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
     return () => {
       cancelled = true;
     };
-  }, [onError, query.edit, query.template, template]);
+  }, [onError, query.copy, query.edit, query.template, template]);
 
   function patch(next: Partial<EditorState>) {
     setState((current) => ({ ...current, ...next }));
@@ -1801,8 +1814,8 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
     <main className="mx-auto w-full max-w-3xl px-4 py-5 sm:px-6 lg:py-8">
       <Link
         href={
-          editing
-            ? `/automations/${encodeURIComponent(query.edit || "")}`
+          editing || copying
+            ? `/automations/${encodeURIComponent(query.edit || query.copy || "")}`
             : "/automations"
         }
         className="inline-flex items-center gap-1 text-sm text-[#6f7d73] hover:text-[#36543d]"
@@ -1816,13 +1829,15 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
             <div className="flex items-center gap-2 text-[#527a5d]">
               <Sparkles size={17} />
               <span className="text-sm font-medium">
-                {editing ? "编辑任务" : "新建自动化任务"}
+                {editing ? "编辑任务" : copying ? "复制为新建任务" : "新建自动化任务"}
               </span>
             </div>
             <h2 className="mt-2 text-2xl font-semibold tracking-tight">
               {editing
                 ? state.name || "编辑自动化任务"
-                : "让助手按时帮你做一件事"}
+                : copying
+                  ? state.name || "复制自动化任务"
+                  : "让助手按时帮你做一件事"}
             </h2>
             <p className="mt-2 text-sm leading-6 text-[#77847a]">
               保存后会先保持暂停。确认一次结果符合预期，再开启定时执行。
@@ -2055,8 +2070,8 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
           <div className="flex flex-wrap justify-end gap-2 border-t border-[#edf0ed] pt-5">
             <Link
               href={
-                editing
-                  ? `/automations/${encodeURIComponent(query.edit || "")}`
+                editing || copying
+                  ? `/automations/${encodeURIComponent(query.edit || query.copy || "")}`
                   : "/automations"
               }
               className="btn-secondary"
@@ -2430,7 +2445,7 @@ function TaskDetailView({
     }
   }
   async function archive() {
-    if (!window.confirm("归档这个任务？历史记录会保留。")) return;
+    if (!window.confirm("归档这个任务？归档后停止执行且不可恢复启用，历史记录会保留。")) return;
     setBusy("archive");
     try {
       const next = await archiveAutomation(task!.taskId, task!.currentRevision);
@@ -2469,11 +2484,20 @@ function TaskDetailView({
             </p>
             {task.status === "archived" ? (
               <p className="mt-3 text-xs text-[#8a958c]">
-                此任务已归档，仅保留历史记录和产物，不能再次执行或修改。
+                此任务已归档，仅保留历史记录和产物，不能再次执行或修改；可复制为新建任务继续使用。
               </p>
             ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
+            {task.status === "archived" ? (
+              <Link
+                href={`/automations/new?copy=${encodeURIComponent(task.taskId)}`}
+                className="btn-primary"
+              >
+                <Copy size={16} />
+                复制为新建任务
+              </Link>
+            ) : null}
             {task.status !== "archived" ? (
               <Link
                 href={`/automations/new?edit=${encodeURIComponent(task.taskId)}`}
