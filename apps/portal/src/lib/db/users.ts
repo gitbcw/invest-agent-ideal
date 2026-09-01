@@ -104,6 +104,38 @@ export class UserRepository {
       .run(passwordHash, mustChangePassword ? 1 : 0, now, userId);
   }
 
+  reprovisionAsUser(
+    userId: string,
+    input: {
+      passwordHash: string;
+      assistantId: string;
+      instanceId: string;
+      displayName: string | null;
+    }
+  ): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE portal_users
+         SET password_hash = ?,
+             role = 'user',
+             assistant_id = ?,
+             instance_id = ?,
+             display_name = ?,
+             must_change_password = 1,
+             updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        input.passwordHash,
+        input.assistantId,
+        input.instanceId,
+        input.displayName,
+        now,
+        userId
+      );
+  }
+
   markLogin(userId: string): void {
     this.db
       .prepare("UPDATE portal_users SET last_login_at = ? WHERE id = ?")

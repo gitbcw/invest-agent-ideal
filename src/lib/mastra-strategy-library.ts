@@ -8,6 +8,7 @@
  * with the raw existing payload so sibling projection domains survive.
  */
 import { sqlite } from "../db/index.js";
+import { beijingDateKey } from "./market-calendar.js";
 import { DEFAULT_PROJECT_ID } from "../lib/user-context.js";
 import type { TradingStrategy } from "../lib/workspace-store.js";
 
@@ -68,7 +69,7 @@ export function writeMastraTradingStrategy(scope: MastraStrategyLibraryScope, st
   return sqlite.transaction(() => {
     const profile = readProfileObject(scope, projectId) ?? {};
     const list = strategiesOf(profile);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = beijingDateKey();
     const idx = list.findIndex((item) => item.key === strategy.key);
     const stamped: TradingStrategy = {
       ...strategy,

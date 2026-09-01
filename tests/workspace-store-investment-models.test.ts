@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { beijingDateKey } from "../src/lib/market-calendar.js";
 
 /**
  * WorkspaceStore 投资模型 CRUD 测试
@@ -90,7 +91,7 @@ describe("WorkspaceStore investment models - 写入", () => {
       status: "active",
     });
     const list = await store.readInvestmentModels();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = beijingDateKey();
     assert.equal(list[0].created_at, today);
     assert.equal(list[0].updated_at, today);
   });

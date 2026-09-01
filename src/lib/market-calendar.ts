@@ -1,9 +1,14 @@
 /**
  * A-share market calendar helpers.
  *
- * Holiday data is based on SSE's 2026 annual market closure notice.
- * Temporary suspensions are intentionally out of scope.
+ * Holiday data is based on SSE's annual market closure notices and only
+ * covers the years listed in ASHARE_FULL_DAY_CLOSURES. Dates outside that
+ * coverage silently count as trading days on weekdays, so query paths warn
+ * loudly instead of failing open without a trace — see
+ * ashareHolidayTableCoverage / warnIfOutsideHolidayCoverage.
  */
+
+import { logger } from "./logger";
 
 const ASHARE_FULL_DAY_CLOSURES = new Set([
   // 2026 New Year
@@ -48,6 +53,30 @@ const ASHARE_FULL_DAY_CLOSURES = new Set([
   "2026-10-07",
 ]);
 
+const ASHARE_COVERED_YEARS = new Set(
+  [...ASHARE_FULL_DAY_CLOSURES].map((dateKey) => Number(dateKey.slice(0, 4)))
+);
+
+const warnedUncoveredYears = new Set<number>();
+
+export function ashareHolidayTableCoverage(): { firstYear: number; lastYear: number } {
+  const years = [...ASHARE_COVERED_YEARS];
+  return { firstYear: Math.min(...years), lastYear: Math.max(...years) };
+}
+
+function warnIfOutsideHolidayCoverage(dateKey: string): void {
+  const year = Number(dateKey.slice(0, 4));
+  if (!Number.isFinite(year) || ASHARE_COVERED_YEARS.has(year)) return;
+  if (warnedUncoveredYears.has(year)) return;
+  warnedUncoveredYears.add(year);
+  const { firstYear, lastYear } = ashareHolidayTableCoverage();
+  logger.warn(
+    `ashare holiday table has no coverage for ${year} (covered ${firstYear}-${lastYear}); ` +
+      `${dateKey} is assumed to be a trading day if it is a weekday — ` +
+      `update ASHARE_FULL_DAY_CLOSURES with the SSE ${year} annual closure notice`
+  );
+}
+
 export function beijingNow(date = new Date()): Date {
   const utc = date.getTime() + date.getTimezoneOffset() * 60000;
   return new Date(utc + 8 * 3600000);
@@ -69,7 +98,9 @@ export function isAshareTradingDay(date = new Date()): boolean {
   const bj = beijingNow(date);
   const day = bj.getDay();
   if (day === 0 || day === 6) return false;
-  return !ASHARE_FULL_DAY_CLOSURES.has(beijingDateKey(date));
+  const dateKey = beijingDateKey(date);
+  warnIfOutsideHolidayCoverage(dateKey);
+  return !ASHARE_FULL_DAY_CLOSURES.has(dateKey);
 }
 
 export function isAshareTradingTime(date = new Date()): boolean {
@@ -125,8 +156,11 @@ export function nextAshareTradingDay(date = new Date()): string | null {
 export function ashareCalendarReport(date = new Date()): AshareCalendarReport {
   const dateKey = beijingDateKey(date);
   const warnings: string[] = [];
-  if (!dateKey.startsWith("2026-")) {
-    warnings.push("calendar_holiday_table_only_verified_for_2026");
+  if (!ASHARE_COVERED_YEARS.has(Number(dateKey.slice(0, 4)))) {
+    const { firstYear, lastYear } = ashareHolidayTableCoverage();
+    warnings.push(
+      `calendar_holiday_table_uncovered_year_${dateKey.slice(0, 4)}_covered_${firstYear}_${lastYear}`
+    );
   }
   return {
     market: "CN_A_SHARE",

@@ -2,6 +2,7 @@ import { describe, test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
   ashareCalendarReport,
+  ashareHolidayTableCoverage,
   beijingDateKey,
   isAshareTradingDay,
   isAshareTradingTime,
@@ -67,5 +68,36 @@ describe("A-share market calendar", () => {
     assert.equal(report.session, "closed");
     assert.equal(report.previousTradingDay, "2026-06-26");
     assert.equal(report.nextTradingDay, "2026-06-29");
+  });
+
+  test("holiday table coverage is derived from the closure table", () => {
+    assert.deepEqual(ashareHolidayTableCoverage(), { firstYear: 2026, lastYear: 2026 });
+  });
+
+  test("calendar report warns loudly for dates outside table coverage", () => {
+    // 2027-01-04 is a Monday beyond the closure table; classification fails
+    // open by design, but the report must surface the uncovered year.
+    const report = ashareCalendarReport(bj("2027-01-04T01:35:00.000Z"));
+    assert.equal(report.isTradingDay, true);
+    assert.ok(
+      report.source.warnings.some((warning) =>
+        warning.includes("calendar_holiday_table_uncovered_year_2027")
+      )
+    );
+  });
+
+  test("isAshareTradingDay warns once per uncovered year", () => {
+    const originalWarn = console.warn;
+    const calls: string[] = [];
+    console.warn = (msg?: unknown) => {
+      calls.push(String(msg));
+    };
+    try {
+      isAshareTradingDay(bj("2028-01-03T01:35:00.000Z"));
+      isAshareTradingDay(bj("2028-01-04T01:35:00.000Z"));
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(calls.filter((msg) => msg.includes("ashare holiday table")).length, 1);
   });
 });

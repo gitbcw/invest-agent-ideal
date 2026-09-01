@@ -10,6 +10,7 @@
 
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
+import { beijingDateKey } from "./market-calendar.js";
 import { portfolio, tradeActions } from "../db/schema.js";
 import type { PortfolioBackend, PortfolioRow } from "./data-backend.js";
 
@@ -63,7 +64,7 @@ export const sqlitePortfolioBackend: PortfolioBackend = {
 
   async upsertActive(userId, instanceId, input) {
     const existing = await this.findActive(userId, instanceId, input.code);
-    const buyDate = input.buyDate ?? new Date().toISOString().slice(0, 10);
+    const buyDate = input.buyDate ?? beijingDateKey();
     const costPrice = input.costPrice ?? null;
 
     if (existing) {
@@ -98,18 +99,19 @@ export const sqlitePortfolioBackend: PortfolioBackend = {
     const existing = await this.findActive(userId, instanceId, code);
     if (!existing) return null;
     const price = sellPrice ?? 0;
+    const sellDate = beijingDateKey();
     await db
       .update(portfolio)
       .set({
         sellPrice: price,
-        sellDate: new Date().toISOString().slice(0, 10),
+        sellDate,
         status: "closed",
       })
       .where(eq(portfolio.id, existing.rowId!));
     return {
       ...existing,
       sellPrice: price,
-      sellDate: new Date().toISOString().slice(0, 10),
+      sellDate,
       status: "closed" as const,
     };
   },

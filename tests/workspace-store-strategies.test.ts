@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { beijingDateKey } from "../src/lib/market-calendar.js";
 
 /**
  * WorkspaceStore 交易策略 CRUD 测试
@@ -78,7 +79,7 @@ describe("WorkspaceStore trading strategies - 写入", () => {
       enabled: true,
     });
     const list = await store.readTradingStrategies();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = beijingDateKey();
     assert.equal(list[0].created_at, today);
     assert.equal(list[0].updated_at, today);
   });

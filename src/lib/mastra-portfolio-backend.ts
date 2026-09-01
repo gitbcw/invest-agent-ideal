@@ -10,6 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { sqlite } from "../db/index.js";
+import { beijingDateKey } from "./market-calendar.js";
 import type { PlanBackend, PlanRow, PortfolioBackend, PortfolioRow, TradeActionRow, WatchlistBackend, WatchlistRow } from "./data-backend.js";
 
 type Scope = { userId: string; instanceId: string };
@@ -216,7 +217,7 @@ export const mastraPortfolioBackend: PortfolioBackend = {
     return (await this.listActive(userId, instanceId)).find((row) => row.code === code) || null;
   },
   async upsertActive(userId, instanceId, input) {
-    const buyDate = input.buyDate ?? new Date().toISOString().slice(0, 10);
+    const buyDate = input.buyDate ?? beijingDateKey();
     const next = mutateProjection(scope(userId, instanceId), (projection) => {
       const holdings = records(projection.holdings, "holdings");
       const existing = holdings.find((row) => text(row.code) === input.code && row.status !== "closed" && row.sell_date == null && row.sellDate == null);
@@ -241,7 +242,7 @@ export const mastraPortfolioBackend: PortfolioBackend = {
       const existing = holdings.find((row) => text(row.code) === code && row.status !== "closed" && row.sell_date == null && row.sellDate == null);
       if (!existing) return;
       existing.sell_price = sellPrice ?? 0;
-      existing.sell_date = new Date().toISOString().slice(0, 10);
+      existing.sell_date = beijingDateKey();
       existing.status = "closed";
       changed = true;
       projection.holdings = holdings;

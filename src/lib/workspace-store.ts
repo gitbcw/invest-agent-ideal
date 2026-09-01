@@ -12,10 +12,11 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile, appendFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile, appendFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "yaml";
 import { resolveWorkspacePath } from "./workspace.js";
+import { beijingDateKey } from "./market-calendar.js";
 import { logger } from "./logger.js";
 
 // ============ 类型 ============
@@ -265,8 +266,7 @@ async function readYaml<T>(filePath: string): Promise<T | null> {
 }
 
 async function writeYaml(filePath: string, data: unknown): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, stringify(data), "utf-8");
+  await writeFileAtomic(filePath, stringify(data));
 }
 
 async function appendJsonl(filePath: string, record: unknown): Promise<void> {
@@ -274,11 +274,28 @@ async function appendJsonl(filePath: string, record: unknown): Promise<void> {
   await appendFile(filePath, JSON.stringify(record) + "\n", "utf-8");
 }
 
-async function writeJsonl(filePath: string, records: unknown[]): Promise<void> {
+/**
+ * Atomic replace: write a sibling temp file then rename over the target, so a
+ * process kill mid-write (PM2 restarts are a real scenario) can never leave a
+ * truncated config YAML behind. The temp file stays in the same directory so
+ * rename never crosses a filesystem boundary.
+ */
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tempPath, content, "utf-8");
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function writeJsonl(filePath: string, records: unknown[]): Promise<void> {
   const body = records.map((r) => JSON.stringify(r)).join("\n");
   const content = records.length > 0 ? body + "\n" : "";
-  await writeFile(filePath, content, "utf-8");
+  await writeFileAtomic(filePath, content);
 }
 
 async function readJsonl<T>(filePath: string): Promise<T[]> {
@@ -373,7 +390,7 @@ export class WorkspaceStore {
       portfolio.holdings[idx] = {
         ...removed,
         status: "closed",
-        sell_date: new Date().toISOString().slice(0, 10),
+        sell_date: beijingDateKey(),
       };
     } else {
       portfolio.holdings.splice(idx, 1);
@@ -525,7 +542,7 @@ export class WorkspaceStore {
   async writeTradingStrategy(strategy: TradingStrategy): Promise<TradingStrategy[]> {
     this.ensureReady();
     const list = await this.readTradingStrategies();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = beijingDateKey();
     const idx = list.findIndex((s) => s.key === strategy.key);
     const stamped: TradingStrategy = {
       ...strategy,
@@ -573,7 +590,7 @@ export class WorkspaceStore {
     this.ensureReady();
     const data = await this.readInvestmentModelsConfig();
     const list = data.models ?? [];
-    const today = new Date().toISOString().slice(0, 10);
+    const today = beijingDateKey();
     const idx = list.findIndex((m) => m.key === model.key);
     const stamped: InvestmentModel = {
       ...model,

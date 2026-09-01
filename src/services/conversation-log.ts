@@ -403,14 +403,16 @@ export function appendConversationMessage(input: {
 }): ConversationMessageRecord {
   const scope = normalizeConversationScope(input.scope);
   if (input.idempotencyKey) {
-    const existing = sqlite.prepare(`
-      SELECT message_id AS messageId
-      FROM conversation_messages
-      WHERE idempotency_key = ?
-      LIMIT 1
-    `).get(input.idempotencyKey) as { messageId: string } | undefined;
-    if (existing?.messageId) {
-      return getConversationMessage(existing.messageId)!;
+    // Scope-constrained replay check: the idempotency key is client-supplied
+    // and the unique index is per (user, instance, conversation, key), so a
+    // bare key lookup could return a message from another scope.
+    const existing = getConversationMessageByIdempotencyKey({
+      idempotencyKey: input.idempotencyKey,
+      scope,
+      conversationId: input.conversationId
+    });
+    if (existing) {
+      return existing;
     }
   }
   const createdAt = input.createdAt || nowIso();

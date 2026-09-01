@@ -50,24 +50,12 @@ export async function POST(request: Request) {
   }
 
   if (existing) {
-    db.prepare(
-      `UPDATE users
-       SET password_hash = ?,
-           role = 'user',
-           assistant_id = ?,
-           instance_id = ?,
-           display_name = ?,
-           must_change_password = 1,
-           updated_at = ?
-       WHERE id = ?`
-    ).run(
+    users.reprovisionAsUser(existing.id, {
       passwordHash,
       assistantId,
       instanceId,
-      displayName || existing.displayName || username,
-      now,
-      existing.id
-    );
+      displayName: displayName || existing.displayName || username
+    });
   } else {
     users.create({
       username,
