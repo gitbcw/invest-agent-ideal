@@ -15,6 +15,10 @@ import { logger } from "../lib/logger.js";
  *   网关已支持，顶替 vision-exp 的文本兜底位；vision-exp 降一位保留。
  * - 同日更正（owner）：glm-5.3-flash 是多模态模型。文本+图片双 ping 通过
  *   （网关实测图片认色正确），图片链同样顶替 vision-exp 为首选。
+ * - 高峰计价成本裁决（owner 2026-09-02）：deepseek 峰时价（输入3/输出9）偏贵，
+ *   qwen3.7-flash 单一价 0.6/2.4 提到 vision-exp 之前；doubao-seed-2-1-turbo
+ *   官方价 3/15/0.6 全时段不低于 deepseek（输出贵 67%、缓存读贵 6 倍），
+ *   维持在 deepseek 之后，仅作末位兜底。
  */
 
 export interface AutoChainEntry {
@@ -29,17 +33,18 @@ export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "gpt-5.6-terra" },
   { model: "gpt-5.6-luna" },
   { model: "glm-5.3-flash" },
-  { model: "deepseek-v4-flash-vision-exp" },
   { model: "qwen3.7-flash" },
+  { model: "deepseek-v4-flash-vision-exp" },
   { model: "doubao-seed-2-1-turbo-260628" },
 ];
 
 /** 图片优先使用国产全模态模型；GPT 仅作为通过探针门禁后的后备。
- * glm-5.3-flash 全模态（owner 2026-08-27 更正，图片 ping 通过），为图片链首选。 */
+ * glm-5.3-flash 全模态（owner 2026-08-27 更正，图片 ping 通过），为图片链首选。
+ * qwen 前置于 deepseek 同 owner 2026-09-02 高峰计价裁决（见文件头）。 */
 export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "glm-5.3-flash" },
-  { model: "deepseek-v4-flash-vision-exp" },
   { model: "qwen3.7-flash" },
+  { model: "deepseek-v4-flash-vision-exp" },
   { model: "doubao-seed-2-1-turbo-260628" },
   { model: "gpt-5.6-terra" },
   { model: "gpt-5.6-luna" },

@@ -17,8 +17,8 @@
  *     v4-pro 输入3元(缓存命中0.025元)/输出6元（2026-08-17 起峰谷价未采用，
  *     按当前单一价记账）; v4-flash-vision-exp 2026-08-21 上线即峰谷价，
  *     与 v4-flash 同牌价：输入峰3/闲1.5、输出峰9/闲4.5（检索 2026-08-21）
- *   - 火山方舟: Doubao-Seed 主力档 输入6元/输出30元（lite/turbo 实际更低，
- *     未获官方精确牌价前按主力档保守上界记账，启用后按价格计算器校准）
+ *   - 火山方舟: Doubao-Seed-2.1-turbo 官方牌价（检索 2026-09-02）输入3元/输出15元/
+ *     缓存命中0.6元；lite 未获官方精确牌价前按主力档 6/30 保守上界占位
  *   - 记账汇率 USD→CNY = 6.75（2026-08-16 中间价 6.7878 / 市场价 6.74 区间取整）
  *
  * Conventions (provider-aligned defaults):
@@ -124,8 +124,10 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
   // 基价（阿里云百炼 ZHIPU/GLM-5.3 挂牌，检索 2026-08-27）：输入 8 / 输出 28 /
   // 缓存命中 2 元，折算后 0.8 / 2.8 / 0.2，单一价无峰谷。
   { model: "glm-5.3-flash", currency: "CNY", tier: { input: 0.8, output: 2.8, cacheRead: 0.2 } },
+  // 火山方舟: turbo 官方牌价 2026-09-02 检索（产品页）：输入3/输出15/缓存命中0.6；
+  // lite 未获官方精确牌价，仍按主力档 6/30 保守上界占位（未入链，暂无流量）。
   { model: "doubao-seed-2-0-lite-260428", currency: "CNY", tier: { input: 6, output: 30 } },
-  { model: "doubao-seed-2-1-turbo-260628", currency: "CNY", tier: { input: 6, output: 30 } },
+  { model: "doubao-seed-2-1-turbo-260628", currency: "CNY", tier: { input: 3, output: 15, cacheRead: 0.6 } },
 ];
 
 /**
