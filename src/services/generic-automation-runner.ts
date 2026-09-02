@@ -89,6 +89,10 @@ type ResolvedBindings = {
   /** T-317: set when an update-mode task declares a monthly rollover and the
    * bound target is not this month's file; the agent must create the target. */
   monthlyRollover: MonthlyRollover | null;
+  /** Set when the revision still binds last month's file but this month's
+   * file already exists (fileName self-healing): the run targets the current
+   * file, and a successful run should converge the revision binding too. */
+  rolloverDrift: MonthlyRollover | null;
 };
 
 class AutomationExecutionFailure extends Error {
@@ -384,6 +388,13 @@ export async function runGenericAutomationTaskNow(input: {
       const output = await commitOutput(input.scope, task, run, result, resolved);
       if (resolved.monthlyRollover && output && result.stagedOutput?.operation === "create") {
         await rollTaskBindingToMonthlyFile(input.scope, task, resolved.monthlyRollover, output.assetId);
+      } else if (resolved.rolloverDrift && output) {
+        // A previous binding switch failed (e.g. 2026-09-01 mg): the run
+        // self-healed onto the current-month file by fileName, but the
+        // revision still binds last month's asset — converge it here so the
+        // drift does not persist month over month.
+        logger.info(`automation monthly rollover drift heal task=${task.taskId} bound=${resolved.rolloverDrift.boundFileName} target=${resolved.rolloverDrift.targetFileName}`);
+        await rollTaskBindingToMonthlyFile(input.scope, task, resolved.rolloverDrift, resolved.output!.assetId);
       }
       const finished = await finishAutomationTaskRun({
         ...input.scope,
@@ -508,6 +519,7 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
       agentUpdateTargets,
       writableTargets: [...agentUpdateTargets.values()],
       monthlyRollover: null,
+      rolloverDrift: null,
     };
   }
   const outputPolicy = task.revision.output;
@@ -525,6 +537,7 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
     mimeType: boundAsset.currentVersion.mimeType,
   };
   let monthlyRollover: MonthlyRollover | null = null;
+  let rolloverDrift: MonthlyRollover | null = null;
   if (outputPolicy.rollover) {
     // T-317 monthly rollover: prefer the current month's file when it already
     // exists (self-healing even if a previous binding switch failed), and
@@ -533,6 +546,7 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
     if (output.fileName !== targetFileName) {
       const currentMonthAsset = await findActiveAssetByFileName({ ...scope, fileName: targetFileName });
       if (currentMonthAsset?.currentVersionId && currentMonthAsset.status === "active") {
+        rolloverDrift = { targetFileName, boundFileName: output.fileName };
         output = {
           assetId: currentMonthAsset.assetId,
           versionId: currentMonthAsset.currentVersionId,
@@ -545,7 +559,7 @@ async function resolveBindings(scope: AutomationScope, task: AutomationTaskRecor
       }
     }
   }
-  return { inputs, output, agentUpdateTargets, writableTargets: [output], monthlyRollover };
+  return { inputs, output, agentUpdateTargets, writableTargets: [output], monthlyRollover, rolloverDrift };
 }
 
 async function createStagingPath(scope: AutomationScope): Promise<string> {
@@ -1037,11 +1051,18 @@ async function commitOutput(scope: AutomationScope, task: AutomationTaskRecord, 
  * new file by fileName, so a failed switch never breaks the schedule. */
 async function rollTaskBindingToMonthlyFile(scope: AutomationScope, task: AutomationTaskRecord, rollover: MonthlyRollover, newAssetId: string): Promise<void> {
   if (task.revision.output.mode !== "update" || !task.revision.output.rollover) return;
+  // The outgoing monthly asset is typically bound more than once — as the
+  // update_target and again as the agent's input workbook. Re-binding output
+  // alone trips normalizeGenericDefinition's update_target writability check
+  // (the 2026-09-01 mg deferred switch), so every binding that references the
+  // old file migrates with the switch.
+  const previousAssetId = task.revision.output.assetId;
   try {
     const updated = await updateAutomationTask({
       ...scope,
       taskId: task.taskId,
       expectedRevision: task.currentRevision,
+      inputs: task.revision.inputs.map((binding) => (binding.assetId === previousAssetId ? { ...binding, assetId: newAssetId } : binding)),
       output: {
         mode: "update",
         assetId: newAssetId,

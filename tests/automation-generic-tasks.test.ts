@@ -1306,6 +1306,113 @@ test("monthly rollover creates the current-month workbook, switches the binding,
   assert.equal(second.run.outputAssetId, created!.assetId, "the self-healed run must commit onto the monthly asset");
 });
 
+test("monthly rollover switch migrates bindings referencing the outgoing asset (2026-09-01 mg regression)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const { instantiateMonthlyFileName } = await import("../src/services/automation-tasks.js");
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const pattern = "{YYYY}-{MM}月持仓与观察标的明细.xlsx";
+  const monthlyFile = instantiateMonthlyFileName(pattern);
+
+  // The migrated mg task binds the outgoing monthly workbook twice: as the
+  // agent's input and as the update_target. A switch that re-binds output
+  // alone is rejected by normalizeGenericDefinition's writability check.
+  const boundBytes = await convertCsvBytesToXlsx(Buffer.from("代码,名称\n600519,示例\n"));
+  const bound = await assets.createUserAsset({
+    ...scope, name: "持仓明细绑定", fileName: "2020-01月持仓与观察标的明细.xlsx",
+    mimeType: XLSX_MIME, bytes: boundBytes,
+  });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-monthly-rollover-migrate",
+    name: "持仓明细滚动",
+    instruction: "维护当月持仓明细。",
+    schedule: schedule(),
+    inputs: [
+      { assetId: bound.assetId, role: "input", versionPolicy: "latest" },
+      { assetId: bound.assetId, role: "update_target", versionPolicy: "latest" },
+    ],
+    output: { mode: "update", assetId: bound.assetId, versionPolicy: "latest", rollover: { kind: "monthly", fileNamePattern: pattern } },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+
+  const newBytes = await convertCsvBytesToXlsx(Buffer.from("代码,名称\n600519,示例\n"));
+  const first = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-monthly-rollover-migrate-once",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "已创建本月文件。", stagedOutput: { operation: "create", fileName: monthlyFile, mimeType: XLSX_MIME, base64: newBytes.toString("base64") } } }),
+  });
+  assert.equal(first.run.status, "succeeded");
+
+  const after = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
+  assert.ok(after);
+  assert.equal(after.status, "active", "the binding switch must leave the schedule active");
+  const afterOutput = after.revision.output as { mode: string; assetId?: string };
+  assert.equal(afterOutput.assetId, first.run.outputAssetId, "the task binding must roll to the monthly asset");
+  assert.ok(
+    after.revision.inputs.every((binding) => binding.assetId === first.run.outputAssetId),
+    "every binding that referenced the outgoing monthly asset must migrate with the switch",
+  );
+});
+
+test("monthly rollover drift heals the revision binding on the next successful run (2026-09-01 mg deferred switch)", async () => {
+  const { automation, assets } = await fixture;
+  const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
+  const { instantiateMonthlyFileName } = await import("../src/services/automation-tasks.js");
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const pattern = "{YYYY}-{MM}月观察标的明细.xlsx";
+  const monthlyFile = instantiateMonthlyFileName(pattern);
+
+  // Reproduce the post-incident state: the current-month workbook already
+  // exists (created by the run whose binding switch failed), while the
+  // revision still binds last month's file — twice.
+  const staleBytes = await convertCsvBytesToXlsx(Buffer.from("代码,名称\n000001,旧\n"));
+  const stale = await assets.createUserAsset({
+    ...scope, name: "观察标的旧月", fileName: "2020-02月观察标的明细.xlsx",
+    mimeType: XLSX_MIME, bytes: staleBytes,
+  });
+  const monthlyBytes = await convertCsvBytesToXlsx(Buffer.from("代码,名称\n000001,新\n"));
+  const monthly = await assets.createUserAsset({
+    ...scope, name: "观察标的本月", fileName: monthlyFile,
+    mimeType: XLSX_MIME, bytes: monthlyBytes,
+  });
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-monthly-rollover-drift",
+    name: "观察标的滚动",
+    instruction: "维护当月观察标的。",
+    schedule: schedule(),
+    inputs: [
+      { assetId: stale.assetId, role: "input", versionPolicy: "latest" },
+      { assetId: stale.assetId, role: "update_target", versionPolicy: "latest" },
+    ],
+    output: { mode: "update", assetId: stale.assetId, versionPolicy: "latest", rollover: { kind: "monthly", fileNamePattern: pattern } },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+
+  const run = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-monthly-rollover-drift-once",
+    executor: async (input) => {
+      assert.equal(input.monthlyRollover, null, "with the current-month file present no create is requested");
+      assert.equal(input.writableTargets[0]?.fileName, monthlyFile);
+      return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "已追加。", stagedOutput: { operation: "update", assetId: input.writableTargets[0]!.assetId, fileName: monthlyFile, mimeType: XLSX_MIME, base64: monthlyBytes.toString("base64") } } };
+    },
+  });
+  assert.equal(run.run.status, "succeeded");
+  assert.equal(run.run.outputAssetId, monthly.assetId, "the self-healed run must commit onto the monthly asset");
+
+  const after = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
+  assert.ok(after);
+  assert.equal(after.status, "active", "the drift heal must leave the schedule active");
+  const afterOutput = after.revision.output as { mode: string; assetId?: string };
+  assert.equal(afterOutput.assetId, monthly.assetId, "the drift heal must converge the binding onto the monthly asset");
+  assert.ok(
+    after.revision.inputs.every((binding) => binding.assetId === monthly.assetId),
+    "the drift heal must migrate bindings off the stale monthly asset",
+  );
+});
+
 test("monthly rollover rejects a create whose fileName is not the monthly target (T-317)", async () => {
   const { automation, assets } = await fixture;
   const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
