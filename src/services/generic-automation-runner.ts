@@ -102,6 +102,16 @@ class AutomationExecutionFailure extends Error {
   }
 }
 
+/** Generic automation runs currently between claim and finalize. Graceful
+ * drain must wait for these: the agent-turn counter drops to zero during
+ * commit/delivery while the run is still mid-flight (the 2026-09-01 SIGINT
+ * orphaned a monthly review at exactly that stage). */
+const inFlightGenericRunIds = new Set<string>();
+/** 当前进程内在途的 generic automation run 数（优雅排空观测用）。 */
+export function activeGenericAutomationRunCount(): number {
+  return inFlightGenericRunIds.size;
+}
+
 /**
  * Generic runs use an explicit service-tool allowlist.  Keep this list small:
  * the runner already owns task lookup, binding resolution and durable output
@@ -276,6 +286,7 @@ export async function runGenericAutomationTaskNow(input: {
   // Running a task for testing is not an instruction to add it to chat
   // history. The explicit continue-in-chat command owns that transition.
   const conversationId = undefined;
+  inFlightGenericRunIds.add(run.runId);
   try {
     const resolved = await resolveBindings(input.scope, task);
     const boundRun = await bindAutomationTaskRunAssets({
@@ -440,6 +451,8 @@ export async function runGenericAutomationTaskNow(input: {
       failed = current || run;
     }
     return { run: failed, conversationId, task };
+  } finally {
+    inFlightGenericRunIds.delete(run.runId);
   }
 }
 

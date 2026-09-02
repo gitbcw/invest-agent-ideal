@@ -190,6 +190,7 @@ export async function runAutomationTaskNow(input: {
   // creates a normal conversation explicitly.
   const conversationId = undefined;
 
+  inFlightTypedRunIds.add(run.runId);
   try {
     const response = await (input.executor || executeAgent)(input.scope, task, run, conversationId, run.leaseToken);
     assertAutomationAgentSucceeded(response);
@@ -221,7 +222,17 @@ export async function runAutomationTaskNow(input: {
       traceId: run.runId,
     });
     return { run: failed, conversationId, task };
+  } finally {
+    inFlightTypedRunIds.delete(run.runId);
   }
+}
+
+/** Typed (source/working-asset) automation runs between claim and finalize —
+ * graceful-drain observation, same rationale as the generic runner counter. */
+const inFlightTypedRunIds = new Set<string>();
+/** 当前进程内在途的 typed automation run 数（优雅排空观测用）。 */
+export function activeTypedAutomationRunCount(): number {
+  return inFlightTypedRunIds.size;
 }
 
 export async function continueAutomationRunInChat(input: { scope: AutomationScope; runId: string }) {

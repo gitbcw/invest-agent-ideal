@@ -31,6 +31,10 @@ const DEFAULT_AUTOMATION_TIMEZONE = "Asia/Shanghai";
  */
 const DEFAULT_AUTOMATION_RUN_LEASE_MS = 15 * 60 * 1000;
 const AUTOMATION_RUN_LEASE_MS = positiveInteger(process.env.AUTOMATION_TASK_LEASE_MS, DEFAULT_AUTOMATION_RUN_LEASE_MS);
+/** Re-schedule delay after a lease-expired scheduled run is terminalized
+ * (process died mid-run): short enough to deliver the schedule intent the
+ * same day, long enough not to fight a restart loop. */
+const LEASE_EXPIRY_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 export type AutomationTaskStatus = "paused" | "active" | "needs_attention" | "archived";
 export type AutomationTaskRunOrigin = "manual" | "scheduled";
@@ -1876,11 +1880,17 @@ function recoverExpiredRun(row: DbRunRow, scope: AutomationScope, now: string): 
   `).run(now, row.taskId, scope.userId, scope.projectId, scope.instanceId, row.runId);
   if (row.origin === "scheduled") {
     const task = requireTaskRow(row.taskId, scope);
-    const revision = requireRevisionById(row.revisionId, scope, row.taskId);
     const failures = Number(task.consecutiveFailures || 0) + 1;
     const needsAttention = failures >= 3;
+    // A lease expiry usually means the process died mid-run (restart, crash),
+    // not that the schedule intent itself failed: retry the slot shortly
+    // instead of dropping it until the next period (the 2026-09-01 dyk
+    // monthly review was lost this way). The archived ::stale idempotency key
+    // keeps the retry single-shot; repeated expiries still escalate to
+    // needs_attention via the consecutive-failure guard above.
+    const retryAt = new Date(Date.parse(now) + LEASE_EXPIRY_RETRY_DELAY_MS).toISOString();
     const nextRunAt = task.status === "active" && !needsAttention
-      ? nextAutomationRunAt(parseScheduleJson(revision.scheduleJson), new Date(now))
+      ? retryAt
       : null;
     sqlite.prepare(`
       UPDATE automation_tasks

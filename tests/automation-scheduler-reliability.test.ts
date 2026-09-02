@@ -160,7 +160,7 @@ test("scheduler recovery terminalizes an expired run without a later claimant", 
   assert.equal(lock.activeRunId, null);
 });
 
-test("scheduler recovery advances a scheduled task so the expired slot is not dispatched every minute", async () => {
+test("scheduler recovery schedules an expired slot for a near retry instead of dropping it to the next period", async () => {
   const { automation, db } = await fixture();
   const task = await createActiveTask();
   const dueAt = "2026-08-20T23:30:00.000Z";
@@ -182,8 +182,15 @@ test("scheduler recovery advances a scheduled task so the expired slot is not di
   assert.equal(await automation.recoverExpiredAutomationTaskRuns(recoveredAt), 1);
   const current = await automation.getAutomationTask({ ...scope, taskId: task.taskId });
   assert.equal(current?.consecutiveFailures, 1);
-  assert.ok(current?.nextRunAt && current.nextRunAt > recoveredAt.toISOString());
+  // A lease expiry usually means the process died mid-run (2026-09-01 dyk):
+  // the slot must retry shortly, not wait for the next schedule period.
+  const retryAtMs = Date.parse(current?.nextRunAt || "");
+  const expectedRetryMs = recoveredAt.getTime() + 5 * 60 * 1000;
+  assert.ok(Number.isFinite(retryAtMs) && Math.abs(retryAtMs - expectedRetryMs) < 1_000,
+    `next_run_at should be ~5min after recovery, got ${current?.nextRunAt}`);
   assert.deepEqual(await automation.listDueAutomationTasks(new Date("2026-08-21T00:01:00.000Z")), []);
+  assert.equal((await automation.listDueAutomationTasks(new Date("2026-08-21T00:05:30.000Z"))).length, 1,
+    "the expired slot must come back due after the retry backoff");
 });
 
 test("a scheduled run completed after its execution deadline advances failure state, not success state", async () => {

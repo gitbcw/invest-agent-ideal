@@ -1413,6 +1413,41 @@ test("monthly rollover drift heals the revision binding on the next successful r
   );
 });
 
+test("in-flight automation run count covers the whole run lifecycle for graceful drain (2026-09-01 SIGINT regression)", async () => {
+  const { automation } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  assert.equal(runner.activeGenericAutomationRunCount(), 0);
+  let releaseExecutor: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => { releaseExecutor = resolve; });
+  const observed: number[] = [];
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-drain-count",
+    name: "排空计数",
+    instruction: "占位任务。",
+    schedule: schedule(),
+    output: { mode: "none" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const inFlight = runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-drain-count-once",
+    executor: async () => {
+      observed.push(runner.activeGenericAutomationRunCount());
+      await gate;
+      return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "完成。" } };
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const duringRun = runner.activeGenericAutomationRunCount();
+  releaseExecutor!();
+  const result = await inFlight;
+  assert.equal(result.run.status, "succeeded");
+  // The count must stay >0 across the whole run (claim→finalize), including
+  // commit/delivery stages where the agent-turn counter is already back to 0.
+  assert.ok(duringRun >= 1 && observed.every((count) => count >= 1), `count must cover the run lifecycle, saw during=${duringRun} observed=${observed.join(",")}`);
+  assert.equal(runner.activeGenericAutomationRunCount(), 0, "count must drop back to zero after finalize");
+});
+
 test("monthly rollover rejects a create whose fileName is not the monthly target (T-317)", async () => {
   const { automation, assets } = await fixture;
   const { convertCsvBytesToXlsx } = await import("../src/services/csv-xlsx-conversion.js");
