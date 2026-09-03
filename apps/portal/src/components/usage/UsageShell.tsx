@@ -45,6 +45,15 @@ function beijingDay(offsetDays: number): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 }
 
+// created_at 是 UTC ISO 串，直接切片展示会慢 8 小时；统一换算到北京时间再显示。
+function beijingTimeLabel(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso.replace("T", " ").slice(5, 19);
+  const parts = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  return `${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
 function fmtCost(value: number): string {
   if (value >= 100) return `¥${value.toFixed(0)}`;
   if (value >= 1) return `¥${value.toFixed(2)}`;
@@ -226,7 +235,7 @@ export function UsageShell({ username }: { username: string }) {
               <tbody>
                 {records.map((row) => (
                   <tr key={row.id} className="border-b border-[#f4f6f4] last:border-0">
-                    <td className="whitespace-nowrap px-3 py-2 text-[#5f6368]">{row.created_at.replace("T", " ").slice(5, 19)}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-[#5f6368]">{beijingTimeLabel(row.created_at)}</td>
                     <td className="whitespace-nowrap px-3 py-2 text-[#22301f]">{MODEL_LABELS[row.model ?? ""] ?? row.model ?? "—"}</td>
                     <td className="whitespace-nowrap px-3 py-2 text-[#8a938c]">{row.modelSource === "auto" ? "自动" : row.modelSource === "user-selection" ? "手动" : row.modelSource ?? "—"}</td>
                     <td className="whitespace-nowrap px-3 py-2 text-[#5f6368]">{((row.inputTokens ?? 0) / 1000).toFixed(1)}k / {((row.outputTokens ?? 0) / 1000).toFixed(1)}k</td>

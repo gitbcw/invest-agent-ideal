@@ -69,6 +69,7 @@ import {
   uploadUserAssetVersion,
 } from "../services/user-assets.js";
 import { assertUploadRequestSize, getStorageUsage } from "../services/user-storage-quota.js";
+import { USAGE_DAY_BUCKET_SQL, usageRange } from "./usage-range.js";
 import { backfillFormalReportAssetMappings, getReportAssetMappingForRead, listReportAssetMappings, registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import { modelRoutingSnapshot, resolveAutoModel } from "../services/model-health.js";
 import { pricingSummary } from "../services/model-pricing.js";
@@ -302,17 +303,6 @@ function localPayloadScope(scope: ConnectorScope, payload: any) {
     projectId: scope.projectId,
     channel: payload?.channel,
   };
-}
-
-function usageRange(message: { payload?: unknown }): { from: string; to: string } {
-  const payload = (message.payload ?? {}) as Record<string, unknown>;
-  const fromRaw = typeof payload.from === "string" && /^\d{4}-\d{2}-\d{2}/.test(payload.from) ? payload.from : "";
-  const toRaw = typeof payload.to === "string" && /^\d{4}-\d{2}-\d{2}/.test(payload.to) ? payload.to : "";
-  const now = new Date();
-  const isoDay = (date: Date) => date.toISOString().slice(0, 10);
-  const from = fromRaw || isoDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
-  const to = toRaw || `${isoDay(now)}T23:59:59.999Z`;
-  return { from: from.length === 10 ? `${from}T00:00:00.000Z` : from, to: to.length === 10 ? `${to}T23:59:59.999Z` : to };
 }
 
 function usageCursor(message: { payload?: unknown }): number {
@@ -630,7 +620,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         GROUP BY agent_model ORDER BY cost DESC
       `).all(usageScope.userId, usageScope.instanceId, range.from, range.to);
       const byDay = sqlite.prepare(`
-        SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS calls,
+        SELECT ${USAGE_DAY_BUCKET_SQL} AS day, COUNT(*) AS calls,
                COALESCE(SUM(cost_amount), 0) AS cost
         FROM agent_traces
         WHERE user_id = ? AND instance_id = ? AND created_at >= ? AND created_at <= ?
