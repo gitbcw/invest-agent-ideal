@@ -1105,6 +1105,11 @@ async function deliverResult(scope: AutomationScope, task: AutomationTaskRecord,
       originRunId: run.runId,
       message: result.summary,
       idempotencyKey: `automation:${run.runId}:delivery`,
+      // 任务级业务时效：显式窗口优先于 24h 默认，过期挂起 job 在用户回来时
+      // 被 resumeAwaitingWeixinDeliveries 判死而不是补发（2026-09-03 事故）。
+      expiresAt: delivery.validityMinutes !== undefined
+        ? new Date(Date.now() + delivery.validityMinutes * 60 * 1000).toISOString()
+        : undefined,
     });
     return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "pending", pushJobId: job.id }) };
   } catch (error) {

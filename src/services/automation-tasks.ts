@@ -94,10 +94,13 @@ function normalizeRolloverPolicy(value: unknown): { kind: "monthly"; fileNamePat
   return { kind: "monthly", fileNamePattern };
 }
 
+/** validityMinutes：推送的业务时效窗口（分钟）。挂起为 awaiting_user 后，
+ * 只有仍在窗口内的 job 才会在用户回来时被 resume 补发；盘中盯盘等强时效
+ * 简报必须配短窗口，否则会像 2026-09-03 事故那样把昨日简报次日补发。 */
 export type AutomationTaskDeliveryPolicy =
   | { mode: "none" }
-  | { mode: "wechat_summary" }
-  | { mode: "wechat_on_condition"; conditionVersion: 1 };
+  | { mode: "wechat_summary"; validityMinutes?: number }
+  | { mode: "wechat_on_condition"; conditionVersion: 1; validityMinutes?: number };
 
 export interface AutomationScope {
   userId: string;
@@ -1112,8 +1115,24 @@ function normalizeOutputPolicy(raw: AutomationTaskOutputPolicy | Record<string, 
 function normalizeDeliveryPolicy(raw: AutomationTaskDeliveryPolicy | Record<string, unknown> | undefined): AutomationTaskDeliveryPolicy {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { mode: "none" };
   const value = raw as Record<string, unknown>;
-  if (value.mode === "none" || value.mode === "wechat_summary") return { mode: value.mode };
-  if (value.mode === "wechat_on_condition" && value.conditionVersion === 1) return { mode: "wechat_on_condition", conditionVersion: 1 };
+  const hasValidity = value.validityMinutes !== undefined;
+  if (hasValidity) {
+    if (typeof value.validityMinutes !== "number" || !Number.isInteger(value.validityMinutes) || value.validityMinutes <= 0) {
+      throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "delivery validityMinutes must be a positive integer");
+    }
+  }
+  if (value.mode === "none") {
+    if (hasValidity) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "unsupported delivery policy");
+    return { mode: "none" };
+  }
+  if (value.mode === "wechat_summary") {
+    return hasValidity ? { mode: "wechat_summary", validityMinutes: value.validityMinutes as number } : { mode: "wechat_summary" };
+  }
+  if (value.mode === "wechat_on_condition" && value.conditionVersion === 1) {
+    return hasValidity
+      ? { mode: "wechat_on_condition", conditionVersion: 1, validityMinutes: value.validityMinutes as number }
+      : { mode: "wechat_on_condition", conditionVersion: 1 };
+  }
   throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "unsupported delivery policy");
 }
 
