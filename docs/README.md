@@ -14,6 +14,11 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [next-direction-governance-analysis-2026-08-22.md](./next-direction-governance-analysis-2026-08-22.md) | 基于治理上位原则的项目成熟度评估、证据缺口和治理计划起点；不创建产品执行任务 |
 | [governance-assessment-matrix.md](./governance-assessment-matrix.md) | G1–G5、L1–L4 治理证据矩阵与复核规则 |
 | [evaluation-assets-registry.md](./evaluation-assets-registry.md) | 第一批版本化评估资产目录及 executable/candidate 数量口径 |
+| [customer-friction-signal-collection-design.md](./customer-friction-signal-collection-design.md) | 客户体验受阻信号自动采集机制设计（草案，T-442）：六类信号源、受阻点数据模型、日/周/月三级产出与落地分期 |
+| [evaluation-deepening-plan.md](./evaluation-deepening-plan.md) | 评估深化方案（草案）：程序性+AI 效果两层、行业前沿实践对照、ED-P1 错误分析例行化→ED-P2 产出 rubric→ED-P3 judge 按需启用的摩擦驱动路线 |
+| [evaluation-rubric-industry-review.md](./evaluation-rubric-industry-review.md) | ED-P2 试点一：行业复盘 17 列产出的人工评分 rubric（五维+四硬门槛，评分兼作 judge 校准样本） |
+| [evaluation-rubric-intraday-watch.md](./evaluation-rubric-intraday-watch.md) | ED-P2 试点二：盘中盯盘微信简报的人工评分 rubric（五维+三硬门槛，含幽灵个股回归哨兵） |
+| [failure-taxonomy.md](./failure-taxonomy.md) | 失败分类法 v1（ED-P1 产出）：调度/投递/模型/数据/产品语义五层 14 类，失败知识的单一入口，新签名先归类再处理 |
 | [model-evaluation-2026-08-27-glm-qwen.md](./model-evaluation-2026-08-27-glm-qwen.md) | 共创期首轮模型评测论文：glm-5.3-flash×3 档 vs qwen3.7-flash×思考开关的双层对照（120 层1 样本 + 2 类自动化任务），含路由建议、成本模型、完整复现指南与两次误诊翻案记录 |
 | [model-routing-and-context-governance-roadmap.md](./model-routing-and-context-governance-roadmap.md) | 现行指导：模型路由与上下文治理演进规划——对照前沿共识（四旋钮/三阶段路由/eval-driven/escalation）的现状定位、P1-P5 摩擦驱动路线图与不做清单 |
 | [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md) | 工具面×失败模式盲区地图：已覆盖/待盘点标注与 candidate 优先级队列 |
@@ -43,11 +48,13 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [mastra-main-sync.md](./mastra-main-sync.md) | Rules for selectively porting `main` behavior without restoring ACP runtime code |
 
 The pre-cutover candidate description in the Mastra documents is historical.
-The active production branch is `feat/mastra-migration`: PM2
-`invest-agent-mastra`, runtime `/home/claude/invest-agent-mastra`, port `23655`,
-with `mastra-portal` on `23657/23658`. The old `main` runtime is stopped. Use
-the current production facts above for deployment and diagnosis; preserve
-production `.env`, SQLite, Workspaces, reviews, state, and WeChat bindings.
+The active production baseline branch is `main` (promoted from
+`feat/mastra-migration` on 2026-08-28; the pre-mastra system line is archived
+as `legacy/pre-mastra`): PM2 `invest-agent-mastra`, runtime
+`/home/claude/invest-agent-mastra`, port `23655`, with `mastra-portal` on
+`23657/23658`. Use the current production facts above for deployment and
+diagnosis; preserve production `.env`, SQLite, Workspaces, reviews, state, and
+WeChat bindings.
 
 ### Product And Investment Method
 
@@ -63,6 +70,8 @@ production `.env`, SQLite, Workspaces, reviews, state, and WeChat bindings.
 | [personas/lao-zhang.md](./personas/lao-zhang.md) | User empathy and product judgment aid |
 
 ### P-17 Convergence Decisions (2026-08)
+
+> ⚠️ 项目身份标注（2026-09-02 owner 裁决）：P-17（旧投研助手）已于 2026-08-28 归档，用户与数据全部迁入 P-33（mastra 重构线）。P-33 走**现役深化**路线：主线 = 产品稳定 + 好用（服务客户在产品内打磨投资策略），选股产品化只是其中一部分而非单点主线；配合客户商业化是后续阶段，当前不启动。本组 P-17 决策书仅作历史决策与证据参照——其定位声明描述的客户与核心循环仍大体成立，但 **M1-M4 里程碑与 10 月外推门槛不作为 P-33 的现行路线图**（P-33 方向记录见 Personal OS 任务 T-419；顶层目标=以本项目为样本验证 AI 应用开发方法论，抽取沉淀由 P-35 承载）。
 
 | Document | Use It For |
 | --- | --- |
