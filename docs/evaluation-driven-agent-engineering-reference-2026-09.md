@@ -94,9 +94,9 @@ Agent 表现 ≠ 模型表现，而是 Model + Prompt + Tools + Context manageme
 
 行业工具已较成熟地解决 **Trace** 和 **Eval**，但「**Trace → Root Cause 的智能诊断协议**仍未标准化」——工具能告诉你得分低、调了什么工具、context 是什么，**为什么失败**仍靠工程师读 trace 凭经验调查。Observed Facts → First Divergence → Competing Hypotheses → Highest Information Gain Experiment → Belief Update → Causal Confirmation 这套协议，是现有 Observability/Eval 工具链中间缺失的一层（本项目 ai-application-diagnosis skill 所在位置）。
 
-## 十一、Eval Factory 概念
+## 十一、Finding → Eval 的晋升流水线（参考形态）
 
-从 Diagnosed Case 到 Eval 的专门流水线：是否值得 Eval？→ 抽取 Minimal Reproduction → 定义 Success Criteria → 设计 Grader → 生成正例 → 生成反例 → 生成边界变体 → 重复 Trial → **验证 Eval 本身** → 分配到 Capability / Regression / Holdout。比单纯一个 Case Management 强得多。
+从 Diagnosed Case 到 Eval 的关键步骤：是否值得 Eval？→ 抽取 Minimal Reproduction → 定义 Success Criteria → 设计 Grader → 生成正例 → 生成反例 → 生成边界变体 → 重复 Trial → **验证 Eval 本身** → 分配到 Capability / Regression / Holdout。
 
 ## 十二、本项目现状对照（2026-09-03，源自原对话评估）
 
@@ -114,12 +114,6 @@ Agent 表现 ≠ 模型表现，而是 Model + Prompt + Tools + Context manageme
 | Multi-trial reliability | 应加入 | Agent eval 关键 |
 | Online evaluation | 可加入 | 主流方向 |
 | Eval-driven CI/CD | 可加入 | 成熟团队方向 |
-
-## 十三、原对话给出的建议与裁决状态
-
-1. 体系从「Observability/Diagnosis/Case Management 三 skill」升级为五块：Infrastructure（Trace）/ Intelligence（Diagnosis）/ Knowledge（Failure Finding Registry）/ Evaluation（Eval Factory：Capability+Regression+Holdout）/ Operations（Offline Eval、CI Gate、Online Eval、Human Review）——**概念分层供参照，不建五块实体**；
-2. 把 Case Management skill 重写为 **`failure-to-eval` skill**——**owner 2026-09-03 裁决：不采纳，太重**。其职能已有轻量承载（failure-taxonomy 即 Finding Registry、bad-case 模板、rubric 校准样本、EV 回归用例），再包一层流程 skill 属重复建设；
-3. 问题本身的升级：从「AI 应用怎么 Debug」→「**如何设计一个能从真实失败中持续学习、持续验证、同时不因局部修复而退化的 AI 软件工程系统**」——2026 Agent 工程最前沿问题之一（已被运营环文档采纳为总纲）。
 
 ## 参考来源（原对话引用，未逐条复核）
 

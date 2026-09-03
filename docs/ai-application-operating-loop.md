@@ -1,6 +1,6 @@
 # AI 应用运营环（方法论文档）
 
-状态：**v0.2 草稿，待 owner 审定**（owner 2026-09-03 提出环框架，同日 Agent 依当日评估成稿）
+状态：**v0.3 草稿，待 owner 审定**（owner 2026-09-03 提出环框架，同日 Agent 依当日评估成稿）
 
 ## 一、定位与双重身份
 
@@ -133,10 +133,10 @@ PRODUCTION 上线
 | 计划/任务/文档 | 环段 | 状态 |
 | --- | --- | --- |
 | T-459 TRACE 可观测性补齐 | TRACE | todo |
-| T-442 受阻信号采集设计 | SIGNAL | 草案待 owner 裁决 |
+| T-442 受阻信号采集落地 | SIGNAL | 已采纳（9-3 owner 裁决），进入实施 |
 | T-457 双 rubric 周评 | SIGNAL/EVAL | doing（周评节奏） |
 | failure-taxonomy.md | FINDING | v1 运转，周回填 |
-| evaluation-deepening-plan.md | EVAL | 草案待 owner 裁决 |
+| evaluation-deepening-plan.md（P1/P3 落地任务） | EVAL | 已采纳（9-3 owner 裁决）；P2 由 T-457 承载 |
 | ai-application-diagnosis skill | DIAGNOSIS | 已立，待实战迭代 |
 | 发布流程/release 脚本 | REGRESSION/PRODUCTION | 成熟运转 |
 | 治理分析与 G1-G5 矩阵（8-22） | 上位治理 | 待对照本环刷新 |
@@ -147,8 +147,7 @@ PRODUCTION 上线
 
 1. judge（ED-P3）启用判据的量化（当前：校准样本 ≥20 + 重复评审瓶颈出现）；
 2. 语义回归门的形态（非阻塞清单起步还是直接阻塞）；
-3. SIGNAL 目标态的量化口径（发现延迟如何度量）；
-4. T-442 与 ED 深化方案两份草案的裁决（建议先审定本文档，再以本文档为共同上下文裁决两者）。
+3. SIGNAL 目标态的量化口径（发现延迟如何度量）。
 
 ## 八、版本历史
 
@@ -156,3 +155,4 @@ PRODUCTION 上线
 | --- | --- | --- |
 | v0.1 | 2026-09-03 | owner 提出九段环框架；Agent 依当日全环评估成稿（现状评级、缺口、目标态、挂环映射） |
 | v0.2 | 2026-09-03 | owner 修订 IMPROVEMENT 段：去除当日个案经验（减法优先/四次否决等表述），改为四条通则——最小因果干预、层级匹配、摩擦驱动、成本与通用性成比例 |
+| v0.3 | 2026-09-03 | owner 裁决采纳 T-442 与 ED 深化方案两份草案，挂环映射更新、未决问题第 4 项关闭；前沿参考文档接入为修订对照面 |
