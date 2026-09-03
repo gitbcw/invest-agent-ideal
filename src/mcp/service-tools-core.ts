@@ -441,7 +441,7 @@ async function dispatchServiceTool(
     case "watch_rules.create": {
       const confirmation = await prepareBoundConfirmation(input, context, "watch_rules.create");
       const rule = await createWatchRule({
-        ...(input as any),
+        ...(confirmation.payload as any),
         userId: context.userId,
         instanceId: context.instanceId,
         source: { kind: "mcp_tool", actor: "workspace_codex" },
@@ -894,10 +894,10 @@ async function archiveAssetTool(input: Record<string, unknown> | undefined, cont
 }
 
 async function deleteAssetTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
-  const assetId = stringInput(input?.assetId);
-  if (!assetId) throw new UserAssetError("ASSET_NOT_FOUND", "assetId is required");
   await assertInteractiveAssetMutation(context, "delete");
   const confirmation = await prepareBoundConfirmation(input, context, "assets.delete");
+  const assetId = stringInput(confirmation.payload.assetId) || stringInput(input?.assetId);
+  if (!assetId) throw new UserAssetError("ASSET_NOT_FOUND", "assetId is required");
   const deleted = await deleteUserAsset({ ...assetScope(context), assetId });
   await confirmation.consume();
   await audit(context, {
@@ -1055,6 +1055,19 @@ async function readPendingConfirmations(input: Record<string, unknown> | undefin
       expiresAt: row.expiresAt,
       createdAt: row.createdAt,
     }));
+  // 摩擦修复（2026-09-03）：用户消息已是显式确认时，pending 里 createdAt 早于
+  // 该消息的草案可直接执行——把路径显式告诉模型，避免弱模型每轮重复注册新
+  // 草案导致时序校验永远不满足（确认死循环）。
+  let actionHint: string | undefined;
+  if (confirmations.length > 0) {
+    const latest = await latestUserMessage(context);
+    if (latest && isExplicitConfirmationText(latest.content?.trim() || "")) {
+      const ready = confirmations.find((row) => new Date(row.createdAt).getTime() < new Date(latest.createdAt).getTime());
+      if (ready) {
+        actionHint = `用户当前消息已确认草案 ${ready.confirmationId}（注册早于该确认）：立即调用 ${ready.operation} 并只传 confirmationId 即可完成写入（服务端按已确认草案执行）；不要注册新草案，也不要再次要求用户确认。`;
+      }
+    }
+  }
   return {
     ok: true,
     userId: context.userId,
@@ -1062,13 +1075,15 @@ async function readPendingConfirmations(input: Record<string, unknown> | undefin
     conversationId: conversationId || null,
     count: confirmations.length,
     confirmations,
+    ...(actionHint ? { actionHint } : {}),
   };
 }
 
 async function confirmOnboardingPortfolio(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "onboarding.confirm_portfolio");
-  const holdingInputs = normalizeOnboardingAssetList(input?.holdings);
-  const watchInputs = normalizeOnboardingAssetList(input?.watchlist);
+  const payload = confirmation.payload;
+  const holdingInputs = normalizeOnboardingAssetList(payload.holdings);
+  const watchInputs = normalizeOnboardingAssetList(payload.watchlist);
   if (!holdingInputs.length && !watchInputs.length) throw new Error("至少需要一个持仓或观察仓标的");
   const missingCodes = [
     ...findOnboardingAssetsMissingCode("holding", holdingInputs),
@@ -1086,7 +1101,7 @@ async function confirmOnboardingPortfolio(input: Record<string, unknown> | undef
     projectId: context.projectId,
     holdings: holdingInputs,
     watchlist: watchInputs,
-    notes: stringInput(input?.notes),
+    notes: stringInput(payload.notes),
   });
   await confirmation.consume();
   await audit(context, {
@@ -1192,8 +1207,9 @@ async function requestOnboardingDraftStepConfirmation(input: Record<string, unkn
 
 async function addWatchlist(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "watchlist.add");
-  const name = stringInput(input?.name ?? input?.stockName);
-  const code = stringInput(input?.code ?? input?.stockCode);
+  const payload = confirmation.payload;
+  const name = stringInput(payload.name ?? payload.stockName);
+  const code = stringInput(payload.code ?? payload.stockCode);
   if (!code) throw new Error("缺少 6 位股票代码；请先通过外部数据 MCP 或用户确认完成代码解析");
   if (!/^\d{6}$/.test(code)) throw new Error("stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀");
   const stockCode = code;
@@ -1207,7 +1223,7 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
   await watchlistBackend.add(context.userId, context.instanceId, {
     code: stockCode,
     name: stockName,
-    reason: normalizeWatchlistReason(stringInput(input?.reason) || "AI 助手根据对话加入"),
+    reason: normalizeWatchlistReason(stringInput(payload.reason) || "AI 助手根据对话加入"),
     source: "ai_conversation",
     expectedRevision,
   });
@@ -1233,24 +1249,25 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
 
 async function setPlan(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "plans.set");
-  const stockCode = stringInput(input?.stockCode ?? input?.code);
+  const payload = confirmation.payload;
+  const stockCode = stringInput(payload.stockCode ?? payload.code);
   if (!stockCode) throw new Error("缺少股票代码");
   if (!/^\d{6}$/.test(stockCode)) throw new Error("stockCode 必须是 6 位数字代码（如 600519），不带 sh/sz 前缀");
-  const stockName = stringInput(input?.stockName ?? input?.name) || stockCode;
+  const stockName = stringInput(payload.stockName ?? payload.name) || stockCode;
   const existing = await planBackend.find(context.userId, context.instanceId, stockCode);
   const expectedRevision = getMastraPortfolioRevision(context.userId, context.instanceId);
   await planBackend.upsert(context.userId, context.instanceId, {
     code: stockCode,
     name: stockName,
-    support: numberOrExisting(input?.support, existing?.support),
-    resistance: numberOrExisting(input?.resistance, existing?.resistance),
-    targetPrice: numberOrExisting(input?.targetPrice, existing?.targetPrice),
-    stopLoss: numberOrExisting(input?.stopLoss, existing?.stopLoss),
-    notes: input?.notes !== undefined ? stringInput(input.notes) ?? null : existing?.notes ?? null,
-    watchConditions: Array.isArray(input?.watchConditions) ? input.watchConditions as any : existing?.watchConditions,
-    linkedAlertRuleIds: Array.isArray(input?.linkedAlertRuleIds) ? input.linkedAlertRuleIds.map(String) : existing?.linkedAlertRuleIds,
-    planType: stringInput(input?.planType) || existing?.planType || "manual",
-    strategyKey: input?.strategyKey !== undefined ? stringInput(input.strategyKey) : existing?.strategyKey ?? null,
+    support: numberOrExisting(payload.support, existing?.support),
+    resistance: numberOrExisting(payload.resistance, existing?.resistance),
+    targetPrice: numberOrExisting(payload.targetPrice, existing?.targetPrice),
+    stopLoss: numberOrExisting(payload.stopLoss, existing?.stopLoss),
+    notes: payload.notes !== undefined ? stringInput(payload.notes) ?? null : existing?.notes ?? null,
+    watchConditions: Array.isArray(payload.watchConditions) ? payload.watchConditions as any : existing?.watchConditions,
+    linkedAlertRuleIds: Array.isArray(payload.linkedAlertRuleIds) ? payload.linkedAlertRuleIds.map(String) : existing?.linkedAlertRuleIds,
+    planType: stringInput(payload.planType) || existing?.planType || "manual",
+    strategyKey: payload.strategyKey !== undefined ? stringInput(payload.strategyKey) : existing?.strategyKey ?? null,
     expectedRevision,
   });
   await confirmation.consume();
@@ -1273,15 +1290,16 @@ async function setPlan(input: Record<string, unknown> | undefined, context: Serv
 
 async function setPlanConditions(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "plans.watch_conditions");
-  const stockCode = stringInput(input?.stockCode ?? input?.code);
+  const payload = confirmation.payload;
+  const stockCode = stringInput(payload.stockCode ?? payload.code);
   if (!stockCode) throw new Error("缺少股票代码");
-  if (!Array.isArray(input?.conditions)) throw new Error("conditions 必须是数组");
+  if (!Array.isArray(payload.conditions)) throw new Error("conditions 必须是数组");
   const result = await setPlanWatchConditions({
     userId: context.userId,
     instanceId: context.instanceId,
     stockCode,
-    stockName: stringInput(input?.stockName ?? input?.name),
-    conditions: input.conditions as PlanWatchConditionInput[],
+    stockName: stringInput(payload.stockName ?? payload.name),
+    conditions: payload.conditions as PlanWatchConditionInput[],
   });
   await confirmation.consume();
   await audit(context, {
@@ -1297,17 +1315,18 @@ async function setPlanConditions(input: Record<string, unknown> | undefined, con
 
 async function proposeMethodChange(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "method_changes.propose");
-  const proposedChange = stringInput(input?.proposedChange);
-  const reason = stringInput(input?.reason);
+  const payload = confirmation.payload;
+  const proposedChange = stringInput(payload.proposedChange);
+  const reason = stringInput(payload.reason);
   if (!proposedChange || !reason) throw new Error("缺少 proposedChange 或 reason");
   const created = await methodChangeBackend.propose({
     userId: context.userId,
     instanceId: context.instanceId,
-    sourceReviewId: stringInput(input?.sourceReviewId),
-    sourceType: stringInput(input?.sourceType) || "review",
+    sourceReviewId: stringInput(payload.sourceReviewId),
+    sourceType: stringInput(payload.sourceType) || "review",
     proposedChange,
     reason,
-    affectedResource: stringInput(input?.affectedResource) || "methodology_profile",
+    affectedResource: stringInput(payload.affectedResource) || "methodology_profile",
   });
   await confirmation.consume();
   await audit(context, {
@@ -1547,7 +1566,7 @@ async function planMethodChangeApplication(input: Record<string, unknown> | unde
 
 async function applyMethodChange(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "method_changes.apply");
-  const plan = await planMethodChangeApplication(input, context);
+  const plan = await planMethodChangeApplication(confirmation.payload, context);
   const candidateId = plan.candidate.id;
   const now = new Date().toISOString();
   let saved = plan.current;
@@ -1637,7 +1656,7 @@ function userPreferenceChangeInput(input: Record<string, unknown> | undefined): 
 async function applyUserPreferences(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const confirmation = await prepareBoundConfirmation(input, context, "preferences.apply");
   const store: UserPreferenceStore = new MastraUserPreferenceStore(context.userId, context.instanceId, context.projectId || DEFAULT_PROJECT_ID);
-  const result = await applyUserPreferenceChange(store, userPreferenceChangeInput(input));
+  const result = await applyUserPreferenceChange(store, userPreferenceChangeInput(confirmation.payload));
   if (store.appendChangeLogOnce) await store.appendChangeLogOnce({
     ts: result.revision,
     source: "mcp",
@@ -2363,7 +2382,7 @@ async function applyPortfolioChanges(input: Record<string, unknown> | undefined,
     return portfolioChangeResult(context, existing, [], [], [], []);
   }
 
-  const plan = await planPortfolioChanges(input ?? {}, context);
+  const plan = await planPortfolioChanges(confirmation.payload, context);
   const now = new Date().toISOString();
   const saved: PortfolioYaml = {
     ...plan.next,
@@ -2531,6 +2550,54 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
   const payload = asRecord(input?.payload);
   if (!operation || !CONFIRMED_WRITE_OPERATIONS.has(operation)) throw new Error("operation is not confirmable");
   if (!context.conversationId) throw new Error("conversationId is required for confirmation");
+  // 摩擦修复（2026-09-03 用户 111 确认死循环）：兜底模型在用户确认后每轮重复
+  // 注册新草案，注册时间被反复推晚，「确认消息晚于草案注册」的时序校验永远
+  // 不满足；且两轮构造的 payload 会漂移。用户已经确认过一个时序满足的草案
+  // 时，内容一致的重复注册直接复用该草案并把执行路径告诉模型——重复构造
+  // 的参数与注册记录以注册为准。内容不一致的是另一个草案（如新 candidate），
+  // 正常新建并指路旧确认，不劫持。
+  const latest = await latestUserMessage(context);
+  const registeredAfterUserConfirmation = latest ? isExplicitConfirmationText(latest.content?.trim() || "") : false;
+  if (registeredAfterUserConfirmation && latest) {
+    const executable = await findExecutablePendingConfirmation(context, operation, latest.createdAt);
+    if (executable) {
+      const canonical = await canonicalizeConfirmationPayload(operation, payload, context);
+      const target = confirmationTarget(operation, canonical, context);
+      if (stableStringify(target.requestBody) === stableStringify(executable.targetRequestBody)) {
+        await audit(context, {
+          operation: "confirmations.request",
+          resourceType: executable.record.resourceType,
+          resourceId: executable.record.resourceId ?? undefined,
+          requestBody: { operation, payload, summary: stringInput(input?.summary), reusedConfirmationId: executable.record.id },
+          resultSummary: `reused pending confirmation ${executable.record.id} (user message is already an explicit confirmation)`,
+        });
+        return {
+          ok: true,
+          userId: context.userId,
+          instanceId: context.instanceId,
+          confirmationId: executable.record.id,
+          reused: true,
+          operation,
+          expiresAt: executable.record.expiresAt,
+          instruction: `用户当前消息已确认此草案（草案注册时间早于该确认消息）：请立即调用 ${operation} 执行写入，只传 confirmationId（可不带业务参数，服务端按已确认草案执行）；不要重新注册草案，也不要再次要求用户确认。`,
+        };
+      }
+      // 内容不一致：这是新草案，正常注册（走下方通用路径），但 warning 指路
+      // 用户确认已覆盖的旧草案，避免弱模型在新草案上反复要确认。
+      const staleExecutableHint = `注意：用户当前消息也可用于执行已注册的草案 ${executable.record.id}（注册早于该消息）。若用户的确认指的就是它，请直接调用对应执行工具（只传该 confirmationId）；若确属新草案，展示它并等用户的下一条确认。`;
+      const created = await registerConfirmationDraft(operation, payload, input, context);
+      return { ...created, warning: created.warning ? `${created.warning} ${staleExecutableHint}` : staleExecutableHint };
+    }
+  }
+  return registerConfirmationDraft(operation, payload, input, context);
+}
+
+async function registerConfirmationDraft(
+  operation: string,
+  payload: Record<string, unknown>,
+  input: Record<string, unknown> | undefined,
+  context: ServiceToolContext
+) {
   const preview = await validateConfirmationDraft(operation, payload, context);
   const canonical = await canonicalizeConfirmationPayload(operation, payload, context);
   const target = confirmationTarget(operation, canonical, context);
@@ -2555,10 +2622,48 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
     operation,
     expiresAt: pending.expiresAt,
     ...(registeredAfterUserConfirmation
-      ? { warning: "本草案注册晚于用户当前已发送的确认消息，用户本轮的确认不能用于执行此草案：请在回复中展示草案并等待用户的下一条确认消息，本轮不要调用写入工具。" }
+      ? { warning: `本草案注册晚于用户当前已发送的确认消息，用户本轮的确认不能用于执行此草案：请在回复中展示草案，用户下一条确认消息到达后立即调用 ${operation} 完成写入（只传 confirmationId 即可）。` }
       : {}),
     ...(preview ? { preview } : {}),
   };
+}
+
+/** 用户消息已是显式确认时，寻找同 operation、未过期、且注册时间早于该确认
+ * 消息的 pending 草案（取最新一条）。时序条件保证这正是用户确认所指向的
+ * 草案；调用方还需比对内容后才复用。 */
+async function findExecutablePendingConfirmation(
+  context: ServiceToolContext,
+  operation: string,
+  latestUserMessageCreatedAt: string
+) {
+  const rows = await db
+    .select()
+    .from(pendingSandboxConfirmations)
+    .where(and(
+      eq(pendingSandboxConfirmations.userId, context.userId),
+      eq(pendingSandboxConfirmations.instanceId, context.instanceId),
+      eq(pendingSandboxConfirmations.status, "pending"),
+      eq(pendingSandboxConfirmations.operation, operation),
+    ))
+    .orderBy(desc(pendingSandboxConfirmations.createdAt))
+    .limit(20);
+  const now = Date.now();
+  const record = rows.find((row) =>
+    new Date(row.expiresAt).getTime() > now &&
+    (row.conversationId ?? "") === (context.conversationId ?? "") &&
+    new Date(row.createdAt).getTime() < new Date(latestUserMessageCreatedAt).getTime()
+  );
+  if (!record) return undefined;
+  return { record, targetRequestBody: safeJson(record.requestBody) };
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
 }
 
 async function validateConfirmationDraft(
@@ -2668,7 +2773,19 @@ async function prepareBoundConfirmation(
   if (!confirmationId) throw new Error("confirmationId is required after requesting confirmation");
   if (!context.conversationId) throw new Error("conversationId is required for confirmed writes");
   await requireRecentUserConfirmation(context, operation, confirmationId);
-  const payload = stripConfirmationFields(input);
+  const { summary: _summary, ...businessFields } = stripConfirmationFields(input);
+  // 摩擦修复（2026-09-03）：模型只传 confirmationId（不带业务字段）时，从注册
+  // 记录恢复已确认草案执行。模型在注册与执行两轮各构造一次参数，弱模型几乎
+  // 必然漂移（canonical mismatch 死锁）；注册记录才是用户确认内容的唯一事实源。
+  let payload = businessFields;
+  if (Object.keys(businessFields).length === 0) {
+    const [registered] = await db
+      .select()
+      .from(pendingSandboxConfirmations)
+      .where(eq(pendingSandboxConfirmations.id, confirmationId))
+      .limit(1);
+    if (registered) payload = restoreExecutablePayload(operation, safeJson(registered.requestBody) as Record<string, unknown>);
+  }
   const canonical = await canonicalizeConfirmationPayload(operation, payload, context);
   const sandboxContext = mcpSandboxContext(context, `mcp-confirm:${Date.now()}`);
   const target = confirmationTarget(operation, canonical, context);
@@ -2679,17 +2796,39 @@ async function prepareBoundConfirmation(
   );
   if (!result.ok) {
     const hint = result.reason === "confirmation payload mismatch"
-      ? "（执行参数与用户确认的草案不一致：请用与草案一致的参数重试，或重新生成草案并再次征求用户确认；本次未执行任何写入）"
+      ? "（执行参数与用户确认的草案不一致：请用与草案一致的参数重试，或只传 confirmationId 让服务端按已确认草案执行；本次未执行任何写入）"
       : "";
     throw new Error(`confirmation invalid: ${result.reason}${hint}`);
   }
   return {
     confirmationId,
+    payload,
     consume: async () => {
       const consumed = await consumeSandboxConfirmation(sandboxContext, confirmationId, target);
       if (!consumed.ok) throw new Error(`confirmation invalid: ${consumed.reason}`);
     },
   };
+}
+
+/** 注册记录存的是 canonical 载荷。恢复为可执行入参：portfolio 的 canonical
+ * 用 watchlistRemovalCodes/watchlistKeepCodes 摘要 watchlist 动作，执行入参
+ * 用 watchlistActions；其余操作的 canonical 就是裁剪过的原始载荷，直接透传。 */
+function restoreExecutablePayload(operation: string, requestBody: Record<string, unknown>): Record<string, unknown> {
+  if (operation === "portfolio.apply_changes") {
+    const {
+      watchlistRemovalCodes = [],
+      watchlistKeepCodes = [],
+      ...rest
+    } = requestBody as { watchlistRemovalCodes?: string[]; watchlistKeepCodes?: string[] };
+    return {
+      ...rest,
+      watchlistActions: [
+        ...watchlistRemovalCodes.map((code) => ({ code, action: "remove" })),
+        ...watchlistKeepCodes.map((code) => ({ code, action: "keep" })),
+      ],
+    };
+  }
+  return requestBody;
 }
 
 function confirmationTarget(operation: string, payload: Record<string, unknown>, context: ServiceToolContext) {
