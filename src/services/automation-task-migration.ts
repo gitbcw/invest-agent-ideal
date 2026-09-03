@@ -55,6 +55,8 @@ export async function migrateLegacyAutomationTaskToAssets(input: AutomationScope
       ...input,
       taskId: task.taskId,
       expectedRevision: task.currentRevision,
+      editSource: "script",
+      editSourceRef: "automation-task-migration",
       instruction: `按原任务要求维护工作产物：${task.revision.description || task.revision.name}`,
       inputs: [{ assetId: sourceAsset.assetId, role: "input", versionPolicy: "fixed", versionId: sourceAsset.currentVersionId! }],
       output: { mode: "update", assetId: workingAsset.assetId, versionPolicy: "latest" },

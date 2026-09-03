@@ -6,6 +6,22 @@
 
 export type MastraBackendId = "mastra";
 
+export type TracePayloadText = { text: string; truncated: boolean; totalChars: number };
+
+/**
+ * T-459 TRACE 载荷：终态工具调用的输入/输出选择性持久化（截断策略见
+ * lib/trace-payload.ts）。只在自动化 run 侧落库；摘要（toolCalls）不受影响。
+ */
+export interface MastraToolPayload {
+  toolCallId: string;
+  serverId?: string;
+  toolName?: string;
+  status?: string;
+  startedAt: string;
+  input?: TracePayloadText;
+  output?: TracePayloadText;
+}
+
 export interface MastraTokenUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -65,6 +81,7 @@ export interface MastraTurnResult {
   modelLabel?: string;
   mcpManifest?: unknown;
   toolCalls?: MastraToolCallSummary[];
+  toolPayloads?: MastraToolPayload[];
 }
 
 export type MastraMessageRole = "system" | "user" | "assistant" | "tool";

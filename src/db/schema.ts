@@ -470,6 +470,32 @@ export const externalMcpToolCalls = sqliteTable("external_mcp_tool_calls", {
 });
 
 /**
+ * T-459 TRACE 载荷：自动化 run 终态工具调用的输入/输出截断全文。只在
+ * runId 存在（自动化 run）时写入——交互会话不落（owner 2026-09-03 隐私
+ * 裁决）。90 天滚动清理（scheduler/trace-payload-retention）。
+ */
+export const automationToolPayloads = sqliteTable("automation_tool_payloads", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  traceId: text("trace_id"),
+  runId: text("run_id").notNull(),
+  taskId: text("task_id"),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  instanceId: text("instance_id").notNull(),
+  toolCallId: text("tool_call_id").notNull(),
+  serverId: text("server_id"),
+  toolName: text("tool_name"),
+  status: text("status"),
+  inputPayload: text("input_payload"),
+  inputTruncated: integer("input_truncated").notNull().default(0),
+  inputTotalChars: integer("input_total_chars"),
+  outputPayload: text("output_payload"),
+  outputTruncated: integer("output_truncated").notNull().default(0),
+  outputTotalChars: integer("output_total_chars"),
+  createdAt: text("created_at").notNull(),
+});
+
+/**
  * MCP server 运行时启停覆盖 (T-243 Phase 2)。
  * per-server 一行,enabled 覆盖 env 基线 (env 是启动时基线,DB 是运行时覆盖)。
  * reason 记录启停理由 (借鉴 ToolRegistry 的 disable(name, reason) 语义,审计用)。

@@ -1,8 +1,9 @@
 import { db } from "../db/index.js";
-import { agentTraces } from "../db/schema.js";
+import { agentTraces, automationToolPayloads } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib/user-context.js";
 import { redactSensitiveText } from "../lib/customer-output.js";
+import type { MastraToolPayload } from "../mastra/types.js";
 import { computeModelCost } from "../services/model-pricing.js";
 import { recordModelFeedback } from "../services/model-health.js";
 
@@ -52,6 +53,7 @@ export interface AgentTraceInput {
   modelSource?: string;
   toolManifest?: unknown;
   toolCalls?: unknown;
+  toolPayloads?: MastraToolPayload[];
   status: TraceStatus;
   errorMessage?: string;
   elapsedMs?: number;
@@ -146,6 +148,35 @@ export async function recordAgentTrace(input: AgentTraceInput) {
     });
     // W1: 每条 trace 即模型健康反馈（成败 + 首字延迟）。
     recordModelFeedback(input.agentModel, { ok: input.status === "success", firstTokenMs: input.firstTokenMs });
+    // T-459 TRACE 载荷：仅自动化 run（runId 存在）落库；交互会话不落。
+    // 观测写入绝不能让主链路失败，与 trace 本身同一纪律。
+    if (input.runId && input.toolPayloads && input.toolPayloads.length > 0) {
+      try {
+        await db.insert(automationToolPayloads).values(
+          input.toolPayloads.map((payload) => ({
+            traceId: truncate(input.traceId, 300),
+            runId: truncate(input.runId, 300)!,
+            taskId: truncate(input.taskId, 300),
+            userId: truncate(input.userId, 120) ?? DEFAULT_USER_ID,
+            projectId: truncate(input.projectId, 120) ?? DEFAULT_PROJECT_ID,
+            instanceId: truncate(input.instanceId, 180) ?? DEFAULT_INSTANCE_ID,
+            toolCallId: truncate(payload.toolCallId, 300)!,
+            serverId: truncate(payload.serverId, 160),
+            toolName: truncate(payload.toolName, 200),
+            status: truncate(payload.status, 40),
+            inputPayload: payload.input?.text,
+            inputTruncated: payload.input?.truncated ? 1 : 0,
+            inputTotalChars: payload.input?.totalChars,
+            outputPayload: payload.output?.text,
+            outputTruncated: payload.output?.truncated ? 1 : 0,
+            outputTotalChars: payload.output?.totalChars,
+            createdAt: new Date().toISOString(),
+          })),
+        );
+      } catch (error) {
+        logger.warn("automation tool payload write failed:", error);
+      }
+    }
   } catch (error) {
     logger.warn("agent trace write failed:", error);
   }

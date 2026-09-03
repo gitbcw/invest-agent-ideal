@@ -523,6 +523,7 @@ export function createRuntimeAgent(): RuntimeAgent {
             replyTextSanitized: cleaned, mode,
             status: "success", elapsedMs: Date.now() - startedAt, usage: mastraResult.usage,
             agentBackend: "mastra", agentModel: mastraResult.model, toolCalls: mastraResult.toolCalls,
+            toolPayloads: mastraResult.toolPayloads,
             modelSource, firstTokenMs: mastraResult.firstTokenMs,
             reviewContextSummary: {
               ...(thinkingRouter ? { thinkingRouter } : {}),

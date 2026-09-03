@@ -237,6 +237,22 @@ export interface AutomationTaskAuditRecord extends AutomationScope {
   createdAt: string;
 }
 
+/**
+ * T-459 编辑来源审计：任务 revision 的编辑者类别。portal=网页端，
+ * agent=Agent 工具链，script=运维/迁移脚本，system=服务层自动行为
+ * （如月度 rollover 换绑）；无法判定时显式 unknown，不许默认伪装。
+ */
+export type AutomationTaskEditSource = "portal" | "agent" | "script" | "system" | "unknown";
+
+function normalizeEditSource(value: unknown): AutomationTaskEditSource {
+  return value === "portal" || value === "agent" || value === "script" || value === "system" ? value : "unknown";
+}
+
+function normalizeEditSourceRef(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return value.trim().slice(0, 300);
+}
+
 export interface CreateAutomationTaskInput extends AutomationScope {
   taskId?: string;
   name: string;
@@ -252,11 +268,17 @@ export interface CreateAutomationTaskInput extends AutomationScope {
   sourceAsset?: AutomationTaskAssetInput;
   /** Alias kept for callers that model the upload simply as `asset`. */
   asset?: AutomationTaskAssetInput;
+  /** T-459 编辑来源审计。 */
+  editSource?: AutomationTaskEditSource;
+  editSourceRef?: string;
 }
 
 export interface UpdateAutomationTaskInput extends AutomationScope {
   taskId: string;
   expectedRevision?: number;
+  /** T-459 编辑来源审计。 */
+  editSource?: AutomationTaskEditSource;
+  editSourceRef?: string;
   name?: string;
   description?: string | null;
   schedule?: AutomationSchedule | Record<string, unknown>;
@@ -755,8 +777,8 @@ export async function createAutomationTask(input: CreateAutomationTaskInput): Pr
       sqlite.prepare(`
         INSERT INTO automation_task_revisions (
           revision_id, task_id, user_id, project_id, instance_id, revision,
-          name, description, schedule_json, source_asset_id, working_asset_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+          name, description, schedule_json, source_asset_id, working_asset_id, created_at, edit_source, edit_source_ref
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         revisionId,
         taskId,
@@ -769,6 +791,8 @@ export async function createAutomationTask(input: CreateAutomationTaskInput): Pr
         sourceAssetId,
         workingAssetId,
         now,
+        normalizeEditSource(input.editSource),
+        normalizeEditSourceRef(input.editSourceRef),
       );
       insertAuditRow({
         taskId,
@@ -891,8 +915,8 @@ export async function updateAutomationTask(input: UpdateAutomationTaskInput): Pr
       sqlite.prepare(`
         INSERT INTO automation_task_revisions (
           revision_id, task_id, user_id, project_id, instance_id, revision,
-          name, description, schedule_json, source_asset_id, working_asset_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          name, description, schedule_json, source_asset_id, working_asset_id, created_at, edit_source, edit_source_ref
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         revisionId,
         taskId,
@@ -906,6 +930,8 @@ export async function updateAutomationTask(input: UpdateAutomationTaskInput): Pr
         sourceAssetId ?? null,
         workingAssetId ?? null,
         now,
+        normalizeEditSource(input.editSource),
+        normalizeEditSourceRef(input.editSourceRef),
       );
       sqlite.prepare(`
         UPDATE automation_tasks
@@ -957,6 +983,7 @@ async function createGenericAutomationTask(input: {
     insertGenericRevision({
       revisionId, taskId, scope: input.scope, revision: 1, name: input.name,
       description: input.description, schedule: input.schedule, definition, createdAt: now,
+      editSource: input.input.editSource, editSourceRef: input.input.editSourceRef,
     });
     insertGenericBindings({ taskId, revisionId, scope: input.scope, bindings: genericBindings(definition), createdAt: now });
     insertAuditRow({ taskId, revisionId, scope: input.scope, action: "task.created", status: "success", details: { revision: 1, status: "paused", kind: "generic" }, createdAt: now });
@@ -994,12 +1021,13 @@ async function updateGenericAutomationTask(input: {
       INSERT INTO automation_task_revisions (
         revision_id, task_id, user_id, project_id, instance_id, revision,
         name, description, instruction, schedule_json, inputs_json, output_json, delivery_json,
-        source_asset_id, working_asset_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+        source_asset_id, working_asset_id, created_at, edit_source, edit_source_ref
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
     `).run(
       revisionId, input.task.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
       revision, name, description, definition.instruction, JSON.stringify(schedule),
       JSON.stringify(definition.inputs), JSON.stringify(definition.output), JSON.stringify(definition.delivery), now,
+      normalizeEditSource(input.input.editSource), normalizeEditSourceRef(input.input.editSourceRef),
     );
     insertGenericBindings({ taskId: input.task.taskId, revisionId, scope: input.scope, bindings: genericBindings(definition), createdAt: now });
     sqlite.prepare(`
@@ -1157,17 +1185,19 @@ function genericBindings(definition: NormalizedGenericDefinition): Array<Automat
 function insertGenericRevision(input: {
   revisionId: string; taskId: string; scope: AutomationScope; revision: number; name: string; description: string | null;
   schedule: AutomationSchedule; definition: NormalizedGenericDefinition; createdAt: string;
+  editSource?: AutomationTaskEditSource; editSourceRef?: string;
 }): void {
   sqlite.prepare(`
     INSERT INTO automation_task_revisions (
       revision_id, task_id, user_id, project_id, instance_id, revision,
       name, description, instruction, schedule_json, inputs_json, output_json, delivery_json,
-      source_asset_id, working_asset_id, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+      source_asset_id, working_asset_id, created_at, edit_source, edit_source_ref
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
   `).run(
     input.revisionId, input.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
     input.revision, input.name, input.description, input.definition.instruction, JSON.stringify(input.schedule),
     JSON.stringify(input.definition.inputs), JSON.stringify(input.definition.output), JSON.stringify(input.definition.delivery), input.createdAt,
+    normalizeEditSource(input.editSource), normalizeEditSourceRef(input.editSourceRef),
   );
 }
 

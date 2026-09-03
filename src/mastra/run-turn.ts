@@ -1,4 +1,5 @@
 import type { UserContext } from "../lib/user-context.js";
+import { serializeTracePayload } from "../lib/trace-payload.js";
 import { createMastraAgent, type MastraAgentFactory, type MastraAgentFactoryOptions } from "./agent-factory.js";
 import { createMastraRequestContext } from "./bindings.js";
 import { createModelGateway, glmReasoningEffort, gptReasoningEffort, isGlmSeriesModel, isGptSeriesModel, type MastraModelGateway, type ModelGatewayOptions } from "./model-gateway.js";
@@ -7,6 +8,7 @@ import {
   type MastraMessage,
   type MastraTokenUsage,
   type MastraToolCallSummary,
+  type MastraToolPayload,
   type MastraTurnResult,
 } from "./types.js";
 
@@ -344,6 +346,53 @@ export function mergeMastraToolCallsAndResults(calls: unknown, results: unknown,
   }
   const merged = [...byId.values()];
   return merged.length > 0 ? merged : undefined;
+}
+
+/**
+ * T-459 TRACE 载荷采集：与 mergeMastraToolCallsAndResults 同源同口径，但保留
+ * 截断后的输入/输出全文而非字符数。采集是旁路的——失败或超限绝不影响回合
+ * 结果本身；是否落库由运行时按 runId（自动化 run）判定。
+ */
+export function collectMastraToolPayloads(
+  calls: unknown,
+  results: unknown,
+  fallbackStartedAt: string = new Date().toISOString(),
+  maxChars?: number,
+): MastraToolPayload[] {
+  const byId = new Map<string, MastraToolPayload>();
+  const absorb = (entry: unknown, origin: "call" | "result") => {
+    if (!isRecord(entry)) return;
+    const payload = isRecord(entry.payload) ? entry.payload : entry;
+    const toolCallId = stringValue(payload.toolCallId) ?? stringValue(payload.id) ?? stringValue(entry.id);
+    if (!toolCallId) return;
+    const startedAt = resolveTimestamp(
+      payload.startedAt ?? entry.startedAt ?? payload.startTime ?? payload.timestamp ?? entry.timestamp,
+      fallbackStartedAt,
+    );
+    const input = payload.input ?? payload.args ?? payload.arguments ?? payload.rawInput;
+    const output = payload.output ?? payload.result ?? payload.rawOutput ?? (origin === "result" && entry.isError === true ? payload.error ?? entry.error : undefined);
+    const status = stringValue(entry.status)
+      ?? (payload.isError === true || entry.isError === true ? "error" : payload.isError === false || entry.isError === false ? "success" : undefined);
+    const existing = byId.get(toolCallId);
+    const serverId = stringValue(payload.serverId ?? entry.serverId) ?? existing?.serverId;
+    const toolName = stringValue(payload.toolName) ?? stringValue(payload.name) ?? existing?.toolName;
+    const inputResolved = existing?.input ?? (input !== undefined ? serializeTracePayload(input, maxChars) : undefined);
+    const outputResolved = existing?.output ?? (output !== undefined ? serializeTracePayload(output, maxChars) : undefined);
+    const resolvedStatus = status ?? existing?.status;
+    const next: MastraToolPayload = {
+      toolCallId,
+      ...(serverId ? { serverId } : {}),
+      ...(toolName ? { toolName } : {}),
+      ...(resolvedStatus ? { status: resolvedStatus } : {}),
+      startedAt: existing?.startedAt ?? startedAt,
+      ...(inputResolved ? { input: inputResolved } : {}),
+      ...(outputResolved ? { output: outputResolved } : {}),
+    };
+    byId.set(toolCallId, next);
+  };
+  for (const call of Array.isArray(calls) ? calls : []) absorb(call, "call");
+  for (const result of Array.isArray(results) ? results : []) absorb(result, "result");
+  return [...byId.values()];
 }
 
 /** Compatibility alias for the application-level mapper name. */
@@ -707,6 +756,7 @@ export async function runMastraTurn(
     if (!text) throw new MastraEmptyResponseError(conversationId);
     const toolCalls = mergeMastraToolCallsAndResults(mapped.toolCalls, mapped.toolResults, new Date(startedAtMs))
       ?? mapMastraToolCalls(mapped.toolCalls, new Date(startedAtMs));
+    const toolPayloads = collectMastraToolPayloads(mapped.toolCalls, mapped.toolResults, new Date(startedAtMs).toISOString());
     const model = mapped.model ?? params.model ?? gateway?.defaultModel;
     const firstTokenMs = mapped.firstTextAtMs !== undefined ? Math.max(0, mapped.firstTextAtMs - startedAtMs) : undefined;
     emitProgress?.({ kind: "turn_end", at: new Date().toISOString(), elapsedMs: Date.now() - startedAtMs, ...(model ? { message: model } : {}) });
@@ -729,6 +779,7 @@ export async function runMastraTurn(
       backendId: "mastra",
       ...(model ? { model } : {}),
       ...(toolCalls ? { toolCalls } : {}),
+      ...(toolPayloads.length > 0 ? { toolPayloads } : {}),
     };
   } catch (error) {
     const mapped = firstTokenTimedOut

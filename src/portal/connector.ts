@@ -814,6 +814,8 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         inputs: Array.isArray(message.payload?.inputs) ? message.payload.inputs : undefined,
         output: message.payload?.output,
         delivery: message.payload?.delivery,
+        editSource: "portal",
+        editSourceRef: typeof message.requestId === "string" ? message.requestId : undefined,
         ...(rawAsset ? { sourceAsset: decodeAutomationAsset(message.payload) } : {}),
       });
       return finish(ok(message.type, message.requestId, task));
@@ -833,6 +835,8 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         inputs: Array.isArray(message.payload?.inputs) ? message.payload.inputs : undefined,
         output: message.payload?.output,
         delivery: message.payload?.delivery,
+        editSource: "portal",
+        editSourceRef: typeof message.requestId === "string" ? message.requestId : undefined,
         ...(rawAsset ? { sourceAsset: decodeAutomationAsset(message.payload) } : {}),
       });
       return finish(ok(message.type, message.requestId, task));

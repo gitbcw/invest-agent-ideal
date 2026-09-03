@@ -486,6 +486,29 @@ export function initDb() {
       reason TEXT,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS automation_tool_payloads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trace_id TEXT,
+      run_id TEXT NOT NULL,
+      task_id TEXT,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL,
+      tool_call_id TEXT NOT NULL,
+      server_id TEXT,
+      tool_name TEXT,
+      status TEXT,
+      input_payload TEXT,
+      input_truncated INTEGER NOT NULL DEFAULT 0,
+      input_total_chars INTEGER,
+      output_payload TEXT,
+      output_truncated INTEGER NOT NULL DEFAULT 0,
+      output_total_chars INTEGER,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_automation_tool_payloads_run ON automation_tool_payloads(run_id);
+    CREATE INDEX IF NOT EXISTS idx_automation_tool_payloads_trace ON automation_tool_payloads(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_automation_tool_payloads_created ON automation_tool_payloads(created_at);
     CREATE TABLE IF NOT EXISTS indicator_definitions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       key TEXT NOT NULL UNIQUE,
@@ -1013,6 +1036,8 @@ export function initDb() {
   migrateStockPlansForInstances();
   migrateAlertSignalStatesForInstances();
   ensureColumn("watchlist", "source", "TEXT NOT NULL DEFAULT 'manual'");
+  ensureColumn("automation_task_revisions", "edit_source", "TEXT");
+  ensureColumn("automation_task_revisions", "edit_source_ref", "TEXT");
   ensureColumn("portfolio", "user_id", "TEXT NOT NULL DEFAULT 'primary'");
   ensureColumn("portfolio", "instance_id", "TEXT NOT NULL DEFAULT 'invest-agent-primary'");
   ensureColumn("portfolio", "status", "TEXT NOT NULL DEFAULT 'open'");

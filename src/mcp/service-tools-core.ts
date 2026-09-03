@@ -664,7 +664,7 @@ async function getAutomationTool(input: Record<string, unknown> | undefined, con
 async function createAutomationTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const value = input ?? {};
   const scope = automationToolScope(context);
-  const created = await createAutomationTask({ ...scope, ...automationDefinitionInput(value) } as never);
+  const created = await createAutomationTask({ ...scope, ...automationDefinitionInput(value), editSource: "agent", editSourceRef: context.runId ?? context.conversationId ?? context.traceId } as never);
   const requestedStatus = requestedAutomationStatus(value);
   // Direct assistant creation is an enable-on-create flow by default. A
   // caller can explicitly request paused when preparing a task for later.
@@ -704,7 +704,7 @@ async function updateAutomationTool(input: Record<string, unknown> | undefined, 
     return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
   }
 
-  const revised = await updateAutomationTask({ ...scope, ...automationUpdateDefinitionInput(value) } as never);
+  const revised = await updateAutomationTask({ ...scope, ...automationUpdateDefinitionInput(value), editSource: "agent", editSourceRef: context.runId ?? context.conversationId ?? context.traceId } as never);
   const shouldRemainActive = requestedStatus === "active" || (requestedStatus !== "paused" && current.status === "active");
   const task = shouldRemainActive
     ? await activateAutomationTask({ ...scope, taskId, expectedRevision: revised.currentRevision })

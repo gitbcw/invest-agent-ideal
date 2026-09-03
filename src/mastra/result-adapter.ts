@@ -8,6 +8,7 @@ export interface ApplicationTurnResult {
   backendId: "mastra";
   model?: string;
   toolCalls?: MastraTurnResult["toolCalls"];
+  toolPayloads?: MastraTurnResult["toolPayloads"];
 }
 
 export function adaptMastraResult(result: MastraTurnResult): ApplicationTurnResult {
@@ -18,6 +19,7 @@ export function adaptMastraResult(result: MastraTurnResult): ApplicationTurnResu
     backendId: "mastra",
     ...(result.model ? { model: result.model } : {}),
     ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
+    ...(result.toolPayloads && result.toolPayloads.length > 0 ? { toolPayloads: result.toolPayloads } : {}),
   };
 }
 

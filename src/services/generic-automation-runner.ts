@@ -1075,6 +1075,8 @@ async function rollTaskBindingToMonthlyFile(scope: AutomationScope, task: Automa
       ...scope,
       taskId: task.taskId,
       expectedRevision: task.currentRevision,
+      editSource: "system",
+      editSourceRef: `monthly-rollover:${rollover.targetFileName}`,
       inputs: task.revision.inputs.map((binding) => (binding.assetId === previousAssetId ? { ...binding, assetId: newAssetId } : binding)),
       output: {
         mode: "update",
