@@ -12,4 +12,4 @@ Invest Agent 是一个网页端（Portal）优先的投资决策助手，微信�
 - `docs/archive/` 仅用于考古，除非当前权威文档明确引用。不得根据历史方案推翻当前契约。
 - 保留用户已有工作树改动；不得用 reset、checkout、批量覆盖或无关重构清除它们。
 
-命令以 `package.json` 为准；当前运行时职责以 [docs/system-overview.md](docs/system-overview.md) 为准；可重复的工程与运维流程以项目 `.codex/skills/` 为准，其中 AI 应用行为异常调试走 [ai-native-context-debugger](.codex/skills/ai-native-context-debugger/SKILL.md)（先证明错误不能由 context 解释，再修改模型或增加机制）。
+命令以 `package.json` 为准；当前运行时职责以 [docs/system-overview.md](docs/system-overview.md) 为准；可重复的工程与运维流程以项目 `.codex/skills/` 为准，其中 AI 应用故障诊断走 [ai-application-diagnosis](.codex/skills/ai-application-diagnosis/SKILL.md)（竞争性因果假设 + 最小验证实验持续降低不确定性；Context First 仅为先验偏好而非固定流程）。
