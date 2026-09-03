@@ -7,8 +7,8 @@
 
 复用 `data/replay-mgreplay-20260817/` 的历史回放结果和会话映射，在已经积累了长上下文的复制会话末尾追加 3 个只读探针。探针均明确要求“不取行情、不修改文件/策略/配置、不创建任务”。
 
-计划文件：[coherence-probe-plan-20260821.json](../data/replay-mgreplay-20260817/coherence-probe-plan-20260821.json)  
-结果文件：[coherence-probe-results-20260821.jsonl](../data/replay-mgreplay-20260817/coherence-probe-results-20260821.jsonl)
+计划文件：`data/replay-mgreplay-20260817/coherence-probe-plan-20260821.json`（本地数据目录，`data/` 不入库）  
+结果文件：`data/replay-mgreplay-20260817/coherence-probe-results-20260821.jsonl`
 
 | 探针 | 历史会话长度 | 目的 | 结果 |
 | --- | ---: | --- | --- |
