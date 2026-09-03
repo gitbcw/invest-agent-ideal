@@ -17,6 +17,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
+import { beijingDateKey } from "../lib/market-calendar.js";
 
 export type RuntimeDataProvider = "eastmoney" | "web";
 export type MarketDataProvider = RuntimeDataProvider;
@@ -217,7 +218,8 @@ function telemetryFilePath(dateKey: string): string {
 }
 
 function todayKey(date = new Date()): string {
-  return date.toISOString().slice(0, 10);
+  // 遥测按北京日历日落键，与日报读取（调度器 beijingDateKey）口径一致。
+  return beijingDateKey(date);
 }
 
 async function appendTelemetry(record: SourceTelemetryRecord): Promise<void> {

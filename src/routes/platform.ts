@@ -28,6 +28,8 @@ import {
   users,
 } from "../db/schema.js";
 import { logger } from "../lib/logger.js";
+import { beijingDateKey } from "../lib/market-calendar.js";
+import { beijingDayOf } from "../lib/beijing-day.js";
 import { createInvestAgentInstance, deleteInvestAgentInstance, getProjectRuntimeContext, listProjectRuntimeContexts, type AiProjectRuntimeContext } from "../platform/project-registry.js";
 import { WeixinMobileManager } from "../channels/weixin-mobile.js";
 import { config } from "../lib/config.js";
@@ -518,8 +520,9 @@ async function loadRuleAlertAudit(input: { userId?: string; instanceId?: string;
 
   const latestTask = taskRows[0] || null;
   const latestEvent = eventRows[0] || null;
-  const today = new Date().toISOString().slice(0, 10);
-  const todayTasks = taskRows.filter((item) => String(item.scheduledFor || item.createdAt).startsWith(today));
+  const today = beijingDateKey();
+  // scheduledFor 混有 dateKey 与完整 ISO 两种格式，统一归到北京日历日再比较。
+  const todayTasks = taskRows.filter((item) => beijingDayOf(String(item.scheduledFor || item.createdAt)) === today);
   const todayEvents = eventRows.filter((item) => item.eventDate === today);
 
   return {
@@ -2116,8 +2119,8 @@ export function registerPlatformRoutes(app: FastifyInstance) {
     if (!project || project.status === "archived") return reply.status(404).send({ ok: false, error: "实例不存在或已归档" });
     const userId = project.ownerUserId;
     const instanceId = project.instanceId;
-    const today = new Date().toISOString().slice(0, 10);
-    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const today = beijingDateKey();
+    const startDate = beijingDateKey(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
     const [holdings, watchlist, plans, watchRules, recentDailyPlans, recentViewpoints] = await Promise.all([
       portfolioBackend.listActive(userId, instanceId).catch(() => []),
       watchlistBackend.list(userId, instanceId).catch(() => []),

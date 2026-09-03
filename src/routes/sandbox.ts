@@ -3,6 +3,7 @@ import { db, sqlite } from "../db/index.js";
 import { agentTraces, alertEvents, alertRules, indicatorResults, mastraProjectProfiles, methodologyProfiles } from "../db/schema.js";
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
+import { beijingDateKey } from "../lib/market-calendar.js";
 import { ACTIVE_BACKEND, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
 import { methodChangeBackend } from "../lib/method-change-backend.js";
@@ -930,7 +931,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   })));
 
   app.get("/api/sandbox/snapshot", sandboxSafe("invest.snapshot.read", async (ctx) => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = beijingDateKey();
     const [portfolioRows, watchlistRows, planRows, upgradedAlertRules, recentIndicatorResults, recentEvents, recentPlans, recentConversations, methodChangeRows, methodologyProfile] =
       await Promise.all([
         portfolioBackend.listActive(ctx.userId, ctx.instanceId),
@@ -942,8 +943,8 @@ export function registerSandboxRoutes(app: FastifyInstance) {
         // WP4.7:daily_plans 走 backend
         (async () => {
           const todayDate = new Date();
-          const endDate = todayDate.toISOString().slice(0, 10);
-          const startDate = new Date(todayDate.getTime() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+          const endDate = beijingDateKey(todayDate);
+          const startDate = beijingDateKey(new Date(todayDate.getTime() - 365 * 24 * 3600 * 1000));
           const all = await dailyPlanBackend.listInRange(ctx.userId, ctx.instanceId, startDate, endDate);
           return all.slice(0, 5);
         })(),
@@ -1349,7 +1350,7 @@ export function registerSandboxRoutes(app: FastifyInstance) {
   app.post<{ Body: { date?: string; force?: boolean; userId?: string } }>("/api/sandbox/reviews/daily", sandboxMutationSafe("invest.review.write", "reviews.daily", async (ctx, request) => {
     const { date, force } = request.body ?? {};
     const content = await generateDailyReview({ force: force ?? true, targetDate: date, userId: ctx.userId, instanceId: ctx.instanceId });
-    return { ok: true, userId: ctx.userId, date: date ?? new Date().toISOString().slice(0, 10), content, summary: content.slice(0, 1200) };
+    return { ok: true, userId: ctx.userId, date: date ?? beijingDateKey(), content, summary: content.slice(0, 1200) };
   }));
 
   app.post<{ Body: { force?: boolean } }>("/api/sandbox/alerts/check", sandboxSafe("invest.alert.check", async (ctx, request) => {

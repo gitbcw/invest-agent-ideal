@@ -17,6 +17,8 @@ import { resolveWorkspacePath } from "../lib/workspace.js";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "path";
+import { beijingDateKey } from "../lib/market-calendar.js";
+import { CREATED_AT_BEIJING_DAY_SQL, beijingDayOf } from "../lib/beijing-day.js";
 
 const REVIEWS_DIR = resolve(process.env.REVIEWS_ROOT || join(process.cwd(), "reviews"));
 const TEMPLATE_KEY = "review_template";
@@ -42,10 +44,8 @@ function ensureDir() {
 }
 
 export function localDateString(date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  // 统一收敛到北京日历日（原为服务器本地时区，存在时区依赖隐患）。
+  return beijingDateKey(date);
 }
 
 function parseDateString(value: string): Date {
@@ -945,8 +945,8 @@ function collectMastraBehaviorStats(
       if (!payload || typeof payload !== "object" || payload.event_type !== "action_confirmed") continue;
       const occurredAt = payload.createdAt ?? row.rowCreatedAt;
       if (!occurredAt) continue;
-      const date = occurredAt.slice(0, 10);
-      if (date < startDate || date > endDate) continue;
+      const date = beijingDayOf(occurredAt);
+      if (!date || date < startDate || date > endDate) continue;
       actionConfirmed.push({ ...payload, rowCreatedAt: occurredAt });
     }
     // Order by business time (payload createdAt), not ledger insert time: the
@@ -954,7 +954,7 @@ function collectMastraBehaviorStats(
     // the same millisecond, and workspace parity is append≈business order.
     actionConfirmed.sort((a, b) => (a.rowCreatedAt < b.rowCreatedAt ? -1 : a.rowCreatedAt > b.rowCreatedAt ? 1 : 0));
     const turnRow = sqlite.prepare(
-      "SELECT COUNT(*) AS count FROM chat_history WHERE user_id=? AND instance_id=? AND role='user' AND substr(created_at,1,10) >= ? AND substr(created_at,1,10) <= ?",
+      `SELECT COUNT(*) AS count FROM chat_history WHERE user_id=? AND instance_id=? AND role='user' AND ${CREATED_AT_BEIJING_DAY_SQL} >= ? AND ${CREATED_AT_BEIJING_DAY_SQL} <= ?`,
     ).get(userId, instanceId, startDate, endDate) as { count: number };
     return {
       available: true,

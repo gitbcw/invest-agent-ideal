@@ -10,6 +10,7 @@ import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { MastraUserPreferenceStore } from "../services/user-preferences.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { beijingNow, isBeijingTradingDay } from "../lib/schedules-loader.js";
+import { beijingDateKey } from "../lib/market-calendar.js";
 import { listWatchRules, dryRunWatchRule, type WatchRuleRecord } from "../services/watch-rules.js";
 import { getRulePrices } from "../services/rule-price-facts.js";
 
@@ -335,7 +336,8 @@ export async function filterAndRecordAlerts(
 ): Promise<AlertItem[]> {
   const now = new Date();
   const createdAt = now.toISOString();
-  const eventDate = createdAt.slice(0, 10);
+  // event_date 是业务「事件日」，按北京日历日落键，与复盘/巡检读取口径一致。
+  const eventDate = beijingDateKey(now);
   const stockCodes = [...new Set(items.map((item) => item.stockCode))];
   const triggeredKeys = new Set(items.map((item) => item.signalKey));
   await releaseInactiveSignalStates(userId, instanceId, stockCodes, triggeredKeys, now);

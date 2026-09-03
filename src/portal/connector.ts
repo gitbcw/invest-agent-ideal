@@ -69,7 +69,8 @@ import {
   uploadUserAssetVersion,
 } from "../services/user-assets.js";
 import { assertUploadRequestSize, getStorageUsage } from "../services/user-storage-quota.js";
-import { USAGE_DAY_BUCKET_SQL, usageRange } from "./usage-range.js";
+import { CREATED_AT_BEIJING_DAY_SQL } from "../lib/beijing-day.js";
+import { usageRange } from "./usage-range.js";
 import { backfillFormalReportAssetMappings, getReportAssetMappingForRead, listReportAssetMappings, registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import { modelRoutingSnapshot, resolveAutoModel } from "../services/model-health.js";
 import { pricingSummary } from "../services/model-pricing.js";
@@ -620,7 +621,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         GROUP BY agent_model ORDER BY cost DESC
       `).all(usageScope.userId, usageScope.instanceId, range.from, range.to);
       const byDay = sqlite.prepare(`
-        SELECT ${USAGE_DAY_BUCKET_SQL} AS day, COUNT(*) AS calls,
+        SELECT ${CREATED_AT_BEIJING_DAY_SQL} AS day, COUNT(*) AS calls,
                COALESCE(SUM(cost_amount), 0) AS cost
         FROM agent_traces
         WHERE user_id = ? AND instance_id = ? AND created_at >= ? AND created_at <= ?

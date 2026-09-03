@@ -1,5 +1,6 @@
 import { sqlite } from "../db/index.js";
 import type { AiProjectRuntimeContext } from "../platform/project-registry.js";
+import { beijingDateKey } from "../lib/market-calendar.js";
 import { isPricedModel, pricingSummary } from "./model-pricing.js";
 
 export type AgentUsageGroupBy = "day" | "instance" | "user" | "model";
@@ -109,7 +110,8 @@ function bucketFor(entry: AgentUsageEntry, groupBy: AgentUsageGroupBy) {
   if (groupBy === "instance") return entry.instanceId;
   if (groupBy === "user") return entry.userId;
   if (groupBy === "model") return entry.model;
-  return entry.timestamp.toISOString().slice(0, 10);
+  // 按天统计走北京日历日（owner 成本视图口径），与调度器 beijingDateKey 约定一致。
+  return beijingDateKey(entry.timestamp);
 }
 
 function readTraceUsageRows(input: {

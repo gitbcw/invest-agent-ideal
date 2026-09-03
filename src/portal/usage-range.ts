@@ -1,10 +1,8 @@
 /** Portal 用量查询的日期边界：created_at 存 UTC，页面日期是北京日历日。 */
 
-const USAGE_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+import { beijingDateKey } from "../lib/market-calendar.js";
 
-function shanghaiIsoDay(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-}
+const USAGE_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function shanghaiDayBoundary(day: string, endOfDay: boolean): string | null {
   const date = new Date(`${day}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}+08:00`);
@@ -23,10 +21,7 @@ export function usageRange(message: { payload?: unknown }): { from: string; to: 
   const from = USAGE_DAY_RE.test(fromRaw) ? shanghaiDayBoundary(fromRaw, false) : fromRaw || null;
   const to = USAGE_DAY_RE.test(toRaw) ? shanghaiDayBoundary(toRaw, true) : toRaw || null;
   return {
-    from: from ?? shanghaiDayBoundary(shanghaiIsoDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000)), false)!,
-    to: to ?? shanghaiDayBoundary(shanghaiIsoDay(now), true)!,
+    from: from ?? shanghaiDayBoundary(beijingDateKey(new Date(now.getTime() - 29 * 24 * 3600 * 1000)), false)!,
+    to: to ?? shanghaiDayBoundary(beijingDateKey(now), true)!,
   };
 }
-
-/** 按天分组与 usageRange 同口径：把 UTC created_at 归到北京日历日（SQLite 无时区库，固定 +8）。 */
-export const USAGE_DAY_BUCKET_SQL = "substr(datetime(substr(created_at, 1, 19), '+8 hours'), 1, 10)";

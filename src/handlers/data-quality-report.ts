@@ -9,6 +9,7 @@ import { mkdir, appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../lib/config.js";
 import { logger } from "../lib/logger.js";
+import { beijingDateKey } from "../lib/market-calendar.js";
 import {
   readTelemetryByDate,
   setAlertSink,
@@ -65,7 +66,8 @@ interface SourceQualitySummary {
 }
 
 function todayKey(): string {
-  return new Date().toISOString().slice(0, 10);
+  // 文件按北京日历日落键，与调度器传入的 beijingDateKey 口径一致。
+  return beijingDateKey();
 }
 
 function qualityFilePath(dateKey: string, ext: "md" | "json" | "jsonl") {
