@@ -36,7 +36,7 @@
 
 门户展示态是 2026-08-16 自由测试发现的缺口：生产门户把软删除等状态存在 portal 独立 SQLite 的 `conversation_mirror`，而候选门户直接使用 runtime.db 的 `portal_conversation_meta`；只做 runtime 表级迁移时，生产已删除会话（首批 19 条）会在候选侧栏复活。任何重跑迁移都必须在会话域完成后追加执行该导入脚本。
 
-权威归属以 [table-ownership.md](/Users/combo/MyFile/projects/invest-agent-ideal-mastra/docs/table-ownership.md) 为准；若 SQLite 与 Workspace 同时存在，以当前生产运行路径的最新、可校验版本为源，不允许静默覆盖。
+权威归属以 [table-ownership.md](./table-ownership.md) 为准；若 SQLite 与 Workspace 同时存在，以当前生产运行路径的最新、可校验版本为源，不允许静默覆盖。
 
 ## 4. 执行阶段
 
