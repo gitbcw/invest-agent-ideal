@@ -115,11 +115,11 @@ Agent 表现 ≠ 模型表现，而是 Model + Prompt + Tools + Context manageme
 | Online evaluation | 可加入 | 主流方向 |
 | Eval-driven CI/CD | 可加入 | 成熟团队方向 |
 
-## 十三、原对话给出的建议（外部建议，未裁决）
+## 十三、原对话给出的建议与裁决状态
 
-1. 体系从「Observability/Diagnosis/Case Management 三 skill」升级为五块：Infrastructure（Trace）/ Intelligence（Diagnosis）/ Knowledge（Failure Finding Registry）/ Evaluation（Eval Factory：Capability+Regression+Holdout）/ Operations（Offline Eval、CI Gate、Online Eval、Human Review）；
-2. 把原设想的 Case Management skill 重写为 **`failure-to-eval` skill**：规定 Diagnosis 完成后 case 如何进入 Finding Registry、满足什么标准晋升为 Eval；
-3. 问题本身的升级：从「AI 应用怎么 Debug」→「**如何设计一个能从真实失败中持续学习、持续验证、同时不因局部修复而退化的 AI 软件工程系统**」——2026 Agent 工程最前沿问题之一。
+1. 体系从「Observability/Diagnosis/Case Management 三 skill」升级为五块：Infrastructure（Trace）/ Intelligence（Diagnosis）/ Knowledge（Failure Finding Registry）/ Evaluation（Eval Factory：Capability+Regression+Holdout）/ Operations（Offline Eval、CI Gate、Online Eval、Human Review）——**概念分层供参照，不建五块实体**；
+2. 把 Case Management skill 重写为 **`failure-to-eval` skill**——**owner 2026-09-03 裁决：不采纳，太重**。其职能已有轻量承载（failure-taxonomy 即 Finding Registry、bad-case 模板、rubric 校准样本、EV 回归用例），再包一层流程 skill 属重复建设；
+3. 问题本身的升级：从「AI 应用怎么 Debug」→「**如何设计一个能从真实失败中持续学习、持续验证、同时不因局部修复而退化的 AI 软件工程系统**」——2026 Agent 工程最前沿问题之一（已被运营环文档采纳为总纲）。
 
 ## 参考来源（原对话引用，未逐条复核）
 
