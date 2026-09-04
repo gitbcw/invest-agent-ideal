@@ -1,5 +1,7 @@
 # 用户自定义公式历史截面选股需求调研记录
 
+> ⚠️ 状态更新（2026-09-03）：本文 §3 的**现状结论已过时**——"筹码数据缺失导致无法承接"的前提不再成立（`chip-distribution.ts` 换手率衰减代理模型已现役，可算 WINNER）。现行现状盘点、终局定义与阶段划分见 [strategy-indicator-roadmap.md](./strategy-indicator-roadmap.md)。本文的 §6 支持等级、§7 分阶段采购条款、§9 验收标准、§10 风险表作为方法论继续有效。
+
 > 调研日期：2026-07-27  
 > 状态：调研结论，可作为客户答复与后续立项输入；尚未形成实施承诺  
 > 关联文档：`composite-indicator-system.md`、`market-data-service-design.md`、`data-source-policy-decision.md`、`data-provider-cost-evaluation.md`
