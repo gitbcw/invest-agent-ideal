@@ -174,3 +174,15 @@ test("90 天滚动清理：只删过期载荷行，不碰主体记录", async ()
   assert.ok(remaining.includes("atrun_recent"));
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM agent_traces WHERE trace_id = 'keep-trace'").get().n, 1);
 });
+
+test("runner→trace 接线：generic automation message.context 必须携带 runId/taskId（2026-09-04 首个真实 run 载荷零落库事故）", async () => {
+  // recordAgentTrace 以 input.runId 为载荷落库门槛，而 agent.ts 从
+  // message.context.runId 读取。首个生产 run 暴露 runner 构造 message 时
+  // 漏放这两个键，run_id 恒 null、toolPayloads 永不落库。defaultExecutor
+  // 为私有函数无法直接行为测试，按 automation-generic-tasks.test.ts 的
+  // 源码断言模式锁住接线行。
+  const { readFile } = await import("node:fs/promises");
+  const runnerSource = await readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
+  assert.match(runnerSource, /runId:\s*input\.run\.runId/, "message.context 必须接线 runId，否则 T-459 载荷链路断裂");
+  assert.match(runnerSource, /taskId:\s*input\.task\.taskId/, "message.context 必须接线 taskId，否则 trace 无法归因到任务");
+});

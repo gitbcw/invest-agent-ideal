@@ -667,6 +667,11 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       // Automation runs are not conversations: a distinct channel keeps them
       // out of the conversation audit scope and any channel-based stats.
       channel: "automation",
+      // recordAgentTrace reads runId/taskId from message.context to gate
+      // automation_tool_payloads (T-459); without this wiring run_id stays
+      // null and payloads never persist (2026-09-04 first live run).
+      runId: input.run.runId,
+      taskId: input.task.taskId,
       conversationId: reviewTarget?.conversationId ?? `automation-run:${input.run.runId}`,
       userId: input.scope.userId,
       projectId: input.scope.projectId,
