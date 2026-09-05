@@ -41,7 +41,7 @@ test("generic automation internal hints cap max steps and preserve a fallback re
   }), {
     enabled: true,
     maxSteps: 30,
-    attemptTimeoutMs: 570_000,
+    attemptTimeoutMs: 840_000,
     fallbackMinRemainingMs: 300_000,
   });
   assert.deepEqual(resolveInternalAutomationBudget({
@@ -64,7 +64,7 @@ test("AUTOMATION_UNLIMITED relaxes automation ceilings for co-creation observati
     attemptTimeoutMs: 9_000_000,
   });
   assert.equal(capped.maxSteps, 30);
-  assert.equal(capped.attemptTimeoutMs, 570_000);
+  assert.equal(capped.attemptTimeoutMs, 840_000);
 
   const previous = process.env.AUTOMATION_UNLIMITED;
   try {

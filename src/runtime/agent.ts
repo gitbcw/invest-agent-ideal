@@ -144,7 +144,11 @@ const INTERNAL_AUTOMATION_MAX_STEPS = 30;
 // 2026-08-27：480s → 570s（mgreplay 回放实测 glm-5.3-flash 三步 ~480s，最终
 // JSON 步差 ~90s 被掐）。570 + 300 兜底 + 30 提交 = 900s 恰为 15 分钟租约；
 // 兜底仅在 attempt 早期失败时发生，全时长 attempt 后无兜底属预期。
-const INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS = 570_000;
+// 2026-09-05：570s → 840s（T-462）。mg 持仓复盘成功日实测 440/452/543/580s
+// 逐日爬升，9-3 已贴线、9-4 打满 570s 被 MASTRA_TURN_TIMEOUT 杀（无部分写入）。
+// 840 + 300 兜底 + 30 提交 = 1170s ≤ 20 分钟租约（DEFAULT_AUTOMATION_RUN_LEASE_MS
+// 已同步 15→20 分钟；与 generic-automation-runner 常量必须同步调整）。
+const INTERNAL_AUTOMATION_ATTEMPT_TIMEOUT_MS = 840_000;
 const INTERNAL_AUTOMATION_FALLBACK_RESERVE_MS = 300_000;
 // 共创期不设限观测开关（owner 2026-08-27）：AUTOMATION_UNLIMITED=1 仅注入
 // 回放/评测进程环境，不进任何生产 .env。开启后 attempt/步数放宽到观测级

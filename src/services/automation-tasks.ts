@@ -29,7 +29,11 @@ const DEFAULT_AUTOMATION_TIMEZONE = "Asia/Shanghai";
  * process can recover a run after the owner disappears.  Deployments with a
  * known ACP upper bound may override this value, while keeping it bounded.
  */
-const DEFAULT_AUTOMATION_RUN_LEASE_MS = 15 * 60 * 1000;
+// 2026-09-05：15 → 20 分钟（T-462）。attempt 预算 570s→840s（agent.ts 与
+// generic-automation-runner.ts 同步）后，840 + 300 兜底 + 30 提交 = 1170s 超出
+// 15 分钟租约；租约过短会经 resolveTurnExecutionBudget 把 attempt 收口回压
+// 到剩余时间，预算放大不生效。
+const DEFAULT_AUTOMATION_RUN_LEASE_MS = 20 * 60 * 1000;
 const AUTOMATION_RUN_LEASE_MS = positiveInteger(process.env.AUTOMATION_TASK_LEASE_MS, DEFAULT_AUTOMATION_RUN_LEASE_MS);
 /** Re-schedule delay after a lease-expired scheduled run is terminalized
  * (process died mid-run): short enough to deliver the schedule intent the
