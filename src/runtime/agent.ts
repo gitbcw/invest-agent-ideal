@@ -576,6 +576,8 @@ export function createRuntimeAgent(): RuntimeAgent {
           //（2026-08-19 mg 复盘事故排查时 error trace 全空是最大盲区）。
           agentModel: selectedModel || (error as { model?: string }).model,
           toolCalls: (error as { toolCalls?: unknown[] }).toolCalls,
+          // T-459 盲区修复：run-turn 已在失败/超时轮次把载荷正文挂上错误对象，此处同样落库。
+          toolPayloads: (error as { toolPayloads?: import("../mastra/types.js").MastraToolPayload[] }).toolPayloads,
           firstTokenMs: (error as { firstTokenMs?: number }).firstTokenMs,
           modelSource,
         });

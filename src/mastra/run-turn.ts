@@ -30,6 +30,10 @@ export class MastraTurnError extends Error {
   /** 2026-08-27 取证补全：超时/失败轮次的首字时间（思考流即计入）。此前
    * error trace 不落该值，glm 长思考运行被误读为「零首字零进度」两次。 */
   firstTokenMs?: number;
+  /** T-459 盲区修复（2026-09-05）：超时/失败轮次同样携带已观测工具的载荷
+   * 正文。mg 持仓复盘 atrun_061599bc 超时被杀后载荷零落库证明：失败场景
+   * 恰是最需要「模型当时看到什么」的场景，采集不能只在成功路径发生。 */
+  toolPayloads?: MastraToolPayload[];
   constructor(
     message: string,
     readonly code: MastraTurnErrorCode,
@@ -792,6 +796,10 @@ export async function runMastraTurn(
     // T-327 取证：失败轮次带上实际模型与已观测到的工具调用（此前 error trace 全空）。
     mapped.model = params.model;
     if (observedToolCalls.length > 0) mapped.toolCalls = observedToolCalls;
+    // T-459 盲区修复：失败/超时轮次从流事件 sink 采集已发生工具的载荷正文，
+    // 与成功路径同源同口径（collectMastraToolPayloads 兼容 sink 的 payload 结构）。
+    const failedPayloads = collectMastraToolPayloads(observedToolCalls, [], new Date().toISOString());
+    if (failedPayloads.length > 0) mapped.toolPayloads = failedPayloads;
     if (firstTokenAtMs !== undefined) mapped.firstTokenMs = firstTokenAtMs;
     throw mapped;
   } finally {

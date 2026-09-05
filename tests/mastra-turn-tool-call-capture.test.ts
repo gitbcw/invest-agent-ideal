@@ -100,3 +100,38 @@ test("fullStream tool chunks (v5 tool-input/tool-output event names) are collect
   assert.equal(result.toolCalls![0].toolName, "market_watch.snapshot");
   assert.equal(result.text, "分析");
 });
+
+test("timeout turn carries observed tool payloads on the error (T-459 abort-path capture)", async () => {
+  // 2026-09-04 mg 持仓复盘 atrun_061599bc 超时被杀后 automation_tool_payloads
+  // 零落库：载荷采集点在成功路径（run-turn 成功收尾），超时 reject 直接进
+  // catch，只有 T-327 的调用元数据被带出、正文全丢。修复后 catch 从流事件
+  // sink 同源采集。此测试锁住该行为：流挂起不结束，timeoutMs 触发 race 杀轮。
+  const agent: MastraAgentLike = {
+    stream() {
+      return {
+        fullStream: (async function* () {
+          yield { type: "tool-input-start", payload: { toolCallId: "tc-timeout", toolName: "mdt_call", args: { dataset: "kline", symbol: "600519" } } };
+          yield { type: "tool-output-available", payload: { toolCallId: "tc-timeout", toolName: "mdt_call", output: { rows: [["2026-09-04"]] } } };
+          yield { type: "text-delta", text: "分析中" };
+          await new Promise<void>(() => {});
+        })(),
+      };
+    },
+  };
+  const runner = createMastraTurnRunner({ agent });
+  await assert.rejects(
+    runner({ conversationId: "conv-timeout-payload", text: "复盘", timeoutMs: 50 }),
+    (error: unknown) => {
+      const e = error as import("../src/mastra/types.js").MastraTurnError & { code?: string };
+      assert.equal(e.code, "MASTRA_TURN_TIMEOUT");
+      assert.ok(Array.isArray(e.toolCalls) && e.toolCalls.length > 0, "T-327: observed call metadata retained");
+      assert.ok(Array.isArray(e.toolPayloads) && e.toolPayloads.length > 0, "T-459: payloads retained on timeout path");
+      const payload = e.toolPayloads![0];
+      assert.equal(payload.toolCallId, "tc-timeout");
+      assert.equal(payload.toolName, "mdt_call");
+      assert.ok(payload.input?.text.includes("600519"), "input args serialized");
+      assert.ok(payload.output?.text.includes("2026-09-04"), "output result serialized");
+      return true;
+    },
+  );
+});
