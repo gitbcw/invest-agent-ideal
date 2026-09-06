@@ -1099,10 +1099,31 @@ async function rollTaskBindingToMonthlyFile(scope: AutomationScope, task: Automa
   }
 }
 
+/** BC-20260904-001（owner 2026-09-06 裁决：服务层质量下限）：wechat_summary
+ *  到点必推，但推送内容不得是空壳——低于下限的 summary 降级为服务层模板
+ *  （引用原文开头），不阻断投递、不改写落库的 result_summary（诊断证据保持
+ *  模型原文）。只做长度这一格式类不变量，内容质量判断仍住 agent 区。 */
+export const AUTOMATION_SUMMARY_MIN_CHARS = 40;
+
+export function meetsSummaryQualityFloor(summary: string): boolean {
+  return summary.trim().length >= AUTOMATION_SUMMARY_MIN_CHARS;
+}
+
+export function degradedSummaryMessage(summary: string, taskName: string): string {
+  const original = summary.trim().replace(/\s+/g, " ").slice(0, 80);
+  return `【${taskName}】本轮模型摘要未达质量下限，服务层兜底说明：模型原文开头为「${original}」。数据产出不受影响，完整内容请到 Portal 查看。`;
+}
+
 async function deliverResult(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: Awaited<ReturnType<typeof normalizeStructuredResult>>): Promise<{ run: AutomationTaskRunRecord }> {
   const delivery = task.revision.delivery;
   if (delivery.mode === "none") return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "not_requested" }) };
   if (!result.shouldNotify) return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "suppressed" }) };
+  const pushMessage = meetsSummaryQualityFloor(result.summary)
+    ? result.summary
+    : degradedSummaryMessage(result.summary, task.revision.name);
+  if (pushMessage !== result.summary) {
+    logger.warn(`automation summary quality floor applied task=${task.taskId} run=${run.runId} rawLen=${result.summary.trim().length}`);
+  }
   try {
     const job = await enqueuePushJob({
       userId: scope.userId,
@@ -1112,7 +1133,7 @@ async function deliverResult(scope: AutomationScope, task: AutomationTaskRecord,
       messageKind: "automation_summary",
       originTaskKey: task.taskId,
       originRunId: run.runId,
-      message: result.summary,
+      message: pushMessage,
       idempotencyKey: `automation:${run.runId}:delivery`,
       // 任务级业务时效：显式窗口优先于 24h 默认，过期挂起 job 在用户回来时
       // 被 resumeAwaitingWeixinDeliveries 判死而不是补发（2026-09-03 事故）。

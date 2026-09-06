@@ -303,7 +303,12 @@ export class InvestAgentMobileBridge {
       try {
         response = await executeWithRetryPolicy(
           () => this.agent.handleMessage({
-            id: `wx-${Date.now()}`,
+            // GAP-1（2026-09-06 裁决：统一到信封键）：turn id 决定 trace 的
+            // trace_id/message_id，而助手消息 requestId 与 MCP observer 用
+            // turnId（有入站消息 ID 时 = 信封幂等键）。两套键曾导致微信轮
+            // 工具调用/消息无法显式反链 trace（85+21 条）。统一用 turnId 后
+            // 三方天然同键（含无消息 ID 的 wx-turn 兜底路径）。
+            id: turnId,
             from: first.conversationId || "weixin-mobile",
             timestamp: Date.now(),
             content: { type: "text", text: userText },

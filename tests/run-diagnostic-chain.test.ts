@@ -211,3 +211,56 @@ test("run diagnostic chain resolves portal conversation and scheduler/push chain
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("diagnostic coverage excludes n.a. scheduler task types from the trace-link denominator (GAP-2)", async () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-diagnostic-cov-"));
+  process.env.NODE_ENV = "test";
+  process.env.DB_PATH = path.join(tempRoot, "test.db");
+  process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
+  process.env.RUNTIME_DATA_ROOT = path.join(tempRoot, "runtime");
+
+  try {
+    const { db, initDb } = await import("../src/db/index.js");
+    const { agentTraces, scheduledTaskRuns } = await import("../src/db/schema.js");
+    const { loadDiagnosticCoverage } = await import("../src/services/run-diagnostic.js");
+
+    const userId = "coverage-na-user";
+    const instanceId = "coverage-na-inst";
+    const now = new Date().toISOString();
+
+    initDb();
+    // 1) 模型型调度 run（有 trace 反链）→ 计入分母且计为已关联。
+    const linkedKey = "2026-09-06:market-watch:coverage-na-user:coverage-na-inst:10:00";
+    await db.insert(agentTraces).values({
+      traceId: "coverage-na-trace-1", runId: linkedKey,
+      conversationId: `scheduler:market-watch:${userId}`, messageId: "coverage-na-trace-1",
+      channel: "scheduler", userText: "x", mode: "scheduled-market-watch",
+      status: "success", agentBackend: "mastra", agentModel: "test-model", createdAt: now,
+    });
+    await db.insert(scheduledTaskRuns).values({
+      taskKey: linkedKey, taskType: "market-watch", userId, projectId: "invest-agent", instanceId,
+      scheduledFor: "2026-09-06:1000", status: "success", claimedAt: now, finishedAt: now, createdAt: now, updatedAt: now,
+    });
+    // 2) 模型型调度 run（无 trace）→ 计入分母、计为缺失（缺失保持可观测）。
+    await db.insert(scheduledTaskRuns).values({
+      taskKey: "2026-09-06:weekly-review:coverage-na-user:coverage-na-inst", taskType: "weekly-review",
+      userId, projectId: "invest-agent", instanceId, scheduledFor: "2026-09-06:1000",
+      status: "success", claimedAt: now, finishedAt: now, createdAt: now, updatedAt: now,
+    });
+    // 3) n.a. 规则任务（不召模型、天然无 trace）→ 不入分母、单独计数。
+    await db.insert(scheduledTaskRuns).values({
+      taskKey: "2026-09-06:rule-alert-check:coverage-na-user:coverage-na-inst:am-0", taskType: "rule-alert-check",
+      userId, projectId: "invest-agent", instanceId, scheduledFor: "2026-09-06:1000",
+      status: "success", claimedAt: now, finishedAt: now, createdAt: now, updatedAt: now,
+    });
+
+    const coverage = await loadDiagnosticCoverage(1);
+    assert.equal(coverage.scheduledRunsTotal, 2, "denominator keeps only model-facing runs");
+    assert.equal(coverage.scheduledRunsWithTraceLink, 1);
+    assert.equal(coverage.scheduledRunsNa, 1, "n.a. rule runs counted separately, not as missing");
+    assert.ok(coverage.scheduledNaTaskTypes.includes("rule-alert-check"));
+    assert.ok(coverage.scheduledNaTaskTypes.includes("data-quality-summary"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

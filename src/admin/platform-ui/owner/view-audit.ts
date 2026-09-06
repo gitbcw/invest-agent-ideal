@@ -70,7 +70,7 @@ function renderAuditHealth(){
   ].join('');
   const covRow='<div class="health-cov">'
     +metric(pctText(dc.auditsWithTraceId,dc.auditsTotal),'服务审计带 trace_id（缺 '+fmtNumber(dc.auditsWithoutTraceId)+'）')
-    +metric(pctText(dc.scheduledRunsWithTraceLink,dc.scheduledRunsTotal),'调度 run 有 trace 反链')
+    +metric(pctText(dc.scheduledRunsWithTraceLink,dc.scheduledRunsTotal),'调度 run 有 trace 反链（n.a. '+fmtNumber(dc.scheduledRunsNa||0)+' 规则任务）')
     +metric(cov.toolCallCoverage==null?'-':pctText(Math.round(cov.toolCallCoverage*cov.completed),cov.completed),'回合含工具调用记录')
     +(cov.missing&&cov.missing.traceId?metric(fmtNumber(cov.missing.traceId),'旧数据缺 traceId'):'')
     +'</div>';

@@ -59,11 +59,12 @@
 | EV-035 | 自动化执行预算与截止期封顶（T-462 机制层） | automation / timeout / budget | executable | 每次模型尝试 timeout 被任务截止期封顶（到期即 expired）；自动兜底要求剩余预算≥下限；generic automation 内部 hint 限制 max steps 并保留 fallback 储备 | 预算外重试、截止期后仍召模型、兜底打穿剩余预算 | `npm test` → `tests/agent-execution-budget.test.ts`（2026-09-06 复核 4/4 绿）；失败模式映射：自动化超时/重试（taxonomy T3） |
 | EV-036 | 确认草案复用与死锁恢复（2026-09-03 真实事件回归） | confirmation / recovery / regression | executable | 用户已确认后模型重复注册草案时，复用时序已满足的 pending 草案（丢弃漂移变体）；执行工具只传 confirmationId 时从注册记录恢复已确认草案执行；不产生无限重注册 | 时间戳反复推晚致时序校验永不满足、payload 漂移后仍执行、确认死循环复发 | `npm test` → `tests/confirmation-reuse-recovery.test.ts`（复刻 111 2026-09-03 调仓确认死锁，防死锁三件套，2026-09-06 复核 2/2 绿）；失败模式映射：长会话一致性/确认流；对应真实失败事件尚未入 taxonomy v1.1，增补建议走 ED-P1 例行初稿（分类法禁静默改写） |
 | EV-037 | 自动化投递时效 validityMinutes（2026-09-03 修复回归） | push / expiry / validity | executable | 盯盘类推送挂起有效期 120min、早报类 360min（validityMinutes 按任务类型配置）；挂起恢复窗口与业务时效匹配；过期内容不外发 | 跨日补发过期内容、时效错配致挂起永远等不到恢复窗口 | `npm test` → `tests/automation-delivery-validity.test.ts`（2026-09-06 复核 4/4 绿）；失败模式映射：推送过期（taxonomy D3/P2 邻接——挂起与时效匹配面） |
+| EV-038 | 自动化 summary 服务层质量下限（BC-20260904-001 修复，owner 2026-09-06 裁决） | automation / push content contract | executable | wechat_summary 到点必推但空壳不得照推：低于下限（40 字符去空白）的 summary，推送消息降级为服务层模板（任务名+引用原文开头+Portal 指引）；落库 result_summary 保持模型原文（诊断证据不被改写）；达标 summary 原样透传 | 空壳/元话语 summary 照推、服务层改写 result_summary、降级模板阻断投递 | `npm test` → `tests/automation-summary-quality-floor.test.ts`（全链 run→deliverResult→push job 消息断言 + helper 边界，2026-09-06 3/3 绿）；失败模式映射：推送内容契约（BC-20260904-001；taxonomy 增补建议留 ED-P1） |
 
 ## 数量口径
 
-- 已登记：37 条
-- 可执行：36 条
+- 已登记：38 条
+- 可执行：37 条
 - 候选：1 条
 - 治理目标：30–50 条可执行、版本化样例
 
@@ -94,6 +95,7 @@
 | 执行预算/截止期/兜底策略 | EV-035 | 预算封顶与 fallback 储备（T-462 面） |
 | 确认草案复用/恢复语义 | EV-024 + EV-036 | 通用确认门 + 2026-09-03 死锁恢复回归 |
 | 投递时效（validityMinutes/挂起窗口） | EV-016 + EV-037 | 终态收敛 + 挂起/时效匹配 |
+| 自动化推送内容契约（summary/简报格式） | EV-016 + EV-038 | 终态收敛 + 质量下限与降级模板（tier-2 语义门适用） |
 | 安全、scope、越权 | 全部适用项 + 安全边界测试（boundary） | 硬门，不可被平均分抵消 |
 
 ## 优先失败模式覆盖视图（2026-09-06，T-468）

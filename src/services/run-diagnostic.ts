@@ -1,4 +1,4 @@
-import { eq, inArray, or, sql, type Column } from "drizzle-orm";
+import { and, eq, inArray, notInArray, or, sql, type Column } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   agentTraces,
@@ -254,7 +254,13 @@ export async function buildRunDiagnostic(by: DiagnosticEntryType, rawId: string)
   };
 }
 
-/** 覆盖率口径：audit 带 trace_id 的比例、scheduler run 有 trace 反链的比例。 */
+/** 不产生模型 trace 的调度任务类型（规则巡检/数据质量汇总）。这些 run 不召
+ *  模型、天然无 trace，按治理口径为 n.a.——不计入 scheduler 反链分母，单独
+ *  计数返回（GAP-2 口径修正，基线见 docs/diagnostic-coverage-report-2026-09-06.md；
+ *  新增无模型轮次的调度类型时在此登记）。 */
+const SCHEDULER_TRACE_NA_TASK_TYPES: readonly string[] = ["rule-alert-check", "data-quality-summary"];
+
+/** 覆盖率口径：audit 带 trace_id 的比例、scheduler run 有 trace 反链的比例（n.a. 任务类型除外）。 */
 export async function loadDiagnosticCoverage(days = 30): Promise<{
   windowDays: number;
   auditsTotal: number;
@@ -262,6 +268,8 @@ export async function loadDiagnosticCoverage(days = 30): Promise<{
   auditsWithoutTraceId: number;
   scheduledRunsTotal: number;
   scheduledRunsWithTraceLink: number;
+  scheduledRunsNa: number;
+  scheduledNaTaskTypes: readonly string[];
 }> {
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
   const [auditStats] = await db.select({
@@ -273,7 +281,17 @@ export async function loadDiagnosticCoverage(days = 30): Promise<{
     total: sql<number>`count(*)`,
     withTrace: sql<number>`sum(case when exists (select 1 from ${agentTraces} where ${agentTraces.runId} = ${scheduledTaskRuns.taskKey}) then 1 else 0 end)`,
   }).from(scheduledTaskRuns)
-    .where(sql`${scheduledTaskRuns.createdAt} >= ${since}`);
+    .where(and(
+      sql`${scheduledTaskRuns.createdAt} >= ${since}`,
+      notInArray(scheduledTaskRuns.taskType, [...SCHEDULER_TRACE_NA_TASK_TYPES]),
+    ));
+  const [naStats] = await db.select({
+    total: sql<number>`count(*)`,
+  }).from(scheduledTaskRuns)
+    .where(and(
+      sql`${scheduledTaskRuns.createdAt} >= ${since}`,
+      inArray(scheduledTaskRuns.taskType, [...SCHEDULER_TRACE_NA_TASK_TYPES]),
+    ));
   return {
     windowDays: days,
     auditsTotal: Number(auditStats?.total ?? 0),
@@ -281,5 +299,7 @@ export async function loadDiagnosticCoverage(days = 30): Promise<{
     auditsWithoutTraceId: Number(auditStats?.total ?? 0) - Number(auditStats?.withTrace ?? 0),
     scheduledRunsTotal: Number(runStats?.total ?? 0),
     scheduledRunsWithTraceLink: Number(runStats?.withTrace ?? 0),
+    scheduledRunsNa: Number(naStats?.total ?? 0),
+    scheduledNaTaskTypes: SCHEDULER_TRACE_NA_TASK_TYPES,
   };
 }

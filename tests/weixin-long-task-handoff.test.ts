@@ -45,3 +45,39 @@ test("WeChat waits for a long task and returns the final result", async () => {
   `).all("weixin-long-task-conversation") as Array<{ content: string }>;
   assert.equal(messages.some((message) => message.content === "后台分析已完成。"), true);
 });
+
+test("weixin turn id equals the envelope key so trace/message/observer share one correlation key (GAP-1 2026-09-06)", async () => {
+  const db = await import("../src/db/index.js");
+  db.initDb();
+  const { InvestAgentMobileBridge } = await import("../src/channels/weixin-message-bridge.js");
+  const captured: Array<{ id?: string; context?: { requestId?: string } }> = [];
+  const bridge = new InvestAgentMobileBridge(
+    "gap1-test",
+    path.join(root, "weixin-state-gap1"),
+    undefined,
+    {
+      agentId: "test-agent",
+      agentName: "test",
+      capabilities: ["chat"],
+      handleMessage: async (message: { id?: string; context?: { requestId?: string } }) => {
+        captured.push(message);
+        return { content: { type: "text" as const, text: "收到。" }, finished: true };
+      },
+    },
+  );
+
+  const result = await bridge.chat({ conversationId: "weixin-gap1-conversation", text: "看看今天持仓", messageId: "wxmsg-gap1-001" });
+  assert.equal(result.text, "收到。");
+  assert.equal(captured.length, 1);
+  const envelopeKey = "weixin-inbound:gap1-test:wxmsg-gap1-001";
+  // GAP-1 核心：agent 轮 id（= trace 的 trace_id/message_id）必须与信封幂等键
+  // （= 助手消息 requestId / MCP observer run_id）同键，微信轮诊断链才可显式反链。
+  assert.equal(captured[0]!.id, envelopeKey);
+  assert.equal(captured[0]!.context?.requestId, envelopeKey);
+  const assistant = db.sqlite.prepare(
+    "SELECT trace_id, request_id FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+  ).get("weixin-gap1-conversation") as { trace_id: string | null; request_id: string | null };
+  assert.equal(assistant.request_id, envelopeKey);
+  assert.ok(assistant.trace_id === envelopeKey || assistant.trace_id === null,
+    `assistant trace key must not diverge from the turn key: ${assistant.trace_id}`);
+});

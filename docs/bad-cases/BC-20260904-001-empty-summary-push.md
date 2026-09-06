@@ -51,13 +51,15 @@ message_kind: automation_summary；message 长度 13
 
 ```text
 是否允许灰度：n.a.（行为+防线缺陷，无发布面）
-修复路径（待 owner 裁决选型）：
-  主修复（服务层，可确定性测试）：summary 质量下限校验——低于下限（如长度/关键要素）时降级为服务层生成的轻量说明模板，不照推模型原文；属服务契约变更，修复后可登记为 EV-038（确定性断言）
-  辅助（可选）：盯盘任务提示词补一行「summary 必须为实质简报，不得输出元话语」
-回归样例：现无确定性样例；盯盘 rubric（W3 信号质量/W4 完备性/W5 表达适配）可检测本型（该样本若被周采样抽中即 fail），但 rubric 为周级非阻塞
-观察：未修复前由 S3（催补/抱怨关键词）与巡查人工段关注复发
+修复路径（owner 2026-09-06 裁决：选项 A 服务层质量下限）：
+  已实现（2026-09-06，T-473，随 SCR-20260906-02 待发布）：wechat_summary 推送入队前确定性校验——
+  summary 去空白后低于 40 字符（AUTOMATION_SUMMARY_MIN_CHARS）时，推送消息降级为服务层模板
+  （任务名+引用原文开头≤80 字+Portal 指引）；到点必推语义不变；落库 result_summary 保持模型原文。
+  语义变更门判级 tier-2（自动化推送内容契约），SCR-20260906-02 随代码 commit。
+回归样例：EV-038（tests/automation-summary-quality-floor.test.ts，全链+边界 3/3 绿）
+观察：发布后由巡查 S7/S3 与 rubric 周评观察；降级模板触发即 logger.warn（频次可巡查聚合）
 复核人：owner
-关闭条件：服务层质量下限上线 + EV-038 入册 + 复核窗口内无同型复发
+关闭条件：发布 + 复核窗口内无「空壳照推」同型（降级模板触发属于防线工作正常，不算复发）
 ```
 
 ## 记录纪律符合性
@@ -66,4 +68,5 @@ message_kind: automation_summary；message 长度 13
 
 ## 观察追加
 
-- 2026-09-06（T-469）：作为语义受阻信号移交格式（Diagnosis Record）的走通案例，六问全答记录见 [customer-friction-signal-collection-design.md](../customer-friction-signal-collection-design.md) §九。
+- 2026-09-06（T-469）：作为语义受阻信号移交格式（Diagnosis Record）的走通案例，六问全答记录见 [customer-friction-signal-collection-design.md](../customer-friction-signal-collection-design.md) §八。
+- 2026-09-06（owner 裁决 + T-473 实现）：选项 A 服务层质量下限落地（40 字符下限+降级模板+EV-038 三测全绿），随 SCR-20260906-02 待白天发布窗口；发布前案例保持 triaged，发布后按关闭条件复核。状态从「修复待裁决」进「已实现待发布」。
