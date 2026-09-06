@@ -44,6 +44,8 @@
 {"week":"2026-W36","date":"2026-09-03","target":"intraday_watch","sample_ref":"push_job fd_xxx (14:30 窗口)","delivery":"sent","scorer":"agent-draft","scores":{"W1":2,"W2":2,"W3":2,"W4":2,"W5":1},"hard_gate_fail":[],"total":"pass(9/10)","notes":"W5 开头寒暄过长","linked_fp":null,"trace":"..."}
 ```
 
+**关联字段必填**（2026-09-06 T-469 定为规范，字段表见 [customer-friction-signal-collection-design.md](./customer-friction-signal-collection-design.md) §8.2）：`trace`（运行 ID，评分样本必须可回链诊断链）、`sample_ref`、`delivery`、`hard_gate_fail`、`linked_fp`（硬门槛命中时必须建受阻点）、`taxonomy_ref`（fail 样本必填）。语义失败样本按 §8.3 落 semantic FP（参照走通案例 BC-20260904-001）。
+
 周聚合并入受阻清单「好用度量」段，与行业复盘 rubric 并列呈现。
 
 ## 七、维护纪律

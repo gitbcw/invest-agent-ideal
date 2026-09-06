@@ -1,6 +1,6 @@
 # 评估资产登记表
 
-状态：第一批盘点（v1，2026-08-22）
+状态：v1（2026-08-22 建）；2026-09-06 增补 EV-034~037（治理闭环 T3 / T-468，按优先失败模式补登记，均映射现有确定性测试）
 
 本登记表落实 G1 的版本化评估资产要求。它只登记隔离评估场景和可复核契约，不把历史模型回复直接当作标准答案，也不复制真实生产秘密或完整用户内容。
 
@@ -55,15 +55,19 @@
 | EV-031 | onboarding.* 引导组 | onboarding / contract / projection | executable | 确认写落服务投影且新用户懒建行与 Workspace 语义一致；draft commit 一次更新全部导入投影；共享契约先存 style 再推进、跳步 409 拒绝、通知与盘中调度对齐；未初始化用户微信轻引导、已配置放行 | 跳步推进、半写投影、未初始化用户进全量流程 | `npm test` → `tests/mastra-onboarding-confirm-write.test.ts`、`tests/mastra-onboarding-draft-commit.test.ts`、`tests/onboarding-contract.test.ts`、`tests/mastra-onboarding-guidance-gate.test.ts`、`tests/mastra-weixin-onboarding-gate.test.ts` |
 | EV-032 | watch_rules.* 规则组（catalog/validate/dry_run） | watch rules / semantics | executable | 目录含 price_cross+复活均线+指标规则且退役类型拒绝（「不支持的 ruleType」）；校验归一化参数；ma_cross dry-run 复现生产交叉语义；SSE 帧解析与 NOT_CONFIGURED 降级；MCP 失败时价格事实降级；可用/缺失/无效价格三类事实映射带 provider | 退役规则复活、dry-run 与生产语义漂移、失败编造事实 | `npm test` → `tests/rule-patrol-mcp.test.ts`（6 项）、`tests/watch-rules-deprecation.test.ts`（5 项）、`tests/rule-price-facts.test.ts` |
 | EV-033 | state 读工具审计证据（read 面收口） | read / audit | executable | portfolio.read/watchlist.read/plans.read 留轻量审计（operation+resultSummary）；read 面 scope 由 EV-021（三字段强制）、EV-029（资产跨 scope 不可见）、EV-024（跨实例确认拒绝）、EV-026（read 分区=全集）组合闭合 | 静默读、跨 scope 读无痕、分区漂移 | `npm test` → `tests/mcp-state-read-audit.test.ts` + 组合证据 |
+| EV-034 | 任务修订编辑来源与自动化载荷可追溯（T-459） | observability / provenance | executable | automation_task_revisions 编辑来源枚举正确（portal/agent/script/system/unknown）；自动化 run（有 runId）工具载荷按 toolCallId 合并落库并 32KB 头尾截断+总量标记；交互会话载荷不落库；90 天滚动清理只删过期载荷行；runner→trace 接线必须携带 runId/taskId（2026-09-04 首个真实 run 载荷零落库事故回归） | 编辑来源漂移或缺失、载荷无限增长、交互载荷误入库、清理误删未过期行、接线遗漏再犯 | `npm test` → `tests/t-459-trace-observability.test.ts`（契约 contracts/T-459.md [auto] 项，2026-09-06 复核 6/6 绿）；失败模式映射：配置/任务修订来源可追溯（防线型，支撑 M3/P3 事后归因） |
+| EV-035 | 自动化执行预算与截止期封顶（T-462 机制层） | automation / timeout / budget | executable | 每次模型尝试 timeout 被任务截止期封顶（到期即 expired）；自动兜底要求剩余预算≥下限；generic automation 内部 hint 限制 max steps 并保留 fallback 储备 | 预算外重试、截止期后仍召模型、兜底打穿剩余预算 | `npm test` → `tests/agent-execution-budget.test.ts`（2026-09-06 复核 4/4 绿）；失败模式映射：自动化超时/重试（taxonomy T3） |
+| EV-036 | 确认草案复用与死锁恢复（2026-09-03 真实事件回归） | confirmation / recovery / regression | executable | 用户已确认后模型重复注册草案时，复用时序已满足的 pending 草案（丢弃漂移变体）；执行工具只传 confirmationId 时从注册记录恢复已确认草案执行；不产生无限重注册 | 时间戳反复推晚致时序校验永不满足、payload 漂移后仍执行、确认死循环复发 | `npm test` → `tests/confirmation-reuse-recovery.test.ts`（复刻 111 2026-09-03 调仓确认死锁，防死锁三件套，2026-09-06 复核 2/2 绿）；失败模式映射：长会话一致性/确认流；对应真实失败事件尚未入 taxonomy v1.1，增补建议走 ED-P1 例行初稿（分类法禁静默改写） |
+| EV-037 | 自动化投递时效 validityMinutes（2026-09-03 修复回归） | push / expiry / validity | executable | 盯盘类推送挂起有效期 120min、早报类 360min（validityMinutes 按任务类型配置）；挂起恢复窗口与业务时效匹配；过期内容不外发 | 跨日补发过期内容、时效错配致挂起永远等不到恢复窗口 | `npm test` → `tests/automation-delivery-validity.test.ts`（2026-09-06 复核 4/4 绿）；失败模式映射：推送过期（taxonomy D3/P2 邻接——挂起与时效匹配面） |
 
 ## 数量口径
 
-- 已登记：33 条
-- 可执行：32 条
+- 已登记：37 条
+- 可执行：36 条
 - 候选：1 条
 - 治理目标：30–50 条可执行、版本化样例
 
-只有 `executable` 计入放行门。目前完成度 **32/30——2026-08-24 晚跨过最低目标线**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第八轮（T-372）：EV-006 放宽契约后复评通过升 executable（三轮证据：澄清路径×1、校验+确认门路径×2）。2026-08-24 第九轮（T-374 晚间 flash 批次）：EV-001~005 两轮回放通过升 executable（qwen3.7-flash 行为口径，性能断言 n.a.；含两例诚实降级通过与上游瞬窗正确终态收敛，观察记录见批次二文档）。唯一剩余 candidate：EV-009（挂起观察，BC-20260824-001，3/3 复现）。
+只有 `executable` 计入放行门。目前完成度 **36/30——2026-08-24 晚跨过最低目标线**。增长轨迹与盲区地图见 [evaluation-gap-enumeration-2026-08-24.md](./evaluation-gap-enumeration-2026-08-24.md)；2026-08-24 第八轮（T-372）：EV-006 放宽契约后复评通过升 executable（三轮证据：澄清路径×1、校验+确认门路径×2）。2026-08-24 第九轮（T-374 晚间 flash 批次）：EV-001~005 两轮回放通过升 executable（qwen3.7-flash 行为口径，性能断言 n.a.；含两例诚实降级通过与上游瞬窗正确终态收敛，观察记录见批次二文档）。唯一剩余 candidate：EV-009（挂起观察，BC-20260824-001，3/3 复现）。2026-09-06（T-468）：EV-034~037 补登记——四项均为「测试已存在、已验证但未入台账」的存量证据转正（各自复跑全绿：6/6、4/4、2/2、4/4），非新造测试；对应 2026-09-03/04 三次真实修复与 T-459/T-462 两个功能面。
 
 可执行性口径说明（2026-08-24，WP4）：
 
@@ -85,10 +89,31 @@
 | scheduler、push、投递重试/过期策略 | EV-016 | 终态收敛与重复副作用 |
 | 观测 schema、trace/audit 关联、诊断链 | EV-017 | 显式关联与缺失计数 |
 | Prompt/方法表达/连贯性相关 | EV-010–EV-012（回放）+ 变更涉及场景 | 真实模型回放，注明环境 |
-| 数据源/行情工具/缓存策略 | EV-013（当前 candidate，缺 fixture） | 未升 executable 前只作回归参考，不作放行门 |
+| 数据源/行情工具/缓存策略 | EV-013 | 已升 executable（2026-08-24 fixture 两轮回放通过），作放行门 |
+| 观测 schema、trace 载荷、修订编辑来源 | EV-034 | 编辑来源与载荷可追溯（T-459 面） |
+| 执行预算/截止期/兜底策略 | EV-035 | 预算封顶与 fallback 储备（T-462 面） |
+| 确认草案复用/恢复语义 | EV-024 + EV-036 | 通用确认门 + 2026-09-03 死锁恢复回归 |
+| 投递时效（validityMinutes/挂起窗口） | EV-016 + EV-037 | 终态收敛 + 挂起/时效匹配 |
 | 安全、scope、越权 | 全部适用项 + 安全边界测试（boundary） | 硬门，不可被平均分抵消 |
 
+## 优先失败模式覆盖视图（2026-09-06，T-468）
+
+治理闭环 T3 要求六类高优先失败模式有可执行覆盖。盘点结论：**六类全部有 executable 资产**，其中四项为本次补登记的存量证据（EV-034~037）。
+
+| 优先失败模式 | 覆盖资产 | 备注 |
+| --- | --- | --- |
+| 长会话一致性和延迟 | EV-010~012（回放）、EV-036（确定性） | 一致性已覆盖；延迟=BC-20260821-001 accepted-risk，按 T-355 裁决仅巡查记录不重建专项 |
+| 外部 MCP 失败与降级 | EV-015 | 连接失败降级 + observer 失败证据 |
+| 自动化超时、取消、重试 | EV-020、EV-035 | 终态/互斥/租约 + 预算/截止期/fallback 储备 |
+| 推送过期、永久失败和重复副作用 | EV-016、EV-037 | 终态收敛 + validityMinutes 时效匹配 |
+| 数据缺口下的证据边界 | EV-002、EV-013 | 诚实降级 + 部分缓存回退与来源标注 |
+| 配置/任务修订后的来源可追溯性 | EV-034 | 编辑来源枚举 + 自动化载荷落库 + 接线回归 |
+
+taxonomy 映射原则：EV 是防线型资产，映射到其所防的 [failure taxonomy](./failure-taxonomy.md) 类（各 EV 行内注明）。EV-036 对应的真实失败事件（2026-09-03 确认死锁）尚未入 taxonomy v1.1——按分类法维护纪律，增补建议写在 ED-P1 周一例行初稿，经 owner 复核后落表，不静默改写。
+
 LLM Judge：当前未启用（n.a.）。启用前提：开放式表达确有人工 rubric 无法覆盖的重复评审瓶颈，且具备人工校准样本、误判记录与停用条件。
+
+语义变更门（2026-09-06 增）：本表管程序性回归子集选择；语义面的两级门与 SCR 记录规则见 [semantic-change-regression-gate.md](./semantic-change-regression-gate.md)——tier-2 变更（权限/scope、投资数据口径、自动化推送内容契约、模型/工具边界、任务修订语义）须先过语义门再计本表门。
 
 ## 样例升级要求
 

@@ -59,6 +59,7 @@
 ```
 
 - `scorer`：起步 `agent-draft`（Agent 初评）+ owner 复核抽改；分歧样本保留双方分（judge 校准的金标准就是这些分歧）；
+- **关联字段必填**（2026-09-06 T-469 定为规范，字段表见 [customer-friction-signal-collection-design.md](./customer-friction-signal-collection-design.md) §8.2）：`trace`（运行 ID，评分样本必须可回链诊断链）、`sample_ref`、`delivery`、`hard_gate_fail`、`linked_fp`（硬门槛命中时必须建受阻点）、`taxonomy_ref`（fail 样本必填）；
 - 周聚合：均分、各维命中 0/1 分的分布、硬门槛次数、fail 样本链接——并入当周受阻清单的「好用度量」段。
 
 ## 七、维护纪律

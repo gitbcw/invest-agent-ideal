@@ -1,6 +1,15 @@
 # Invest Agent Docs
 
-This directory keeps current, agent-useful knowledge small and navigable. Historical plans, experiments, test records, migration notes, and superseded decisions live in [archive/](./archive/) and should not guide new implementation unless a current document explicitly points there.
+This directory keeps current, agent-useful knowledge small and navigable. Start with [current-state.md](./current-state.md) for the project phase, then use the domain index below. Historical plans, experiments, test records, migration notes, and superseded decisions live in [archive/](./archive/) and should not guide new implementation unless a current document explicitly points there.
+
+## 文档状态约定
+
+- **当前契约/现行指导**：可直接影响今天的开发、验收或运维决策。
+- **草案/设计**：提出方案但不代表已经实现；以文档中的状态和验收记录为准。
+- **执行记录/验收记录**：记录某次变更或演练的证据，不等于当前系统全貌。
+- **历史归档**：仅用于考古、审计和理解决策来源，不作为新实现输入。
+
+若当前文档与归档文档冲突，以 `AGENTS.md`、本页、`current-state.md` 及明确标注为现行的领域文档为准。
 
 ## Read By Domain
 
@@ -14,11 +23,12 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [next-direction-governance-analysis-2026-08-22.md](./next-direction-governance-analysis-2026-08-22.md) | 基于治理上位原则的项目成熟度评估、证据缺口和治理计划起点；不创建产品执行任务 |
 | [governance-assessment-matrix.md](./governance-assessment-matrix.md) | G1–G5、L1–L4 治理证据矩阵与复核规则 |
 | [evaluation-assets-registry.md](./evaluation-assets-registry.md) | 第一批版本化评估资产目录及 executable/candidate 数量口径 |
-| [customer-friction-signal-collection-design.md](./customer-friction-signal-collection-design.md) | 客户体验受阻信号自动采集机制设计（已采纳 9-3，T-442 实施中）：六类信号源、受阻点数据模型、日/周/月三级产出与落地分期 |
+| [customer-friction-signal-collection-design.md](./customer-friction-signal-collection-design.md) | 客户体验受阻信号自动采集机制设计（已采纳 9-3，T-442 实施中）：S1~S7 信号源（含 S7 诊断链关联缺口，9-6 增）、受阻点数据模型（含语义信号字段）、日/周/月三级产出、语义受阻信号与 Diagnosis Record 移交格式（§八）与落地分期 |
 | [evaluation-deepening-plan.md](./evaluation-deepening-plan.md) | 评估深化方案（已采纳 9-3）：程序性+AI 效果两层、行业前沿实践对照、ED-P1 错误分析例行化→ED-P2 产出 rubric→ED-P3 judge 按需启用的摩擦驱动路线 |
 | [evaluation-rubric-industry-review.md](./evaluation-rubric-industry-review.md) | ED-P2 试点一：行业复盘 17 列产出的人工评分 rubric（五维+四硬门槛，评分兼作 judge 校准样本） |
 | [evaluation-rubric-intraday-watch.md](./evaluation-rubric-intraday-watch.md) | ED-P2 试点二：盘中盯盘微信简报的人工评分 rubric（五维+三硬门槛，含幽灵个股回归哨兵） |
-| [failure-taxonomy.md](./failure-taxonomy.md) | 失败分类法 v1（ED-P1 产出）：调度/投递/模型/数据/产品语义五层 14 类，失败知识的单一入口，新签名先归类再处理 |
+| [failure-taxonomy.md](./failure-taxonomy.md) | 失败分类法 v1.1（ED-P1 产出，9-3 增补 M4/P3）：调度/投递/模型/数据/产品语义/成本六层 16 类，失败知识的单一入口，新签名先归类再处理 |
+| [semantic-change-regression-gate.md](./semantic-change-regression-gate.md) | 语义变更回归门（T-470，2026-09-06）：两级门（tier-1 非阻塞 / tier-2 阻塞）与 SCR 轻量记录模板（程序/语义/性能/业务终态四栏独立结论）；运营环未决问题 2 的答案 |
 | [ai-application-operating-loop.md](./ai-application-operating-loop.md) | **运营环方法论文档（T-460，本目录上位框架）**：REALITY→PRODUCTION 九段环，双职（操作手册+实验对象，项目稳定文档收敛即为方法论）；逐段现状/目标/缺口、双速环主攻方向、实践→文档维护纪律、既有计划挂环映射 |
 | [evaluation-driven-agent-engineering-reference-2026-09.md](./evaluation-driven-agent-engineering-reference-2026-09.md) | 前沿参考（非规范，owner 与 GPT 对话整理）：Evaluation-Driven Agent Engineering——失败知识三层（Instance/Finding/Eval）、三 Suite（Regression/Capability/Holdout）与毕业生命周期、Outcome/Constraint 双 grader、三层 grader、multi-trial reliability、harness、离线+在线双循环、Finding→Eval 晋升流水线、Diagnosis Layer 行业缺口定位与本项目 12 项对照 |
 | [model-evaluation-2026-08-27-glm-qwen.md](./model-evaluation-2026-08-27-glm-qwen.md) | 共创期首轮模型评测论文：glm-5.3-flash×3 档 vs qwen3.7-flash×思考开关的双层对照（120 层1 样本 + 2 类自动化任务），含路由建议、成本模型、完整复现指南与两次误诊翻案记录 |
@@ -29,9 +39,12 @@ This directory keeps current, agent-useful knowledge small and navigable. Histor
 | [bad-cases/BC-20260821-001-long-conversation-coherence-latency.md](./bad-cases/BC-20260821-001-long-conversation-coherence-latency.md) | 首次治理演练：长会话逻辑已修复但性能与 Trace 证据未过放行门 |
 | [bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md](./bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md) | 筹码集中度查询缓存未命中即宣告缺口：归因 L1 工具学说缺证据穷尽规则，修复为指令补行，回归样例 EV-013 |
 | [bad-cases/BC-20260824-001-phantom-attachment-attribution.md](./bad-cases/BC-20260824-001-phantom-attachment-attribution.md) | 附件引用被冒称已读：真实工具数据（portfolio_read）被表述为「截图识别」，两轮回放复现，回归样例 EV-009 |
+| [bad-cases/BC-20260904-001-empty-summary-push.md](./bad-cases/BC-20260904-001-empty-summary-push.md) | 空壳简报照推（程序全绿、语义失败的范式案例，T-469 走通案例）：主因模型单轮漂移+次因服务层无 summary 质量下限，修复选型待 owner 裁决 |
 | [run-diagnostic-view-contract.md](./run-diagnostic-view-contract.md) | 从 traceId 串起对话、工具、审计、调度、产物和投递的最小诊断契约 |
+| [diagnostic-coverage-report-2026-09-06.md](./diagnostic-coverage-report-2026-09-06.md) | 诊断链生产覆盖率首轮实测（T-467）：7 天窗口 99.6% 串通、audit 100%、缺口归因三分法（历史/n.a./新代码）、S7 巡查阈值、GAP-1/GAP-2 登记 |
 | [release-governance-evidence-template.md](./release-governance-evidence-template.md) | 变更影响、验证、灰度、观测、回滚和 go/no-go 记录模板 |
 | [release-record-20260824-dd072a15.md](./release-record-20260824-dd072a15.md) | 真实发布记录：T-357 治理执行线（WP0–WP5）上线，含验收九项与 known-good 标记 |
+| [governance-review-2026-09-06.md](./governance-review-2026-09-06.md) | 治理放行复核记录（T-471，治理闭环包 T-466~T-471 收口）：G1–G5/L1–L4 逐项结论、扩大使用范围三前置条件、未解决风险与下次复核触发清单 |
 | [isolated-fault-drill-matrix.md](./isolated-fault-drill-matrix.md) | 四类隔离故障演练的注入点、终态、副作用和通过门槛 |
 | [AI应用复杂系统管理落地方案.md](./AI应用复杂系统管理落地方案.md) | 方法论来源（非执行规范，2026-08-24 起带 ⚠️ 非规范性标注）：复杂系统评估/护栏/韧性/演化/可观测性的通用方法论素材；固定数字、工具栈与团队规模仅为示例，执行口径以 [ai-system-governance-principles.md](./ai-system-governance-principles.md) 为准 |
 | [mastra-architecture-baseline.md](./mastra-architecture-baseline.md) | Candidate architecture baseline: verified topology, layering, data architecture, capability surface inventory, UX contracts, confirmed directions, and the layer-by-layer review agenda |

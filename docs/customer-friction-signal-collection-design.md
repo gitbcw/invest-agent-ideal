@@ -22,23 +22,29 @@
 | S4 | `agent_traces` | 首字延迟>30s 的轮次、失败轮、单轮成本突增（>¥1） | trace 落库完整（first_token_ms / cost / status 均有） |
 | S5 | `external_mcp_tool_calls` | 工具调用失败率、降级发生（空工具集继续作答的轮次占比） | W4 observer 收口点已恢复记录（chat + scheduled 双路径） |
 | S6 | Portal 喜欢/不喜欢反馈 | 点踩（含选填反馈文本）；点赞/点踩比 | 交互 8-28 已重做（选中填充隐藏对侧+点踩弹窗）；数据已落库，落地时确认表名 |
+| S7 | 诊断链关联缺口（2026-09-06 增，治理闭环 T-467） | 当日 audit trace 覆盖率 <100%（排除 2026-08-24 前历史行）；automation trace 关联 <99%（排除 error_category=expired 的模型前失败）；push/delivery origin 关联 <100%；微信通道 MCP 未解析条数（GAP-20260906-1 修复前记趋势不告警，修复后归零再出现即告警） | 基线与处置三分法（历史/n.a.白名单/新代码立案）见 [diagnostic-coverage-report-2026-09-06.md](./diagnostic-coverage-report-2026-09-06.md)；n.a. 白名单：无模型轮次的规则任务、reviews.save 定时产物、模型启动前过期失败的 run |
 
 P2 可选扩展（首版不做）：功能绕开信号——客户在产品外完成产品内已有能力（如本地 Excel 替代复盘库），需要人工访谈交叉验证，不适合自动采集，仅留清单字段供周会人工标注。
 
 ## 四、受阻点数据模型（本机落档，不建生产表）
 
-每条受阻点（friction point）：
+每条受阻点（friction point；2026-09-06 T-469 扩展语义信号字段）：
 
 ```
 id: FP-YYYYMMDD-NN
-信号源: S1~S6
-类别: 任务失败漏跑 | 投递未达 | 催补抱怨 | 延迟异常 | 工具降级 | 主动反馈
+信号源: S1~S7
+信号性质: program | semantic（semantic=程序层成功/无程序信号但用户结果受损）
+来源四类（semantic 必填其一）: user_feedback | manual_finding | eval_failure | repeat_fix
+类别: 任务失败漏跑 | 投递未达 | 催补抱怨 | 延迟异常 | 工具降级 | 主动反馈 | 语义失败
+程序层状态: succeeded | failed | partial | unknown（semantic 信号的关键区分字段）
 证据: 签名/关键词/trace id 列表（只存指针，不复制正文）
 影响客户: mg / dyk / 111 / all
 频次: 窗口内次数（周级聚合）
 首次发现 / 最近发生: 时间戳
 状态: open → acknowledged → fixed → verified（复用巡查验证）
 关联: 修复 commit / BC-xxx / EV-xxx（转评估样例时回填）
+taxonomy_ref: failure-taxonomy 分类号；未入表的新类写「ED-P1 增补建议」
+rubric_ref: 关联评分记录（week + sample_ref，来自 eval-rubric-scores）
 ```
 
 落档位置：`data/friction-reports/`（周清单 + 周期性聚合 JSON，本机仓库外运行数据，同 patrol-reports 惯例）。
@@ -63,8 +69,64 @@ id: FP-YYYYMMDD-NN
 | FP-P0 | 日级聚合挂靠巡查（S1~S6 六类 SQL + friction-reports JSON 落档） | **已上线 2026-09-02**（SQL 已在生产库只读 dry-run 验证；首跑当晚 19:15） |
 | FP-P1 | 周级清单（周一早独立自动化 + 周四晚巡查兼任） | **已配置 2026-09-02**，随 FP-P0 数据积累自动运转 |
 | FP-P2 | 月级趋势视图 + 功能绕开信号（人工标注字段） | 视 P1 使用价值决定 |
+| FP-P3 | 语义信号层（signal_kind/程序层状态/来源四类/taxonomy_ref 字段 + rubric 关联必填 + Diagnosis Record 移交格式） | **格式已定 2026-09-06（T-469）**；采集随巡查/周评自然运转，走通案例 BC-20260904-001 |
 
-## 八、裁决记录（owner 2026-09-02）
+## 八、语义受阻信号与 Diagnosis Record 移交（2026-09-06 增补，T-469 最小实现）
+
+### 8.1 要解决的问题
+
+S1~S7 全部是程序性信号：run 失败、投递失败、延迟、成本、工具失败、点踩、关联缺口。**「程序成功但用户结果不对」**（内容空转、表格错绑、来源冒用、跨日错发）不会触发任何一类。本节把语义失败纳入 FP 台账并给出移交格式，不改生产、不加部署。
+
+### 8.2 rubric 评分记录与运行 ID 关联（必填字段规范，两份 rubric 同此口径）
+
+评分记录（`data/eval-rubric-scores/*.jsonl`）自 2026-W36 起已实际携带 `trace`（atrun_*）字段；本节将其定为**必填规范**，两份 rubric 文档的记录格式节均指向此处：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `trace` | ✅ | 运行 ID（atrun_* / portal-* / wx-*），评分样本必须可回链诊断链 |
+| `sample_ref` | ✅ | push_job id 或 asset version id（产出实体指针） |
+| `delivery` | ✅ | 采样时顺带核对的投递状态 |
+| `hard_gate_fail` | ✅ | 命中即转 ED-P1 候选并核对受阻点登记 |
+| `linked_fp` | ✅（可 null） | 关联受阻点；无则 null，硬门槛命中时必须建 |
+| `taxonomy_ref` | ✅（评分 fail 时） | 失败归类；未入表新类写「ED-P1 增补建议」 |
+
+### 8.3 语义信号的四个来源与统一出口
+
+| 来源 | 进入方式 | 说明 |
+| --- | --- | --- |
+| 用户反馈（user_feedback） | S6 点踩/选填文本、S3 催补关键词、owner 会话转述 | 只记元数据与指针，不摘正文 |
+| 人工发现（manual_finding） | 19:15 巡查人工段、owner/agent 复盘 | 本设计走通案例即此源 |
+| 评估失败（eval_failure） | rubric 硬门槛命中或维度 fail；回放资产失败 | 经 `rubric_ref`/EV 编号关联 |
+| 重复修复（repeat_fix） | 同签名/同 taxonomy_ref 关了又开（≥2 次） | 月级复发率视图的语义子集 |
+
+统一出口：全部落 FP 条目（`信号性质=semantic` + `程序层状态` + 来源四类 + taxonomy_ref），随日级 JSON/周清单流转，**不另建平行台账**。
+
+### 8.4 移交格式：语义失败 → Diagnosis Record
+
+触发条件（满足其一）：① 硬门槛命中（H1~H5/W 类）；② 同型 semantic FP 累计 ≥2；③ S 级 ≥S2 的单次语义失败。移交即按 ai-application-diagnosis skill（`.codex/skills/ai-application-diagnosis/SKILL.md`，仓库根相对路径）§10 的 15 字段起草，FP 条目提供前六个字段的初值：
+
+| Diagnosis Record 字段 | FP/诊断链初值来源 |
+| --- | --- |
+| Symptom / Expected Behavior | FP 类别 + 关联 BC/任务契约 |
+| Reproduction / Runtime Snapshot | FP 证据指针（trace/run/push id）→ Platform 运行诊断视图单 ID 解析 |
+| First Divergence / Evidence | 诊断链缺失计数 + trace 工具载荷（T-459 落盘） |
+| Current Hypotheses 起 | taxonomy_ref 给归因先验 |
+| 其余字段 | 按诊断流程补齐，不预填 |
+
+### 8.5 走通案例：BC-20260904-001（空壳简报照推）
+
+完整立案见 [bad-cases/BC-20260904-001-empty-summary-push.md](./bad-cases/BC-20260904-001-empty-summary-push.md)。六问全答：
+
+1. **谁受阻**：dyk / 盯盘简报（`migrated_scheduled-market-watch_88b950f3`）/ 9-4 11:00 窗微信推送。
+2. **程序层是否成功**：是——run `atrun_d19bf8ff…` succeeded、push `7188852f…` sent、trace 齐全（这正是 S1~S7 零感知的原因）。
+3. **用户实际影响**：盘中窗口收到 13 字符元话语，无任何行情/持仓实质，误报「没推送」。
+4. **taxonomy 归类**：M3 邻接（模型行为漂移-内容空转）；正式入表建议留 ED-P1 周一初稿（分类法禁静默改写）。
+5. **是否已有回归样例**：无确定性样例；盯盘 rubric W3/W4/W5 可检测本型（周采样、非阻塞）。修复（服务层 summary 质量下限）后登记 EV-038。
+6. **裁决**：待 owner——服务层质量下限 vs 仅提示词约束；未修复前 S3+巡查人工段观察复发。
+
+本案例同时验证了移交链路的可行性：FP 字段 → 诊断链单 ID 解析 → BC 立案 → 修复后 EV 回填，全程显式 ID，无时间邻近推断。
+
+## 九、裁决记录（owner 2026-09-02）
 
 1. 周清单**落档即可，不推微信**；频率**每周两次**（周一早、周四晚），稳定 4 周后可降为每周一次；
 2. S3 隐私边界 = **只统计关键词命中次数与签名，不摘录正文**；
