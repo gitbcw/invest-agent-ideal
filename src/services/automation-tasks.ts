@@ -3,11 +3,12 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs
 import path from "node:path";
 
 import { sqlite } from "../db/index.js";
+import { logger } from "../lib/logger.js";
 import { isAshareTradingDay } from "../lib/market-calendar.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
-import { AutomationSpreadsheetValidationError, validateAutomationSpreadsheet } from "./automation-spreadsheet.js";
+import { AutomationSpreadsheetValidationError, snapshotWorkbookSchema, validateAutomationSpreadsheet, type AutomationWorkbookSchema } from "./automation-spreadsheet.js";
 import { isRegisteredScheduledTaskType } from "./scheduled-task-types.js";
 import {
   assetFormatForFileName,
@@ -76,6 +77,11 @@ export type AutomationTaskOutputPolicy =
       /** Monthly file rollover (T-317): when the month changes the run may
        * create the next monthly file and the task binding rolls to it. */
       rollover?: { kind: "monthly"; fileNamePattern: string };
+      /** Persisted workbook schema contract (T-480): bound at task
+       * create/edit from the target asset's current version (or supplied
+       * explicitly); the runner fail-fasts before model execution when the
+       * bound workbook no longer matches. */
+      expectedSchema?: AutomationWorkbookSchema;
     };
 
 /** Instantiate a monthly rollover fileNamePattern for a date, e.g.
@@ -1080,14 +1086,14 @@ async function normalizeGenericDefinition(scope: AutomationScope, input: {
     }
     inputs.push(binding);
   }
-  const output = normalizeOutputPolicy(input.output);
+  const normalizedOutput = normalizeOutputPolicy(input.output);
   for (const binding of inputs) {
     if (binding.role !== "update_target") continue;
-    if (output.mode === "update" && binding.assetId === output.assetId && binding.versionPolicy === "latest") continue;
-    if (output.mode === "agent" && binding.versionPolicy === "latest") continue;
+    if (normalizedOutput.mode === "update" && binding.assetId === normalizedOutput.assetId && binding.versionPolicy === "latest") continue;
+    if (normalizedOutput.mode === "agent" && binding.versionPolicy === "latest") continue;
     throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "update_target must be writable by the task output mode");
   }
-  await validateOutputPolicy(scope, output);
+  const output = await validateOutputPolicy(scope, normalizedOutput);
   const delivery = normalizeDeliveryPolicy(input.delivery);
   return { instruction, inputs, output, delivery };
 }
@@ -1107,7 +1113,10 @@ function normalizeAssetBinding(raw: Record<string, unknown>): AutomationTaskAsse
  * {mode:'update',…} without knowing about rollover — without inheritance
  * every such edit silently strips a configured monthly rollover (the
  * 2026-08-24 industry-review regression). Undefined rollover inherits the
- * previous policy's; an explicit null clears it. */
+ * previous policy's; an explicit null clears it. T-480: expectedSchema is
+ * deliberately NOT inherited — undefined re-snapshots the bound asset's
+ * current schema (an edit accepting the asset as-is is exactly the known
+ * upgrade path); supply it explicitly or null to pin/clear. */
 function inheritRolloverPolicy(
   incoming: AutomationTaskOutputPolicy | Record<string, unknown> | undefined,
   previous: AutomationTaskOutputPolicy,
@@ -1139,9 +1148,31 @@ function normalizeOutputPolicy(raw: AutomationTaskOutputPolicy | Record<string, 
     if (value.versionPolicy !== "latest") throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "update requires latest versionPolicy");
     const expectedVersionId = value.expectedVersionId === undefined ? undefined : normalizeOpaqueId(String(value.expectedVersionId), "expectedVersionId");
     const rollover = normalizeRolloverPolicy(value.rollover);
-    return { mode: "update", assetId, versionPolicy: "latest", ...(expectedVersionId ? { expectedVersionId } : {}), ...(rollover ? { rollover } : {}) };
+    const expectedSchema = normalizeExpectedSchema(value.expectedSchema);
+    return { mode: "update", assetId, versionPolicy: "latest", ...(expectedVersionId ? { expectedVersionId } : {}), ...(rollover ? { rollover } : {}), ...(expectedSchema ? { expectedSchema } : {}) };
   }
   throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "unsupported output mode");
+}
+
+function normalizeExpectedSchema(value: unknown): AutomationWorkbookSchema | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "expectedSchema must be an object");
+  const record = value as Record<string, unknown>;
+  const columnCount = record.columnCount;
+  const headerRow = record.headerRow;
+  if (typeof columnCount !== "number" || !Number.isInteger(columnCount) || columnCount < 1 || columnCount > 500) {
+    throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "expectedSchema columnCount must be an integer in [1,500]");
+  }
+  if (typeof headerRow !== "number" || !Number.isInteger(headerRow) || headerRow < 1 || headerRow > 10) {
+    throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "expectedSchema headerRow must be an integer in [1,10]");
+  }
+  if (record.header === undefined || record.header === null) {
+    return { columnCount, headerRow };
+  }
+  if (!Array.isArray(record.header) || record.header.length !== columnCount || record.header.some((item) => typeof item !== "string")) {
+    throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "expectedSchema header must be a string array of length columnCount");
+  }
+  return { columnCount, headerRow, header: record.header.map((item) => String(item).slice(0, 200)) };
 }
 
 function normalizeDeliveryPolicy(raw: AutomationTaskDeliveryPolicy | Record<string, unknown> | undefined): AutomationTaskDeliveryPolicy {
@@ -1168,12 +1199,24 @@ function normalizeDeliveryPolicy(raw: AutomationTaskDeliveryPolicy | Record<stri
   throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "unsupported delivery policy");
 }
 
-async function validateOutputPolicy(scope: AutomationScope, output: AutomationTaskOutputPolicy): Promise<void> {
-  if (output.mode !== "update") return;
+async function validateOutputPolicy(scope: AutomationScope, output: AutomationTaskOutputPolicy): Promise<AutomationTaskOutputPolicy> {
+  if (output.mode !== "update") return output;
   const asset = await getUserAsset({ ...scope, assetId: output.assetId });
   if (!asset || asset.status !== "active" || !asset.currentVersion) throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", output.assetId);
   if (!(asset.currentVersion.format === "markdown" || asset.currentVersion.format === "xlsx")) {
     throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "update supports markdown/xlsx only");
+  }
+  if (asset.currentVersion.format !== "xlsx" || output.expectedSchema) return output;
+  // T-480 schema 绑定：xlsx update 任务未显式携带契约时，从绑定资产当前版本
+  // 确定性快照。inspect 失败只降级为无契约（warn），不阻断编辑——契约缺失
+  // 时运行时行为与存量任务一致。
+  try {
+    const version = await readUserAssetVersion({ ...scope, assetId: output.assetId, versionId: asset.currentVersion.versionId });
+    const expectedSchema = await snapshotWorkbookSchema(version.bytes);
+    return { ...output, expectedSchema };
+  } catch (error) {
+    logger.warn(`automation expectedSchema snapshot skipped asset=${output.assetId} error=${String(error).slice(0, 120)}`);
+    return output;
   }
 }
 

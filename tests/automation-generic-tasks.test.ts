@@ -1587,14 +1587,18 @@ test("task edits inherit the monthly rollover unless explicitly cleared (2026-08
     output: { mode: "update", assetId: target.assetId, versionPolicy: "latest" },
   });
   assert.equal(edited.currentRevision, 2);
-  assert.deepEqual(edited.revision.output, { mode: "update", assetId: target.assetId, versionPolicy: "latest", rollover }, "an edit that re-sends the output without rollover must not strip it");
+  // T-480：编辑会自动补 expectedSchema 快照（xlsx update 目标），断言时剥离该
+  // 新增字段，保持本用例聚焦 rollover 继承语义。
+  const { expectedSchema: _snapshot, ...editedOutput } = edited.revision.output as Record<string, unknown>;
+  assert.deepEqual(editedOutput, { mode: "update", assetId: target.assetId, versionPolicy: "latest", rollover }, "an edit that re-sends the output without rollover must not strip it");
 
   const cleared = await automation.updateAutomationTask({
     ...scope, taskId: task.taskId, expectedRevision: 2,
     output: { mode: "update", assetId: target.assetId, versionPolicy: "latest", rollover: null },
   });
   assert.equal(cleared.currentRevision, 3);
-  assert.deepEqual(cleared.revision.output, { mode: "update", assetId: target.assetId, versionPolicy: "latest" }, "an explicit rollover:null clears the policy");
+  const { expectedSchema: _snapshot2, ...clearedOutput } = cleared.revision.output as Record<string, unknown>;
+  assert.deepEqual(clearedOutput, { mode: "update", assetId: target.assetId, versionPolicy: "latest" }, "an explicit rollover:null clears the policy");
 });
 
 test("parseStructuredAcpResponse extracts the trailing JSON object from mixed prose (mg 2026-08-26 failure shape)", async () => {

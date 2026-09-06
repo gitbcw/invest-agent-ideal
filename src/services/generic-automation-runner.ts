@@ -32,7 +32,9 @@ import { hasReviewArtifactPublication } from "./conversation-artifacts.js";
 import { classifyThinkingDepth } from "./thinking-depth-router.js";
 import {
   appendRowsToXlsxBytes,
+  describeSchemaMismatch,
   inspectAutomationXlsx,
+  snapshotWorkbookSchema,
   writeAutomationSpreadsheetHelper,
   type AutomationSpreadsheetInspection,
 } from "./automation-spreadsheet.js";
@@ -320,6 +322,15 @@ export async function runGenericAutomationTaskNow(input: {
       const spreadsheetContext = usesXlsx
         ? await resolveSpreadsheetContext(input.scope, resolved)
         : undefined;
+      // T-480 schema 契约 fail-fast：绑定工作簿与 revision 契约不符时在模型
+      // 执行前阻断（零模型成本）。monthly rollover 目标是新文件，绑定资产是
+      // 上月文件——该场景由 rollover create 的结构校验覆盖，此处跳过。
+      const expectedSchema = task.revision.output.mode === "update" ? task.revision.output.expectedSchema : undefined;
+      if (expectedSchema && resolved.output && resolved.monthlyRollover === null) {
+        const bound = await readUserAssetVersion({ ...input.scope, assetId: resolved.output.assetId, versionId: resolved.output.versionId });
+        const mismatch = describeSchemaMismatch(expectedSchema, await snapshotWorkbookSchema(bound.bytes));
+        if (mismatch) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", mismatch);
+      }
       const xlsxAppendOnly = isXlsxAppendOnlyTask(task, resolved);
       const reviewTarget = resolveGenericAutomationReviewTarget(task, boundRun);
       const response = await (input.executor || defaultExecutor)({
@@ -929,6 +940,13 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
     && staged.operation === "create";
   if (rolloverCreate && fileName !== resolved.monthlyRollover!.targetFileName) {
     throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `stagedOutput fileName must be the monthly target ${resolved.monthlyRollover!.targetFileName}`);
+  }
+  // T-480：rollover 新文件结构以 revision 契约为权威——服务层此前只校验
+  // 文件名（2026-09-04 P-001 暴露的缺口），新文件列数/表头漂移不设防。
+  const rolloverSchema = outputPolicy.mode === "update" ? outputPolicy.expectedSchema : undefined;
+  if (rolloverCreate && rolloverSchema) {
+    const mismatch = describeSchemaMismatch(rolloverSchema, await snapshotWorkbookSchema(Buffer.from(base64, "base64")));
+    if (mismatch) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `stagedOutput ${mismatch}`);
   }
   const operation = outputPolicy.mode === "agent"
     ? staged.operation

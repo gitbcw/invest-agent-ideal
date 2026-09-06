@@ -317,6 +317,53 @@ export async function inspectAutomationXlsx(bytes: Uint8Array): Promise<Automati
   };
 }
 
+/** Persisted workbook schema contract bound to an update-mode task revision
+ * (T-480). columnCount uses the same derivation as the appendRows guard
+ * (max of physical columns and the header row's last non-empty column). */
+export interface AutomationWorkbookSchema {
+  columnCount: number;
+  headerRow: number;
+  header?: string[];
+}
+
+/** Snapshot the first worksheet's schema as a revision-bindable contract.
+ * Text labels are normalized the same way the runtime guard compares them. */
+export async function snapshotWorkbookSchema(bytes: Uint8Array): Promise<AutomationWorkbookSchema> {
+  const inspection = await inspectAutomationXlsx(bytes);
+  const sheet = inspection.sheets[0];
+  if (!sheet) throw new AutomationSpreadsheetValidationError("workbook has no worksheets");
+  const header = sheet.headers.map((value) => normalizeCellText(value));
+  // columnCount counts physical/last-header columns which can exceed the
+  // header row's populated cells; pad so the persisted contract always has
+  // one label per column (empty labels compare as empty).
+  while (header.length < sheet.columnCount) header.push("");
+  return { columnCount: sheet.columnCount, headerRow: sheet.headerRow, header };
+}
+
+/** null when compatible; otherwise a deterministic, human-actionable diff. */
+export function describeSchemaMismatch(expected: AutomationWorkbookSchema, actual: AutomationWorkbookSchema): string | null {
+  const diffs: string[] = [];
+  if (expected.columnCount !== actual.columnCount) {
+    diffs.push(`列数不符：任务契约 ${expected.columnCount} 列，工作簿实际 ${actual.columnCount} 列`);
+  }
+  if (expected.headerRow !== actual.headerRow) {
+    diffs.push(`表头行不符：任务契约第 ${expected.headerRow} 行，工作簿实际第 ${actual.headerRow} 行`);
+  }
+  if (expected.header) {
+    const actualHeader = actual.header ?? [];
+    const limit = Math.max(expected.header.length, actualHeader.length);
+    const moved: string[] = [];
+    for (let i = 0; i < limit; i += 1) {
+      const want = expected.header[i] ?? "";
+      const got = actualHeader[i] ?? "";
+      if (want !== got) moved.push(`第 ${i + 1} 列期望「${want}」实际「${got}」`);
+    }
+    if (moved.length) diffs.push(`表头标签不符：${moved.slice(0, 3).join("；")}${moved.length > 3 ? `（共 ${moved.length} 处）` : ""}`);
+  }
+  if (!diffs.length) return null;
+  return `AUTOMATION_SCHEMA_MISMATCH: ${diffs.join("；")}。若这是已知合法的表结构变更，请在 Portal 编辑该任务并重新保存以更新契约快照；否则请检查绑定的工作簿资产版本。`;
+}
+
 /**
  * Deterministic row-append for update-mode automation output: the agent only
  * supplies the row data, the service owns the workbook mechanics. When
