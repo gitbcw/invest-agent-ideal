@@ -16,9 +16,7 @@ Workspace Agents do not call local HTTP routes, handle service tokens, or edit s
 
 ## Current Production Runtime
 
-The active production codebase is this branch (`feat/mastra-migration`). The
-legacy `main` runtime is stopped and must not be treated as the live release
-target. Production runs PM2 `invest-agent-mastra` from
+The active production codebase is the `main` branch. Production runs PM2 `invest-agent-mastra` from
 `/home/claude/invest-agent-mastra` on runtime port `23655`; `mastra-portal`
 serves the Portal/relay on `23657/23658`. Production `.env`, SQLite, real
 Workspaces, reviews, state, and WeChat bindings are server-owned assets and
@@ -53,6 +51,7 @@ npm run verify
 
 - [AGENTS.md](./AGENTS.md): development Agent global red lines and task-start rules.
 - [docs/README.md](./docs/README.md): task-based context map with must-read material and verification.
+- [docs/current-state.md](./docs/current-state.md): current phase, active priorities, and graduation gates.
 - [docs/system-overview.md](./docs/system-overview.md): current architecture and ownership map.
 
 ## Product Boundary
