@@ -55,6 +55,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 | [open-work-items.md](./open-work-items.md) | owner 口述工作项台账（W1 自动模型路由、W2 模型选择器信息升级、W3 使用统计页等；新增工作从此追加） |
 | [preset-system-design.md](./preset-system-design.md) | Preset object system design (draft): system provides generic capabilities; packs like the low-disturbance review mode are preset configuration data |
 | [scheduled-flows-to-automation-design.md](./scheduled-flows-to-automation-design.md) | Review/market-watch to automation-task unification design (draft): task model extensions, preference field mapping, migration phases |
+| [automation-failure-notify-design.md](./automation-failure-notify-design.md) | Scheduled automation failure/recovery user notification (T-479): notify contract (first-failure + recovery aggregation), idempotency keys, copy templates, hooks, and acceptance map |
 | [mastra-main-parity-verification.md](./mastra-main-parity-verification.md) | Capability parity verification against `main`: four-layer framework, G1-G23 gap ledger, and per-gap evidence |
 | [cost-statistics-design.md](./cost-statistics-design.md) | Cost-statistics rebuild design (draft): per-model pricing registry, price-at-trace-write, backfill, admin cost view server-side rework |
 | [mastra-workspace-exit-mapping.md](./mastra-workspace-exit-mapping.md) | Current Mastra candidate work package, technical evidence, H1 boundary, isolated topology, and next actions |

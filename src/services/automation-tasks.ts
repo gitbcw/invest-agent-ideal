@@ -2083,6 +2083,7 @@ export async function recoverExpiredAutomationTaskRuns(at = new Date(), limit = 
     LIMIT ?
   `).all(Math.min(Math.max(Math.trunc(limit), 1), 500)) as DbRunRow[];
   let recovered = 0;
+  const terminalized: Array<{ scope: AutomationScope; taskId: string; runId: string }> = [];
   const transaction = sqlite.transaction(() => {
     for (const row of rows) {
       const scope = { userId: row.userId, projectId: row.projectId, instanceId: row.instanceId };
@@ -2091,10 +2092,18 @@ export async function recoverExpiredAutomationTaskRuns(at = new Date(), limit = 
       const before = selectRunById(row.runId, scope);
       recoverExpiredRun(row, scope, now);
       const after = selectRunById(row.runId, scope);
-      if (before?.status === "running" && (after?.status === "failed" || after?.status === "succeeded")) recovered += 1;
+      if (before?.status === "running" && (after?.status === "failed" || after?.status === "succeeded")) {
+        recovered += 1;
+        terminalized.push({ scope, taskId: row.taskId, runId: row.runId });
+      }
     }
   });
   transaction();
+  // T-479：reaper 终态化后的失败/恢复通知决策（幂等，查询式；dynamic import 防环）。
+  const { notifyAutomationRunTerminalQuietly } = await import("./automation-notify.js");
+  for (const item of terminalized) {
+    await notifyAutomationRunTerminalQuietly(item);
+  }
   return recovered;
 }
 
@@ -2222,7 +2231,13 @@ export function finalizeAutomationTaskRunInTransaction(input: FinishAutomationTa
 }
 
 export async function finishAutomationTaskRun(input: FinishAutomationTaskRunInput): Promise<AutomationTaskRunRecord> {
-  return sqlite.transaction(() => finalizeAutomationTaskRunInTransaction(input))();
+  const run = sqlite.transaction(() => finalizeAutomationTaskRunInTransaction(input))();
+  // T-479：scheduled 终态的失败首条/恢复通知。dynamic import 避免与
+  // automation-notify → push-queue → weixin-delivery 的静态环；通知自身吞错，
+  // 不反噬终态收口。
+  const { notifyAutomationRunTerminalQuietly } = await import("./automation-notify.js");
+  await notifyAutomationRunTerminalQuietly({ scope: assertAutomationScope(input), taskId: run.taskId, runId: run.runId });
+  return run;
 }
 
 function latestRunsByTask(scope: AutomationScope): Map<string, NonNullable<AutomationTaskSummary["latestRun"]>> {

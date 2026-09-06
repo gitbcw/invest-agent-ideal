@@ -1,4 +1,5 @@
 import { logger } from "../lib/logger.js";
+import { notifyAutomationRunTerminalQuietly } from "../services/automation-notify.js";
 import {
   expireStaleScheduledAutomationTaskRun,
   listDueAutomationTasks,
@@ -86,6 +87,14 @@ export async function runAutomationSchedulerTick(now = new Date(), dependencies:
         logger.warn(
           `automation scheduler queue-expired task=${task.taskId} revision=${task.currentRevisionId} expired=${expired.expired} run=${expired.run.runId} status=${expired.run.status} queue_delay_ms=${dispatchQueueDelayMs} active=${runningAutomationTasks.size} rss_bytes=${rssBytes()}`,
         );
+        if (expired.expired) {
+          // T-479：队列延迟终态化后的失败首条通知决策（幂等，manual 无关此路径）。
+          await notifyAutomationRunTerminalQuietly({
+            scope: { userId: task.userId, instanceId: task.instanceId, projectId: task.projectId },
+            taskId: task.taskId,
+            runId: expired.run.runId,
+          });
+        }
       } catch (error) {
         logger.error(
           `automation scheduler failed to terminalize stale queued task=${task.taskId} queue_delay_ms=${dispatchQueueDelayMs} active=${runningAutomationTasks.size} rss_bytes=${rssBytes()}:`,
