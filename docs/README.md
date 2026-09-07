@@ -113,6 +113,8 @@ WeChat bindings.
 | [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
 | [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
 | [workspace-compatibility.md](./workspace-compatibility.md) | Read-only preflight, managed-asset ownership, backup, migration and rollback contract for existing user Workspaces |
+| [workspace-backup-operations.md](./workspace-backup-operations.md) | 每日工作区备份范围、allowlist、排除项、加密与恢复门禁 |
+| [disaster-recovery-restore-sop.md](./disaster-recovery-restore-sop.md) | 灾备恢复 SOP：纯用户数据快照的真实恢复路径、验收清单与门禁（T-415 2026-09-07 演练验证） |
 | [version-snapshot-and-assisted-rollback-plan.md](./version-snapshot-and-assisted-rollback-plan.md) | Release snapshot, known-good retention, standard deploy/code rollback, and audited AI-assisted Workspace recovery |
 | [t194-maintenance-window-handoff.md](./t194-maintenance-window-handoff.md) | Current T-194 release/rollback demonstration, evidence capture, human gate, and Personal OS completion handoff |
 
@@ -186,6 +188,7 @@ Long runbooks that were formerly under `docs/` have been moved into the correspo
 | [mg-data-capability-gap-statistics.md](./mg-data-capability-gap-statistics.md) | 火山云 mg 用户对话提取出的平台数据能力缺口、证据索引和优先级 |
 | [mg-platform-capability-gap-test-cases.md](./mg-platform-capability-gap-test-cases.md) | 针对数据服务、来源质量、回测和送达闭环的可验收平台测试 |
 | [mg-classic-user-requirement-test-cases.md](./mg-classic-user-requirement-test-cases.md) | 从 mg 经典自然语言需求抽取的端到端用户场景测试 |
+| [mg-s1-chip-control-replay-2026-09-06.md](./mg-s1-chip-control-replay-2026-09-06.md) | T-484 执行记录：mg 控盘度 V1.2-S1 最小回放（120 格、冻结口径、逐因子差异、S1 裁定 G-A~G-I、go 有条件）；工件在 data/t484-s1/ |
 
 ### Intent Pack
 
