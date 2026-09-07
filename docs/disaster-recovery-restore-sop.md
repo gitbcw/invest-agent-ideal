@@ -5,7 +5,7 @@ T-415 于 2026-09-07 用当日快照 `2026-09-07T010004+0800` 首次真实演练
 ## 1. 适用范围与前提
 
 - 备份格式：2026-08-28 大修后的「纯用户数据」模式（代码通道已裁撤）。每份日全量 = `databases/`（runtime.db + legacy-portal.db）+ `workspaces/`（111/dyk/mg）+ `reviews/` + `runtime-data/`（用户与运维数据部分）+ `sensitive/`（加密敏感包）+ `manifest.sha256` + `metadata.txt` + `COMPLETE`
-- 备份位置：本机 Mac mini `~/MyFile/my-data/backups/invest-agent/disaster-recovery/full/<ts>/`，`latest-full` 指针只指向校验通过的快照；保留 14 个日全量，RPO = 24 小时
+- 备份位置：本机 Mac mini `~/MyFile/my-data/backups/invest-agent/disaster-recovery/full/<ts>/`，`latest-full` 指针只指向校验通过的快照；滚动保留 7 个日全量（2026-08-28 用户裁决，`prune_snapshots 7`），RPO = 24 小时
 - 解密私钥：`~/MyFile/my-data/keys/invest-agent-dr/private.pem`（已双备份：本目录 + 用户密码管理器）。**私钥丢失 = 敏感包永久不可解**，这是整个恢复链的单点
 - 代码不在备份内：代码灾备 = git（生产基线 main 已推 GitHub）。恢复 = 新机部署代码 + 备份落位用户数据
 - 备份运维细节（allowlist、排除项、加密算法）见 [workspace-backup-operations.md](./workspace-backup-operations.md) 与固定副本脚本 `~/Library/Application Support/InvestAgent/disaster-recovery/scripts/`
@@ -89,7 +89,7 @@ rm -f data-key.hex   # 明文密钥即用即毁
 | 项 | 通过标准 |
 |---|---|
 | manifest 校验 | 全部哈希一致，0 失败 |
-| runtime.db | `integrity_check=ok`；users=活跃用户数；三用户 messages/sessions 与预期量级一致；`mastra_portfolio_states` 三用户各 1 行且 portfolio_json 可读（注意：`portfolio`/`watchlist` 等旧表为空是正常态，持仓真实载体是 states 表） |
+| runtime.db | `integrity_check=ok`；users=活跃用户数；三用户 messages/sessions 与预期量级一致；`mastra_portfolio_states` 三用户各 1 行且 portfolio_json 可读——这是 Mastra 模式持仓权威载体（服务层写入，链路见 [table-ownership.md](./table-ownership.md)），工作区 `config/portfolio.yaml` 随工作区恢复一并核验；`portfolio`/`watchlist` 等旧冻结表为空属正常 |
 | 工作区 | 111/dyk/mg 目录文件数量级正确（2026-09-07：490/513/513）；各自 AGENTS.md 在位；`.codex/{goals,state,memories}_*.sqlite` 可读；skills/sessions 在位 |
 | reviews | 文件数与备份 manifest 一致（2026-09-07：44） |
 | 敏感包 | 指纹匹配、解密成功、列表含 `.env`/`.state`/`.sandbox-secret`/portal `.env`/codex 三件套 |
@@ -111,9 +111,9 @@ pm2 拉起后：Platform/Portal 页面可登录、三用户工作区路径与持
 
 ## 5. 已知事实与口径
 
-- 保留 14 个日全量（非 7 天）；快照总量 2026-09 口径约 250–430MB/晚，本机备份根 ~1.2GB
+- 滚动保留 7 个日全量（2026-08-28 用户裁决；T-252 时代的 14 天政策已被其取代）；快照总量 2026-09 口径约 250–430MB/晚，本机备份根 ~1.2GB
 - 快照含测试/eval 用户数据（112/113/eval-*/mgreplay 等）——与生产库一致，清理属生产数据治理议题
-- `runtime-data/` 内历史一次性 `.bak`（80MB）每晚随快照复制，属可优化项（移 archives 或排除），尚未处理
+- `runtime-data/` 同步已排除 `*.db.bak-*`（2026-09-07 起，一次性恢复前副本不再逐晚入快照；文件本体留在服务器，dry-run 验证生效）
 - 每晚 01:00 的备份任务只做「备份+校验」，不做恢复（T-252 后运维政策）
 
 ## 6. RTO 口径与再演练触发条件

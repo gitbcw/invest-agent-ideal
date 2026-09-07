@@ -54,6 +54,8 @@
 
 这些表承载**用户的投资判断、风格规则、方法、复盘产物、记忆事件**,在工作空间内有 yaml/jsonl 对应物。迁移后,SQLite 写入冻结,新数据只写工作空间。
 
+> **Mastra 运行时补充(2026-09-07, T-415 恢复演练确认)**: Mastra 生产模式下,`portfolio`/`watchlist`/`stock_plans`/`trade_actions` 的服务侧权威投影是 `mastra_portfolio_states`(每用户实例一行,`portfolio_json` 保留完整导入载荷,`source_path=service-owned://portfolio`,乐观锁 `source_revision`;实现见 `src/lib/mastra-portfolio-backend.ts`)。工作空间 `config/portfolio.yaml` 是迁移导入源;上表冻结旧表在生产为空属正常。灾备恢复验收时,持仓按「工作区 YAML + `mastra_portfolio_states` 行」双恢复核验。
+
 | 表 | 工作空间对应物 | 备注 |
 |---|---|---|
 | `portfolio` | `config/portfolio.yaml`(holdings) | 持仓 |

@@ -137,8 +137,10 @@ backup_full_data() {
   # 与工作区备份同一策略：任意深度排除（对齐 b43edd2/dd072a1 的修复口径）。
   # runtime.db.pre-*/projects.pre-* 是迁移期服务器侧保险副本：DR 已有每晚
   # runtime.db 快照，逐晚搬运历史保险副本只会让备份无限膨胀。
+  # *.db.bak-* 是一次性恢复前副本（如 20260831 行业复盘），同理不逐晚搬运
+  # （T-415 演练发现 80MB/晚冗余）；文件本体留在服务器，不入快照。
   sync_tree "${REMOTE_RUNTIME_DIR}/data/reviews" "${STAGING_DIR}/reviews" '._*'
-  sync_tree "${REMOTE_RUNTIME_DIR}/data" "${STAGING_DIR}/runtime-data" '*.db' '*.db-*' 'test-*' 'cache/' 'backups/' '/reviews/' '.sandbox-secret' '._*' '.sandbox-token' '.codex/auth.json' '.codex/logs_2.sqlite*' '.codex/.tmp/' '.codex/tmp/' 'runtime.db.pre-*' 'projects.pre-*'
+  sync_tree "${REMOTE_RUNTIME_DIR}/data" "${STAGING_DIR}/runtime-data" '*.db' '*.db-*' 'test-*' 'cache/' 'backups/' '/reviews/' '.sandbox-secret' '._*' '.sandbox-token' '.codex/auth.json' '.codex/logs_2.sqlite*' '.codex/.tmp/' '.codex/tmp/' 'runtime.db.pre-*' 'projects.pre-*' '*.db.bak-*'
 }
 
 backup_encrypted_sensitive_state() {
