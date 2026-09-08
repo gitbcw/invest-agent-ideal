@@ -45,6 +45,26 @@ export async function consumeSandboxConfirmation(ctx: SandboxContext, confirmati
   return { ok: true as const, record: validated.record };
 }
 
+/** 确认身份比对口径（2026-09-08 用户 111 三连确认回归）：portfolio.apply_changes
+ * 的持仓 name/notes 是模型每轮必然重写的自由文本（"稀有金属ETF"→"稀有金属ETF嘉实"、
+ * 股价估算备注→"2000股"），不应参与确认身份比对；业务字段（代码/权重/股数/成本/
+ * 现金/清仓与自选动作）不一致仍构成另一个草案，显式漂移执行照样拒。其余操作保持
+ * 全量比对。 */
+export function comparableConfirmationBody(operation: string, value: unknown): unknown {
+  if (operation !== "portfolio.apply_changes") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const { upsertHoldings, ...rest } = value as Record<string, unknown>;
+  if (!Array.isArray(upsertHoldings)) return rest;
+  return {
+    ...rest,
+    upsertHoldings: upsertHoldings.map((holding) => {
+      if (!holding || typeof holding !== "object" || Array.isArray(holding)) return holding;
+      const { name: _name, notes: _notes, ...stripped } = holding as Record<string, unknown>;
+      return stripped;
+    }),
+  };
+}
+
 export async function validateSandboxConfirmation(ctx: SandboxContext, confirmationId: string, target: SandboxConfirmationTarget) {
   const [record] = await db
     .select()
@@ -71,7 +91,8 @@ export async function validateSandboxConfirmation(ctx: SandboxContext, confirmat
   if (record.operation !== target.operation || record.resourceType !== target.resourceType || (record.resourceId ?? "") !== (target.resourceId ?? "")) {
     return { ok: false as const, reason: "confirmation target mismatch" };
   }
-  if (stableJson(parseRequestBody(record.requestBody)) !== stableJson(stripConfirmationFields(target.requestBody))) {
+  const comparableOperation = record.operation;
+  if (stableJson(comparableConfirmationBody(comparableOperation, parseRequestBody(record.requestBody))) !== stableJson(comparableConfirmationBody(comparableOperation, stripConfirmationFields(target.requestBody)))) {
     return { ok: false as const, reason: "confirmation payload mismatch" };
   }
   if (new Date(record.expiresAt).getTime() <= now.getTime()) {

@@ -42,7 +42,7 @@ import { ACTIVE_BACKEND, isWorkspaceBackend, planBackend, portfolioBackend, watc
 import { getMastraPortfolioRevision, isSameRevisionInstant, readMastraPortfolioProjection, replaceMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
-import { consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
+import { comparableConfirmationBody, consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId, type UserContext } from "../lib/user-context.js";
 import {
@@ -2556,6 +2556,11 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
   // 时，内容一致的重复注册直接复用该草案并把执行路径告诉模型——重复构造
   // 的参数与注册记录以注册为准。内容不一致的是另一个草案（如新 candidate），
   // 正常新建并指路旧确认，不劫持。
+  // 口径收窄（2026-09-08 用户 111 三连确认回归）：复用判定与执行校验都只比
+  // 业务核心字段（代码/权重/股数/成本/现金等），持仓 name/notes 这类模型每轮
+  // 必然重写的自由文本不再构成「另一个草案」；业务字段漂移（改权重/改代码/
+  // 丢股数）仍正常新建并要求用户再确认。执行安全不变量不动：显式带上与注册
+  // 记录不一致的业务参数执行仍然被拒。
   const latest = await latestUserMessage(context);
   const registeredAfterUserConfirmation = latest ? isExplicitConfirmationText(latest.content?.trim() || "") : false;
   if (registeredAfterUserConfirmation && latest) {
@@ -2563,7 +2568,7 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
     if (executable) {
       const canonical = await canonicalizeConfirmationPayload(operation, payload, context);
       const target = confirmationTarget(operation, canonical, context);
-      if (stableStringify(target.requestBody) === stableStringify(executable.targetRequestBody)) {
+      if (stableStringify(comparableConfirmationBody(operation, target.requestBody)) === stableStringify(comparableConfirmationBody(operation, executable.targetRequestBody))) {
         await audit(context, {
           operation: "confirmations.request",
           resourceType: executable.record.resourceType,
