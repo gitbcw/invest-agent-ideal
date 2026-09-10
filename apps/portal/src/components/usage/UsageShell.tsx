@@ -32,6 +32,7 @@ const MODEL_LABELS: Record<string, string> = {
   "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-5.6-luna": "GPT-5.6 Luna",
   "gpt-5.5": "GPT-5.5",
+  "deepseek-flash": "DeepSeek V4.1 Flash",
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "deepseek-v4-flash": "DeepSeek V4 Flash",
   "glm-5.3-flash": "GLM-5.3 Flash",

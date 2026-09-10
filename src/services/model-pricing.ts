@@ -17,6 +17,11 @@
  *     v4-pro 输入3元(缓存命中0.025元)/输出6元（2026-08-17 起峰谷价未采用，
  *     按当前单一价记账）; v4-flash-vision-exp 2026-08-21 上线即峰谷价，
  *     与 v4-flash 同牌价：输入峰3/闲1.5、输出峰9/闲4.5（检索 2026-08-21）
+ *   - DeepSeek 4.1（检索 2026-09-10）：V4.1-Flash 以新 ID deepseek-flash 上线
+ *     （全模态），输入峰2/闲1、输出峰8/闲4、缓存命中峰0.04/闲0.02，峰谷窗口
+ *     为「工作日」9-12 / 14-18 点；旧 ID v4-flash/vision-exp 上游已改路由 4.1
+ *     并按 4.1 价计费，v4-pro 2026-09-14 12:00 起同样改路由。旧条目保留原价
+ *     仅供历史 trace 重算；桥接期落在旧 ID 上的少量流量按旧价偏高估记。
  *   - 火山方舟: Doubao-Seed-2.1-turbo 官方牌价（检索 2026-09-02）输入3元/输出15元/
  *     缓存命中0.6元；lite 未获官方精确牌价前按主力档 6/30 保守上界占位
  *   - 记账汇率 USD→CNY = 6.75（2026-08-16 中间价 6.7878 / 市场价 6.74 区间取整）
@@ -55,6 +60,8 @@ export interface TimeTieredPricing {
   effectiveFrom: string;
   /** Beijing-time windows [startHour, endHour) billed at the peak rate. */
   peakWindowsUtcPlus8: Array<[number, number]>;
+  /** true = 峰谷窗口仅工作日（北京时间周一~周五）生效，周末恒空闲价。 */
+  weekdaysOnly?: boolean;
   peak: ModelPriceTier;
   offPeak: ModelPriceTier;
 }
@@ -86,6 +93,22 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
   { model: "gpt-5.6-luna", currency: "CNY", tier: GPT_5_6_TIERS.luna },
   { model: "gpt-5.5", currency: "CNY", tier: usd(5, 30) }, // 与 sol 同牌价：¥2.0 / ¥12.0
   {
+    // DeepSeek V4.1-Flash（2026-09-10 上线，官方新 ID，全模态文本+图片）。
+    // 官方峰谷窗口为「工作日」9-12 / 14-18（weekdaysOnly），周末恒空闲价。
+    // 发布即峰谷价、无旧单一价适用期，tier 按空闲价占位（生效期后仅走 timeTiered）。
+    model: "deepseek-flash", currency: "CNY",
+    tier: { input: 1, output: 4, cacheRead: 0.02 },
+    timeTiered: {
+      effectiveFrom: "2026-09-09T16:00:00.000Z",
+      peakWindowsUtcPlus8: [[9, 12], [14, 18]],
+      weekdaysOnly: true,
+      peak: { input: 2.0, output: 8.0, cacheRead: 0.04 },
+      offPeak: { input: 1.0, output: 4.0, cacheRead: 0.02 },
+    },
+  },
+  {
+    // 2026-09-10 起上游已将本 ID 路由至 V4.1-Flash 并按 4.1 价计费；
+    // 条目保留原价仅供历史 trace 重算，新流量不应再落此 ID。
     model: "deepseek-v4-flash", currency: "CNY",
     tier: { input: 1, output: 2, cacheRead: 0.02 },
     timeTiered: {
@@ -97,6 +120,8 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
     },
   },
   {
+    // pro 下线（owner 2026-09-10）：上游 2026-09-14 12:00 起退役本 ID 并改路由
+    // V4.1-Flash；本系统同日已从选择器移除。条目保留原价仅供历史 trace 重算。
     model: "deepseek-v4-pro", currency: "CNY",
     tier: { input: 3, output: 6, cacheRead: 0.025 },
     timeTiered: {
@@ -109,6 +134,8 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
   {
     // 2026-08-21 发布即峰谷价，与 v4-flash 同牌价；晚于峰谷切换上线，
     // 无旧单一价适用期，tier 按空闲价占位（生效期后仅走 timeTiered）。
+    // 2026-09-10 起上游已将本 ID 路由至 V4.1-Flash 并按 4.1 价计费；条目保留
+    // 原价仅供历史 trace 重算（链内桥接期流量按本价偏高估记）。
     model: "deepseek-v4-flash-vision-exp", currency: "CNY",
     tier: { input: 1.5, output: 4.5, cacheRead: 0.05 },
     timeTiered: {
@@ -176,8 +203,15 @@ export function isPricedModel(model: string | undefined | null): boolean {
 }
 
 /** Beijing-time peak check for time-tiered providers (UTC+8, hour windows). */
-export function isBeijingPeakHour(at: Date, windows: Array<[number, number]>): boolean {
-  const beijingHour = (((at.getUTCHours() + 8) % 24) + 24) % 24;
+export function isBeijingPeakHour(at: Date, windows: Array<[number, number]>, weekdaysOnly = false): boolean {
+  // 整体平移 8 小时后直接读 UTC 字段：小时与 (getUTCHours()+8)%24 等价，
+  // 且跨日窗口下星期字段仍然正确（weekdaysOnly 判定需要）。
+  const beijing = new Date(at.getTime() + 8 * 3_600_000);
+  if (weekdaysOnly) {
+    const day = beijing.getUTCDay();
+    if (day === 0 || day === 6) return false;
+  }
+  const beijingHour = beijing.getUTCHours();
   return windows.some(([start, end]) => beijingHour >= start && beijingHour < end);
 }
 
@@ -187,7 +221,7 @@ function tierFor(model: string | undefined | null, at?: Date): { tier: ModelPric
   if (entry) {
     const when = at ?? new Date();
     if (entry.timeTiered && when.getTime() >= Date.parse(entry.timeTiered.effectiveFrom)) {
-      const tier = isBeijingPeakHour(when, entry.timeTiered.peakWindowsUtcPlus8) ? entry.timeTiered.peak : entry.timeTiered.offPeak;
+      const tier = isBeijingPeakHour(when, entry.timeTiered.peakWindowsUtcPlus8, entry.timeTiered.weekdaysOnly ?? false) ? entry.timeTiered.peak : entry.timeTiered.offPeak;
       return { tier, source: "priced" };
     }
     return { tier: entry.tier, source: "priced" };
@@ -198,7 +232,7 @@ function tierFor(model: string | undefined | null, at?: Date): { tier: ModelPric
 /** Registry summary for API surfaces (admin cost view rate badges). */
 export function pricingSummary(): {
   currency: "CNY";
-  models: Array<{ model: string; tier: Required<ModelPriceTier>; timeTiered?: { effectiveFrom: string; peak: Required<ModelPriceTier>; offPeak: Required<ModelPriceTier>; peakWindowsUtcPlus8: Array<[number, number]> } }>;
+  models: Array<{ model: string; tier: Required<ModelPriceTier>; timeTiered?: { effectiveFrom: string; peak: Required<ModelPriceTier>; offPeak: Required<ModelPriceTier>; peakWindowsUtcPlus8: Array<[number, number]>; weekdaysOnly?: boolean } }>;
   defaultTier: Required<ModelPriceTier>;
 } {
   const expand = (tier: ModelPriceTier): Required<ModelPriceTier> => ({
@@ -219,6 +253,7 @@ export function pricingSummary(): {
           peak: expand(entry.timeTiered.peak),
           offPeak: expand(entry.timeTiered.offPeak),
           peakWindowsUtcPlus8: entry.timeTiered.peakWindowsUtcPlus8,
+          ...(entry.timeTiered.weekdaysOnly ? { weekdaysOnly: true } : {}),
         },
       } : {}),
     })),

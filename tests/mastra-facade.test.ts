@@ -158,7 +158,7 @@ test("GPT-series turns carry default reasoningEffort=high; GLM-5.3 carries high;
   // 其他国产轮：不携带 providerOptions。
   const domesticRun = capture();
   await runMastraTurn(
-    { conversationId: "domestic-effort", text: "test", model: "deepseek-v4-flash-vision-exp" },
+    { conversationId: "domestic-effort", text: "test", model: "deepseek-flash" },
     { agent: domesticRun.agent, gateway: gatewayOptions },
   );
   assert.equal(domesticRun.seen.providerOptions, undefined);

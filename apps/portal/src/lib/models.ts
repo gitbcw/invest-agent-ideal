@@ -6,6 +6,9 @@
  * 展示口径（owner 2026-08-17）：输入/输出双价（元/百万 tokens），
  * 峰谷模型统一按峰值。GPT 系列裁撤（owner 2026-08-26，同日二次修订）：
  * sol/5.5 禁用，terra + luna 可用且 terra 优先。
+ * DeepSeek 4.1 换挡（owner 2026-09-10）：deepseek-flash（V4.1-Flash）上架，
+ * 旧 v4-pro / v4-flash / vision-exp 从兜底清单下线（历史会话显示名保留在
+ * ModelPicker/UsageShell 的映射里）。
  */
 export interface ModelOption {
   /** 网关上的模型 id，传给 conversation.chat payload 的 model 字段 */
@@ -29,10 +32,8 @@ export const DEFAULT_MODEL_VALUE = "gpt-5.6-terra";
 export const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
   { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", description: "高质量均衡档，日常深度分析推荐", inputPrice: 1.0, outputPrice: 6.0 },
   { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", description: "轻量快速档，低成本兜底", inputPrice: 0.08, outputPrice: 0.48 },
-  { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro", description: "深度思考档，中文与工具调用强，仅手动可选", inputPrice: 9.0, outputPrice: 27.0 },
-  { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash", description: "极速性价比档，仅手动可选", inputPrice: 3.0, outputPrice: 9.0 },
+  { value: "deepseek-flash", label: "DeepSeek V4.1 Flash", description: "全模态档，支持图片理解与工具调用，国产次选", inputPrice: 2.0, outputPrice: 8.0 },
   { value: "glm-5.3-flash", label: "GLM-5.3 Flash", description: "智谱全模态轻量档，国产链兜底", inputPrice: 0.8, outputPrice: 2.8 },
-  { value: "deepseek-v4-flash-vision-exp", label: "DeepSeek V4 Flash Vision", description: "多模态档，支持图片理解与工具调用，国产次选", inputPrice: 3.0, outputPrice: 9.0 },
   { value: "qwen3.7-flash", label: "Qwen3.7 Flash", description: "极速多模态档，支持图片理解，图片轮兜底", inputPrice: 0.6, outputPrice: 2.4 },
   { value: "doubao-seed-2-1-turbo-260628", label: "豆包 Seed 2.1 Turbo", description: "多模态档，支持图片理解，仅手动可选", inputPrice: 6, outputPrice: 30 },
 ];

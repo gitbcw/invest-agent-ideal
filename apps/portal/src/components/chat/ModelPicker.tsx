@@ -16,15 +16,18 @@ interface ModelsStateResponse {
   };
 }
 
+// 可选模型的显示名（决定下拉内容）；旧 DeepSeek ID 保留映射仅供历史
+// 会话选中值/自动档回显，不再出现在下拉里（4.1 换挡 2026-09-10）。
 const LABELS: Record<string, string> = {
   "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-5.6-luna": "GPT-5.6 Luna",
-  "deepseek-v4-pro": "DeepSeek V4 Pro",
-  "deepseek-v4-flash": "DeepSeek V4 Flash",
+  "deepseek-flash": "DeepSeek V4.1 Flash",
   "glm-5.3-flash": "GLM-5.3 Flash",
-  "deepseek-v4-flash-vision-exp": "DeepSeek V4 Flash Vision",
   "qwen3.7-flash": "Qwen3.7 Flash",
   "doubao-seed-2-1-turbo-260628": "豆包 Seed 2.1 Turbo",
+  "deepseek-v4-pro": "DeepSeek V4 Pro",
+  "deepseek-v4-flash": "DeepSeek V4 Flash",
+  "deepseek-v4-flash-vision-exp": "DeepSeek V4 Flash Vision",
 };
 
 export function ModelPicker({

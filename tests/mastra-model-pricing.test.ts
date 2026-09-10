@@ -66,6 +66,23 @@ test("model pricing registry computes per-model costs with provider-aligned defa
   assert.equal(visionPeak.amount, 3);
   assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-flash-vision-exp" && entry.timeTiered && entry.timeTiered.peak.input === 3));
 
+  // deepseek-flash（V4.1-Flash，2026-09-10 上线，官方新 ID）：峰谷窗口仅工作日生效。
+  // 工作日高峰（北京周二 2026-09-15 10:00 = UTC 02:00）：输入 ¥2/M。
+  const ds41Peak = computeModelCost("deepseek-flash", { inputTokens: 1_000_000 }, { at: "2026-09-15T02:00:00.000Z" });
+  assert.equal(ds41Peak.source, "priced");
+  assert.equal(ds41Peak.amount, 2);
+  // 周末同时段（北京周六 2026-09-19 10:00）：恒空闲价 ¥1/M。
+  const ds41Weekend = computeModelCost("deepseek-flash", { inputTokens: 1_000_000 }, { at: "2026-09-19T02:00:00.000Z" });
+  assert.equal(ds41Weekend.amount, 1);
+  // 工作日晚间空闲（北京周二 20:00 = UTC 12:00）：输出 ¥4/M。
+  const ds41OffPeak = computeModelCost("deepseek-flash", { outputTokens: 1_000_000 }, { at: "2026-09-15T12:00:00.000Z" });
+  assert.equal(ds41OffPeak.amount, 4);
+  // 生效前（北京 9-09 23:59）：走 tier 占位（=空闲价）。
+  const ds41Before = computeModelCost("deepseek-flash", { inputTokens: 1_000_000 }, { at: "2026-09-09T15:59:00.000Z" });
+  assert.equal(ds41Before.amount, 1);
+  // summary 暴露峰谷与工作日口径供费率徽标展示。
+  assert.ok(summary.models.some((entry) => entry.model === "deepseek-flash" && entry.timeTiered && entry.timeTiered.peak.input === 2 && entry.timeTiered.weekdaysOnly === true));
+
   // glm-5.3-flash：owner 折算 2026-08-27（glm-5.3 牌价 1/10），单一价 ¥0.8/¥2.8、
   // 缓存命中显式 ¥0.2（不用 input/10 默认）。
   const glm = computeModelCost("glm-5.3-flash", { inputTokens: 1_000_000, outputTokens: 1_000_000, cachedReadTokens: 1_000_000 });

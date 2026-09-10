@@ -45,7 +45,8 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
-    // 国产链逐级降级：glm → qwen → deepseek → doubao（文本与图片同序；qwen 前置为 owner 2026-09-02 高峰计价裁决）。
+    // 国产链逐级降级：glm → qwen → deepseek-flash → vision-exp（桥接）→ doubao
+    // （qwen 前置为 owner 2026-09-02 高峰计价裁决；4.1 换挡 2026-09-10）。
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
     clock += 60_000;
@@ -56,7 +57,13 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     recordModelFeedback("qwen3.7-flash", { ok: false });
     clock += 60_000;
     recordModelFeedback("qwen3.7-flash", { ok: false });
-    assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-v4-flash-vision-exp");
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-flash");
+    clock += 60_000;
+    recordModelFeedback("deepseek-flash", { ok: false });
+    clock += 60_000;
+    recordModelFeedback("deepseek-flash", { ok: false });
+    // 桥接兜底：网关通道未就位导致 deepseek-flash 降级时落到旧 ID（上游同模型）。
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-v4-flash-vision-exp");
     clock += 60_000;
     recordModelFeedback("deepseek-v4-flash-vision-exp", { ok: false });
     clock += 60_000;
@@ -111,8 +118,9 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra", "gpt-5.6-luna"] }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash"] }).model, "qwen3.7-flash");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.7-flash"] }).model, "deepseek-v4-flash-vision-exp");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.7-flash", "deepseek-v4-flash-vision-exp"] }).model, "doubao-seed-2-1-turbo-260628");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.7-flash"] }).model, "deepseek-flash");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.7-flash", "deepseek-flash"] }).model, "deepseek-v4-flash-vision-exp");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.7-flash", "deepseek-flash", "deepseek-v4-flash-vision-exp"] }).model, "doubao-seed-2-1-turbo-260628");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
@@ -178,7 +186,10 @@ test("model catalog keeps terra+luna from the GPT series; sol and 5.5 stay disab
   assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-sol"], undefined);
   assert.equal(MODEL_DESCRIPTIONS["gpt-5.5"], undefined);
   assert.equal(MODEL_DESCRIPTIONS["glm-5.3-flash"] !== undefined, true);
-  assert.equal(MODEL_DESCRIPTIONS["deepseek-v4-flash-vision-exp"] !== undefined, true);
+  // DeepSeek 4.1 换挡（2026-09-10）：deepseek-flash 上架选择器，旧 vision-exp
+  // 移出（链内仍作桥接兜底）。
+  assert.equal(MODEL_DESCRIPTIONS["deepseek-flash"] !== undefined, true);
+  assert.equal(MODEL_DESCRIPTIONS["deepseek-v4-flash-vision-exp"], undefined);
   assert.equal(MODEL_DESCRIPTIONS["qwen3.7-flash"] !== undefined, true);
   assert.equal(MODEL_DESCRIPTIONS["doubao-seed-2-1-turbo-260628"] !== undefined, true);
 });
