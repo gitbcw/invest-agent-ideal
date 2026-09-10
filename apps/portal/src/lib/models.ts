@@ -6,9 +6,9 @@
  * 展示口径（owner 2026-08-17）：输入/输出双价（元/百万 tokens），
  * 峰谷模型统一按峰值。GPT 系列裁撤（owner 2026-08-26，同日二次修订）：
  * sol/5.5 禁用，terra + luna 可用且 terra 优先。
- * DeepSeek 4.1 换挡（owner 2026-09-10）：deepseek-flash（V4.1-Flash）上架，
- * 旧 v4-pro / v4-flash / vision-exp 从兜底清单下线（历史会话显示名保留在
- * ModelPicker/UsageShell 的映射里）。
+ * DeepSeek 4.1 统一合并（owner 2026-09-10，同日二次裁决）：全系统只保留
+ * deepseek-flash（V4.1-Flash）一个 DeepSeek 模型；旧 v4-pro / v4-flash /
+ * vision-exp 全部出册（历史用量行的显示名仅在 UsageShell 维护）。
  */
 export interface ModelOption {
   /** 网关上的模型 id，传给 conversation.chat payload 的 model 字段 */

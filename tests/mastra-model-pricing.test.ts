@@ -42,31 +42,13 @@ test("model pricing registry computes per-model costs with provider-aligned defa
   const summary = pricingSummary();
   assert.ok(summary.models.some((entry) => entry.model === "gpt-5.6-sol" && entry.tier.input === 2.0));
   assert.ok(summary.models.some((entry) => entry.model === "gpt-5.5" && entry.tier.input === 2.0));
-  assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-pro" && entry.tier.input === 3));
+  assert.ok(summary.models.some((entry) => entry.model === "deepseek-flash" && entry.tier.input === 1));
   assert.ok(summary.defaultTier.cacheRead > 0);
 
-  // DeepSeek peak/off-peak restatement (effective 2026-08-17 Beijing).
-  // 高峰（北京 10:00 = UTC 02:00）：flash 输入 ¥3/M。
-  const peak = computeModelCost("deepseek-v4-flash", { inputTokens: 1_000_000 }, { at: "2026-08-18T02:00:00.000Z" });
-  assert.equal(peak.amount, 3);
-  // 空闲（北京 22:00 = UTC 14:00）：flash 输入 ¥1.5/M。
-  const offPeak = computeModelCost("deepseek-v4-flash", { inputTokens: 1_000_000 }, { at: "2026-08-18T14:00:00.000Z" });
-  assert.equal(offPeak.amount, 1.5);
-  // 生效前（北京 8-16 23:59）：沿用旧单一价 ¥1/M。
-  const beforeCutover = computeModelCost("deepseek-v4-flash", { inputTokens: 1_000_000 }, { at: "2026-08-16T15:59:00.000Z" });
-  assert.equal(beforeCutover.amount, 1);
-  // pro 高峰输出 ¥27/M。
-  const proPeak = computeModelCost("deepseek-v4-pro", { outputTokens: 1_000_000 }, { at: "2026-08-20T06:30:00.000Z" });
-  assert.equal(proPeak.amount, 27);
-  // 峰谷模型带时段信息进 summary 供费率徽标展示。
-  assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-flash" && entry.timeTiered && entry.timeTiered.peak.input === 3));
-  // vision-exp 2026-08-21 上线即峰谷价，与 flash 同牌价（北京 14:30 = UTC 06:30 高峰输入 ¥3/M）。
-  const visionPeak = computeModelCost("deepseek-v4-flash-vision-exp", { inputTokens: 1_000_000 }, { at: "2026-08-21T06:30:00.000Z" });
-  assert.equal(visionPeak.source, "priced");
-  assert.equal(visionPeak.amount, 3);
-  assert.ok(summary.models.some((entry) => entry.model === "deepseek-v4-flash-vision-exp" && entry.timeTiered && entry.timeTiered.peak.input === 3));
-
-  // deepseek-flash（V4.1-Flash，2026-09-10 上线，官方新 ID）：峰谷窗口仅工作日生效。
+  // DeepSeek 4.1 统一合并（owner 2026-09-10 二次裁决）：注册表只剩
+  // deepseek-flash 一个条目，峰谷窗口仅工作日生效；旧 ID 全部经
+  // MODEL_ALIASES 并轨按 deepseek-flash 计价（上游对旧名同样按 4.1 价实收），
+  // 历史行金额以写入时落库为准、仅重算走本口径。
   // 工作日高峰（北京周二 2026-09-15 10:00 = UTC 02:00）：输入 ¥2/M。
   const ds41Peak = computeModelCost("deepseek-flash", { inputTokens: 1_000_000 }, { at: "2026-09-15T02:00:00.000Z" });
   assert.equal(ds41Peak.source, "priced");
@@ -80,7 +62,14 @@ test("model pricing registry computes per-model costs with provider-aligned defa
   // 生效前（北京 9-09 23:59）：走 tier 占位（=空闲价）。
   const ds41Before = computeModelCost("deepseek-flash", { inputTokens: 1_000_000 }, { at: "2026-09-09T15:59:00.000Z" });
   assert.equal(ds41Before.amount, 1);
-  // summary 暴露峰谷与工作日口径供费率徽标展示。
+  // 旧 ID 并轨：同一时刻与 deepseek-flash 同价、仍算入册（alias 命中）。
+  assert.equal(isPricedModel("deepseek-v4-pro"), true);
+  assert.equal(isPricedModel("deepseek-v4-flash-vision-exp"), true);
+  assert.equal(computeModelCost("deepseek-v4-flash-vision-exp", { inputTokens: 1_000_000 }, { at: "2026-09-15T02:00:00.000Z" }).amount, 2);
+  // 4.1 生效前的历史日期重算走 tier 占位（空闲价），不再按旧 v4 峰谷价。
+  assert.equal(computeModelCost("deepseek-v4-pro", { outputTokens: 1_000_000 }, { at: "2026-08-20T06:30:00.000Z" }).amount, 4);
+  // summary（费率徽标/connector models.state）只暴露一个 deepseek 条目。
+  assert.equal(summary.models.filter((entry) => entry.model.startsWith("deepseek")).length, 1);
   assert.ok(summary.models.some((entry) => entry.model === "deepseek-flash" && entry.timeTiered && entry.timeTiered.peak.input === 2 && entry.timeTiered.weekdaysOnly === true));
 
   // glm-5.3-flash：owner 折算 2026-08-27（glm-5.3 牌价 1/10），单一价 ¥0.8/¥2.8、

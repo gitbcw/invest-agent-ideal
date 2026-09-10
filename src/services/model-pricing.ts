@@ -20,8 +20,11 @@
  *   - DeepSeek 4.1（检索 2026-09-10）：V4.1-Flash 以新 ID deepseek-flash 上线
  *     （全模态），输入峰2/闲1、输出峰8/闲4、缓存命中峰0.04/闲0.02，峰谷窗口
  *     为「工作日」9-12 / 14-18 点；旧 ID v4-flash/vision-exp 上游已改路由 4.1
- *     并按 4.1 价计费，v4-pro 2026-09-14 12:00 起同样改路由。旧条目保留原价
- *     仅供历史 trace 重算；桥接期落在旧 ID 上的少量流量按旧价偏高估记。
+ *     并按 4.1 价计费，v4-pro 2026-09-14 12:00 起同样改路由。同日二次裁决
+ *     （owner）：统一合并——注册表只保留 deepseek-flash 一个条目，旧 ID 经
+ *     MODEL_ALIASES 并轨计价（与上游对旧名的现行实收一致）；历史 trace
+ *     金额以写入时落库为准，仅未来重算按并轨价（4.1 生效前日期走 tier
+ *     占位=空闲价）。
  *   - 火山方舟: Doubao-Seed-2.1-turbo 官方牌价（检索 2026-09-02）输入3元/输出15元/
  *     缓存命中0.6元；lite 未获官方精确牌价前按主力档 6/30 保守上界占位
  *   - 记账汇率 USD→CNY = 6.75（2026-08-16 中间价 6.7878 / 市场价 6.74 区间取整）
@@ -96,6 +99,8 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
     // DeepSeek V4.1-Flash（2026-09-10 上线，官方新 ID，全模态文本+图片）。
     // 官方峰谷窗口为「工作日」9-12 / 14-18（weekdaysOnly），周末恒空闲价。
     // 发布即峰谷价、无旧单一价适用期，tier 按空闲价占位（生效期后仅走 timeTiered）。
+    // 同日二次裁决（owner）：统一合并，此为注册表内唯一的 DeepSeek 条目，
+    // 旧 v4 系列 ID 经 MODEL_ALIASES 并轨到此计价。
     model: "deepseek-flash", currency: "CNY",
     tier: { input: 1, output: 4, cacheRead: 0.02 },
     timeTiered: {
@@ -104,45 +109,6 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
       weekdaysOnly: true,
       peak: { input: 2.0, output: 8.0, cacheRead: 0.04 },
       offPeak: { input: 1.0, output: 4.0, cacheRead: 0.02 },
-    },
-  },
-  {
-    // 2026-09-10 起上游已将本 ID 路由至 V4.1-Flash 并按 4.1 价计费；
-    // 条目保留原价仅供历史 trace 重算，新流量不应再落此 ID。
-    model: "deepseek-v4-flash", currency: "CNY",
-    tier: { input: 1, output: 2, cacheRead: 0.02 },
-    timeTiered: {
-      // 2026-08-17 00:00 北京时间生效；高峰 9-12 / 14-18 点，空闲价 = 高峰一半。
-      effectiveFrom: "2026-08-16T16:00:00.000Z",
-      peakWindowsUtcPlus8: [[9, 12], [14, 18]],
-      peak: { input: 3.0, output: 9.0, cacheRead: 0.10 },
-      offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05 },
-    },
-  },
-  {
-    // pro 下线（owner 2026-09-10）：上游 2026-09-14 12:00 起退役本 ID 并改路由
-    // V4.1-Flash；本系统同日已从选择器移除。条目保留原价仅供历史 trace 重算。
-    model: "deepseek-v4-pro", currency: "CNY",
-    tier: { input: 3, output: 6, cacheRead: 0.025 },
-    timeTiered: {
-      effectiveFrom: "2026-08-16T16:00:00.000Z",
-      peakWindowsUtcPlus8: [[9, 12], [14, 18]],
-      peak: { input: 9.0, output: 27.0, cacheRead: 0.30 },
-      offPeak: { input: 4.5, output: 13.5, cacheRead: 0.15 },
-    },
-  },
-  {
-    // 2026-08-21 发布即峰谷价，与 v4-flash 同牌价；晚于峰谷切换上线，
-    // 无旧单一价适用期，tier 按空闲价占位（生效期后仅走 timeTiered）。
-    // 2026-09-10 起上游已将本 ID 路由至 V4.1-Flash 并按 4.1 价计费；条目保留
-    // 原价仅供历史 trace 重算（链内桥接期流量按本价偏高估记）。
-    model: "deepseek-v4-flash-vision-exp", currency: "CNY",
-    tier: { input: 1.5, output: 4.5, cacheRead: 0.05 },
-    timeTiered: {
-      effectiveFrom: "2026-08-16T16:00:00.000Z",
-      peakWindowsUtcPlus8: [[9, 12], [14, 18]],
-      peak: { input: 3.0, output: 9.0, cacheRead: 0.10 },
-      offPeak: { input: 1.5, output: 4.5, cacheRead: 0.05 },
     },
   },
   // qwen3.7-flash：owner 提供牌价 2026-08-18（输入 0.6 元 / 输出 2.4 元，单一价）。
@@ -162,12 +128,18 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
  * 同档计价；真正未知的新型号仍走 DEFAULT_TIER 并在聚合层计 unpricedCalls。
  */
 const MODEL_ALIASES: Record<string, string> = {
-  "deepseek-v4-flash-none": "deepseek-v4-flash",
-  "deepseek-v4-flash-max": "deepseek-v4-flash",
-  "deepseek-v4-pro-none": "deepseek-v4-pro",
-  "deepseek-v4-pro-max": "deepseek-v4-pro",
-  "deepseek-v4-flash-vision-exp-none": "deepseek-v4-flash-vision-exp",
-  "deepseek-v4-flash-vision-exp-max": "deepseek-v4-flash-vision-exp",
+  // DeepSeek 旧 ID 统一并轨（owner 2026-09-10 二次裁决）：上游只剩
+  // deepseek-flash（旧名全部路由 4.1 按新价实收），旧 ID 一律并入
+  // deepseek-flash 计价；历史 trace 金额以写入时落库为准。
+  "deepseek-v4-flash": "deepseek-flash",
+  "deepseek-v4-flash-none": "deepseek-flash",
+  "deepseek-v4-flash-max": "deepseek-flash",
+  "deepseek-v4-pro": "deepseek-flash",
+  "deepseek-v4-pro-none": "deepseek-flash",
+  "deepseek-v4-pro-max": "deepseek-flash",
+  "deepseek-v4-flash-vision-exp": "deepseek-flash",
+  "deepseek-v4-flash-vision-exp-none": "deepseek-flash",
+  "deepseek-v4-flash-vision-exp-max": "deepseek-flash",
   // 思考深度别名：同模型不同档位，同价计费。glm-5.3-flash-max 档位已于
   // 2026-08-28 裁撤（Z.ai bench 性价比差 + 实盘零命中），别名保留仅为
   // 历史 trace 行重算时的计价兼容，新流量不再产生该模型。
