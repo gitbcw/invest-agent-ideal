@@ -70,3 +70,4 @@ message_kind: automation_summary；message 长度 13
 
 - 2026-09-06（T-469）：作为语义受阻信号移交格式（Diagnosis Record）的走通案例，六问全答记录见 [customer-friction-signal-collection-design.md](../customer-friction-signal-collection-design.md) §八。
 - 2026-09-06（owner 裁决 + T-473 实现）：选项 A 服务层质量下限落地（40 字符下限+降级模板+EV-038 三测全绿），随 SCR-20260906-02 待白天发布窗口；发布前案例保持 triaged，发布后按关闭条件复核。状态从「修复待裁决」进「已实现待发布」。
+- 2026-09-10（T-475 观察窗口中期复核，窗口 9-06T02:04Z~09-10T03:11Z）：**无同型复发，符合关闭条件走势**。证据：①`automation summary quality floor applied` 日志 0 次触发（app.log 覆盖自 8-15，全窗口在案）——降级模板零实际送达，交付核对项 n.a.；②窗口内已投递 automation_summary（sent）0 条低于 40 字符下限、0 条含降级模板标记（最短一条 80 字符，dyk 9-07，为正常短摘要）；③run 落库 result_summary 0 条低于下限——9-04 的 13 字元话语签名未再现；④S3 催补四日仅 9-08 一条已知 111 会话命中（归因 W4 超时，与本防线无关），S6 点踩四日全 0——用户未因此受阻。SCR-20260906-02「业务终态正确」栏据此**中期回填 pass**（证据详见 [diagnostic-coverage-retest-2026-09-10.md](../diagnostic-coverage-retest-2026-09-10.md) §五）。终局：9-13 窗口收口时如仍无同型，建议 status → fixed 并关闭（owner 裁决）。

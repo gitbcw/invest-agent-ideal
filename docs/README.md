@@ -42,6 +42,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 | [bad-cases/BC-20260904-001-empty-summary-push.md](./bad-cases/BC-20260904-001-empty-summary-push.md) | 空壳简报照推（程序全绿、语义失败的范式案例，T-469 走通案例）：主因模型单轮漂移+次因服务层无 summary 质量下限，修复选型待 owner 裁决 |
 | [run-diagnostic-view-contract.md](./run-diagnostic-view-contract.md) | 从 traceId 串起对话、工具、审计、调度、产物和投递的最小诊断契约 |
 | [diagnostic-coverage-report-2026-09-06.md](./diagnostic-coverage-report-2026-09-06.md) | 诊断链生产覆盖率首轮实测（T-467）：7 天窗口 99.6% 串通、audit 100%、缺口归因三分法（历史/n.a./新代码）、S7 巡查阈值、GAP-1/GAP-2 登记 |
+| [diagnostic-coverage-retest-2026-09-10.md](./diagnostic-coverage-retest-2026-09-10.md) | 覆盖率复测中期报告（T-474）：GAP-1 断点归零未回升、S7 三率全达标、GAP-2 发现 trace_payload_retention 等未登记 n.a. 白名单致平台比率仍 0%（一行补登待发布）；SCR-01/02 业务终态中期回填 pass |
 | [release-governance-evidence-template.md](./release-governance-evidence-template.md) | 变更影响、验证、灰度、观测、回滚和 go/no-go 记录模板 |
 | [release-record-20260824-dd072a15.md](./release-record-20260824-dd072a15.md) | 真实发布记录：T-357 治理执行线（WP0–WP5）上线，含验收九项与 known-good 标记 |
 | [release-record-20260906-2afb5e0f.md](./release-record-20260906-2afb5e0f.md) | 真实发布记录：T-472 诊断链口径修复 + T-473 summary 质量下限；语义门首两份 SCR（tier-2）实战；发布记录纪律自本次恢复逐次 |
