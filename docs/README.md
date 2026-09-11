@@ -51,6 +51,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 | [release-record-20260908-b5f065c7.md](./release-record-20260908-b5f065c7.md) | 真实发布记录：确认身份比对忽略持仓 name/notes（111 三连确认 9-08 回归）——复用与执行同口径收窄，业务字段漂移仍另立新草案；观察窗口至 9-15 |
 | [release-record-20260910-da8df7a0.md](./release-record-20260910-da8df7a0.md) | 真实发布记录：DeepSeek 4.1 换挡——deepseek-flash 上架双链与计价（weekdaysOnly 工作日峰谷）、vision-exp 桥接兜底、pro 下线；外部依赖=newapi 补通道后探针自动换回 |
 | [release-record-20260910-d7ff4fa0.md](./release-record-20260910-d7ff4fa0.md) | 真实发布记录：DeepSeek 统一合并（同日二次裁决）——全系统只保留 deepseek-flash，桥接位撤销、旧 ID 九个并轨别名计价 |
+| [release-record-20260911-b7202c2.md](./release-record-20260911-b7202c2.md) | 真实发布记录：行业复盘质量控制失效链修复——工具入参宽容矫正（qwen 字符串参数定性）、零写入收口（skipReason 契约）、expectedSchema 真实列头+列语义校验（rev22/rev9 重切）、推送 JSON 信封剥离 |
 | [governance-review-2026-09-06.md](./governance-review-2026-09-06.md) | 治理放行复核记录（T-471，治理闭环包 T-466~T-471 收口）：G1–G5/L1–L4 逐项结论、扩大使用范围三前置条件、未解决风险与下次复核触发清单 |
 | [isolated-fault-drill-matrix.md](./isolated-fault-drill-matrix.md) | 四类隔离故障演练的注入点、终态、副作用和通过门槛 |
 | [AI应用复杂系统管理落地方案.md](./AI应用复杂系统管理落地方案.md) | 方法论来源（非执行规范，2026-08-24 起带 ⚠️ 非规范性标注）：复杂系统评估/护栏/韧性/演化/可观测性的通用方法论素材；固定数字、工具栈与团队规模仅为示例，执行口径以 [ai-system-governance-principles.md](./ai-system-governance-principles.md) 为准 |
