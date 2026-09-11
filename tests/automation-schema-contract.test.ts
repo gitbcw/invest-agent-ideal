@@ -350,3 +350,62 @@ test("columnRules violations that survive repair fail the run instead of committ
   const current = await userAssets.readCurrentUserAsset({ ...baseScope, assetId: asset.assetId });
   assert.equal(current.descriptor.versionId, asset.currentVersionId, "no version may be committed for rule-violating rows");
 });
+
+test("text-kind column rules survive the task-edit boundary intact (2026-09-12 caliber-to-agent fix)", async () => {
+  const { automation, userAssets } = await fixture;
+  const bytes = await makeWorkbookBytes(17, true, 1);
+  const asset = await userAssets.createUserAsset({ ...baseScope, fileName: "text-rules-table.xlsx", bytes, source: "upload" });
+  // rev24 形态：行业名称列不绑词表，只带格式级字段。归一化若逐字段白名单
+  // 拷贝漏掉 maxLength/balancedBrackets，规则会静默降级为纯必填。
+  const task = await automation.createAutomationTask({
+    ...baseScope,
+    taskId: "schema-text-rules",
+    name: "文本格式规则任务",
+    instruction: "按 17 列契约追加当日行业复盘行。",
+    schedule: { frequency: "trading_days" as const, time: "19:30", timezone: "Asia/Shanghai" },
+    output: {
+      mode: "update" as const, assetId: asset.assetId, versionPolicy: "latest" as const,
+      expectedSchema: {
+        columnCount: 17,
+        headerRow: 2,
+        header: HEADERS_17,
+        columnRules: {
+          "2": { kind: "date", required: true },
+          "4": { kind: "text", required: true, maxLength: 30, balancedBrackets: true },
+        },
+      },
+    },
+    delivery: { mode: "none" },
+  });
+  const persisted = task.revision.output.mode === "update"
+    ? task.revision.output.expectedSchema?.columnRules?.["4"]
+    : undefined;
+  assert.deepEqual(persisted, { kind: "text", required: true, maxLength: 30, balancedBrackets: true }, "format-level fields must persist, not be stripped by normalization");
+
+  // 编辑边界同一条链路：updateAutomationTask 也不能剥字段。
+  const updated = await automation.updateAutomationTask({
+    ...baseScope, taskId: task.taskId, editSource: "test",
+    instruction: "按 17 列契约追加当日行业复盘行（编辑后）。",
+  });
+  const afterEdit = updated.revision.output.mode === "update"
+    ? updated.revision.output.expectedSchema?.columnRules?.["4"]
+    : undefined;
+  assert.deepEqual(afterEdit, { kind: "text", required: true, maxLength: 30, balancedBrackets: true }, "edit must preserve format-level fields");
+
+  // 非法取值在边界拒绝。
+  await assert.rejects(
+    automation.createAutomationTask({
+      ...baseScope,
+      taskId: "schema-text-rules-bad",
+      name: "非法文本规则",
+      instruction: "更新表格。",
+      schedule: { frequency: "trading_days" as const, time: "19:30", timezone: "Asia/Shanghai" },
+      output: {
+        mode: "update" as const, assetId: asset.assetId, versionPolicy: "latest" as const,
+        expectedSchema: { columnCount: 17, headerRow: 2, header: HEADERS_17, columnRules: { "4": { kind: "text", maxLength: 0 } } },
+      },
+      delivery: { mode: "none" },
+    }),
+    /maxLength must be an integer in \[1,500\]/,
+  );
+});

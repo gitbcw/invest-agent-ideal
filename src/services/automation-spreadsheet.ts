@@ -374,16 +374,22 @@ export interface AutomationWorkbookSchema {
 export interface AutomationColumnRule {
   /** 期望值形态；缺省只做非空/枚举检查。 */
   kind?: "number" | "date" | "text";
-  /** 枚举白名单。匹配除精确相等外还接受两种注释形态（2026-09-11 owner
-   * 裁决：申万二级行业名合法）：尾部括号注释按主体或括号内取值比对
-   * （「元件(PCB)」→元件；「兵装(地面兵装)」→地面兵装），比较忽略尾部
-   * 版本后缀 Ⅱ/II/2（「地面兵装Ⅱ」≡「地面兵装」）。截断值（如「通信设」）
-   * 不匹配任何形态，截断检测保留。 */
+  /** 枚举白名单：通用能力，供真正封闭取值域的列选用。口径类取值不绑枚举
+   * （2026-09-11 owner 晚间二次裁决：行业复盘「行业名称」的一级/二级粒度
+   * 属 agent 判断区，rev24 起该列从枚举降级为 kind=text 格式级规则——
+   * 枚举词表会随分类调整腐化，且把业务口径判断硬编码进服务层违反
+   * 「服务层只接管格式类不变量」）。匹配除精确相等外还接受注释形态：
+   * 尾部括号注释按主体或括号内取值比对（「元件(PCB)」→元件；
+   * 「兵装(地面兵装)」→地面兵装），比较忽略尾部版本后缀 Ⅱ/II/2。 */
   enumValues?: string[];
   /** 允许的显式缺失标注（如「数据缺失」）；命中时不按 kind/required 追究。 */
   allowMissing?: string[];
   /** 该列必须非空（allowMissing 优先）。 */
   required?: boolean;
+  /** kind=text：归一空白后的字符数上限（防串列/整段粘贴，非内容判断）。 */
+  maxLength?: number;
+  /** kind=text：要求括号成对闭合（截断特征检测，如「元件(PCB」）。 */
+  balancedBrackets?: boolean;
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -424,6 +430,21 @@ function matchesEnumValue(text: string, enumValues: string[]): boolean {
   return enumNameVariants(text).some((variant) => normalized.has(variant));
 }
 
+/** 截断特征：任一括号类型开闭数量不等（中英文圆括号/方括号各算一类）。 */
+function hasBalancedBrackets(text: string): boolean {
+  const pairs: Array<readonly [string, string]> = [["(", ")"], ["（", "）"], ["[", "]"], ["【", "】"]];
+  for (const [open, close] of pairs) {
+    let opens = 0;
+    let closes = 0;
+    for (const ch of text) {
+      if (ch === open) opens += 1;
+      else if (ch === close) closes += 1;
+    }
+    if (opens !== closes) return false;
+  }
+  return true;
+}
+
 /** 追加行按 columnRules 逐格校验；null=通过，否则返回可执行的差异描述
  * （会作为 AUTOMATION_RUN_INVALID_RESULT 回喂模型触发自纠重试）。 */
 export function validateRowsAgainstColumnRules(rows: unknown[][], schema: AutomationWorkbookSchema): string | null {
@@ -450,6 +471,14 @@ export function validateRowsAgainstColumnRules(rows: unknown[][], schema: Automa
         problems.push(`第 ${rowIndex + 1} 行「${label}」值「${text.slice(0, 24)}」不是数值`);
       } else if (rule.kind === "date" && !isDateCell(value)) {
         problems.push(`第 ${rowIndex + 1} 行「${label}」值「${text.slice(0, 24)}」不是日期（YYYY-MM-DD）`);
+      } else if (rule.kind === "text") {
+        const collapsed = text.replace(/\s+/g, "");
+        if (rule.maxLength !== undefined && collapsed.length > rule.maxLength) {
+          problems.push(`第 ${rowIndex + 1} 行「${label}」值超过 ${rule.maxLength} 字上限（疑似串列或整段粘贴）`);
+        }
+        if (rule.balancedBrackets && !hasBalancedBrackets(text)) {
+          problems.push(`第 ${rowIndex + 1} 行「${label}」值「${text.slice(0, 24)}」括号未成对闭合（疑似名称截断）`);
+        }
       }
     }
     if (problems.length >= 5) break;

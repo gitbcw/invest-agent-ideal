@@ -1191,6 +1191,18 @@ function normalizeColumnRules(value: unknown, columnCount: number): Record<strin
       }
       rule.required = record.required;
     }
+    if (record.maxLength !== undefined) {
+      if (typeof record.maxLength !== "number" || !Number.isInteger(record.maxLength) || record.maxLength < 1 || record.maxLength > 500) {
+        throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", `expectedSchema columnRules["${key}"].maxLength must be an integer in [1,500]`);
+      }
+      rule.maxLength = record.maxLength;
+    }
+    if (record.balancedBrackets !== undefined) {
+      if (typeof record.balancedBrackets !== "boolean") {
+        throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", `expectedSchema columnRules["${key}"].balancedBrackets must be a boolean`);
+      }
+      rule.balancedBrackets = record.balancedBrackets;
+    }
     if (Object.keys(rule).length > 0) rules[String(index)] = rule;
   }
   return Object.keys(rules).length > 0 ? rules : undefined;

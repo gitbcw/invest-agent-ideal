@@ -195,3 +195,25 @@ test("validateRowsAgainstColumnRules: 9-4 misalignment, 9-7 universe drift, sent
   assert.match(validateRowsAgainstColumnRules([[1, "", "pt", "银行", "1", "2", "", "", "", "", "", "", "", "", "", "", ""]], schema)!, /复盘日期.*为空/);
   assert.equal(validateRowsAgainstColumnRules([aligned], { columnCount: 17, headerRow: 2 }), null, "no rules → no semantic gate (backward compatible)");
 });
+
+test("kind=text rules gate format only: any complete name passes, truncation/overflow still caught (2026-09-11 caliber-to-agent fix)", async () => {
+  const { validateRowsAgainstColumnRules } = await import("../src/services/automation-spreadsheet.js");
+  // rev24 起行业复盘「行业名称」列不再绑申万词表（owner 二次裁决：一级/二级
+  // 粒度属 agent 判断区）。服务层只保留格式类不变量：非空、长度上限、括号
+  // 闭合（截断特征）——任何完整行业名（含未列举的新分类）都应放行。
+  const schema = {
+    columnCount: 17,
+    headerRow: 2,
+    header: ["序号", "复盘日期", "行业代码", "行业名称", "当日涨跌幅(%)", "主力净流入(亿元)", "5日主力净流入(亿元)", "成交额(亿元)", "涨跌家数", "涨停公司", "已删除：公司涨幅(%)", "资金流入较强公司", "公司主力净流入(亿元)", "趋势判断", "主要原因", "验证条件/风险", "来源与时间"],
+    columnRules: {
+      "2": { kind: "date" as const, required: true },
+      "4": { kind: "text" as const, required: true, maxLength: 30, balancedBrackets: true },
+    },
+  };
+  const row = (name: unknown) => [1, "2026-09-11", "pt01801770", name, "1.41", "48.46", "254.14", "1858.35", "39涨/79跌", "无涨停", "", "", "", "观察", "行业当日上涨", "关注后续", "腾讯板块"];
+  assert.equal(validateRowsAgainstColumnRules([row("通信设备"), row("兵装(地面兵装)"), row("元件(PCB)"), row("美容护理")], schema), null, "any complete name at either granularity passes — no vocabulary in the service layer");
+  assert.match(validateRowsAgainstColumnRules([row("元件(PCB")], schema)!, /括号未成对闭合（疑似名称截断）/, "unclosed bracket is the truncation tell");
+  assert.match(validateRowsAgainstColumnRules([row("兵装（地面兵装")], schema)!, /括号未成对闭合（疑似名称截断）/, "full-width bracket truncation is caught too");
+  assert.match(validateRowsAgainstColumnRules([row("通信设备".repeat(10))], schema)!, /超过 30 字上限/, "a pasted wall of text exceeds the format bound");
+  assert.match(validateRowsAgainstColumnRules([row("")], schema)!, /行业名称.*为空（必填列）/, "empty name stays a required-column failure");
+});
