@@ -53,6 +53,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 | [release-record-20260910-d7ff4fa0.md](./release-record-20260910-d7ff4fa0.md) | 真实发布记录：DeepSeek 统一合并（同日二次裁决）——全系统只保留 deepseek-flash，桥接位撤销、旧 ID 九个并轨别名计价 |
 | [release-record-20260911-b7202c2.md](./release-record-20260911-b7202c2.md) | 真实发布记录：行业复盘质量控制失效链修复——工具入参宽容矫正（qwen 字符串参数定性）、零写入收口（skipReason 契约）、expectedSchema 真实列头+列语义校验（rev22/rev9 重切）、推送 JSON 信封剥离 |
 | [release-record-20260911-0824e856.md](./release-record-20260911-0824e856.md) | 真实发布记录：复盘推送断供修复——8-17 迁移 delivery=none 链路修复（8 任务 rev2 wechat_summary+时效窗口）、推送正文改用发布后 pushBrief（不泄漏工具名/artifactId）；当晚 19:00-19:20 三用户首验 |
+| [release-record-20260911-066a777b.md](./release-record-20260911-066a777b.md) | 真实发布记录：行业复盘口径归还 agent（rev24 格式级列规则+说明约束，mgreplay 全链验证）、qwen3.7-flash 下线、qwen3.8-flash 上架顶替链位；周一 19:30 rev24 首验 |
 | [release-record-20260911-ea1ee19d.md](./release-record-20260911-ea1ee19d.md) | 真实发布记录：行业复盘白名单扩至申万一级∪二级（owner 晚间裁决，rev23 162 值）+ 枚举匹配支持括号注释/Ⅱ后缀形态；9-11 当日行补录待腾讯网关恢复 |
 | [governance-review-2026-09-06.md](./governance-review-2026-09-06.md) | 治理放行复核记录（T-471，治理闭环包 T-466~T-471 收口）：G1–G5/L1–L4 逐项结论、扩大使用范围三前置条件、未解决风险与下次复核触发清单 |
 | [isolated-fault-drill-matrix.md](./isolated-fault-drill-matrix.md) | 四类隔离故障演练的注入点、终态、副作用和通过门槛 |
