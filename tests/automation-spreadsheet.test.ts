@@ -178,10 +178,19 @@ test("validateRowsAgainstColumnRules: 9-4 misalignment, 9-7 universe drift, sent
   const misaligned = ["2026-09-04", "银行", "0.87", "280.75", "0.27", "-0.43", "无涨停", "不适用", "温和上涨", "行业防御性上涨", "腾讯板块", "", "", "", "", "", ""];
   const mismatch = validateRowsAgainstColumnRules([misaligned], schema)!;
   assert.match(mismatch, /第 4 列|行业名称/, "misalignment is caught at the enum column");
-  // 9-7 形态：申万二级名与截断名不在白名单（截断检测由枚举承担）。
+  // 9-7 形态：截断名不在白名单（截断检测由枚举承担）。
   const drift = [8, "2026-09-07", "pt01801130", "农产品加", "+3.74%", "数据缺失", "数据缺失", "数据缺失", "1. 封板", "金健米业", "", "", "", "强势反弹", "粮油", "无", "东财"];
   const driftError = validateRowsAgainstColumnRules([drift], schema)!;
-  assert.match(driftError, /不在约定取值集内/, "secondary-universe/truncated names are rejected");
+  assert.match(driftError, /不在约定取值集内/, "truncated names are rejected");
+  // 2026-09-11 owner 裁决：申万二级行业名合法（当晚行业复盘 5 行被一级白名单
+  // 误拦）。二级名及「主体(注释)」/括号内取值/去Ⅱ 形态均应放行。
+  const sw2Schema = { ...schema, columnRules: { ...schema.columnRules, "4": { required: true, enumValues: ["银行", "通信设备", "元件", "地面兵装Ⅱ", "玻璃玻纤"] } } };
+  const sw2Row = (name: string) => [1, "2026-09-11", "pt01801770", name, "1.41", "48.46", "254.14", "1858.35", "39涨/79跌", "无涨停", "", "", "", "观察", "行业当日上涨", "关注后续", "腾讯板块"];
+  assert.equal(validateRowsAgainstColumnRules([sw2Row("通信设备")], sw2Schema), null, "exact SW2 name passes");
+  assert.equal(validateRowsAgainstColumnRules([sw2Row("元件(PCB)")], sw2Schema), null, "annotated form matches its base name");
+  assert.equal(validateRowsAgainstColumnRules([sw2Row("兵装(地面兵装)")], sw2Schema), null, "annotated form matches the parenthesized value");
+  assert.equal(validateRowsAgainstColumnRules([sw2Row("地面兵装")], sw2Schema), null, "roman-numeral suffix on the whitelist entry is ignored");
+  assert.match(validateRowsAgainstColumnRules([sw2Row("通信设")], sw2Schema)!, /不在约定取值集内/, "truncated SW2 name is still rejected");
   // 必填缺失与显式缺失标注。
   assert.match(validateRowsAgainstColumnRules([[1, "", "pt", "银行", "1", "2", "", "", "", "", "", "", "", "", "", "", ""]], schema)!, /复盘日期.*为空/);
   assert.equal(validateRowsAgainstColumnRules([aligned], { columnCount: 17, headerRow: 2 }), null, "no rules → no semantic gate (backward compatible)");

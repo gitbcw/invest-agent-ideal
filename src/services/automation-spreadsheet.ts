@@ -374,8 +374,11 @@ export interface AutomationWorkbookSchema {
 export interface AutomationColumnRule {
   /** 期望值形态；缺省只做非空/枚举检查。 */
   kind?: "number" | "date" | "text";
-  /** 枚举白名单（精确匹配，trim 后比较）。同时承担截断检测：截断值不会
-   * 等于白名单任一成员。 */
+  /** 枚举白名单。匹配除精确相等外还接受两种注释形态（2026-09-11 owner
+   * 裁决：申万二级行业名合法）：尾部括号注释按主体或括号内取值比对
+   * （「元件(PCB)」→元件；「兵装(地面兵装)」→地面兵装），比较忽略尾部
+   * 版本后缀 Ⅱ/II/2（「地面兵装Ⅱ」≡「地面兵装」）。截断值（如「通信设」）
+   * 不匹配任何形态，截断检测保留。 */
   enumValues?: string[];
   /** 允许的显式缺失标注（如「数据缺失」）；命中时不按 kind/required 追究。 */
   allowMissing?: string[];
@@ -402,6 +405,25 @@ function isDateCell(value: unknown): boolean {
   return ISO_DATE.test(text) || /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(text);
 }
 
+/** 枚举比对的形态归一：去空白、去尾部版本后缀（Ⅱ/II/2）。 */
+function normalizeEnumName(text: string): string {
+  return text.replace(/\s+/g, "").replace(/[ⅡII2]+$/u, "");
+}
+
+/** 候选形态：原值 + 尾部括号注释的主体与括号内取值。 */
+function enumNameVariants(text: string): string[] {
+  const trimmed = text.trim();
+  const variants = [trimmed];
+  const annotated = /^(.*?)\s*[（(]([^()（）]*)[)）]\s*$/.exec(trimmed);
+  if (annotated) variants.push(annotated[1], annotated[2]);
+  return variants.map(normalizeEnumName).filter(Boolean);
+}
+
+function matchesEnumValue(text: string, enumValues: string[]): boolean {
+  const normalized = new Set(enumValues.map((value) => normalizeEnumName(value)));
+  return enumNameVariants(text).some((variant) => normalized.has(variant));
+}
+
 /** 追加行按 columnRules 逐格校验；null=通过，否则返回可执行的差异描述
  * （会作为 AUTOMATION_RUN_INVALID_RESULT 回喂模型触发自纠重试）。 */
 export function validateRowsAgainstColumnRules(rows: unknown[][], schema: AutomationWorkbookSchema): string | null {
@@ -420,8 +442,8 @@ export function validateRowsAgainstColumnRules(rows: unknown[][], schema: Automa
         if (rule.required) problems.push(`第 ${rowIndex + 1} 行「${label}」为空（必填列）`);
         continue;
       }
-      if (rule.enumValues && !rule.enumValues.includes(text)) {
-        problems.push(`第 ${rowIndex + 1} 行「${label}」值「${text.slice(0, 24)}」不在约定取值集内（疑似口径漂移或截断）`);
+      if (rule.enumValues && !matchesEnumValue(text, rule.enumValues)) {
+        problems.push(`第 ${rowIndex + 1} 行「${label}」值「${text.slice(0, 24)}」不在约定取值集内（取值可带尾部括号注释，如「元件(PCB)」；疑似口径漂移或截断）`);
         continue;
       }
       if (rule.kind === "number" && !isNumericCell(value)) {
