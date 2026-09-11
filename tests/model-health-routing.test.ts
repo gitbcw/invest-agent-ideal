@@ -45,24 +45,24 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
-    // 国产链逐级降级：glm → qwen3.8-flash → deepseek-flash → doubao
-    // （qwen3.7-flash 下线 owner 2026-09-11，同日深夜 qwen3.8-flash 顶回原链位；
-    // deepseek 4.1 统一合并 2026-09-10 二次裁决后链内无旧 ID 桥接位）。
+    // 国产链逐级降级：glm → deepseek-flash → qwen3.8-flash → doubao
+    // （qwen3.7-flash 下线 owner 2026-09-11；同日深夜二次调整 deepseek 前置
+    // qwen3.8——首夜 qwen3.8 重载自动化空响应、deepseek 接管完成工作）。
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "qwen3.8-flash");
-    assert.equal(resolveAutoModel({ hasImage: true }).model, "qwen3.8-flash");
-    clock += 60_000;
-    recordModelFeedback("qwen3.8-flash", { ok: false });
-    clock += 60_000;
-    recordModelFeedback("qwen3.8-flash", { ok: false });
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-flash");
     clock += 60_000;
     recordModelFeedback("deepseek-flash", { ok: false });
     clock += 60_000;
     recordModelFeedback("deepseek-flash", { ok: false });
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "qwen3.8-flash");
+    clock += 60_000;
+    recordModelFeedback("qwen3.8-flash", { ok: false });
+    clock += 60_000;
+    recordModelFeedback("qwen3.8-flash", { ok: false });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "doubao-seed-2-1-turbo-260628");
 
     // 全链降级时按优先级硬选通过探针门禁的链首（terra）。
@@ -112,9 +112,9 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra"] }).model, "gpt-5.6-luna");
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra", "gpt-5.6-luna"] }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash"] }).model, "qwen3.8-flash");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.8-flash"] }).model, "deepseek-flash");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.8-flash", "deepseek-flash"] }).model, "doubao-seed-2-1-turbo-260628");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash"] }).model, "deepseek-flash");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-flash"] }).model, "qwen3.8-flash");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-flash", "qwen3.8-flash"] }).model, "doubao-seed-2-1-turbo-260628");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
