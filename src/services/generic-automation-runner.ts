@@ -8,6 +8,9 @@ import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
 import { OUTPUT_VOLUME_POLICY } from "../runtime/spreadsheet-output-policy.js";
 import { serverTimeFact } from "../runtime/mobile-prompt.js";
 import { ACTIVE_BACKEND, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
+import { dailyPlanBackend } from "../lib/daily-plan-backend.js";
+import { periodicReviewBackend } from "../lib/periodic-review-backend.js";
+import { sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
 import { enqueuePushJob } from "./push-queue.js";
@@ -1185,11 +1188,32 @@ export function degradedSummaryMessage(summary: string, taskName: string): strin
   return `【${taskName}】本轮模型摘要未达质量下限，服务层兜底说明：模型原文开头为「${original}」。数据产出不受影响，完整内容请到 Portal 查看。`;
 }
 
+/** 复盘类任务的推送正文取发布后落库的 pushBrief（reviews.save 的 summary 字段），
+ * 而不是运行总结：模型的最终回复是面向审计的元叙述（「已完成并通过 reviews.save
+ * 发布（artifactId=…）」），直接推送会把工具名/artifactId 带进微信消息。发布门禁
+ * （hasReviewArtifactPublication）已保证该记录存在；读取失败时回退运行总结。 */
+async function readPublishedReviewPushBrief(
+  scope: AutomationScope,
+  target: GenericAutomationReviewTarget,
+): Promise<string> {
+  const row = target.kind === "daily"
+    ? await dailyPlanBackend.get(scope.userId, scope.instanceId, target.reportKey).catch(() => null)
+    : await periodicReviewBackend.get(scope.userId, scope.instanceId, target.kind, target.reportKey).catch(() => null);
+  const summary = row?.summary;
+  return typeof summary === "string" ? sanitizeWeixinCustomerText(summary).trim() : "";
+}
+
 async function deliverResult(scope: AutomationScope, task: AutomationTaskRecord, run: AutomationTaskRunRecord, result: Awaited<ReturnType<typeof normalizeStructuredResult>>): Promise<{ run: AutomationTaskRunRecord }> {
   const delivery = task.revision.delivery;
   if (delivery.mode === "none") return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "not_requested" }) };
-  if (!result.shouldNotify) return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "suppressed" }) };
-  const cleanedForPush = unwrapJsonEnvelopeSummary(result.summary);
+  // 复盘类任务到点必推（与 BC-20260904-001 的 wechat_summary 语义一致）：
+  // 发布成功本身就是通知事由，shouldNotify 缺省/为 false 不压制投递；推送
+  // 正文优先用发布后的 pushBrief。2026-09-11 修复：迁移时复盘任务 delivery
+  // 曾被整体置 none，且旧路径推的是运行总结而非简报。
+  const reviewTarget = resolveGenericAutomationReviewTarget(task, run);
+  const reviewBrief = reviewTarget ? await readPublishedReviewPushBrief(scope, reviewTarget) : "";
+  if (!reviewTarget && !result.shouldNotify) return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "suppressed" }) };
+  const cleanedForPush = reviewBrief || unwrapJsonEnvelopeSummary(result.summary);
   const pushMessage = meetsSummaryQualityFloor(cleanedForPush)
     ? cleanedForPush
     : degradedSummaryMessage(result.summary, task.revision.name);

@@ -1737,3 +1737,105 @@ test("market-watch prompts deterministically inject the holdings universe (dyk 2
   assert.ok(runnerSource.includes('const MARKET_WATCH_TASK_TYPE = "scheduled-market-watch"'), "gate must target scheduled-market-watch only");
   assert.ok(runnerSource.includes("...(marketWatchUniverse ? [marketWatchUniverse] : [])"), "fact must land in the prompt lines");
 });
+
+test("typed review delivery pushes the published pushBrief, not the run summary (2026-09-11 review push outage)", async () => {
+  const { automation, db } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const { saveSkillPeriodicReview } = await import("../src/handlers/review.js");
+  const { sanitizeWeixinCustomerText } = await import("../src/lib/customer-output.js");
+
+  // 2026-09-11 事故：8-17 迁移把复盘任务 delivery 置 none，复盘简报自那以后
+  // 从未推送；且旧 deliverResult 推的是模型运行总结（含 reviews.save、
+  // artifactId 等内部字样），不是 reviews.save 落库的 pushBrief。
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-weekly-review-push-brief",
+    taskType: "scheduled-weekly-review",
+    name: "周复盘推送",
+    instruction: "生成周复盘并调用 reviews.save。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "wechat_summary", validityMinutes: 2880 },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const pushBrief = "**本周复盘要点**\n\n- 组合整体回撤可控，维持既有预案不动。\n- 周末前关注量能验证信号，失效位以预案为准。";
+
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "manual",
+    scheduledFor: "2026-09-05T01:00:00.000Z",
+    idempotencyKey: "generic-weekly-review-push-brief-once",
+    executor: async ({ run }) => {
+      const target = runner.resolveGenericAutomationReviewTarget(task, run)!;
+      await saveSkillPeriodicReview({
+        userId: scope.userId,
+        instanceId: scope.instanceId,
+        kind: "weekly",
+        reportKey: target.reportKey,
+        content: "# Weekly push brief\n",
+        summary: pushBrief,
+        context: { publication: { conversationId: target.conversationId, scheduled: true } },
+      });
+      return {
+        content: { type: "text" as const, text: "done" },
+        finished: true,
+        data: { summary: "周复盘已完成并通过 reviews.save 发布（artifactId=art_demo）。核心内容已推送。" },
+      };
+    },
+  });
+  assert.equal(result.run.status, "succeeded");
+  assert.equal(result.run.deliveryStatus, "pending", "review runs must deliver once delivery mode allows it");
+  assert.ok(result.run.pushJobId);
+  const job = db.sqlite.prepare("SELECT message FROM push_jobs WHERE id = ?").get(result.run.pushJobId!) as { message: string };
+  assert.equal(job.message, sanitizeWeixinCustomerText(pushBrief).trim());
+  assert.ok(!job.message.includes("reviews.save"), "the WeChat message must not leak tool names from the run summary");
+  assert.ok(!job.message.includes("artifactId"), "the WeChat message must not leak internal artifact ids");
+});
+
+test("review push falls back to the run summary when the published brief is unreadable", async () => {
+  const { automation, db } = await fixture;
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const { publishServiceOwnedReviewArtifact } = await import("../src/services/conversation-artifacts.js");
+
+  // 发布门禁通过（artifact 存在）但 backend 读不到 summary（如并发裁撤）：
+  // 推送回退到质量下限保护下的运行总结，不得静默不推。
+  const task = await automation.createAutomationTask({
+    ...scope,
+    taskId: "generic-weekly-review-push-fallback",
+    taskType: "scheduled-weekly-review",
+    name: "周复盘兜底",
+    instruction: "生成周复盘并调用 reviews.save。",
+    schedule: schedule(),
+    output: { mode: "none" },
+    delivery: { mode: "wechat_summary" },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: task.taskId, expectedRevision: 1 });
+  const metaSummary = "周复盘已完成发布，本周组合波动率明显下降，维持既有预案不动，周末需要持续关注外围市场联动与汇率变化。";
+
+  const result = await runner.runGenericAutomationTaskNow({
+    scope,
+    taskId: task.taskId,
+    origin: "manual",
+    // 与上一用例不同 reportKey：periodicReviewBackend 记录按 (kind, reportKey)
+    // 全局落库，同 key 会让兜底用例读到上一用例的 pushBrief。
+    scheduledFor: "2026-09-12T01:00:00.000Z",
+    idempotencyKey: "generic-weekly-review-push-fallback-once",
+    executor: async ({ run }) => {
+      const target = runner.resolveGenericAutomationReviewTarget(task, run)!;
+      await publishServiceOwnedReviewArtifact({
+        ...scope,
+        assistantId: scope.instanceId,
+        conversationId: target.conversationId,
+        kind: "weekly",
+        reportKey: target.reportKey,
+        content: "# Weekly fallback\n",
+      });
+      return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: metaSummary } };
+    },
+  });
+  assert.equal(result.run.status, "succeeded");
+  assert.equal(result.run.deliveryStatus, "pending");
+  const job = db.sqlite.prepare("SELECT message FROM push_jobs WHERE id = ?").get(result.run.pushJobId!) as { message: string };
+  assert.equal(job.message, metaSummary);
+});
