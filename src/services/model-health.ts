@@ -24,9 +24,12 @@ import { logger } from "../lib/logger.js";
  *   （峰2/8、闲1/4，工作日峰谷，较旧档整体更便宜）。
  * - 同日二次裁决（owner）：统一合并——上游 DeepSeek 只剩 deepseek-flash
  *   一个模型，本系统不再保留旧 ID 桥接位，链内仅 deepseek-flash；中转
- *   网关通道就位前它探针失败即降级跳过（glm/qwen/doubao 承接），就位后
+ *   网关通道就位前它探针失败即降级跳过（glm/doubao 承接），就位后
  *   探针转绿自动恢复，无需发版。pro 同日从选择器下线（上游
  *   2026-09-14 12:00 退役该 ID）。
+ * - qwen3.7-flash 下线（owner 2026-09-11）：文本/图片双链移除、选择器
+ *   出册（9-9/9-10 行业复盘参数字符串化事故档，lenient 矫正只是止血）。
+ *   上游 qwen-3.8-next 开放后可回归顶替原链位（glm 与 deepseek 之间）。
  */
 
 export interface AutoChainEntry {
@@ -41,18 +44,16 @@ export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "gpt-5.6-terra" },
   { model: "gpt-5.6-luna" },
   { model: "glm-5.3-flash" },
-  { model: "qwen3.7-flash" },
   { model: "deepseek-flash" },
   { model: "doubao-seed-2-1-turbo-260628" },
 ];
 
 /** 图片优先使用国产全模态模型；GPT 仅作为通过探针门禁后的后备。
  * glm-5.3-flash 全模态（owner 2026-08-27 更正，图片 ping 通过），为图片链首选。
- * qwen 前置于 deepseek 同 owner 2026-09-02 高峰计价裁决（见文件头）；
- * deepseek 4.1 统一合并（2026-09-10 二次裁决）见文件头注。 */
+ * deepseek 4.1 统一合并（2026-09-10 二次裁决）、qwen3.7-flash 下线
+ * （2026-09-11 owner 裁决）见文件头注。 */
 export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "glm-5.3-flash" },
-  { model: "qwen3.7-flash" },
   { model: "deepseek-flash" },
   { model: "doubao-seed-2-1-turbo-260628" },
   { model: "gpt-5.6-terra" },
@@ -61,13 +62,14 @@ export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
 
 /** UI 展示用的一句话定位说明（W2）。不在此列的模型不进入选择器。
  * deepseek 4.1 统一合并（owner 2026-09-10 二次裁决）：全系统只保留
- * deepseek-flash 一个 DeepSeek 模型，旧 ID 全部出册。 */
+ * deepseek-flash 一个 DeepSeek 模型，旧 ID 全部出册。
+ * qwen3.7-flash 出册（owner 2026-09-11）：不再使用，qwen-3.8-next
+ * 开放后以其新 ID 回归。 */
 export const MODEL_DESCRIPTIONS: Record<string, string> = {
   "gpt-5.6-terra": "高质量均衡档，日常深度分析推荐",
   "gpt-5.6-luna": "轻量快速档，低成本兜底",
   "glm-5.3-flash": "智谱全模态轻量档，国产链兜底",
   "deepseek-flash": "DeepSeek V4.1 Flash 全模态档，支持图片理解与工具调用，国产次选",
-  "qwen3.7-flash": "全模态极速档，支持图片理解与工具调用",
   "doubao-seed-2-1-turbo-260628": "全模态档，支持图片理解与工具调用",
 };
 
