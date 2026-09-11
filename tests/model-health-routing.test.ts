@@ -45,14 +45,19 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
-    // 国产链逐级降级：glm → deepseek-flash → doubao
-    // （qwen3.7-flash 下线 owner 2026-09-11，qwen-3.8-next 开放后回归；
+    // 国产链逐级降级：glm → qwen3.8-flash → deepseek-flash → doubao
+    // （qwen3.7-flash 下线 owner 2026-09-11，同日深夜 qwen3.8-flash 顶回原链位；
     // deepseek 4.1 统一合并 2026-09-10 二次裁决后链内无旧 ID 桥接位）。
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-flash");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "qwen3.8-flash");
+    assert.equal(resolveAutoModel({ hasImage: true }).model, "qwen3.8-flash");
+    clock += 60_000;
+    recordModelFeedback("qwen3.8-flash", { ok: false });
+    clock += 60_000;
+    recordModelFeedback("qwen3.8-flash", { ok: false });
     assert.equal(resolveAutoModel({ hasImage: true }).model, "deepseek-flash");
     clock += 60_000;
     recordModelFeedback("deepseek-flash", { ok: false });
@@ -107,8 +112,9 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra"] }).model, "gpt-5.6-luna");
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra", "gpt-5.6-luna"] }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash"] }).model, "deepseek-flash");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-flash"] }).model, "doubao-seed-2-1-turbo-260628");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash"] }).model, "qwen3.8-flash");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.8-flash"] }).model, "deepseek-flash");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "qwen3.8-flash", "deepseek-flash"] }).model, "doubao-seed-2-1-turbo-260628");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
@@ -178,8 +184,9 @@ test("model catalog keeps terra+luna from the GPT series; sol and 5.5 stay disab
   // 旧 ID 全部出册。
   assert.equal(MODEL_DESCRIPTIONS["deepseek-flash"] !== undefined, true);
   assert.equal(MODEL_DESCRIPTIONS["deepseek-v4-flash-vision-exp"], undefined);
-  // qwen3.7-flash 下线（owner 2026-09-11）：出册不再使用，qwen-3.8-next
-  // 开放后以其新 ID 回归。
+  // qwen3.7-flash 下线（owner 2026-09-11）：出册不再使用；同日深夜上游开放
+  // qwen3.8-flash（探针 HTTP 200）顶回原链位。
   assert.equal(MODEL_DESCRIPTIONS["qwen3.7-flash"], undefined);
+  assert.equal(MODEL_DESCRIPTIONS["qwen3.8-flash"] !== undefined, true);
   assert.equal(MODEL_DESCRIPTIONS["doubao-seed-2-1-turbo-260628"] !== undefined, true);
 });
