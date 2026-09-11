@@ -34,8 +34,9 @@ export const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
   { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", description: "轻量快速档，低成本兜底", inputPrice: 0.08, outputPrice: 0.48 },
   { value: "deepseek-flash", label: "DeepSeek V4.1 Flash", description: "全模态档，支持图片理解与工具调用，国产次选", inputPrice: 2.0, outputPrice: 8.0 },
   { value: "glm-5.3-flash", label: "GLM-5.3 Flash", description: "智谱全模态轻量档，国产链兜底", inputPrice: 0.8, outputPrice: 2.8 },
-  // qwen3.7-flash 下线、qwen3.8-flash 顶替（owner 2026-09-11）；价暂沿用 3.7 档占位。
-  { value: "qwen3.8-flash", label: "Qwen3.8 Flash", description: "极速多模态档，支持图片理解，图片轮兜底", inputPrice: 0.6, outputPrice: 2.4 },
+  // qwen3.7-flash 下线、qwen3.8-flash 顶替（owner 2026-09-11）；官方牌价
+  // （百炼北京区域 8-27 降价后）：0.8 / 2.7 元每百万 tokens。
+  { value: "qwen3.8-flash", label: "Qwen3.8 Flash", description: "极速多模态档，支持图片理解，图片轮兜底", inputPrice: 0.8, outputPrice: 2.7 },
   { value: "doubao-seed-2-1-turbo-260628", label: "豆包 Seed 2.1 Turbo", description: "多模态档，支持图片理解，仅手动可选", inputPrice: 6, outputPrice: 30 },
 ];
 

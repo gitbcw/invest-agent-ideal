@@ -115,8 +115,11 @@ export const MODEL_PRICING: ModelPricingEntry[] = [
   // 已下线（2026-09-11）；条目保留供历史用量计费。
   { model: "qwen3.7-flash", currency: "CNY", tier: { input: 0.6, output: 2.4 } },
   // qwen3.8-flash：3.7 的替代档（owner 2026-09-11 深夜上线，网关探针 200）。
-  // 官方牌价未提供，暂沿用 3.7 档 0.6/2.4 占位，待 owner 确认后修正。
-  { model: "qwen3.8-flash", currency: "CNY", tier: { input: 0.6, output: 2.4 } },
+  // 官方牌价（阿里云百炼北京区域，模型页核验 2026-09-11，即 8-27 降价后）：
+  // 输入 0.8 / 输出 2.7 / 缓存命中 0.1 元每百万 tokens，单一价无峰谷；
+  // 新加坡区域 1.094/3.427/0.117 不适用本链。显式缓存创建 1.25 未入表
+  // （网关 trace 不单独计该口径）。
+  { model: "qwen3.8-flash", currency: "CNY", tier: { input: 0.8, output: 2.7, cacheRead: 0.1 } },
   // glm-5.3-flash：owner 提供折算 2026-08-27——按 glm-5.3 牌价的 1/10。
   // 基价（阿里云百炼 ZHIPU/GLM-5.3 挂牌，检索 2026-08-27）：输入 8 / 输出 28 /
   // 缓存命中 2 元，折算后 0.8 / 2.8 / 0.2，单一价无峰谷。
