@@ -4,14 +4,20 @@
  * expectedSchema 的新 revision（append-only + 审计），把任务契约绑定到
  * 绑定资产当前版本的实测结构。幂等：已对齐或契约一致时跳过。
  *
+ * 2026-09-11 扩展：--rules=<taskId>=<rules.json> 为指定任务附加列语义规则
+ * （columnRules：枚举白名单/数值/日期/必填/显式缺失标注）。重切时保留
+ * 既有 columnRules，除非显式覆盖。
+ *
  * 用法（生产，需与部署后的 dist 同源）：
  *   set -a; . ./.env; set +a
  *   node scripts/align-mg-workbook-schema.mjs --dist ./dist [--dry-run] \
- *     [--tasks at_60d62fcb-5eb3-4e0e-b70b-6203680a750d,at_d64649ad-d96f-447b-a462-91d89c01de5d]
+ *     [--tasks at_60d62fcb-5eb3-4e0e-b70b-6203680a750d,at_d64649ad-d96f-447b-a462-91d89c01de5d] \
+ *     [--rules=at_60d62fcb-5eb3-4e0e-b70b-6203680a750d=./data/industry-column-rules.json]
  */
 import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
+import { readFileSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 const args = process.argv.slice(2);
@@ -23,6 +29,22 @@ const defaultTasks = [
 ];
 const tasksArg = args.find((a) => a.startsWith("--tasks="))?.slice(8);
 const taskIds = (tasksArg ? tasksArg.split(",") : defaultTasks).map((s) => s.trim()).filter(Boolean);
+
+const rulesByTask = new Map();
+for (const arg of args.filter((a) => a.startsWith("--rules="))) {
+  const value = arg.slice(8);
+  const sep = value.indexOf("=");
+  if (sep <= 0) { console.log(`[align] 忽略无法解析的 --rules 参数: ${arg}`); continue; }
+  const taskId = value.slice(0, sep).trim();
+  const rulesPath = value.slice(sep + 1);
+  try {
+    rulesByTask.set(taskId, JSON.parse(readFileSync(rulesPath, "utf8")));
+    console.log(`[align] rules 载入 ${taskId} <- ${rulesPath}`);
+  } catch (error) {
+    console.log(`[align] rules 载入失败 ${rulesPath}: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 2;
+  }
+}
 
 const dist = path.resolve(distArg);
 const { updateAutomationTask, activateAutomationTask } = await import(path.join(dist, "services/automation-tasks.js"));
@@ -36,7 +58,8 @@ function schemaEquals(a, b) {
   const ah = a.header ?? [];
   const bh = b.header ?? [];
   if (ah.length !== bh.length) return false;
-  return ah.every((v, i) => v === bh[i]);
+  if (ah.some((v, i) => v !== bh[i])) return false;
+  return JSON.stringify(a.columnRules ?? {}) === JSON.stringify(b.columnRules ?? {});
 }
 
 for (const taskId of taskIds) {
@@ -58,7 +81,14 @@ for (const taskId of taskIds) {
   console.log(`[align] ${label} 实测 ${schema.columnCount} 列 headerRow=${schema.headerRow}`);
 
   if (schemaEquals(output.expectedSchema, schema)) { console.log(`[align] ${taskId} OK already aligned`); continue; }
-  if (dryRun) { console.log(`[align] ${taskId} DRY-RUN would commit revision ${rev.revision + 1} with expectedSchema(${schema.columnCount} 列)`); continue; }
+  // 重切保留既有列语义规则，除非 --rules 显式覆盖；显式传入的 rules 优先。
+  const nextSchema = {
+    ...schema,
+    ...(rulesByTask.has(taskId) || output.expectedSchema?.columnRules
+      ? { columnRules: rulesByTask.get(taskId) ?? output.expectedSchema?.columnRules }
+      : {}),
+  };
+  if (dryRun) { console.log(`[align] ${taskId} DRY-RUN would commit revision ${rev.revision + 1} with expectedSchema(${nextSchema.columnCount} 列, rules=${Object.keys(nextSchema.columnRules ?? {}).length} 列规则)`); continue; }
 
   const previousStatus = taskRow.status;
   const updated = await updateAutomationTask({
@@ -69,10 +99,10 @@ for (const taskId of taskIds) {
     instruction: rev.instruction,
     schedule: JSON.parse(rev.schedule_json || "{}"),
     inputs: JSON.parse(rev.inputs_json || "[]"),
-    output: { ...output, expectedSchema: schema },
+    output: { ...output, expectedSchema: nextSchema },
     delivery: JSON.parse(rev.delivery_json || "{}"),
     editSource: "script",
-    editSourceRef: "t480-workbook-schema-align",
+    editSourceRef: rulesByTask.has(taskId) ? "t480-schema-align+column-rules-20260911" : "t480-workbook-schema-align",
   });
   console.log(`[align] ${taskId} committed revision ${updated.currentRevision}`);
   if (previousStatus === "active") {

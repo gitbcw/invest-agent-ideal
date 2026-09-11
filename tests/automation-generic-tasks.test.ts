@@ -98,7 +98,9 @@ test("runner prompts steer XLSX appends to declarative appendRows and require ex
   assert.match(runnerSource, /绝不能直接使用旧的 lastDedupeValue/);
   assert.doesNotMatch(runnerSource, /value:lastDedupeValue 或本次待追加日期/);
   assert.match(runnerSource, /缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败/);
-  assert.match(runnerSource, /显式返回 outputSkipped:true 并在 summary 说明原因/);
+  assert.match(runnerSource, /outputSkipped:true 并携带 skipReason/, "skipReason 契约（2026-09-11 零写入收口）必须出现在最终 JSON 指令里");
+  assert.match(runnerSource, /skipReason:'duplicate'/);
+  assert.match(runnerSource, /skipReason:'no_data'/);
   assert.match(runnerSource, /serverTimeFact/, "automation prompts must state the server date fact like chat turns do (mg 8-12 scope incident)");
   assert.doesNotMatch(runnerSource, /一律以该日期为准|不得用于本轮取数参数/, "date injection stays a bare fact; behavior rules belong to the tool layer");
 });
@@ -1039,6 +1041,10 @@ test("bound update task may finish without changing its file via explicit output
     idempotencyKey: "generic-run-update-unchanged-once",
     executor: async (input) => {
       assert.deepEqual(input.writableTargets, [{ assetId: target.assetId, versionId: target.currentVersionId, fileName: "shipping.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }]);
+      // 首轮缺 skipReason 触发自纠；修复轮补上 duplicate 后维持成功（2026-09-11 契约）。
+      if (input.repairContext) {
+        return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "当日行已存在，未更新文件。", outputSkipped: true, skipReason: "duplicate" } };
+      }
       return { content: { type: "text" as const, text: "暂无可核验报价。" }, finished: true, data: { summary: "暂无可核验报价，未更新文件。", outputSkipped: true } };
     },
   });
@@ -1127,7 +1133,7 @@ test("declarative stagedOutput appendRows commits rows without spreadsheet.trans
     scope, taskId: ambiguousUpdate.taskId, origin: "scheduled", idempotencyKey: "generic-xlsx-ambiguous-update-once",
     executor: async (input) => {
       assert.equal(input.xlsxAppendOnly, false, "ambiguous XLSX updates must retain spreadsheet.transform");
-      return { content: { type: "text" as const, text: "无变化" }, finished: true, data: { summary: "无需更新。", outputSkipped: true } };
+      return { content: { type: "text" as const, text: "无变化" }, finished: true, data: { summary: "无需更新。", outputSkipped: true, skipReason: "duplicate" } };
     },
   });
   assert.equal(ambiguousRun.run.status, "succeeded");
@@ -1161,10 +1167,25 @@ test("update run without stagedOutput fails unless outputSkipped is explicit (si
 
   const explicit = await runner.runGenericAutomationTaskNow({
     scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-silent-no-output-skipped",
-    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "非交易日，未修改。", outputSkipped: true } }),
+    executor: async (input) => {
+      // 缺 skipReason 的 outputSkipped 先被判无效并触发自纠；修复轮补上 duplicate 维持成功。
+      if (input.repairContext) {
+        return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "非交易日，未修改。", outputSkipped: true, skipReason: "duplicate" } };
+      }
+      return { content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "非交易日，未修改。", outputSkipped: true } };
+    },
   });
-  assert.equal(explicit.run.status, "succeeded", "an explicit outputSkipped decision stays a success");
+  assert.equal(explicit.run.status, "succeeded", "an explicit outputSkipped decision with skipReason:duplicate stays a success");
   assert.equal(explicit.run.outputAssetId, null);
+
+  // 2026-09-11 零写入收口：no_data 不再静默成功——按失败登记（9-9/9-10 行业复盘空转回归）。
+  const noData = await runner.runGenericAutomationTaskNow({
+    scope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "generic-silent-no-output-no-data",
+    executor: async () => ({ content: { type: "text" as const, text: "done" }, finished: true, data: { summary: "数据缺失，未修改。", outputSkipped: true, skipReason: "no_data" } }),
+  });
+  assert.equal(noData.run.status, "failed", "skipReason:no_data must register as a failure, not a silent success");
+  assert.match(noData.run.errorMessage || "", /AUTOMATION_RUN_ZERO_WRITE_NO_DATA/);
+  assert.equal(noData.run.errorCategory, "validation_failed");
 });
 
 test("appendRows guards: stale monthly rollover and malformed rows fail with teaching messages", async () => {

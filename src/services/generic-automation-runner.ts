@@ -35,6 +35,7 @@ import {
   describeSchemaMismatch,
   inspectAutomationXlsx,
   snapshotWorkbookSchema,
+  validateRowsAgainstColumnRules,
   writeAutomationSpreadsheetHelper,
   type AutomationSpreadsheetInspection,
 } from "./automation-spreadsheet.js";
@@ -656,14 +657,14 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
           : "",
         "需要读取绑定文件时，直接使用上述 assetId 调用 assets.version.read；不要用 assets.list 猜测或替换任务对象。其他“我的文件”仅可作为参考，绝不能作为本次更新输出目标。",
         input.spreadsheetHelper
-          ? `本次包含 XLSX 绑定文件。服务端已注入每个工作表的 sheet/header/columnCount/dedupeColumn/lastDedupeValue；严格沿用这些事实。普通表尾追加不要调用 spreadsheet.transform，直接在最终 stagedOutput 返回 {operation:'appendRows', sheet:'服务端给出的工作表名'（只有一个工作表时可省略）, rows:[[每行各列的值],…]（必须是二维数组，列数必须等于 columnCount，列序必须等于 header）, skipIfCellMatches:{column:dedupeColumn, value:'本次待追加行在判重列中的值'}}。先把本次判重值与 lastDedupeValue 比较：相同则返回 outputSkipped:true；不同则必须使用本次新值作为 skipIfCellMatches.value，绝不能直接使用旧的 lastDedupeValue，否则会把正常新行误判为重复。服务层会确定性追加到表尾并提交新版本。只有确需修改表头、格式或既有单元格等非追加变更时，才使用 spreadsheet.transform 生成更新后的工作簿；不要用它模拟普通追加。执行环境不能运行本地脚本，暂存目录中的 automation-sheet.mjs 仅供参考、无法执行；不要把 XLSX 当文本编辑，也不要声称没有电子表格处理能力。`
+          ? `本次包含 XLSX 绑定文件。服务端已注入每个工作表的 sheet/header/columnCount/dedupeColumn/lastDedupeValue；严格沿用这些事实。普通表尾追加不要调用 spreadsheet.transform，直接在最终 stagedOutput 返回 {operation:'appendRows', sheet:'服务端给出的工作表名'（只有一个工作表时可省略）, rows:[[每行各列的值],…]（必须是二维数组，列数必须等于 columnCount，列序必须等于 header）, skipIfCellMatches:{column:dedupeColumn, value:'本次待追加行在判重列中的值'}}。先把本次判重值与 lastDedupeValue 比较：相同则返回 outputSkipped:true 与 skipReason:'duplicate'；不同则必须使用本次新值作为 skipIfCellMatches.value，绝不能直接使用旧的 lastDedupeValue，否则会把正常新行误判为重复。服务层会确定性追加到表尾并提交新版本。只有确需修改表头、格式或既有单元格等非追加变更时，才使用 spreadsheet.transform 生成更新后的工作簿；不要用它模拟普通追加。执行环境不能运行本地脚本，暂存目录中的 automation-sheet.mjs 仅供参考、无法执行；不要把 XLSX 当文本编辑，也不要声称没有电子表格处理能力。`
           : "本次没有 XLSX 文件，不需要电子表格处理。",
         `执行预算（服务层约束）：最多 ${GENERIC_AUTOMATION_MAX_TOOL_CALLS} 次服务/外部工具调用；单次模型尝试最多 ${GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS / 1000} 秒；按“读取绑定输入与结构 → 必要的有限研究 → 一次最终动作”三阶段执行。不要重复读取同一版本、不要探索任务/会话/确认/盯盘配置。自动换模型仅在总 agent 截止时间尚余至少 ${GENERIC_AUTOMATION_FALLBACK_RESERVE_MS / 1000} 秒时发生，截止时间前另预留 ${GENERIC_AUTOMATION_COMMIT_RESERVE_MS / 1000} 秒提交空间；进入收尾阶段后立即返回结构化 JSON。`,
         `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
-        "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变、显式返回 outputSkipped:true 并在 summary 说明原因；不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
+        "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变、显式返回 outputSkipped:true 并附带 skipReason:'no_data'（本轮会按失败登记并通知负责人跟进，不要为了规避失败而写入占位行）；当日行已存在时用 skipReason:'duplicate'。不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         input.task.revision.output.mode === "none"
           ? "最终回复必须是一个 JSON 对象：{summary:string, shouldNotify?:boolean}。本任务不产出文件资产：最终 JSON 里禁止出现 stagedOutput 字段（出现会导致运行被判无效）；一切结果都写入 summary。若任务过程中确需留档，用任务说明允许的领域工具（如 reviews.save）完成，不要用 stagedOutput。"
-          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'appendRows'|'update'|'create', …}, shouldNotify?:boolean, outputSkipped?:boolean}。向绑定工作簿表尾追加数据行时优先用 operation:'appendRows'（只带 sheet/rows/skipIfCellMatches，不携带文件内容）；生成完整新文件时优先调用 spreadsheet.create 在当前暂存目录生成 XLSX，并原样返回工具结果里的 stagedOutput；自行生成 XLSX/CSV 时必须返回 {operation:'create', fileName:'带扩展名的文件名', filePath:'暂存目录内的相对路径'}，fileName 和 filePath 缺一不可；filePath 必须原样使用文件写入工具返回的相对路径（通常就是纯文件名），不得自行拼接目录前缀、暂存根路径或绝对路径，也不得越出暂存目录。只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。若本次运行确定无需修改绑定文件（如数据缺失、当日行已存在），必须显式返回 outputSkipped:true 并在 summary 说明原因；缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败。",
+          : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'appendRows'|'update'|'create', …}, shouldNotify?:boolean, outputSkipped?:boolean, skipReason?:'duplicate'|'no_data'}。向绑定工作簿表尾追加数据行时优先用 operation:'appendRows'（只带 sheet/rows/skipIfCellMatches，不携带文件内容）；生成完整新文件时优先调用 spreadsheet.create 在当前暂存目录生成 XLSX，并原样返回工具结果里的 stagedOutput；自行生成 XLSX/CSV 时必须返回 {operation:'create', fileName:'带扩展名的文件名', filePath:'暂存目录内的相对路径'}，fileName 和 filePath 缺一不可；filePath 必须原样使用文件写入工具返回的相对路径（通常就是纯文件名），不得自行拼接目录前缀、暂存根路径或绝对路径，也不得越出暂存目录。只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。若本次运行确定无需修改绑定文件，必须显式返回 outputSkipped:true 并携带 skipReason——'duplicate' 表示当日行已存在（判重可证实），'no_data' 表示数据缺失（将按失败登记待人工跟进）；缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败。",
         ...(input.task.revision.delivery.mode === "none"
           ? []
           : [
@@ -872,7 +873,27 @@ async function normalizeStructuredResult(response: AgentResponse, task: Automati
     // never a silent success: the 2026-08-19 industry-review loss was a run
     // marked succeeded while the workbook stayed untouched.
     if (task.revision.output.mode === "update" && data.outputSkipped !== true) {
-      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput is required for update tasks unless the run explicitly reports outputSkipped:true with the reason in summary");
+      throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", "stagedOutput is required for update tasks unless the run explicitly reports outputSkipped:true with skipReason");
+    }
+    if (task.revision.output.mode === "update") {
+      const skipReason = typeof data.skipReason === "string" ? data.skipReason.trim() : "";
+      if (skipReason === "no_data") {
+        // 2026-09-09/09-10 行业复盘连续两晚「succeeded 但零写入」：数据缺失
+        // 空转不再静默成功。按失败登记（validation 类）触发 T-479 失败通知与
+        // 巡查可见性；当日行是否补录由人工裁决。9-4 版本的「无输出即成功」
+        // 缺口由 skipReason 契约收口。
+        throw new AutomationTaskError(
+          "AUTOMATION_RUN_ZERO_WRITE_NO_DATA",
+          "update 任务零写入（no_data）未通过输出校验（validation）：数据缺失不是有效成功终态，本轮按失败登记并通知；若当日行已存在请改报 skipReason:'duplicate'（服务端判重可证实）",
+        );
+      }
+      if (skipReason !== "duplicate") {
+        throw new AutomationTaskError(
+          "AUTOMATION_RUN_INVALID_RESULT",
+          "outputSkipped:true 必须携带 skipReason 字段：'duplicate'（当日行已存在）或 'no_data'（数据缺失，将按失败登记待人工处置）；请在最终 JSON 中补上",
+        );
+      }
+      return { summary: summary || "自动化运行完成，未修改文件。", shouldNotify, outputSkipped: true };
     }
     return { summary: summary || "自动化运行完成，未修改文件。", shouldNotify, ...(data.outputSkipped === true ? { outputSkipped: true } : {}) };
   }
@@ -1011,8 +1032,17 @@ async function normalizeAppendRowsResult(
   let outcome: Awaited<ReturnType<typeof appendRowsToXlsxBytes>>;
   try {
     const currentBytes = await readUserAssetVersion({ ...scope, assetId: target.assetId, versionId: target.versionId });
+    // 列语义校验（2026-09-11）：列数守卫防不住「17 列但整体错位/口径漂移」
+    //（9-4 列错位、9-7 申万二级宇宙+名称截断）。违规抛 INVALID_RESULT 走
+    // 既有自纠重试，修复失败则 run 失败并触发 T-479 失败通知。
+    const semantic = outputPolicy.mode === "update" ? outputPolicy.expectedSchema : undefined;
+    if (semantic?.columnRules && Array.isArray(rows)) {
+      const violation = validateRowsAgainstColumnRules(rows as unknown[][], semantic);
+      if (violation) throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `appendRows ${violation}`);
+    }
     outcome = await appendRowsToXlsxBytes({ bytes: currentBytes.bytes, sheet, rows: rows as unknown[][], skipIfCellMatches: skip });
   } catch (error) {
+    if (error instanceof AutomationTaskError) throw error;
     throw new AutomationTaskError("AUTOMATION_RUN_INVALID_RESULT", `appendRows failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (outcome.kind === "skipped") {
@@ -1127,6 +1157,29 @@ export function meetsSummaryQualityFloor(summary: string): boolean {
   return summary.trim().length >= AUTOMATION_SUMMARY_MIN_CHARS;
 }
 
+/** 2026-09-11：summary 双层 JSON 信封剥离（W37 补评样本 185b313a/ae86b203：
+ * 推送正文是 {"summary":"…","shouldNotify":true} 原样文本——模型偶发把
+ * 信封再编码进 summary 值）。与质量下限同位生效：只清洗推送正文，落库的
+ * result_summary 保持模型原文供诊断。仅在整体就是结果信封时剥离，普通
+ * JSON 数据文本不受影响。 */
+export function unwrapJsonEnvelopeSummary(text: string): string {
+  let current = text.trim();
+  for (let hop = 0; hop < 2 && current.startsWith("{") && current.endsWith("}"); hop += 1) {
+    try {
+      const parsed = JSON.parse(current) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object" || typeof parsed.summary !== "string") break;
+      const allowedKeys = new Set(["summary", "shouldNotify", "outputSkipped", "skipReason", "stagedOutput"]);
+      if (Object.keys(parsed).some((key) => !allowedKeys.has(key))) break;
+      const inner = parsed.summary.trim();
+      if (!inner) break;
+      current = inner;
+    } catch {
+      break;
+    }
+  }
+  return current;
+}
+
 export function degradedSummaryMessage(summary: string, taskName: string): string {
   const original = summary.trim().replace(/\s+/g, " ").slice(0, 80);
   return `【${taskName}】本轮模型摘要未达质量下限，服务层兜底说明：模型原文开头为「${original}」。数据产出不受影响，完整内容请到 Portal 查看。`;
@@ -1136,11 +1189,15 @@ async function deliverResult(scope: AutomationScope, task: AutomationTaskRecord,
   const delivery = task.revision.delivery;
   if (delivery.mode === "none") return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "not_requested" }) };
   if (!result.shouldNotify) return { run: await updateAutomationTaskRunDelivery({ ...scope, runId: run.runId, status: "suppressed" }) };
-  const pushMessage = meetsSummaryQualityFloor(result.summary)
-    ? result.summary
+  const cleanedForPush = unwrapJsonEnvelopeSummary(result.summary);
+  const pushMessage = meetsSummaryQualityFloor(cleanedForPush)
+    ? cleanedForPush
     : degradedSummaryMessage(result.summary, task.revision.name);
-  if (pushMessage !== result.summary) {
-    logger.warn(`automation summary quality floor applied task=${task.taskId} run=${run.runId} rawLen=${result.summary.trim().length}`);
+  if (cleanedForPush !== result.summary) {
+    logger.warn(`automation summary JSON envelope stripped task=${task.taskId} run=${run.runId} rawLen=${result.summary.length} cleanedLen=${cleanedForPush.length}`);
+  }
+  if (pushMessage !== cleanedForPush) {
+    logger.warn(`automation summary quality floor applied task=${task.taskId} run=${run.runId} rawLen=${cleanedForPush.trim().length}`);
   }
   try {
     const job = await enqueuePushJob({

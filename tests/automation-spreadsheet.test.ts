@@ -138,3 +138,51 @@ test("spreadsheet transform expands a merged title row when distinct header cell
   );
   assert.equal(reopened.getWorksheet("行业复盘")!.getCell("B1").isMerged, false);
 });
+
+/** 2026-09-11 rev21 空 schema 事故：合并标题行（A1:Q1）被 ExcelJS 铺满 17 格，
+ * 旧推导把标题行当表头。修复后剔除合并覆盖格，真实表头行胜出。 */
+test("merged title row no longer hijacks header detection (rev21 hollow-schema fix)", async () => {
+  const { snapshotWorkbookSchema } = await import("../src/services/automation-spreadsheet.js");
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("数据");
+  ws.getCell(1, 1).value = "2026年09月行业复盘表_序号分段版";
+  ws.mergeCells(1, 1, 1, 17);
+  const headers = ["序号", "复盘日期", "行业代码", "行业名称", "当日涨跌幅(%)", "主力净流入(亿元)", "5日主力净流入(亿元)", "成交额(亿元)", "涨跌家数", "涨停公司", "已删除：公司涨幅(%)", "资金流入较强公司", "公司主力净流入(亿元)", "趋势判断", "主要原因", "验证条件/风险", "来源与时间"];
+  ws.getRow(2).values = headers;
+  ws.getRow(3).values = [1, "2026-09-03", "pt01801790", "非银金融", "1.33", "21.25", "-21.87", "511.83", "48涨/25跌/6平", "无涨停 / 不适用", "", "", "", "观察", "行业当日上涨", "关注后续", "腾讯板块"];
+  ws.getRow(4).values = ["备注：仅记录当日涨幅前10"];
+  ws.mergeCells(4, 1, 4, 17);
+  const data = await wb.xlsx.writeBuffer();
+  const schema = await snapshotWorkbookSchema(Buffer.from(data));
+  assert.equal(schema.headerRow, 2, "merged title row must be skipped");
+  assert.deepEqual(schema.header, headers, "real column labels become the contract");
+});
+
+test("validateRowsAgainstColumnRules: 9-4 misalignment, 9-7 universe drift, sentinels, numbers", async () => {
+  const { validateRowsAgainstColumnRules } = await import("../src/services/automation-spreadsheet.js");
+  const SW1 = ["银行", "煤炭", "非银金融"];
+  const schema = {
+    columnCount: 17,
+    headerRow: 2,
+    header: ["序号", "复盘日期", "行业代码", "行业名称", "当日涨跌幅(%)", "主力净流入(亿元)", "5日主力净流入(亿元)", "成交额(亿元)", "涨跌家数", "涨停公司", "已删除：公司涨幅(%)", "资金流入较强公司", "公司主力净流入(亿元)", "趋势判断", "主要原因", "验证条件/风险", "来源与时间"],
+    columnRules: {
+      "2": { kind: "date" as const, required: true },
+      "4": { required: true, enumValues: SW1 },
+      "5": { kind: "number" as const },
+      "6": { kind: "number" as const, allowMissing: ["数据缺失"] },
+    },
+  };
+  const aligned = [1, "2026-09-04", "pt01801780", "银行", "0.87", "-0.43", "数据缺失", "280.75", "35涨/4跌", "无涨停", "", "", "", "温和上涨", "防御性", "无", "来源"];
+  assert.equal(validateRowsAgainstColumnRules([aligned], schema), null, "aligned rows pass");
+  // 9-4 形态：日期串占第 1 列（序号列），整行左移两格。
+  const misaligned = ["2026-09-04", "银行", "0.87", "280.75", "0.27", "-0.43", "无涨停", "不适用", "温和上涨", "行业防御性上涨", "腾讯板块", "", "", "", "", "", ""];
+  const mismatch = validateRowsAgainstColumnRules([misaligned], schema)!;
+  assert.match(mismatch, /第 4 列|行业名称/, "misalignment is caught at the enum column");
+  // 9-7 形态：申万二级名与截断名不在白名单（截断检测由枚举承担）。
+  const drift = [8, "2026-09-07", "pt01801130", "农产品加", "+3.74%", "数据缺失", "数据缺失", "数据缺失", "1. 封板", "金健米业", "", "", "", "强势反弹", "粮油", "无", "东财"];
+  const driftError = validateRowsAgainstColumnRules([drift], schema)!;
+  assert.match(driftError, /不在约定取值集内/, "secondary-universe/truncated names are rejected");
+  // 必填缺失与显式缺失标注。
+  assert.match(validateRowsAgainstColumnRules([[1, "", "pt", "银行", "1", "2", "", "", "", "", "", "", "", "", "", "", ""]], schema)!, /复盘日期.*为空/);
+  assert.equal(validateRowsAgainstColumnRules([aligned], { columnCount: 17, headerRow: 2 }), null, "no rules → no semantic gate (backward compatible)");
+});

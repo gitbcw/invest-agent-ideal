@@ -88,3 +88,26 @@ test("floor helpers: trim, exact boundary, whitespace collapse, 80-char original
   const collapsed = degradedSummaryMessage("word\n\n  word2", "t");
   assert.ok(collapsed.includes("word word2"), "whitespace collapsed in quoted original");
 });
+
+/** 2026-09-11（W37 补评样本 185b313a/ae86b203）：summary 双层 JSON 信封
+ * 原样照推。信封剥离与质量下限同位生效：只清洗推送正文，落库原文不动。 */
+test("double-encoded JSON envelope summary is unwrapped before the push enqueue", async () => {
+  const { db } = await fixture;
+  const inner = "沪指盘中回落 0.6%，持仓九只全绿，科创50 跌 1.2%，无触发异动；继续持有现有仓位，午后关注 3200 点支撑与量能变化。";
+  const enveloped = JSON.stringify({ summary: JSON.stringify({ summary: inner, shouldNotify: true }), shouldNotify: true });
+  const { pushed } = await runSummaryTask("floor-envelope", enveloped);
+  assert.equal(pushed.run.status, "succeeded");
+  assert.ok(pushed.run.pushJobId);
+  const job = db.sqlite.prepare("SELECT message FROM push_jobs WHERE id = ?").get(pushed.run.pushJobId) as { message: string };
+  assert.equal(job.message, inner, "the push body must be the unwrapped inner summary");
+  const run = db.sqlite.prepare("SELECT result_summary FROM automation_task_runs WHERE run_id = ?").get(pushed.run.runId) as { result_summary: string | null };
+  assert.equal(run.result_summary, enveloped, "diagnostic evidence keeps the raw model output");
+});
+
+test("ordinary JSON-shaped data text is never unwrapped", async () => {
+  const runner = await import("../src/services/generic-automation-runner.js");
+  const dataText = '{"columns":["成交额(元)"],"rows":[["123"]],"meta":{"source":"tencent"}}';
+  assert.equal(runner.unwrapJsonEnvelopeSummary(dataText), dataText);
+  assert.equal(runner.unwrapJsonEnvelopeSummary("普通文本推送"), "普通文本推送");
+  assert.equal(runner.unwrapJsonEnvelopeSummary(""), "");
+});

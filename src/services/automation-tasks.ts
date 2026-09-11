@@ -8,7 +8,7 @@ import { isAshareTradingDay } from "../lib/market-calendar.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { ACTIVE_BACKEND } from "../lib/data-backend.js";
 import { mastraWorkspaceRegistry } from "../mastra/workspace-registry.js";
-import { AutomationSpreadsheetValidationError, snapshotWorkbookSchema, validateAutomationSpreadsheet, type AutomationWorkbookSchema } from "./automation-spreadsheet.js";
+import { AutomationSpreadsheetValidationError, snapshotWorkbookSchema, validateAutomationSpreadsheet, type AutomationColumnRule, type AutomationWorkbookSchema } from "./automation-spreadsheet.js";
 import { isRegisteredScheduledTaskType } from "./scheduled-task-types.js";
 import {
   assetFormatForFileName,
@@ -465,6 +465,7 @@ export class AutomationTaskError extends Error {
       | "AUTOMATION_RUN_LEASE_LOST"
       | "AUTOMATION_RUN_EXECUTION_DEADLINE_EXCEEDED"
       | "AUTOMATION_RUN_INVALID_RESULT"
+      | "AUTOMATION_RUN_ZERO_WRITE_NO_DATA"
       | "ASSET_SUBMISSION_FAILED"
       | "AUTOMATION_TASK_BUSY"
       | "AUTOMATION_TASK_NOT_ACTIVE"
@@ -1154,6 +1155,47 @@ function normalizeOutputPolicy(raw: AutomationTaskOutputPolicy | Record<string, 
   throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "unsupported output mode");
 }
 
+function normalizeColumnRules(value: unknown, columnCount: number): Record<string, AutomationColumnRule> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "expectedSchema columnRules must be an object keyed by 1-based column number");
+  }
+  const rules: Record<string, AutomationColumnRule> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 1 || index > columnCount) {
+      throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", `expectedSchema columnRules key "${key}" must be a 1-based column number within columnCount`);
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", `expectedSchema columnRules["${key}"] must be an object`);
+    }
+    const record = raw as Record<string, unknown>;
+    const rule: AutomationColumnRule = {};
+    if (record.kind !== undefined) {
+      if (record.kind !== "number" && record.kind !== "date" && record.kind !== "text") {
+        throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", `expectedSchema columnRules["${key}"].kind must be number|date|text`);
+      }
+      rule.kind = record.kind;
+    }
+    for (const listKey of ["enumValues", "allowMissing"] as const) {
+      const list = record[listKey];
+      if (list === undefined) continue;
+      if (!Array.isArray(list) || list.length > 500 || list.some((item) => typeof item !== "string" || !item.trim() || item.length > 120)) {
+        throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", `expectedSchema columnRules["${key}"].${listKey} must be a string array (≤500 items, each 1-120 chars)`);
+      }
+      rule[listKey] = (list as string[]).map((item) => item.trim());
+    }
+    if (record.required !== undefined) {
+      if (typeof record.required !== "boolean") {
+        throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", `expectedSchema columnRules["${key}"].required must be a boolean`);
+      }
+      rule.required = record.required;
+    }
+    if (Object.keys(rule).length > 0) rules[String(index)] = rule;
+  }
+  return Object.keys(rules).length > 0 ? rules : undefined;
+}
+
 function normalizeExpectedSchema(value: unknown): AutomationWorkbookSchema | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "object" || Array.isArray(value)) throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "expectedSchema must be an object");
@@ -1166,13 +1208,14 @@ function normalizeExpectedSchema(value: unknown): AutomationWorkbookSchema | und
   if (typeof headerRow !== "number" || !Number.isInteger(headerRow) || headerRow < 1 || headerRow > 10) {
     throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "expectedSchema headerRow must be an integer in [1,10]");
   }
+  const columnRules = normalizeColumnRules(record.columnRules, columnCount);
   if (record.header === undefined || record.header === null) {
-    return { columnCount, headerRow };
+    return { columnCount, headerRow, ...(columnRules ? { columnRules } : {}) };
   }
   if (!Array.isArray(record.header) || record.header.length !== columnCount || record.header.some((item) => typeof item !== "string")) {
     throw new AutomationTaskError("AUTOMATION_INVALID_OUTPUT_POLICY", "expectedSchema header must be a string array of length columnCount");
   }
-  return { columnCount, headerRow, header: record.header.map((item) => String(item).slice(0, 200)) };
+  return { columnCount, headerRow, header: record.header.map((item) => String(item).slice(0, 200)), ...(columnRules ? { columnRules } : {}) };
 }
 
 function normalizeDeliveryPolicy(raw: AutomationTaskDeliveryPolicy | Record<string, unknown> | undefined): AutomationTaskDeliveryPolicy {

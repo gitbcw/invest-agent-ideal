@@ -70,10 +70,11 @@ test("creating an xlsx update task snapshots expectedSchema from the bound asset
   const outputJson = db.sqlite.prepare("SELECT output_json FROM automation_task_revisions WHERE task_id = ? AND revision = 1").get(task.taskId) as { output_json: string };
   const output = JSON.parse(outputJson.output_json);
   assert.equal(output.expectedSchema.columnCount, 17);
-  // 合并标题行读回 17 格全非空，findLikelyHeaderRow 判 r1 为表头——与运行时
-  // sheetSchema 同口径（这正是契约与守卫一致性的来源）。
-  assert.equal(output.expectedSchema.headerRow, 1);
-  assert.equal(output.expectedSchema.header.length, 17);
+  // 2026-09-11 修复：合并标题行（A1:Q1）会被 ExcelJS 铺满 17 格，此前
+  // findLikelyHeaderRow 因此把标题行当表头，契约 header 17 项全是文件名
+  //（rev21 空 schema）。修复后剔除合并覆盖格再计数，真实表头行 r2 胜出。
+  assert.equal(output.expectedSchema.headerRow, 2);
+  assert.deepEqual(output.expectedSchema.header, HEADERS_17);
 
   // 契约兼容：17 列 appendRows 正常执行。
   const result = await (await fixture).runner.runGenericAutomationTaskNow({
@@ -227,4 +228,125 @@ test("monthly rollover create with a drifted schema is rejected at the service l
   const runRow = db.sqlite.prepare("SELECT error_message FROM automation_task_runs WHERE run_id = ?").get(result.run.runId) as { error_message: string };
   assert.ok(runRow.error_message.includes("AUTOMATION_SCHEMA_MISMATCH"), runRow.error_message);
   assert.ok(runRow.error_message.includes("16"), runRow.error_message);
+});
+
+test("columnRules: misaligned rows (2026-09-04) and secondary-universe names (2026-09-07) are rejected with teaching messages", async () => {
+  const { automation, userAssets, runner } = await fixture;
+  const bytes = await makeWorkbookBytes(17, true, 1);
+  const asset = await userAssets.createUserAsset({ ...baseScope, fileName: "rules-table.xlsx", bytes, source: "upload" });
+  const SW1 = ["农林牧渔", "基础化工", "钢铁", "有色金属", "电子", "家用电器", "食品饮料", "纺织服饰", "轻工制造", "医药生物", "公用事业", "交通运输", "房地产", "商贸零售", "社会服务", "综合", "建筑材料", "建筑装饰", "电力设备", "国防军工", "计算机", "传媒", "通信", "银行", "非银金融", "汽车", "机械设备", "环保", "美容护理", "石油石化", "煤炭"];
+  const task = await automation.createAutomationTask({
+    ...baseScope,
+    taskId: "schema-column-rules",
+    name: "列语义规则任务",
+    instruction: "按 17 列契约追加当日行业复盘行。",
+    schedule: { frequency: "trading_days" as const, time: "19:30", timezone: "Asia/Shanghai" },
+    output: {
+      mode: "update" as const, assetId: asset.assetId, versionPolicy: "latest" as const,
+      expectedSchema: {
+        columnCount: 17,
+        headerRow: 2,
+        header: HEADERS_17,
+        columnRules: {
+          "2": { kind: "date", required: true },
+          "4": { required: true, enumValues: SW1 },
+          "5": { kind: "number" },
+          "6": { kind: "number", allowMissing: ["数据缺失"] },
+          "7": { kind: "number", allowMissing: ["数据缺失"] },
+          "8": { kind: "number", allowMissing: ["数据缺失"] },
+        },
+      },
+    },
+    delivery: { mode: "none" },
+  });
+  await automation.activateAutomationTask({ ...baseScope, taskId: task.taskId, expectedRevision: 1 });
+
+  // 2026-09-07 形态：日期串漂到第 1 列、序号落第 2 列、申万二级名+截断名、资金流「数据缺失」。
+  const driftedRow = ["2026-09-07", "8", "农产品加", "农产品加", "+3.74%", "数据缺失", "数据缺失", "1. 金健米业", "强势反弹", "粮油安全", "", "", "", "", "", "", ""];
+  let repairCalls = 0;
+  const result = await runner.runGenericAutomationTaskNow({
+    scope: baseScope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "rules-run-1",
+    executor: async (input) => {
+      if (input.repairContext) {
+        repairCalls += 1;
+        return {
+          content: { type: "text" as const, text: "ok" },
+          finished: true,
+          data: {
+            summary: "修复后按 17 列对齐追加。",
+            shouldNotify: false,
+            stagedOutput: {
+              operation: "appendRows" as const,
+              rows: [[9, "2026-09-07", "pt01801230", "综合", "1.23", "2.5", "-1.5", "120.4", "10涨/5跌", "无涨停", "", "", "", "观察", "原因", "风险", "来源 19:31"]],
+              skipIfCellMatches: { column: 2, value: "2026-09-07" },
+            },
+          },
+        };
+      }
+      return {
+        content: { type: "text" as const, text: "ok" },
+        finished: true,
+        data: {
+          summary: "已追加。",
+          shouldNotify: false,
+          stagedOutput: { operation: "appendRows" as const, rows: [driftedRow], skipIfCellMatches: { column: 1, value: "2026-09-07" } },
+        },
+      };
+    },
+  });
+  assert.equal(result.run.status, "succeeded", "violating rows must be rejected, repaired rows must commit");
+  assert.equal(repairCalls, 1, "the column-rule violation must trigger exactly one self-repair round");
+  const runRow = (await fixture).db.sqlite.prepare("SELECT error_message FROM automation_task_runs WHERE run_id = ?").get(result.run.runId) as { error_message: string };
+  void runRow;
+  // 违规信息只存在于日志/自纠上下文；成功 run 不留 error。规则命中的核心断言：
+  // repair 轮被触发（否则 driftedRow 会直接入库），且入库行是修复后的对齐行。
+  const ExcelJS = (await import("exceljs")).default;
+  const current = await userAssets.readCurrentUserAsset({ ...baseScope, assetId: asset.assetId });
+  const wb = new ExcelJS.Workbook();
+  const buf = Buffer.from(current.bytes);
+  await wb.xlsx.load(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer);
+  const sheet = wb.getWorksheet("数据")!;
+  const lastRow = (sheet.getRow(sheet.rowCount).values as unknown[]).slice(1);
+  assert.equal(lastRow[1], "2026-09-07", "date lands in column 2 after repair");
+  assert.equal(lastRow[3], "综合", "SW-L1 name lands in column 4 after repair");
+});
+
+test("columnRules violations that survive repair fail the run instead of committing garbage", async () => {
+  const { automation, userAssets, runner } = await fixture;
+  const bytes = await makeWorkbookBytes(17, true, 1);
+  const asset = await userAssets.createUserAsset({ ...baseScope, fileName: "rules-table-2.xlsx", bytes, source: "upload" });
+  const task = await automation.createAutomationTask({
+    ...baseScope,
+    taskId: "schema-column-rules-fail",
+    name: "列语义规则失败任务",
+    instruction: "按 17 列契约追加当日行业复盘行。",
+    schedule: { frequency: "trading_days" as const, time: "19:30", timezone: "Asia/Shanghai" },
+    output: {
+      mode: "update" as const, assetId: asset.assetId, versionPolicy: "latest" as const,
+      expectedSchema: {
+        columnCount: 17,
+        headerRow: 2,
+        header: HEADERS_17,
+        columnRules: { "4": { required: true, enumValues: ["银行", "煤炭"] } },
+      },
+    },
+    delivery: { mode: "none" },
+  });
+  await automation.activateAutomationTask({ ...baseScope, taskId: task.taskId, expectedRevision: 1 });
+  const badRow = ["1", "2026-09-04", "pt01801780", "金融", "0.87", "280.75", "0.27", "-0.43", "35涨", "无涨停", "", "", "", "观察", "原因", "风险", "来源"];
+  const result = await runner.runGenericAutomationTaskNow({
+    scope: baseScope, taskId: task.taskId, origin: "scheduled", idempotencyKey: "rules-fail-1",
+    executor: async () => ({
+      content: { type: "text" as const, text: "ok" },
+      finished: true,
+      data: {
+        summary: "已追加。",
+        shouldNotify: false,
+        stagedOutput: { operation: "appendRows" as const, rows: [badRow], skipIfCellMatches: { column: 2, value: "2026-09-04" } },
+      },
+    }),
+  });
+  assert.equal(result.run.status, "failed", "enum drift must fail the run after the wasted repair round");
+  const current = await userAssets.readCurrentUserAsset({ ...baseScope, assetId: asset.assetId });
+  assert.equal(current.descriptor.versionId, asset.currentVersionId, "no version may be committed for rule-violating rows");
 });

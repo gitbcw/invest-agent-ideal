@@ -1,6 +1,7 @@
 import { logger } from "../lib/logger.js";
 import { buildExternalRegistrations, isExternalRegistrationActivated } from "../mcp/external-mcp-registrations.js";
 import { recordObservedExternalToolCall } from "../services/external-mcp-observer.js";
+import { withLenientInputValidation } from "./lenient-tool-input.js";
 
 export interface ResolvedExternalMcp {
   id: string;
@@ -219,5 +220,21 @@ function wrapObservableTool(
   };
   const copy = Object.create(Object.getPrototypeOf(tool), Object.getOwnPropertyDescriptors(tool)) as Record<string, unknown>;
   Object.defineProperty(copy, "execute", { value: wrappedExecute, writable: true, configurable: true, enumerable: true });
+  // 宽容入参矫正（2026-09-11）：Mastra 核心在 execute 之前按 inputSchema 校验，
+  // 兜底档模型的字符串化参数在这一层就被拒——observer 包装碰不到。这里对
+  // inputSchema 的标准 validate 再包一层：严格校验失败时按 schema 自带
+  // jsonSchema 引导还原类型重校验，仅在整体通过时采用。
+  if (copy.inputSchema && typeof copy.inputSchema === "object") {
+    try {
+      Object.defineProperty(copy, "inputSchema", {
+        value: withLenientInputValidation(copy.inputSchema as object),
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    } catch {
+      // Coercion is best-effort; the original schema stays in place.
+    }
+  }
   return copy;
 }

@@ -262,15 +262,56 @@ function resolveDedupeColumn(headers: unknown[]): number {
   return 1;
 }
 
+/** 解码 "A1:Q1" 风格区间为行列范围（ExcelJS sheet.model.merges 的存储形态）。 */
+function decodeMergeRange(range: string): { startRow: number; endRow: number; startCol: number; endCol: number } | null {
+  const match = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(range.trim().toUpperCase());
+  if (!match) return null;
+  const col = (letters: string) => letters.split("").reduce((acc, ch) => acc * 26 + (ch.charCodeAt(0) - 64), 0);
+  const startRow = Number(match[2]);
+  const startCol = col(match[1]);
+  return {
+    startRow,
+    endRow: match[4] ? Number(match[4]) : startRow,
+    startCol,
+    endCol: match[3] ? col(match[3]) : startCol,
+  };
+}
+
+/** 该行被合并单元格覆盖的列集合。ExcelJS 对合并行会把主单元格值铺满整个
+ * 合并区，一个跨 17 列的标题行读起来像 17 个非空格——不剔除会把标题行
+ * 误判成表头（2026-09-11 rev21 空 schema 事故：header 17 项全是文件名）。 */
+function mergedColumnsOnRow(sheet: ExcelJS.Worksheet, rowNumber: number): Set<number> {
+  const covered = new Set<number>();
+  const merges = sheet.model?.merges;
+  if (!Array.isArray(merges)) return covered;
+  for (const range of merges) {
+    const decoded = decodeMergeRange(String(range));
+    if (!decoded || rowNumber < decoded.startRow || rowNumber > decoded.endRow) continue;
+    if (decoded.startCol === decoded.endCol && decoded.startRow === decoded.endRow) continue;
+    for (let column = decoded.startCol; column <= decoded.endCol; column += 1) covered.add(column);
+  }
+  return covered;
+}
+
+function countEffectiveCells(sheet: ExcelJS.Worksheet, rowNumber: number): number {
+  const merged = mergedColumnsOnRow(sheet, rowNumber);
+  const values = rowValues(sheet.getRow(rowNumber));
+  let count = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    if (merged.has(index + 1)) continue;
+    if (hasCellValue(values[index])) count += 1;
+  }
+  return count;
+}
+
 function findLikelyHeaderRow(sheet: ExcelJS.Worksheet): number {
-  const first = rowValues(sheet.getRow(1));
-  if (first.filter(hasCellValue).length >= 2) return 1;
+  if (countEffectiveCells(sheet, 1) >= 2) return 1;
   // A title-only first row is common in manually maintained workbooks. Pick
   // the first following row with at least two populated cells as the schema
   // row; keep row 1 as the conservative fallback for one-column sheets.
   const limit = Math.min(sheet.rowCount, 10);
   for (let rowNumber = 2; rowNumber <= limit; rowNumber += 1) {
-    if (rowValues(sheet.getRow(rowNumber)).filter(hasCellValue).length >= 2) return rowNumber;
+    if (countEffectiveCells(sheet, rowNumber) >= 2) return rowNumber;
   }
   return 1;
 }
@@ -324,6 +365,75 @@ export interface AutomationWorkbookSchema {
   columnCount: number;
   headerRow: number;
   header?: string[];
+  /** 可选列语义规则（2026-09-11）：键为 1 基列号。列数校验只防多/少列，
+   * 防不住「17 列但整体错位/口径漂移」（9-4 列错位、9-7 申万二级宇宙）。
+   * 规则由任务 revision 显式携带，快照推导不自动生成。 */
+  columnRules?: Record<string, AutomationColumnRule>;
+}
+
+export interface AutomationColumnRule {
+  /** 期望值形态；缺省只做非空/枚举检查。 */
+  kind?: "number" | "date" | "text";
+  /** 枚举白名单（精确匹配，trim 后比较）。同时承担截断检测：截断值不会
+   * 等于白名单任一成员。 */
+  enumValues?: string[];
+  /** 允许的显式缺失标注（如「数据缺失」）；命中时不按 kind/required 追究。 */
+  allowMissing?: string[];
+  /** 该列必须非空（allowMissing 优先）。 */
+  required?: boolean;
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function cellText(value: unknown): string {
+  return value === null || value === undefined ? "" : normalizeCellText(value);
+}
+
+function isNumericCell(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "string") return false;
+  return /^[+-]?\d+(?:\.\d+)?%?$/.test(value.trim());
+}
+
+function isDateCell(value: unknown): boolean {
+  if (value instanceof Date) return true;
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  return ISO_DATE.test(text) || /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(text);
+}
+
+/** 追加行按 columnRules 逐格校验；null=通过，否则返回可执行的差异描述
+ * （会作为 AUTOMATION_RUN_INVALID_RESULT 回喂模型触发自纠重试）。 */
+export function validateRowsAgainstColumnRules(rows: unknown[][], schema: AutomationWorkbookSchema): string | null {
+  const rules = schema.columnRules;
+  if (!rules || Object.keys(rules).length === 0) return null;
+  const problems: string[] = [];
+  for (const [rowIndex, row] of rows.entries()) {
+    for (const [columnKey, rule] of Object.entries(rules)) {
+      const columnIndex = Number(columnKey) - 1;
+      if (!Number.isInteger(columnIndex) || columnIndex < 0 || columnIndex >= schema.columnCount) continue;
+      const label = schema.header?.[columnIndex] || `第 ${columnKey} 列`;
+      const value = row[columnIndex];
+      const text = cellText(value);
+      if ((rule.allowMissing ?? []).map((marker) => marker.trim()).includes(text)) continue;
+      if (!text) {
+        if (rule.required) problems.push(`第 ${rowIndex + 1} 行「${label}」为空（必填列）`);
+        continue;
+      }
+      if (rule.enumValues && !rule.enumValues.includes(text)) {
+        problems.push(`第 ${rowIndex + 1} 行「${label}」值「${text.slice(0, 24)}」不在约定取值集内（疑似口径漂移或截断）`);
+        continue;
+      }
+      if (rule.kind === "number" && !isNumericCell(value)) {
+        problems.push(`第 ${rowIndex + 1} 行「${label}」值「${text.slice(0, 24)}」不是数值`);
+      } else if (rule.kind === "date" && !isDateCell(value)) {
+        problems.push(`第 ${rowIndex + 1} 行「${label}」值「${text.slice(0, 24)}」不是日期（YYYY-MM-DD）`);
+      }
+    }
+    if (problems.length >= 5) break;
+  }
+  if (!problems.length) return null;
+  return `追加行未通过列语义校验：${problems.join("；")}。请严格按表头列序输出 ${schema.columnCount} 列（表头：${(schema.header ?? []).filter(Boolean).join("、")}），字段取值遵守任务口径约定`;
 }
 
 /** Snapshot the first worksheet's schema as a revision-bindable contract.

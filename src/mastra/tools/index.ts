@@ -1,12 +1,13 @@
 import { z } from "zod/v4";
 import { callServiceTool as defaultCallServiceTool, type ServiceToolContext } from "../../mcp/service-tools-core.js";
+import { lenientZodObject } from "../lenient-tool-input.js";
 import { TOOL_SPECS, type ToolSpec } from "./registry.js";
 import { checkToolScope, scopeDeniedResult, type MastraToolContext } from "./scope-guard.js";
 
 export interface InProcessTool {
   id: string;
   description: string;
-  inputSchema: z.ZodObject<z.ZodRawShape>;
+  inputSchema: z.ZodType<Record<string, unknown>>;
   execute(input: Record<string, unknown> | undefined, context?: unknown): Promise<unknown>;
 }
 
@@ -22,7 +23,10 @@ export function createInProcessToolset(options: InProcessToolsetOptions = {}): r
   return (options.specs ?? TOOL_SPECS).map((spec) => ({
     id: spec.id,
     description: spec.description,
-    inputSchema: z.object(spec.inputSchema),
+    // 宽容矫正（2026-09-11）：兜底档模型把 number/boolean/object 参数写成
+    // JSON 字符串（"50"/"True"/"{}"）时先按声明类型还原再校验；严格校验
+    // 直接通过的正常路径零改动。toJSONSchema 按 shape 生成，模型侧定义不变。
+    inputSchema: lenientZodObject(spec.inputSchema),
     async execute(input: Record<string, unknown> | undefined, context?: unknown): Promise<unknown> {
       const requestContext = context ?? options.context;
       const decision = checkToolScope(spec.id, requestContext);
