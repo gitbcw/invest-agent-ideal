@@ -38,6 +38,7 @@ const MODEL_LABELS: Record<string, string> = {
   "glm-5.3-flash": "GLM-5.3 Flash",
   "deepseek-v4-flash-vision-exp": "DeepSeek V4 Flash Vision",
   "qwen3.7-flash": "Qwen3.7 Flash",
+  "qwen3.8-flash": "Qwen3.8 Flash",
   "doubao-seed-2-1-turbo-260628": "豆包 Seed 2.1 Turbo",
 };
 

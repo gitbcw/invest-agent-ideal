@@ -18,13 +18,14 @@ interface ModelsStateResponse {
 
 // 可选模型的显示名（决定下拉内容）。DeepSeek 4.1 统一合并（2026-09-10
 // 二次裁决）：只保留 deepseek-flash，旧 ID 不再出现在任何选择器映射里
-// （历史用量行的显示名在 UsageShell 单独维护）。
+// （历史用量行的显示名在 UsageShell 单独维护）。qwen3.7-flash 下线、
+// qwen3.8-flash 顶替（owner 2026-09-11 裁决，3.7 不再保留）。
 const LABELS: Record<string, string> = {
   "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-5.6-luna": "GPT-5.6 Luna",
   "deepseek-flash": "DeepSeek V4.1 Flash",
   "glm-5.3-flash": "GLM-5.3 Flash",
-  "qwen3.7-flash": "Qwen3.7 Flash",
+  "qwen3.8-flash": "Qwen3.8 Flash",
   "doubao-seed-2-1-turbo-260628": "豆包 Seed 2.1 Turbo",
 };
 
