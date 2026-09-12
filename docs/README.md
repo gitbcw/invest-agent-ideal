@@ -39,10 +39,12 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 | [bad-cases/BC-20260821-001-long-conversation-coherence-latency.md](./bad-cases/BC-20260821-001-long-conversation-coherence-latency.md) | 首次治理演练：长会话逻辑已修复但性能与 Trace 证据未过放行门 |
 | [bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md](./bad-cases/BC-20260823-001-chips-snapshot-premature-gap.md) | 筹码集中度查询缓存未命中即宣告缺口：归因 L1 工具学说缺证据穷尽规则，修复为指令补行，回归样例 EV-013 |
 | [bad-cases/BC-20260824-001-phantom-attachment-attribution.md](./bad-cases/BC-20260824-001-phantom-attachment-attribution.md) | 附件引用被冒称已读：真实工具数据（portfolio_read）被表述为「截图识别」，两轮回放复现，回归样例 EV-009 |
-| [bad-cases/BC-20260904-001-empty-summary-push.md](./bad-cases/BC-20260904-001-empty-summary-push.md) | 空壳简报照推（程序全绿、语义失败的范式案例，T-469 走通案例）：主因模型单轮漂移+次因服务层无 summary 质量下限，修复选型待 owner 裁决 |
+| [bad-cases/BC-20260904-001-empty-summary-push.md](./bad-cases/BC-20260904-001-empty-summary-push.md) | 空壳简报照推（程序全绿、语义失败的范式案例，T-469 走通案例）：主因模型单轮漂移+次因服务层无 summary 质量下限；服务层质量下限已上线（T-473），观察窗口终局无复发、建议关闭（待 owner 终裁） |
 | [run-diagnostic-view-contract.md](./run-diagnostic-view-contract.md) | 从 traceId 串起对话、工具、审计、调度、产物和投递的最小诊断契约 |
 | [diagnostic-coverage-report-2026-09-06.md](./diagnostic-coverage-report-2026-09-06.md) | 诊断链生产覆盖率首轮实测（T-467）：7 天窗口 99.6% 串通、audit 100%、缺口归因三分法（历史/n.a./新代码）、S7 巡查阈值、GAP-1/GAP-2 登记 |
 | [diagnostic-coverage-retest-2026-09-10.md](./diagnostic-coverage-retest-2026-09-10.md) | 覆盖率复测中期报告（T-474）：GAP-1 断点归零未回升、S7 三率全达标、GAP-2 发现 trace_payload_retention 等未登记 n.a. 白名单致平台比率仍 0%（一行补登待发布）；SCR-01/02 业务终态中期回填 pass |
+| [diagnostic-coverage-retest-2026-09-12.md](./diagnostic-coverage-retest-2026-09-12.md) | 覆盖率复测终局报告（T-474，owner 裁决提前收口）：GAP-1 归零未回升终局通过、S7 三率 100%、异常终态零未解释；GAP-2 白名单一行待发布；SCR-01/02 业务终态终局 pass |
+| [governance-review-2026-09-12.md](./governance-review-2026-09-12.md) | 治理放行复核增量（T-476）：扩大范围三前置条件①②已达成、③待 owner 裁决 BC-20260904-001 关闭；解除 no-go 建议与遗留移交清单 |
 | [release-governance-evidence-template.md](./release-governance-evidence-template.md) | 变更影响、验证、灰度、观测、回滚和 go/no-go 记录模板 |
 | [release-record-20260824-dd072a15.md](./release-record-20260824-dd072a15.md) | 真实发布记录：T-357 治理执行线（WP0–WP5）上线，含验收九项与 known-good 标记 |
 | [release-record-20260906-2afb5e0f.md](./release-record-20260906-2afb5e0f.md) | 真实发布记录：T-472 诊断链口径修复 + T-473 summary 质量下限；语义门首两份 SCR（tier-2）实战；发布记录纪律自本次恢复逐次 |

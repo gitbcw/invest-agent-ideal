@@ -65,6 +65,6 @@ date / author / linked_commit_or_task:
 
 ## 六、首例与接线
 
-- 首个消费者：T-472（诊断链观测口径修复——微信关联键统一 + scheduler n.a. 过滤）发布时须出首份 SCR：变更面=model 相邻的观测写入侧 + automation_output 无涉；受影响资产 EV-017/EV-022/EV-034；预期改善=诊断覆盖率报告 GAP-1/GAP-2；观察窗口=发布后 7 天复测覆盖率。
+- 首例已完成：T-472（诊断链观测口径修复——微信关联键统一 + scheduler n.a. 过滤）随 20260906T020157Z-2afb5e0f 发布，首两份 SCR（SCR-20260906-01/02）随 commit f370388 落档；观察窗口复测 9-10 中期 + 9-12 终局均 pass（业务终态栏），GAP-1 断链归零未回升。
 - 信号联动：SCR 观察窗口内的 semantic FP / rubric fail / S7 告警即失败动作触发器（定义见 [customer-friction-signal-collection-design.md](./customer-friction-signal-collection-design.md)）。
 - 复核节奏：每次治理放行复核（模板见 release-governance-evidence）清点在观察窗口内的 SCR 清单。

@@ -28,11 +28,11 @@
 
 | 原则 | 当前等级 | 当前证据 | 已知缺口 | 下一次复核证据 | 责任边界 | 复核日期 |
 | --- | --- | --- | --- | --- | --- | --- |
-| G1 先建反馈，再谈优化 | 基础具备（2026-09-06 升） | [evaluation-assets-registry.md](./evaluation-assets-registry.md)：37 条登记、36 条 `executable`，六类优先失败模式全覆盖（EV-034~037 存量证据转正）；[failure-taxonomy.md](./failure-taxonomy.md) v1.1（16 类/6 层）为归因单一入口；Bad Case 台账 4 条（[bad-cases/](./bad-cases/)）；rubric 试点两份并落 2026-W36 首轮评分（`data/eval-rubric-scores/`） | 语义门已建立但首例 SCR 未走（T-472 发布时）；LLM Judge 维持 n.a.（启用前提已预写）；EV-009 唯一 candidate 挂起观察（owner 裁决） | 首份 SCR（T-472）+ rubric 周评延续 | 治理/评估 | 2026-09-13 |
+| G1 先建反馈，再谈优化 | 基础具备（2026-09-06 升） | [evaluation-assets-registry.md](./evaluation-assets-registry.md)：37 条登记、36 条 `executable`，六类优先失败模式全覆盖（EV-034~037 存量证据转正）；[failure-taxonomy.md](./failure-taxonomy.md) v1.1（16 类/6 层）为归因单一入口；Bad Case 台账 4 条（[bad-cases/](./bad-cases/)）；rubric 试点两份并落 2026-W36 首轮评分（`data/eval-rubric-scores/`）；语义门首两份 SCR 已实战（SCR-20260906-01/02 随 20260906T020157Z 发布，观察窗口 9-12 终局收口、业务终态栏 pass） | LLM Judge 维持 n.a.（启用前提已预写）；EV-009 唯一 candidate 挂起观察（owner 裁决） | rubric 周评延续（ED-P2 周一 10:30 首跑）；LLM Judge 启用前提达成时复核 | 治理/评估 | 2026-10-06 |
 | G2 最小化模型职责 | 基础具备（维持） | service-tools 授权面 fail-closed（EV-026）；scope/确认/revision/幂等确定性断言（EV-014/023/024）；read 面审计收口（EV-033） | 新变更把确定性规则重新塞回 Prompt 的风险持续存在 | 随每次涉及服务契约/工具清单的变更做边界审查 | 服务/MCP | 随变更 |
 | G3 假设每层都会失败 | 基础具备（2026-09-06 升） | 四类隔离故障演练（F1–F4）全部有仓内可重复 fixture 与终态/副作用断言：[isolated-fault-drill-matrix.md](./isolated-fault-drill-matrix.md)、[isolated-fault-drill-record-2026-08-24.md](./isolated-fault-drill-record-2026-08-24.md)、EV-015/016/018；生产真实故障均有收敛与修复记录（2026-09-03 确认死锁三件套、2026-09-05 attempt 预算扩容 160d9b9） | 真实生产环境故障注入未执行（当前治理未要求）；涉运行时行为变更后需重跑对应演练子集 | 下次涉及调度/推送/装配/模型链的变更时重跑对应演练子集 | 运行时/依赖方 | 随变更 |
 | G4 小步发布、可观测回退 | 基础具备（2026-09-06 升） | 真实发布全链记录两份：[20260824](./release-record-20260824-dd072a15.md)、[20260906](./release-record-20260906-2afb5e0f.md)（快照→部署→九项验收→known-good→回滚口径，含语义门 SCR 首战）；`scripts/deploy-volcano.sh` 构建感知发布通道与白天发布纪律 | 8-24~9-05 期间发布未逐次记录（历史缺口登记在案，不追溯补齐）；持续要求=每次真实发布逐次出记录 | 每次真实发布记录落档并回填本表 | 发布/运维 | 随下次发布 |
-| G5 只记录必要且可关联的事实 | 基础具备（2026-09-06 升） | 单 ID 端到端诊断链与缺失计数（`src/services/run-diagnostic.ts` + Platform 运行诊断视图 + EV-017）；生产覆盖率已实测（7 天窗口 99.6% 串通，见 [diagnostic-coverage-report-2026-09-06.md](./diagnostic-coverage-report-2026-09-06.md)）；S7 巡查项与处置三分法已上线；GAP-1/GAP-2 修复已随 20260906T020157Z 发布（微信轮三方同键、覆盖率 n.a. 分离） | 修复效果待 7 天复测收口（2026-09-13）；历史 85+21 条断链保持登记不回填；外部 MCP 降级链诊断样例 | 7 天覆盖率复测落档（微信反链归零验证） | 观测/服务 | 2026-09-13 |
+| G5 只记录必要且可关联的事实 | 基础具备（2026-09-06 升） | 单 ID 端到端诊断链与缺失计数（`src/services/run-diagnostic.ts` + Platform 运行诊断视图 + EV-017）；生产覆盖率已实测（7 天窗口 99.6% 串通，见 [diagnostic-coverage-report-2026-09-06.md](./diagnostic-coverage-report-2026-09-06.md)）；GAP-1/GAP-2 修复已随 20260906T020157Z 发布；**终局复测已落档（2026-09-12 提前收口：GAP-1 断链归零未回升、S7 三率 100%、异常终态零未解释，[diagnostic-coverage-retest-2026-09-12.md](./diagnostic-coverage-retest-2026-09-12.md)）** | GAP-2 白名单补登一行待下次白天发布（trace_payload_retention/file_retention_* 共 3 类；8 月历史行滑出中，约 9-17 后平台比率进入结构性 n.a.）；历史 85+21 条断链保持登记不回填；外部 MCP 降级链诊断样例 | 白名单补登发布后平台比率口径核对 | 观测/服务 | 随下次发布 |
 
 ## L1–L4 分层矩阵
 
@@ -168,6 +168,18 @@
 新增缺口：无；历史 85+21 条微信断链登记不回填；质量下限降级模板触发率待观察
 是否阻断发布：无新增阻断；扩大使用范围前置条件②（T-472+SCR+7 天复测）已走完前两步，复测 2026-09-13 收口
 下一复核条件：2026-09-13 观察窗口收口（覆盖率复测 + SCR 业务终态栏回填 + BC-20260904-001 关闭条件复核）；下次发布记录落档
+```
+
+### 2026-09-12 观察窗口终局收口（T-474/T-475/T-476，owner 裁决提前收口）
+
+```text
+日期：2026-09-12
+复核范围：GAP-1/2 修复 7 天观察窗口终局复测（原定 9-13，owner 裁决提前至 9-12，理由=周末非交易日边际证据价值低，审计痕见终局复测报告文首）+ BC-20260904-001 关闭条件终验 + 扩大范围前置条件复核（零代码变更、零部署、生产只读）
+证据链接：diagnostic-coverage-retest-2026-09-12.md（终局复测主报告：GAP-1 归零未回升、S7 三率 100%、异常终态零未解释）；bad-cases/BC-20260904-001-empty-summary-push.md（终局观察追加，建议 fixed 待 owner 终裁）；governance-review-2026-09-12.md（放行复核增量：三前置条件①②已达成、③待 owner）；patrol-reports/2026-09-06..09-11 六份巡查交叉核对
+等级变化：无（G1–G5、L1–L4 维持基础具备）；G5「修复效果待 7 天复测收口」缺口关闭，更新为「白名单补登一行待发布」；G1「首例 SCR 未走」缺口关闭（首两份 SCR 实战 + 观察窗口业务终态栏 pass）
+新增缺口：GAP-2 白名单一行（trace_payload_retention 等 3 类，待 owner 授权随下次白天发布，同步基线 §六 n.a. 条目与 EV-017 断言）；trace_payload_retention 9-11 漏跑一次（9-12 恢复核对，不立案）；app.log 测试日志混入（日志卫生可选项）
+是否阻断发布：不新增阻断；扩大使用范围前置条件①②已达成、③（BC-20260904-001 关闭裁决）待 owner——详见 governance-review-2026-09-12.md
+下一复核条件：BC 关闭裁决后解除/维持 no-go 复核；白名单补登发布后核对平台比率口径（约 9-17 历史行滑出完成）；2026-10-06 季度例行；阻断项清单事件立即复核
 ```
 
 每次更新矩阵时追加：
