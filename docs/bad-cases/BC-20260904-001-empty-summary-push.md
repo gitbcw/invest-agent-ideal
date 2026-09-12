@@ -4,7 +4,7 @@
 
 ```yaml
 case_id: BC-20260904-001
-status: triaged
+status: fixed（2026-09-12 owner 经 T-475 确认关闭）
 severity: S2-medium
 first_seen_at: 2026-09-04T03:00:58Z（11:00 北京，盘中窗口）
 last_seen_at: 2026-09-04
@@ -72,3 +72,4 @@ message_kind: automation_summary；message 长度 13
 - 2026-09-06（owner 裁决 + T-473 实现）：选项 A 服务层质量下限落地（40 字符下限+降级模板+EV-038 三测全绿），随 SCR-20260906-02 待白天发布窗口；发布前案例保持 triaged，发布后按关闭条件复核。状态从「修复待裁决」进「已实现待发布」。
 - 2026-09-10（T-475 观察窗口中期复核，窗口 9-06T02:04Z~09-10T03:11Z）：**无同型复发，符合关闭条件走势**。证据：①`automation summary quality floor applied` 日志 0 次触发（app.log 覆盖自 8-15，全窗口在案）——降级模板零实际送达，交付核对项 n.a.；②窗口内已投递 automation_summary（sent）0 条低于 40 字符下限、0 条含降级模板标记（最短一条 80 字符，dyk 9-07，为正常短摘要）；③run 落库 result_summary 0 条低于下限——9-04 的 13 字元话语签名未再现；④S3 催补四日仅 9-08 一条已知 111 会话命中（归因 W4 超时，与本防线无关），S6 点踩四日全 0——用户未因此受阻。SCR-20260906-02「业务终态正确」栏据此**中期回填 pass**（证据详见 [diagnostic-coverage-retest-2026-09-10.md](../diagnostic-coverage-retest-2026-09-10.md) §五）。终局：9-13 窗口收口时如仍无同型，建议 status → fixed 并关闭（owner 裁决）。
 - 2026-09-12（T-475 终局复核，窗口 9-06T02:04Z~09-12T01:25Z，端点随 T-474 提前收口——owner 2026-09-12 裁决，剩余为周末非交易日、盯盘简报观察对象不产生）：**终局无同型复发，符合关闭条件，建议 status triaged→fixed 并关闭（owner 终裁）**。证据：①生产流量「automation summary quality floor applied」触发 0 次——app.log 中 9-10T06:21Z 的 7 条 WARN 经核实为当日发布验收期间在服务器执行测试套件的 fixture 日志（任务名 `validity-watch-*`/`floor-shell` 与 [tests/automation-delivery-validity.test.ts](../../tests/automation-delivery-validity.test.ts)、[tests/automation-summary-quality-floor.test.ts](../../tests/automation-summary-quality-floor.test.ts) 夹具同名；对应 run_id 在生产 `automation_task_runs` 零存在、零 push；[logger.ts](../../src/lib/logger.ts) 按 `process.cwd()` 相对路径共享写 `logs/app.log` 所致）——防线未需出手，降级模板零实际送达（交付核对项维持 n.a.）；②窗口内已投递 automation_summary（sent）59 条，最短 80 字符（正常短摘要）、0 条低于 40 字符下限、0 条降级模板标记；run 落库 result_summary 86 条最短 66 字符、0 条低于下限——9-04 的 13 字元话语签名零再现；③S3 催补 9-10/9-11 关键词命中 0（mg 催补风险累积属 T-496 数据缺口面，与本防线无关）、S6 点踩持续 0——用户未因此受阻。SCR-20260906-02「业务终态正确」栏**终局回填 pass**（证据 [diagnostic-coverage-retest-2026-09-12.md](../diagnostic-coverage-retest-2026-09-12.md) §五）。
+- 2026-09-12（关闭）：owner 经 T-475 确认终局结论（task_confirm 2026-09-12T01:4xZ），本案按关闭条件关闭——status → **fixed**。后续防线由巡查 S7/S3 持续观察（复发即重开）；本案作为「程序全绿、语义失败」范式案例继续供 ED-P1/taxonomy 引用。
