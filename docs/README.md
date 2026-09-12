@@ -57,6 +57,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 | [release-record-20260911-0824e856.md](./release-record-20260911-0824e856.md) | 真实发布记录：复盘推送断供修复——8-17 迁移 delivery=none 链路修复（8 任务 rev2 wechat_summary+时效窗口）、推送正文改用发布后 pushBrief（不泄漏工具名/artifactId）；当晚 19:00-19:20 三用户首验 |
 | [release-record-20260911-066a777b.md](./release-record-20260911-066a777b.md) | 真实发布记录：行业复盘口径归还 agent（rev24 格式级列规则+说明约束，mgreplay 全链验证）、qwen3.7-flash 下线、qwen3.8-flash 上架顶替链位；周一 19:30 rev24 首验 |
 | [release-record-20260911-ea1ee19d.md](./release-record-20260911-ea1ee19d.md) | 真实发布记录：行业复盘白名单扩至申万一级∪二级（owner 晚间裁决，rev23 162 值）+ 枚举匹配支持括号注释/Ⅱ后缀形态；9-11 当日行补录待腾讯网关恢复 |
+| [release-record-20260912-63f10507.md](./release-record-20260912-63f10507.md) | 真实发布记录：scheduler n.a. 白名单补登三类无模型维护调度（GAP-2 收尾，EV-017 断言同步+基线 §九 变更记录）；发布后 scheduledRunsNa 96→107 对账一致，约 9-17 八月行滑出后比率进 0/0 结构性 n.a. |
 | [governance-review-2026-09-06.md](./governance-review-2026-09-06.md) | 治理放行复核记录（T-471，治理闭环包 T-466~T-471 收口）：G1–G5/L1–L4 逐项结论、扩大使用范围三前置条件、未解决风险与下次复核触发清单 |
 | [isolated-fault-drill-matrix.md](./isolated-fault-drill-matrix.md) | 四类隔离故障演练的注入点、终态、副作用和通过门槛 |
 | [AI应用复杂系统管理落地方案.md](./AI应用复杂系统管理落地方案.md) | 方法论来源（非执行规范，2026-08-24 起带 ⚠️ 非规范性标注）：复杂系统评估/护栏/韧性/演化/可观测性的通用方法论素材；固定数字、工具栈与团队规模仅为示例，执行口径以 [ai-system-governance-principles.md](./ai-system-governance-principles.md) 为准 |
