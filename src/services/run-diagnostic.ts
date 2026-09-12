@@ -258,7 +258,13 @@ export async function buildRunDiagnostic(by: DiagnosticEntryType, rawId: string)
  *  模型、天然无 trace，按治理口径为 n.a.——不计入 scheduler 反链分母，单独
  *  计数返回（GAP-2 口径修正，基线见 docs/diagnostic-coverage-report-2026-09-06.md；
  *  新增无模型轮次的调度类型时在此登记）。 */
-const SCHEDULER_TRACE_NA_TASK_TYPES: readonly string[] = ["rule-alert-check", "data-quality-summary"];
+const SCHEDULER_TRACE_NA_TASK_TYPES: readonly string[] = [
+  "rule-alert-check",
+  "data-quality-summary",
+  "trace_payload_retention",
+  "file_retention_trash_purge",
+  "file_retention_attachment_cleanup",
+];
 
 /** 覆盖率口径：audit 带 trace_id 的比例、scheduler run 有 trace 反链的比例（n.a. 任务类型除外）。 */
 export async function loadDiagnosticCoverage(days = 30): Promise<{

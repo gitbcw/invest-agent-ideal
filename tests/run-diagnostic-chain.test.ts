@@ -253,13 +253,22 @@ test("diagnostic coverage excludes n.a. scheduler task types from the trace-link
       userId, projectId: "invest-agent", instanceId, scheduledFor: "2026-09-06:1000",
       status: "success", claimedAt: now, finishedAt: now, createdAt: now, updatedAt: now,
     });
+    // 4) n.a. 维护调度（90 天滚动清理，不召模型；2026-09-12 补登白名单）→ 同 3。
+    await db.insert(scheduledTaskRuns).values({
+      taskKey: "trace_payload_retention:2026-09-12:coverage-na-user", taskType: "trace_payload_retention",
+      userId, projectId: "invest-agent", instanceId, scheduledFor: "2026-09-12:0418",
+      status: "success", claimedAt: now, finishedAt: now, createdAt: now, updatedAt: now,
+    });
 
     const coverage = await loadDiagnosticCoverage(1);
     assert.equal(coverage.scheduledRunsTotal, 2, "denominator keeps only model-facing runs");
     assert.equal(coverage.scheduledRunsWithTraceLink, 1);
-    assert.equal(coverage.scheduledRunsNa, 1, "n.a. rule runs counted separately, not as missing");
+    assert.equal(coverage.scheduledRunsNa, 2, "n.a. rule + maintenance runs counted separately, not as missing");
     assert.ok(coverage.scheduledNaTaskTypes.includes("rule-alert-check"));
     assert.ok(coverage.scheduledNaTaskTypes.includes("data-quality-summary"));
+    assert.ok(coverage.scheduledNaTaskTypes.includes("trace_payload_retention"));
+    assert.ok(coverage.scheduledNaTaskTypes.includes("file_retention_trash_purge"));
+    assert.ok(coverage.scheduledNaTaskTypes.includes("file_retention_attachment_cleanup"));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

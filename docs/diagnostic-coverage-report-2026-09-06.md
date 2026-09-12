@@ -75,7 +75,7 @@
 缺失关联处置规则（三分法）：
 
 1. **历史数据**：登记、不处置、不计入当期覆盖率分母口径解释之外的新动作。
-2. **非适用节点（n.a. 白名单）**：无模型轮次的规则任务（rule-alert-check、data-quality-summary）、reviews.save 定时产物、模型启动前过期失败的 run。度量时剔除并在报告标注；白名单变更需在本文档追加记录。
+2. **非适用节点（n.a. 白名单）**：无模型轮次的规则任务（rule-alert-check、data-quality-summary）、无模型维护调度（trace_payload_retention、file_retention_trash_purge、file_retention_attachment_cleanup——2026-09-12 追加，见文末变更记录）、reviews.save 定时产物、模型启动前过期失败的 run。度量时剔除并在报告标注；白名单变更需在本文档追加记录。
 3. **新代码造成**：立案诊断（走 [ai-application-diagnosis](../.codex/skills/ai-application-diagnosis/SKILL.md)），当日完成 First Divergence 定位；期间相关变更不得扩大灰度。
 
 ## 七、本次登记的 GAP
@@ -91,3 +91,8 @@
 - G5：诊断链从「能查」升级为「已实测 + 有基线 + 有巡查项」；微信断点为已知缺口，修复前不阻断放行（无失败遮蔽、正向链路完整）。
 
 复测条件：GAP-1 修复发布后 7 天窗口复测一次；此后每季度或重大观测面变更时复测。
+
+## 九、n.a. 白名单变更记录
+
+- 2026-09-06（首登）：rule-alert-check、data-quality-summary、reviews.save 定时产物、模型启动前过期失败的 run。
+- 2026-09-12：追加三类无模型维护调度——`trace_payload_retention`、`file_retention_trash_purge`、`file_retention_attachment_cleanup`。原因：9-06 新上线的 `trace_payload_retention`（及同类 file_retention_*）未登记，30 天平台口径 scheduler 反链分母被污染、比率长期 0% 造成误读（发现与证据见 [diagnostic-coverage-retest-2026-09-10.md](./diagnostic-coverage-retest-2026-09-10.md) §四、[diagnostic-coverage-retest-2026-09-12.md](./diagnostic-coverage-retest-2026-09-12.md) §四）；owner 2026-09-12 授权随白天发布补登，断言同步 EV-017（tests/run-diagnostic-chain.test.ts）。预期：8 月历史 typed 前旧行约 9-17 滑出 30 天窗口后，该指标进入 0/0 结构性 n.a.。
