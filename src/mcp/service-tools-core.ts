@@ -43,6 +43,7 @@ import { getMastraPortfolioRevision, isSameRevisionInstant, readMastraPortfolioP
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import { comparableConfirmationBody, consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
+import { validateConfirmationContract } from "../lib/confirmation-contract.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId, type UserContext } from "../lib/user-context.js";
 import {
@@ -2550,6 +2551,12 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
   const payload = asRecord(input?.payload);
   if (!operation || !CONFIRMED_WRITE_OPERATIONS.has(operation)) throw new Error("operation is not confirmable");
   if (!context.conversationId) throw new Error("conversationId is required for confirmation");
+  // T-506 P0（owner 2026-09-15 审查定案）：登记入口按操作做字段契约校验。此前畸形
+  // 草案（模型自造 schema）能通过登记并进入确认阶段，之后只传 confirmationId 恢复
+  // 出的草案缺字段、重写全字段又永不匹配，形成 A/B 双死路拒收循环。契约错误在
+  // 此当场打回，模型可同轮修正重新登记；执行期比对与安全校验不受影响。
+  const contract = validateConfirmationContract(operation, payload);
+  if (!contract.ok) throw new Error(contract.error);
   // 摩擦修复（2026-09-03 用户 111 确认死循环）：兜底模型在用户确认后每轮重复
   // 注册新草案，注册时间被反复推晚，「确认消息晚于草案注册」的时序校验永远
   // 不满足；且两轮构造的 payload 会漂移。用户已经确认过一个时序满足的草案
