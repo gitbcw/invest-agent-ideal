@@ -600,6 +600,18 @@ export function initDb() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS confirmation_rejections (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL DEFAULT 'invest-agent',
+      instance_id TEXT NOT NULL DEFAULT 'invest-agent-primary',
+      conversation_id TEXT,
+      operation TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS onboarding_drafts (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,

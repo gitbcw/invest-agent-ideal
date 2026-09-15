@@ -1,10 +1,44 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { pendingSandboxConfirmations } from "../db/schema.js";
+import { confirmationRejections, pendingSandboxConfirmations } from "../db/schema.js";
 import type { SandboxContext } from "./sandbox-context.js";
 
 const DEFAULT_CONFIRMATION_TTL_MS = 10 * 60 * 1000;
+
+export type ConfirmationRejectionStage = "register" | "execute";
+export type ConfirmationRejectionReason =
+  | "contract_invalid"    // 注册端字段契约拒绝（T-506 P0）
+  | "business_invalid"    // 注册端业务/可执行性校验拒绝（T-506 P2）
+  | "payload_mismatch"    // 执行端参数与已确认草案不一致
+  | "confirmation_state"; // 执行端确认记录状态（过期/不存在/目标错配等）
+
+/** T-506 P2：确认流拒绝账本（尽力而为，失败不阻塞原错误路径）。 */
+export async function recordConfirmationRejection(input: {
+  scope: { userId: string; projectId?: string | null; instanceId: string };
+  conversationId?: string | null;
+  operation: string;
+  stage: ConfirmationRejectionStage;
+  reasonCode: ConfirmationRejectionReason;
+  detail: string;
+}): Promise<void> {
+  try {
+    await db.insert(confirmationRejections).values({
+      id: randomUUID(),
+      userId: input.scope.userId,
+      projectId: input.scope.projectId || "invest-agent",
+      instanceId: input.scope.instanceId,
+      conversationId: input.conversationId ?? null,
+      operation: input.operation,
+      stage: input.stage,
+      reasonCode: input.reasonCode,
+      detail: input.detail.slice(0, 500),
+      createdAt: new Date().toISOString(),
+    });
+  } catch {
+    // 账本写入失败不影响主流程：原错误仍会抛出并被工具层审计。
+  }
+}
 
 export interface SandboxConfirmationTarget {
   operation: string;

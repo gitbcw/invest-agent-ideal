@@ -42,7 +42,7 @@ import { ACTIVE_BACKEND, isWorkspaceBackend, planBackend, portfolioBackend, watc
 import { getMastraPortfolioRevision, isSameRevisionInstant, readMastraPortfolioProjection, replaceMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
-import { comparableConfirmationBody, consumeSandboxConfirmation, createSandboxConfirmation, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
+import { comparableConfirmationBody, consumeSandboxConfirmation, createSandboxConfirmation, recordConfirmationRejection, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import { validateConfirmationContract } from "../lib/confirmation-contract.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
 import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser, normalizeUserId, type UserContext } from "../lib/user-context.js";
@@ -2556,7 +2556,13 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
   // 出的草案缺字段、重写全字段又永不匹配，形成 A/B 双死路拒收循环。契约错误在
   // 此当场打回，模型可同轮修正重新登记；执行期比对与安全校验不受影响。
   const contract = validateConfirmationContract(operation, payload);
-  if (!contract.ok) throw new Error(contract.error);
+  if (!contract.ok) {
+    await recordConfirmationRejection({
+      scope: context, conversationId: context.conversationId,
+      operation, stage: "register", reasonCode: "contract_invalid", detail: contract.error,
+    });
+    throw new Error(contract.error);
+  }
   // 摩擦修复（2026-09-03 用户 111 确认死循环）：兜底模型在用户确认后每轮重复
   // 注册新草案，注册时间被反复推晚，「确认消息晚于草案注册」的时序校验永远
   // 不满足；且两轮构造的 payload 会漂移。用户已经确认过一个时序满足的草案
@@ -2610,7 +2616,18 @@ async function registerConfirmationDraft(
   input: Record<string, unknown> | undefined,
   context: ServiceToolContext
 ) {
-  const preview = await validateConfirmationDraft(operation, payload, context);
+  // T-506 P2：登记端业务/可执行性校验拒绝进结构化账本（含 onboarding/portfolio
+  // 等既有深度校验的失败），供按原因码统计趋势。
+  let preview: Awaited<ReturnType<typeof validateConfirmationDraft>> = undefined;
+  try {
+    preview = await validateConfirmationDraft(operation, payload, context);
+  } catch (error) {
+    await recordConfirmationRejection({
+      scope: context, conversationId: context.conversationId,
+      operation, stage: "register", reasonCode: "business_invalid", detail: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
   const canonical = await canonicalizeConfirmationPayload(operation, payload, context);
   const target = confirmationTarget(operation, canonical, context);
   const pending = await createSandboxConfirmation(mcpSandboxContext(context, `mcp-request:${Date.now()}`), target);
@@ -2683,6 +2700,32 @@ async function validateConfirmationDraft(
   payload: Record<string, unknown>,
   context: ServiceToolContext
 ) {
+  // T-506 P2（owner 2026-09-15）：登记后立即可执行性检查——让「用户确认过的草案
+  // 必然能落地」，而不是确认后才在执行端炸。三个有真实业务状态的契约操作：
+  if (operation === "watch_rules.create") {
+    const validation = await validateWatchRule({
+      ...(payload as Record<string, unknown>),
+      userId: context.userId,
+      instanceId: context.instanceId,
+    });
+    if (!validation.ok) {
+      throw new Error(`确认草案未通过 watch_rules.create 业务校验：${validation.errors.join("；")}。请修正后重新登记草案（可先用 watch_rules.validate 预检）。`);
+    }
+  }
+  if (operation === "watchlist.add") {
+    const code = stringInput(payload.code ?? payload.stockCode);
+    const existing = code ? await watchlistBackend.find(context.userId, context.instanceId, code) : null;
+    if (existing) {
+      throw new Error(`确认草案不可执行：${existing.name}(${existing.code}) 已在自选池中，无需重复添加。请告知用户现状，不要继续登记此草案。`);
+    }
+  }
+  if (operation === "assets.delete") {
+    const assetId = stringInput(payload.assetId);
+    const asset = assetId ? await getUserAsset({ ...assetScope(context), assetId }) : null;
+    if (!asset) {
+      throw new Error(`确认草案不可执行：资产 ${assetId ?? "(空)"} 不存在或不属于当前用户。请核对 assetId 后重新登记草案。`);
+    }
+  }
   if (operation === "onboarding.confirm_step") {
     const step = stringInput(payload.step);
     if (!isSharedOnboardingStep(step)) throw new Error(`非法 onboarding step: ${String(step ?? "")}`);
@@ -2807,6 +2850,13 @@ async function prepareBoundConfirmation(
     target
   );
   if (!result.ok) {
+    // T-506 P2：执行端拒绝进结构化账本（mismatch 与确认状态分开计数）。
+    await recordConfirmationRejection({
+      scope: context, conversationId: context.conversationId,
+      operation, stage: "execute",
+      reasonCode: result.reason === "confirmation payload mismatch" ? "payload_mismatch" : "confirmation_state",
+      detail: result.reason,
+    });
     const hint = result.reason === "confirmation payload mismatch"
       ? "（执行参数与用户确认的草案不一致：请用与草案一致的参数重试，或只传 confirmationId 让服务端按已确认草案执行；本次未执行任何写入）"
       : "";

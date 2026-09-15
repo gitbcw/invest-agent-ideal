@@ -605,6 +605,23 @@ export const pendingSandboxConfirmations = sqliteTable("pending_sandbox_confirma
   updatedAt: text("updated_at").notNull(),
 });
 
+/** T-506 P2：确认流拒绝账本（结构化原因，owner 2026-09-15 排定）。注册端契约/
+ * 业务校验拒绝与执行端比对拒绝各记一行（stage+reason_code），供巡查与周评按
+ * 原因码统计趋势（取代 9-13 排查时的人肉 grep 计数）。尽力而为写入：账本失败
+ * 不阻塞原错误路径。 */
+export const confirmationRejections = sqliteTable("confirmation_rejections", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull().default("invest-agent"),
+  instanceId: text("instance_id").notNull(),
+  conversationId: text("conversation_id"),
+  operation: text("operation").notNull(),
+  stage: text("stage").notNull(), // register | execute
+  reasonCode: text("reason_code").notNull(), // contract_invalid | business_invalid | payload_mismatch | confirmation_state
+  detail: text("detail").notNull().default(""),
+  createdAt: text("created_at").notNull(),
+});
+
 /**
  * Service-owned onboarding draft state. This intentionally does not mirror
  * workspace configuration: workspace files change only after a frozen draft
