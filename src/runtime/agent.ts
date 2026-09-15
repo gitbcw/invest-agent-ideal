@@ -549,11 +549,17 @@ export function createRuntimeAgent(): RuntimeAgent {
         const errorMessage = formatUnknownError(error);
         const taskError = classifyTaskError(errorMessage);
         const isBusy = errorMessage.includes("MASTRA_TURN_BUSY");
+        // T-506 P1（BC-20260913-001）：空响应保留原始错误码而非归入
+        // TASK_UNKNOWN_FAILURE——conversation 层据此生成专用降级回复，巡查/审计
+        // 也能按 MASTRA_EMPTY_RESPONSE 直数（与 trace 签名对齐）。
+        const isEmptyResponse = errorMessage.includes("MASTRA_EMPTY_RESPONSE");
         const executionErrorCode = isBusy
           ? "MASTRA_TURN_BUSY"
-          : taskError.code === "TASK_TIMEOUT"
-            ? "MASTRA_TURN_TIMEOUT"
-            : taskError.code;
+          : isEmptyResponse
+            ? "MASTRA_EMPTY_RESPONSE"
+            : taskError.code === "TASK_TIMEOUT"
+              ? "MASTRA_TURN_TIMEOUT"
+              : taskError.code;
         await recordAgentTrace({
           traceId: message.id,
           runId: typeof message.context?.runId === "string" ? message.context.runId : undefined,
@@ -596,6 +602,11 @@ export function createRuntimeAgent(): RuntimeAgent {
             executionErrorCode,
             executionErrorCategory: taskError.category,
             executionRetryable: taskError.retryable,
+            // T-506 P1：空响应且本轮发生过工具调用时，把计数带给 conversation 层，
+            // 供其生成「工具已执行但无最终回复」的专用降级文案（BC-20260913-001）。
+            ...(isEmptyResponse && Array.isArray((error as { toolCalls?: unknown[] }).toolCalls) && (error as { toolCalls?: unknown[] }).toolCalls!.length > 0
+              ? { executionToolCallCount: (error as { toolCalls?: unknown[] }).toolCalls!.length }
+              : {}),
           },
         );
       }

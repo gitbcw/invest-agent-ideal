@@ -662,6 +662,32 @@ export function getConversation(input: {
   };
 }
 
+/** T-506 P1 / BC-20260913-001：MASTRA_EMPTY_RESPONSE 且本轮发生过工具调用时，
+ * 用确定性降级回复替换泛化「暂时性故障」文案——不承诺成功、不绕过任何确认
+ * 校验，只交代「已执行的操作有审计」并指路下一步。有等待确认的草案时优先
+ * 指路「回复确认继续」（mg 9-13 正是卡在草案悬空、无任何指引）；无草案则
+ * 引导重发。条件不满足（无工具调用/非空响应）返回 null，走原终态文案。 */
+function emptyResponseDegradedReply(
+  response: { data?: Record<string, unknown> } | null,
+  scope: ConversationScope,
+  conversationId: string
+): string | null {
+  if (response?.data?.executionErrorCode !== "MASTRA_EMPTY_RESPONSE") return null;
+  const toolCallCount = Number(response.data.executionToolCallCount ?? 0);
+  if (!Number.isInteger(toolCallCount) || toolCallCount <= 0) return null;
+  const pending = sqlite.prepare(`
+    SELECT operation FROM pending_sandbox_confirmations
+    WHERE user_id = ? AND instance_id = ? AND conversation_id = ? AND status = 'pending' AND expires_at > ?
+    ORDER BY created_at DESC LIMIT 1
+  `).get(scope.userId, scope.instanceId, conversationId, new Date().toISOString());
+  return [
+    "本轮没有生成最终回复，你的请求未完成；本轮已执行的操作均有系统审计记录。",
+    pending
+      ? "本会话还有一份等待你确认的操作草案：如需继续，直接回复「确认」；不需要就忽略它。"
+      : "你可以直接重发这条请求，我会重新处理。",
+  ].join("");
+}
+
 export async function chatViaConversationLog(input: {
   userId?: string;
   assistantId?: string;
@@ -1238,6 +1264,7 @@ async function chatViaConversationLogOnce(input: {
     automationFailure = Boolean(responseError) && !isBusyResponse;
     if (responseError && !automationConversation) {
       const terminal = terminalTaskError(responseError);
+      const degradedReply = emptyResponseDegradedReply(response, scope, input.conversationId);
       response = isBusyResponse
         ? {
           content: { type: "text", text: "上一条消息还在处理中，这条消息还没有执行；等上一条完成后，点这条回复下的「重新生成」即可重新执行。" },
@@ -1247,7 +1274,7 @@ async function chatViaConversationLogOnce(input: {
           data: { executionErrorCode: "MASTRA_TURN_BUSY", executionErrorNote: "input-not-executed" },
         }
         : {
-          content: { type: "text", text: terminal.userMessage },
+          content: { type: "text", text: degradedReply ?? terminal.userMessage },
           finished: true,
           data: {
             executionStatus: "failed",
