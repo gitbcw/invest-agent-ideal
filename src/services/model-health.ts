@@ -36,6 +36,9 @@ import { logger } from "../lib/logger.js";
  *   qwen3.8 在重载自动化任务上空响应（MASTRA_EMPTY_RESPONSE，探针正常），
  *   deepseek 接管完成实际工作；峰时价差（deepseek 峰 2/8 vs qwen 0.8/2.7）
  *   让位于可靠性。qwen3.8 降为 deepseek 之后的次选。
+ * - glm 容忍度放宽（owner 2026-09-18）：glm 国产通道稳定性可靠，偶发空响应/
+ *   慢首字（如 9-18 一次空响应+一次 32.6s 首字连续触发降级）不应轻易退出链位
+ *   ——坏证据阈值放宽到 3，其余模型维持 2。
  */
 
 export interface AutoChainEntry {
@@ -88,6 +91,8 @@ const GPT_PROBE_MAX_LATENCY_MS = 10_000;
 const GPT_PROBE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const MAX_ERROR_RATE = 0.2;
 const DEGRADE_EVIDENCES = 2;
+/** 按模型前缀差异化的降级坏证据阈值（owner 2026-09-18：glm 放宽到 3，见文件头）。 */
+const DEGRADE_EVIDENCES_BY_PREFIX: Array<[prefix: string, evidences: number]> = [["glm-", 3]];
 const RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
 const PROBATION_GOOD_EVIDENCES = 2;
 const MAX_EVENTS_PER_MODEL = 50;
@@ -172,6 +177,12 @@ function isBadEvidence(ok: boolean, firstTokenMs?: number): boolean {
   return firstTokenMs !== undefined && firstTokenMs > SLOW_FIRST_TOKEN_MS;
 }
 
+function degradeEvidencesFor(model: string): number {
+  const lowered = model.toLowerCase();
+  const override = DEGRADE_EVIDENCES_BY_PREFIX.find(([prefix]) => lowered.startsWith(prefix));
+  return override ? override[1] : DEGRADE_EVIDENCES;
+}
+
 /** 每轮 trace 写入后的反馈入口：成败 + 首字延迟。 */
 export function recordModelFeedback(model: string | undefined, input: { ok: boolean; firstTokenMs?: number; source?: "turn" | "probe" }): void {
   if (!model) return;
@@ -186,7 +197,7 @@ export function recordModelFeedback(model: string | undefined, input: { ok: bool
   if (state.events.length > MAX_EVENTS_PER_MODEL) state.events.splice(0, state.events.length - MAX_EVENTS_PER_MODEL);
   if (isBadEvidence(input.ok, input.firstTokenMs)) {
     state.consecutiveBad += 1;
-    if (state.consecutiveBad >= DEGRADE_EVIDENCES && state.degradedAt === undefined) {
+    if (state.consecutiveBad >= degradeEvidencesFor(model) && state.degradedAt === undefined) {
       state.degradedAt = now;
       logger.info(`模型降级 model=${model} consecutiveBad=${state.consecutiveBad}（冷却 ${Math.round(RECOVERY_COOLDOWN_MS / 60000)} 分钟后乐观重试）`);
     }

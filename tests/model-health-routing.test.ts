@@ -48,8 +48,14 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     // 国产链逐级降级：glm → deepseek-flash → qwen3.8-flash → doubao
     // （qwen3.7-flash 下线 owner 2026-09-11；同日深夜二次调整 deepseek 前置
     // qwen3.8——首夜 qwen3.8 重载自动化空响应、deepseek 接管完成工作）。
+    // glm 容忍度放宽（owner 2026-09-18）：坏证据阈值 3，两个坏证据不降级
+    //（9-18 事故档：一次空响应+一次 32.6s 首字不应把 glm 踢出链位）。
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
+    clock += 60_000;
+    recordModelFeedback("glm-5.3-flash", { ok: false });
+    assert.equal(getModelHealth("glm-5.3-flash").healthy, true);
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     clock += 60_000;
     recordModelFeedback("glm-5.3-flash", { ok: false });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "deepseek-flash");

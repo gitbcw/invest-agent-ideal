@@ -1,4 +1,5 @@
 import { getMastraBindings, resolveMastraBindings, type MastraBindingsProvider } from "./bindings.js";
+import { DeepseekReasoningCompatProcessor } from "./deepseek-reasoning-compat.js";
 import {
   createModelGateway,
   type MastraModelConfig,
@@ -28,6 +29,9 @@ async function assembleInputProcessors(bindings?: MastraBindingsProvider): Promi
   if (steps > 0 && resolved.ToolCallFilter) {
     processors.push(new resolved.ToolCallFilter({ filterAfterToolSteps: steps }));
   }
+  // DeepSeek reasoning_content 回传兼容（2026-09-18）：非 deepseek 模型零改写，
+  // 无条件挂载避免按模型拼装 processor 列表。详见 deepseek-reasoning-compat.ts。
+  processors.push(new DeepseekReasoningCompatProcessor());
   return processors;
 }
 
