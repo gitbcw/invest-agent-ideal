@@ -21,13 +21,13 @@
 
 ### 运行结果分层记录
 
-`tasks.ts recordRunOutcome/listRunOutcomes` + 新表 `agent_space_run_outcomes`（第 22 张 agent_space 表）：分层记录**绑定可核对事实来源（返工 R3）**——
-- `execution_succeeded/failed`：来源=run 本身（存在+同 scope 已核）；
-- `artifact_generated`：`detail.assetId` 必须是同 scope 真实用户资产（可选 versionId 须属于该资产）；
-- `delivery_succeeded`：`detail.pushJobId` 必须是同 scope 真实 `push_jobs` 行且 status='sent'；`delivery_failed` 须 status∈{dead, expired}；
-- `user_read`：无受信阅读事件源，**不提供**——只能记显式非事实名 `user_read_claimed`（声称，不冒充已读事实）。
+`tasks.ts recordRunOutcome/listRunOutcomes` + 新表 `agent_space_run_outcomes`（第 22 张 agent_space 表）：分层记录**绑定可核对事实来源（返工 R3/R3-2，事实必须与本次 run 有因果关系）**——
+- `execution_succeeded/failed`：来源=run **真实终态**——succeeded 要求 `automation_task_runs.status='succeeded'`，failed 要求 'failed'；running/pending/相反终态一律拒绝；
+- `delivery_succeeded/failed`：`detail.pushJobId` 必须是同 scope 真实 `push_jobs` 行，status 匹配（sent / dead|expired）**且 `origin_run_id === 本次 runId`**——别的 run 的投递（含无 origin 的）不可记到本 run；
+- `artifact_claimed`：当前 schema 没有可核对的 run↔产物关系（资产绑定停在 task revision 层），`artifact_generated` 事实名**不提供**——只能记显式声称名（assetId/versionId 仍须真实同 scope 且归属正确）；可信产物关系表落地后再升级事实名；
+- `user_read_claimed`：无受信阅读事件源，同样只提供声称名。
 
-append-only 带审计；run 真实存在且同 scope；幂等键同键同内容回放返回既有条、异内容冲突；时间线按插入序。
+append-only 带审计（审计 detail 保留验证来源：verifiedRunStatus、pushJobId、assetId）；run 真实存在且同 scope；幂等键同键同内容回放返回既有条、异内容冲突；时间线按插入序。
 
 ### 任务边界（沿用 + 明确）
 
@@ -49,6 +49,8 @@ npm run build && npx tsc --noEmit   # 0 错误
 ```
 
 返工补充断言：expired/rejected/disabled/draft 各有带状态的排除记录且入冻结 basis、跨 scope 不可枚举；pageSize+hasMore 真实续页、basis 绑定 continuation 逐页走完冻结集合、越界空页、tiny 预算被排除项任何续页不可达；伪资产/跨 scope 资产/错版本/伪 push job/状态不符/缺 ref/冒充 user_read 全部拒绝。
+
+R3-2 补充断言：同 scope 但属于其他 run 的 sent 投递记入本 run 被拒；无 origin_run_id 的 dead 投递被拒；running run 声称执行成功/失败均被拒；succeeded run 声称 execution_failed 被拒；`artifact_generated` 事实名不可用（只允许 `artifact_claimed`）。
 
 表计数 21→22（`agent_space_run_outcomes`）；table-ownership 已含 W1-W4 说明，本表同域归属。
 

@@ -2359,29 +2359,67 @@ test("W5: scoped state packet, run-basis evidence, layered run outcomes, commitm
 
   // —— 运行结果分层记录：执行/产物/投递（失败→成功）/阅读（R3 事实源绑定）——
   // 投递事实源：同 scope 真实 push_jobs（一 sent 一 dead）
+  db.sqlite.prepare(`INSERT INTO push_jobs (id,user_id,project_id,instance_id,channel,backend,source,status,origin_run_id,message,next_retry_at,created_at,updated_at)
+                     VALUES ('pj_sent',?,?,?,'weixin-mobile','hermes','test','sent','run_w1_1','m',?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now);
+  db.sqlite.prepare(`INSERT INTO push_jobs (id,user_id,project_id,instance_id,channel,backend,source,status,origin_run_id,message,next_retry_at,created_at,updated_at)
+                     VALUES ('pj_dead',?,?,?,'weixin-mobile','hermes','test','dead','run_w1_1','m',?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now);
+  // R3-2 反例素材：同 scope 但属于其他 run 的 sent 投递 / 无 origin 的 dead 投递 / running 状态的 run
+  db.sqlite.prepare(`INSERT INTO push_jobs (id,user_id,project_id,instance_id,channel,backend,source,status,origin_run_id,message,next_retry_at,created_at,updated_at)
+                     VALUES ('pj_sent_other',?,?,?,'weixin-mobile','hermes','test','sent','run_w1_2','m',?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now);
   db.sqlite.prepare(`INSERT INTO push_jobs (id,user_id,project_id,instance_id,channel,backend,source,status,message,next_retry_at,created_at,updated_at)
-                     VALUES ('pj_sent',?,?,?,'weixin-mobile','hermes','test','sent','m',?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now);
-  db.sqlite.prepare(`INSERT INTO push_jobs (id,user_id,project_id,instance_id,channel,backend,source,status,message,next_retry_at,created_at,updated_at)
-                     VALUES ('pj_dead',?,?,?,'weixin-mobile','hermes','test','dead','m',?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now);
+                     VALUES ('pj_dead_noorigin',?,?,?,'weixin-mobile','hermes','test','dead','m',?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now);
+  db.sqlite.prepare(`INSERT INTO automation_task_runs (run_id,task_id,revision_id,user_id,project_id,instance_id,origin,idempotency_key,attempt,status,claimed_at,started_at,created_at,updated_at)
+                     VALUES ('run_r32_running','task_exec_1','rev_w1_1',?,?,?,'manual','idem-r32',1,'running',?,?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now, now);
   const os1 = space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "execution_succeeded", actor: "system", idempotencyKey: "w5-exec-1" });
-  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated", detail: { assetId: "asset_w2" }, actor: "system" });
+  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_claimed", detail: { assetId: "asset_w2" }, actor: "system" });
   space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_failed", detail: { pushJobId: "pj_dead" }, actor: "system" });
   space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", detail: { pushJobId: "pj_sent" }, actor: "system" });
   space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "user_read_claimed", actor: "system" });
   const timeline = space.listRunOutcomes(scopeA, "run_w1_1").map((o) => o.kind);
-  assert.deepEqual(timeline.slice(-5), ["execution_succeeded", "artifact_generated", "delivery_failed", "delivery_succeeded", "user_read_claimed"], "each lifecycle stage is recorded separately in order");
+  assert.deepEqual(timeline.slice(-5), ["execution_succeeded", "artifact_claimed", "delivery_failed", "delivery_succeeded", "user_read_claimed"], "each lifecycle stage is recorded separately in order");
   const replayedOutcome = space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "execution_succeeded", actor: "system", idempotencyKey: "w5-exec-1" });
   assert.equal(replayedOutcome.outcomeId, os1.outcomeId, "idempotent outcome replay returns the existing record");
   expectAgentSpaceError(
-    () => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "execution_failed", actor: "system", idempotencyKey: "w5-exec-1" }),
+    () => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "execution_succeeded", detail: { different: true }, actor: "system", idempotencyKey: "w5-exec-1" }),
     "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+  );
+  // —— R3-2：事实必须属于本次 run / 匹配真实终态 ——
+  expectAgentSpaceError(
+    () => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", detail: { pushJobId: "pj_sent_other" }, actor: "system" }),
+    "AGENT_SPACE_VERSION_INVALID",
+    "another run's sent delivery cannot be claimed for this run",
+  );
+  expectAgentSpaceError(
+    () => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_failed", detail: { pushJobId: "pj_dead_noorigin" }, actor: "system" }),
+    "AGENT_SPACE_VERSION_INVALID",
+    "a delivery without origin_run_id cannot be attributed to any run",
+  );
+  expectAgentSpaceError(
+    () => space.recordRunOutcome({ scope: scopeA, runId: "run_r32_running", kind: "execution_succeeded", actor: "system" }),
+    "AGENT_SPACE_VERSION_INVALID",
+    "a running run has no execution fact yet",
+  );
+  expectAgentSpaceError(
+    () => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "execution_failed", actor: "system" }),
+    "AGENT_SPACE_VERSION_INVALID",
+    "execution_failed cannot be claimed on a succeeded run",
+  );
+  expectAgentSpaceError(
+    () => space.recordRunOutcome({ scope: scopeA, runId: "run_r32_running", kind: "execution_failed", actor: "system" }),
+    "AGENT_SPACE_VERSION_INVALID",
+    "a running run has no terminal execution fact",
+  );
+  expectAgentSpaceError(
+    () => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated" as never, actor: "system" }),
+    "AGENT_SPACE_ARGUMENT_INVALID",
+    "no trusted run-artifact relation exists; only artifact_claimed is recordable",
   );
   expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "bogus" as never, actor: "system" }), "AGENT_SPACE_ARGUMENT_INVALID");
   expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_missing", kind: "user_read_claimed", actor: "system" }), "AGENT_SPACE_NOT_FOUND");
   // R3 反例：伪资产 / 跨 scope 资产 / 伪 push job / 状态不符 / 冒充已读
-  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated", detail: { assetId: "asset_fake" }, actor: "system" }), "AGENT_SPACE_NOT_FOUND");
-  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated", detail: { assetId: "asset_b1" }, actor: "system" }), "AGENT_SPACE_SCOPE_MISMATCH");
-  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated", detail: { assetId: "asset_w2", versionId: "ver_b1" }, actor: "system" }), "AGENT_SPACE_VERSION_INVALID");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_claimed", detail: { assetId: "asset_fake" }, actor: "system" }), "AGENT_SPACE_NOT_FOUND");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_claimed", detail: { assetId: "asset_b1" }, actor: "system" }), "AGENT_SPACE_SCOPE_MISMATCH");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_claimed", detail: { assetId: "asset_w2", versionId: "ver_b1" }, actor: "system" }), "AGENT_SPACE_VERSION_INVALID");
   expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", detail: { pushJobId: "pj_fake" }, actor: "system" }), "AGENT_SPACE_NOT_FOUND");
   expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", detail: { pushJobId: "pj_dead" }, actor: "system" }), "AGENT_SPACE_VERSION_INVALID");
   expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_failed", detail: { pushJobId: "pj_sent" }, actor: "system" }), "AGENT_SPACE_VERSION_INVALID");

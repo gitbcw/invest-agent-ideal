@@ -410,26 +410,28 @@ export function getTaskRunSnapshot(scope: UserScope, runId: string): {
 export type RunOutcomeKind =
   | "execution_succeeded"
   | "execution_failed"
-  | "artifact_generated"
+  | "artifact_claimed"
   | "delivery_succeeded"
   | "delivery_failed"
   | "user_read_claimed";
 
 const RUN_OUTCOME_KINDS: readonly RunOutcomeKind[] = [
-  "execution_succeeded", "execution_failed", "artifact_generated",
+  "execution_succeeded", "execution_failed", "artifact_claimed",
   "delivery_succeeded", "delivery_failed", "user_read_claimed",
 ];
 
 /**
- * 返工 R3：outcome 是分层**事实**记录，不是自报声明——每类绑定可核对来源：
- * - execution_*：来源=run 本身（存在+同 scope 已核）；
- * - artifact_generated：detail.assetId 必须是同 scope 真实用户资产（可选
- *   versionId 须属于该资产）；
- * - delivery_succeeded：detail.pushJobId 必须是同 scope 真实 push_jobs 行
- *   且 status='sent'；
- * - delivery_failed：同上且 status ∈ {dead, expired}；
- * - user_read：当前无受信阅读事件源，只能以显式非事实名 user_read_claimed
- *   记录（声称，不冒充已读事实）。
+ * 返工 R3/R3-2：outcome 是分层**事实**记录，来源必须与本次 runId 有因果：
+ * - execution_*：来源=run 真实终态——succeeded 要求 run.status='succeeded'，
+ *   failed 要求 'failed'；running/pending/相反终态拒绝；
+ * - artifact_claimed：当前 schema 没有可核对的 run↔产物关系（asset 绑定
+ *   停在 revision 层），因此只能以显式非事实名记录声称（assetId/versionId
+ *   仍须真实且同 scope）；可信产物关系表落地后才能升级 artifact_generated；
+ * - delivery_*：detail.pushJobId 必须是同 scope 真实 push_jobs 行，
+ *   status 匹配（sent / dead|expired）**且 origin_run_id === 本次 runId**——
+ *   别的 run 的投递不可记到本 run；
+ * - user_read：无受信阅读事件源，只能以 user_read_claimed 记录。
+ * 审计 detail 保留验证来源（runStatus、pushJobId+originRunId、assetId）。
  */
 
 export interface RunOutcomeRecord {
@@ -440,12 +442,17 @@ export interface RunOutcomeRecord {
   createdAt: string;
 }
 
-function verifyRunScope(scope: UserScope, runId: string): void {
+function fetchRunRow(scope: UserScope, runId: string): { user_id: string; project_id: string; instance_id: string; status: string; task_id: string } {
   const row = sqlite
-    .prepare("SELECT user_id, project_id, instance_id FROM automation_task_runs WHERE run_id=?")
-    .get(runId) as { user_id: string; project_id: string; instance_id: string } | undefined;
+    .prepare("SELECT user_id, project_id, instance_id, status, task_id FROM automation_task_runs WHERE run_id=?")
+    .get(runId) as { user_id: string; project_id: string; instance_id: string; status: string; task_id: string } | undefined;
   if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation run ${runId}`);
   assertRowScope(row, scope);
+  return row;
+}
+
+function verifyRunScope(scope: UserScope, runId: string): void {
+  fetchRunRow(scope, runId);
 }
 
 /**
@@ -465,11 +472,12 @@ export function recordRunOutcome(input: {
   if (!RUN_OUTCOME_KINDS.includes(input.kind)) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `unknown run outcome kind ${input.kind}`);
   }
-  if ((input.kind as string) === "user_read") {
-    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "user_read has no trusted fact source; record user_read_claimed instead");
+  const kindName = input.kind as string;
+  if (kindName === "user_read" || kindName === "artifact_generated") {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${kindName} has no trusted fact source; record ${kindName === "user_read" ? "user_read_claimed" : "artifact_claimed"} instead`);
   }
-  verifyRunScope(input.scope, input.runId);
-  verifyOutcomeFactSource(input.scope, input.kind, input.detail);
+  const runRow = fetchRunRow(input.scope, input.runId);
+  verifyOutcomeFactSource(input.scope, input.runId, input.kind, input.detail, runRow.status);
   const detailJson = input.detail ? JSON.stringify(input.detail) : null;
   if (input.idempotencyKey) {
     const existing = sqlite
@@ -507,15 +515,29 @@ export function recordRunOutcome(input: {
       objectType: "agent_space_run_outcome",
       objectId: outcomeId,
       toStatus: input.kind,
-      detail: { runId: input.runId, kind: input.kind },
+      detail: {
+        runId: input.runId,
+        kind: input.kind,
+        verifiedRunStatus: runRow.status,
+        ...(typeof input.detail?.pushJobId === "string" ? { pushJobId: input.detail.pushJobId } : {}),
+        ...(typeof input.detail?.assetId === "string" ? { assetId: input.detail.assetId } : {}),
+      },
     });
   });
   tx();
   return { outcomeId, runId: input.runId, kind: input.kind, detail: input.detail ?? null, createdAt: nowIso() };
 }
 
-function verifyOutcomeFactSource(scope: UserScope, kind: RunOutcomeKind, detail: Record<string, unknown> | undefined): void {
-  if (kind === "artifact_generated") {
+function verifyOutcomeFactSource(scope: UserScope, runId: string, kind: RunOutcomeKind, detail: Record<string, unknown> | undefined, runStatus: string): void {
+  if (kind === "execution_succeeded" || kind === "execution_failed") {
+    // R3-2：执行事实从 run 真实终态严格匹配；running/相反终态拒绝。
+    const required = kind === "execution_succeeded" ? "succeeded" : "failed";
+    if (runStatus !== required) {
+      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `${kind} requires the run terminal status '${required}' (got '${runStatus}')`);
+    }
+    return;
+  }
+  if (kind === "artifact_claimed") {
     const assetId = typeof detail?.assetId === "string" ? detail.assetId : "";
     if (!assetId) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "artifact_generated requires detail.assetId referencing a real asset");
     const asset = sqlite
@@ -534,13 +556,17 @@ function verifyOutcomeFactSource(scope: UserScope, kind: RunOutcomeKind, detail:
     return;
   }
   if (kind === "delivery_succeeded" || kind === "delivery_failed") {
+    // R3-2：投递事实必须属于**本次 run**——origin_run_id 严格匹配。
     const pushJobId = typeof detail?.pushJobId === "string" ? detail.pushJobId : "";
     if (!pushJobId) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${kind} requires detail.pushJobId referencing a real push job`);
     const job = sqlite
-      .prepare("SELECT user_id, project_id, instance_id, status FROM push_jobs WHERE id=?")
-      .get(pushJobId) as { user_id: string; project_id: string; instance_id: string; status: string } | undefined;
+      .prepare("SELECT user_id, project_id, instance_id, status, origin_run_id FROM push_jobs WHERE id=?")
+      .get(pushJobId) as { user_id: string; project_id: string; instance_id: string; status: string; origin_run_id: string | null } | undefined;
     if (!job) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `push job ${pushJobId} (delivery fact source)`);
     assertRowScope(job, scope);
+    if (job.origin_run_id !== runId) {
+      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `${kind} requires the push job to belong to run ${runId} (origin_run_id=${job.origin_run_id ?? "null"})`);
+    }
     if (kind === "delivery_succeeded" && job.status !== "sent") {
       throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `delivery_succeeded requires the push job to be sent (got ${job.status})`);
     }
