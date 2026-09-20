@@ -2190,6 +2190,18 @@ function ensureAgentSpaceTables() {
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       UNIQUE(commitment_id, due_at)
     );
+
+    CREATE TABLE IF NOT EXISTS agent_space_run_basis (
+      basis_id TEXT PRIMARY KEY,
+      basis_key TEXT NOT NULL UNIQUE,
+      domain TEXT NOT NULL DEFAULT 'user',
+      user_id TEXT, project_id TEXT, instance_id TEXT,
+      agent_id TEXT NOT NULL,
+      entry_kind TEXT NOT NULL,
+      conversation_id TEXT, task_id TEXT, run_id TEXT,
+      basis_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
   // W1 返工（验收 R3/R4/R6）增量列与新表：新建表语句已含；
   // ensureColumn 仅为已初始化过的 W1 隔离库幂等补齐。

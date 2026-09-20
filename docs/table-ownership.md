@@ -51,9 +51,9 @@
 | `alert_signal_states` | 跨进程去重缓存 | 调度器 + server 都访问,跨进程协同(类似 `push_jobs` 性质),必须在 SQLite(WP4.10 决策保留) |
 
 
-### 🟢 Agent Space 域（W1，2026-09-20 新增，19 张）
+### 🟢 Agent Space 域（W1-W4，2026-09-20 新增，21 张）
 
-服务层新对象域（`agent_space_*`，见 [W1-delivery](./agent-space-execution/W1-delivery.md)）：方法/技能/发布/安装/绑定/授权、任务依赖与不可变运行快照、T-524 状态对象（Fact/Lesson/Workflow/Commitment/履约）与统一审计。归属服务层 SQLite；内容底座复用 `user_assets`/`user_asset_versions`（只存引用+checksum，不复制正文）；用户域对象强制 user/project/instance scope，系统域（domain='system'）scope 列为 NULL 物理分域。回滚=DROP 该前缀表集合，前向修复=重放 initDb（幂等）。
+服务层新对象域（`agent_space_*`，见 [W1-delivery](./agent-space-execution/W1-delivery.md)、[W2](./agent-space-execution/W2-delivery.md)/[W3](./agent-space-execution/W3-delivery.md)/[W4](./agent-space-execution/W4-delivery.md)）：方法/技能/发布/安装/绑定/授权、任务依赖与不可变运行快照、T-524 状态对象（Fact/Lesson/Workflow/Commitment/履约）、运行装配 run-basis 与统一审计。归属服务层 SQLite；内容底座复用 `user_assets`/`user_asset_versions`（只存引用+checksum，不复制正文；系统技能字节走内容寻址存储）；用户域对象强制 user/project/instance scope，系统域（domain='system'）scope 列为 NULL 物理分域。回滚=DROP 该前缀表集合（仅测试夹具重置），真实恢复=验证备份/定向前向修复，前向修复=重放 initDb（幂等）。
 
 ### 🔴 迁移至工作空间(10 张)
 

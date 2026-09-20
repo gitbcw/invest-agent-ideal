@@ -165,7 +165,7 @@ test("isolated DB: tables created, re-running initDb is idempotent (repeatable u
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'agent_space_%' ORDER BY name")
     .all()
     .map((r: { name: string }) => r.name);
-  assert.equal(tables.length, 20);
+  assert.equal(tables.length, 21);
   db.initDb();
   const checkpoint = db.sqlite.prepare("SELECT key FROM schema_migrations WHERE key='agent_space_v1'").get();
   assert.ok(checkpoint);
@@ -194,7 +194,7 @@ test("fixture reset (not recovery): dropping the domain recreates an empty struc
   const restored = db.sqlite
     .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name LIKE 'agent_space_%'")
     .get() as { n: number };
-  assert.equal(restored.n, 20, "structure replay recreates the domain (empty); real-data recovery uses verified backups per W1-delivery §6");
+  assert.equal(restored.n, 21, "structure replay recreates the domain (empty); real-data recovery uses verified backups per W1-delivery §6");
 });
 
 test("R3: method content refs must be real, in-scope, checksum-matched", async () => {
@@ -1634,4 +1634,123 @@ test("W3-R2: default manifest is a one-time init event; later default kinds neve
   const retried = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentFlaky.agent_id, actor: "system" });
   assert.equal(retried.alreadyInitialized, false);
   assert.equal(retried.appliedInstallationIds.length, 1, "retry after repair completes the full init consistently");
+});
+
+test("W4: runtime assembly — pinned run-basis, task narrowing, budget truncation, isolation", async () => {
+  const { db, space } = await fixture;
+
+  // 基础装配：active Agent + 已装技能（真实字节）+ 方法绑定（current）+ 资产授权 + 有效 lesson
+  const agent = space.createAgent({ scope: scopeA, name: "W4装配助手", actor: "user:a" });
+  space.setAgentStatus(scopeA, agent.agent_id, "active", "user:a");
+  const skill = space.upsertSkill({ domain: "user", scope: scopeA, slug: "w4-skill", name: "W4技能", actor: "user:a" });
+  const sv1 = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_1", contentChecksum: W2_CHK_1 },
+    origin: "private_edit", actor: "user:a",
+  });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv1.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s1", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv1.version_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
+  space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv1.version_id, installedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_install", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agent.agent_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } }), actor: "user:a" });
+  const method = space.createMethod({ scope: scopeA, name: "W4方法", actor: "user:a" });
+  const mv1 = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: mv1.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: mv1.version_id, versionId: mv1.version_id, extraBinding: { methodId: method.method_id, adopt: "true" } }), actor: "user:a" });
+  space.bindMethod({ scope: scopeA, agentId: agent.agent_id, methodId: method.method_id, versionPolicy: "current", actor: "user:a" });
+  space.grantAsset({ scope: scopeA, agentId: agent.agent_id, assetId: "asset_w2", grantedBy: "user:a", actor: "user:a" });
+  const lesson = space.createStateCandidate({ scope: scopeA, kind: "lesson", title: "W4经验", content: { trigger: "t", guidance: "g" }, ownerKind: "conversation", ownerId: "conv_w1", actor: "agent" });
+  space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, expectedVersionId: lesson.versionId, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_lesson2", { operation: "state.approve", objectType: "agent_space_lesson", objectId: lesson.objectId, versionId: lesson.versionId, extraBinding: { kind: "lesson" } }), actor: "user:a" });
+
+  // conversation 入口：可解释 run-basis（固定版本 + 状态包 + 桩标注）
+  const basis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:1", conversationId: "conv_w1", actor: "user:a" });
+  assert.equal(basis.skills.length, 1);
+  assert.equal(basis.skills[0]!.versionId, sv1.version_id, "skills pin the installed fixed version");
+  assert.equal(basis.methods[0]!.versionId, mv1.version_id);
+  assert.equal(basis.methods[0]!.contentChecksum, W2_CHK_1);
+  assert.equal(basis.assets[0]!.assetId, "asset_w2");
+  assert.ok(basis.statePacket.lessons.some((l) => l.objectId === lesson.objectId), "effective lessons enter the state packet");
+  assert.equal(basis.statePacket.agentState.status, "stub", "agent_state is a clearly-marked W5 stub");
+  assert.equal(basis.pruned.length + basis.skipped.length, 0);
+  // 幂等回放：同 key 同内容返回既有记录
+  const replay = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:1", conversationId: "conv_w1", actor: "user:a" });
+  assert.equal(replay.basisId, basis.basisId);
+
+  // 并发更新不替换本轮版本：升级技能 + 方法采用 v2 → 已记录 basis 不变；重新解析拿新版本
+  const sv2 = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_2", contentChecksum: W2_CHK_2 },
+    origin: "private_edit", actor: "user:a",
+  });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv2.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s2", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv2.version_id, versionId: sv2.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
+  space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv2.version_id, installedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_upgrade", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agent.agent_id, versionId: sv2.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } }), actor: "user:a" });
+  const reread = space.getRunBasis(scopeA, "conversation:conv_w1:turn:1");
+  assert.equal(reread.skills[0]!.versionId, sv1.version_id, "recorded basis keeps this round's versions after concurrent upgrades");
+  const basis2 = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:2", conversationId: "conv_w1", actor: "user:a" });
+  assert.equal(basis2.skills[0]!.versionId, sv2.version_id, "the next round resolves the new fixed version");
+  // 同 key 内容变化 → 幂等冲突
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:1", conversationId: "conv_w1", actor: "user:a" }),
+    "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+  );
+
+  // generic_automation 入口：任务依赖收窄（agent_state 依赖经直写行模拟 W5 后注册面）
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_exec_1", kind: "skill", refId: skill.skill_id, versionPolicy: "pinned", pinnedVersionId: sv2.version_id, agentId: agent.agent_id, actor: "user:a" });
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_exec_1", kind: "method", refId: method.method_id, versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
+  db.sqlite.prepare(
+    `INSERT INTO agent_space_task_dependencies (dependency_id, task_id, user_id, project_id, instance_id, agent_id, kind, ref_id, version_policy, pinned_version_id, metadata_json, created_at, updated_at)
+     VALUES ('tdep_w4_state', 'task_exec_1', ?, ?, ?, ?, 'agent_state', 'w4-state-slot', 'latest', NULL, NULL, ?, ?)`,
+  ).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, agent.agent_id, now, now);
+  const autoBasis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "run:run_w1_2:basis", taskId: "task_exec_1", runId: "run_w1_2", actor: "user:a" });
+  assert.equal(autoBasis.entryKind, "generic_automation");
+  assert.equal(autoBasis.skills.length, 1, "dependency-covered skill stays");
+  assert.equal(autoBasis.methods.length, 1);
+  assert.ok(autoBasis.skipped.some((s) => s.kind === "agent_state" && s.reason.includes("W5")), "agent_state deps resolve to the marked stub");
+  assert.ok(autoBasis.skipped.every((s) => s.kind !== "asset") && autoBasis.pruned.every((p) => p.kind !== "asset") || autoBasis.pruned.some((p) => p.kind === "asset" && p.reason === "not-in-task-dependencies"), "assets outside dependencies are pruned with a reason");
+  assert.ok(autoBasis.pruned.some((p) => p.kind === "asset" && p.ref === "asset_w2"), "granted-but-undeclared asset is pruned");
+  // 依赖 pin 旧版本 → 安装已是新版本 → skipped 且不进上下文
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_exec_1", kind: "skill", refId: skill.skill_id, versionPolicy: "pinned", pinnedVersionId: sv1.version_id, agentId: agent.agent_id, actor: "user:a" });
+  const pinMismatch = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "run:pin-mismatch:basis", taskId: "task_exec_1", actor: "user:a" });
+  assert.equal(pinMismatch.skills.length, 0, "version-mismatched dependency does not enter context");
+  assert.ok(pinMismatch.skipped.some((s) => s.kind === "skill" && s.reason.includes("pins version")), "mismatch is explained in skipped");
+  // 声明了但装配缺失的依赖（真实存在、Agent 未绑定）→ skipped 说明
+  const method2 = space.createMethod({ scope: scopeA, name: "W4未绑定方法", actor: "user:a" });
+  const mv2b = space.addMethodVersion({ scope: scopeA, methodId: method2.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  space.approveMethodVersion({ scope: scopeA, methodId: method2.method_id, versionId: mv2b.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_m", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: mv2b.version_id, versionId: mv2b.version_id, extraBinding: { methodId: method2.method_id, adopt: "true" } }), actor: "user:a" });
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_exec_1", kind: "method", refId: method2.method_id, versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
+  const missingDep = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "scheduled", basisKey: "schedule:w4:1", taskId: "task_exec_1", actor: "user:a" });
+  assert.equal(missingDep.entryKind, "scheduled");
+  assert.ok(missingDep.skipped.some((s) => s.ref === method2.method_id && s.reason.includes("missing from the agent assembly")), "unbound-but-declared dependency is explained as missing");
+
+  // 预算截断：极小预算下 state packet 截断有记录，offset 分页可取余
+  const tiny = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:3", conversationId: "conv_w1", stateBudgetChars: 1, actor: "user:a" });
+  assert.ok(tiny.truncations.length >= 1, "budget truncations are recorded");
+  assert.equal(tiny.statePacket.budgetChars, 1);
+  const paged = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:4", conversationId: "conv_w1", stateBudgetChars: 20000, stateOffset: tiny.statePacket.totalEntries, actor: "user:a" });
+  assert.equal(paged.statePacket.lessons.length + paged.statePacket.workflows.length, 0, "offset past the end yields an empty page without error");
+
+  // 拒绝矩阵：未启用/禁用 Agent、跨 scope、缺入口上下文
+  const draftAgent = space.createAgent({ scope: scopeA, name: "W4草稿助手", actor: "user:a" });
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: draftAgent.agent_id, entryKind: "conversation", basisKey: "conversation:draft:1", conversationId: "conv_w1", actor: "user:a" }),
+    "AGENT_SPACE_INVALID_TRANSITION",
+  );
+  space.setAgentStatus(scopeA, agent.agent_id, "disabled", "user:a");
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:5", conversationId: "conv_w1", actor: "user:a" }),
+    "AGENT_SPACE_INVALID_TRANSITION",
+  );
+  space.setAgentStatus(scopeA, agent.agent_id, "active", "user:a");
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeB, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:cross:1", conversationId: "conv_w1", actor: "user:b" }),
+    "AGENT_SPACE_SCOPE_MISMATCH",
+  );
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "scheduled", basisKey: "schedule:no-task:1", actor: "user:a" }),
+    "AGENT_SPACE_ARGUMENT_INVALID",
+  );
+  expectAgentSpaceError(() => space.getRunBasis(scopeB, "conversation:conv_w1:turn:1"), "AGENT_SPACE_SCOPE_MISMATCH");
+
+  // 旧 Workspace 隔离：装配只走 DB 读模型；工作区目录为空也能完整装配
+  const { readdirSync } = await import("node:fs");
+  const workspaceEntries = readdirSync(process.env.WORKSPACE_ROOT!);
+  assert.equal(workspaceEntries.length, 0, "the fixture workspace root stays empty; assembly never reads it");
+  const stillWorks = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:6", conversationId: "conv_w1", actor: "user:a" });
+  assert.ok(stillWorks.basisId);
 });

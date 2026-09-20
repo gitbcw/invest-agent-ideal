@@ -1520,3 +1520,20 @@ export const agentSpaceCommitmentFulfillments = sqliteTable("agent_space_commitm
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+/** W4 run-basis: explainable, version-pinned assembly record per entry (conversation/automation/scheduled). */
+export const agentSpaceRunBasis = sqliteTable("agent_space_run_basis", {
+  basisId: text("basis_id").primaryKey(),
+  basisKey: text("basis_key").notNull().unique(),
+  domain: text("domain").notNull().default("user"),
+  userId: text("user_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
+  agentId: text("agent_id").notNull(),
+  entryKind: text("entry_kind").notNull(),
+  conversationId: text("conversation_id"),
+  taskId: text("task_id"),
+  runId: text("run_id"),
+  basisJson: text("basis_json").notNull(),
+  createdAt: text("created_at").notNull(),
+});
