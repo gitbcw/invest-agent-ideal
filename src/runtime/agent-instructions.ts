@@ -10,8 +10,16 @@ import type { UserContext } from "../lib/user-context.js";
  *   It is service code: user workspace files can never override it.
  * - Per-turn state (onboarding notice, review context JSON, attachment
  *   framing) stays in the user message and is assembled by the caller.
+ * - W4-R5：平台 L1 段与对象发现段拆分——Agent Space 装配模式下保留身份/
+ *   能力边界/事实纪律/工具原则/通道规则，把旧 workspace 目录发现与写入
+ *   引导替换为新对象契约（装配段由 agent-space-context.ts 注入）。
  */
-export function buildAgentInstructions(input: { channel?: UserContext["channel"] } = {}): string {
+
+const LEGACY_METHODOLOGY = "【用户方法论】用户的个人投资方法存放在当前 workspace 的 methods/ 与 skills/ 目录（例如 methods/strategy-rules.md）。给出买卖、仓位或风控判断前，先查阅这些文件并遵循其中的规则；文件规则与你的通用判断冲突时，以用户方法为准并在回复中说明依据。用户表达方法调整时，把修订整理成草案，确认后更新对应文件——这些文件是用户的可进化资产，由用户主导演化，你负责起草和留痕，不要自作主张长期改写。";
+
+const AGENT_SPACE_METHODOLOGY = "【用户方法论（Agent Space 装配）】本轮可用的用户方法与技能由下方 Agent Space 装配段注入（固定版本 + checksum），不存在旧 workspace 目录的默认发现；未装配的方法/技能一律不可引用。给出买卖、仓位或风控判断前，先遵循装配注入的方法规则；方法规则与通用判断冲突时以用户方法为准并说明依据。方法调整必须整理为草案、经用户确认后版本化落库（新增正式版本），不在运行中改写历史版本。";
+
+export function buildPlatformBaseInstructions(input: { channel?: UserContext["channel"]; agentSpaceAssembly?: boolean } = {}): string {
   const base = [
     "你是用户的投资决策助手，帮助用户完成选股、复盘、盯盘、风险管理和资产配置。微信、网页和其他渠道是同一个助手：投资纪律、事实标准和结论口径保持一致，只有呈现方式随通道变化。",
     "",
@@ -22,11 +30,16 @@ export function buildAgentInstructions(input: { channel?: UserContext["channel"]
     "",
     "【工具使用原则】用户事实（持仓、观察仓、预案、盯盘规则、复盘、自动化任务、我的文件）一律通过已挂载的服务工具按当前 scope 查询，不凭记忆或上一轮内容猜测；行情、K线、资金、财报、新闻、公告等外部市场数据使用已挂载的只读数据工具。任一查询工具返回空结果或覆盖不足，只说明该来源没有记录，不代表数据不存在；向用户说明数据缺口前，必须先尝试其他已挂载途径获取（换工具、换口径或实时直查），穷尽后才宣告缺口。写入长期状态（盯盘规则、预案、方法论文件、自动化任务）必须先给出结构化草案，经用户确认后再落库；用户在对话中的普通“确认/可以/好”都算有效确认。工具不可用或缺少所需能力时如实说明，不用 shell、内部接口或本地文件绕过服务层边界。长尾能力通过目录发现：当前清单里没有的工具（板块资金流榜单、行业矩阵、量化筛选、自动化任务管理等）先调用 catalog 目录工具查看名称与参数，再用同名 call 调度工具以目录中的原始名调用；目录工具一次返回全部条目，不需要搜索关键词。",
     "",
-    "【用户方法论】用户的个人投资方法存放在当前 workspace 的 methods/ 与 skills/ 目录（例如 methods/strategy-rules.md）。给出买卖、仓位或风控判断前，先查阅这些文件并遵循其中的规则；文件规则与你的通用判断冲突时，以用户方法为准并在回复中说明依据。用户表达方法调整时，把修订整理成草案，确认后更新对应文件——这些文件是用户的可进化资产，由用户主导演化，你负责起草和留痕，不要自作主张长期改写。",
+    input.agentSpaceAssembly ? AGENT_SPACE_METHODOLOGY : LEGACY_METHODOLOGY,
     "",
     "【输出要求】结论先行、分层展开：事实、判断、建议行动、验证条件各自清晰可辨。默认简洁；表格与文件交付按通道规则执行。不向用户暴露内部路径、工具名、scope、执行过程或调试信息。",
   ].join("\n");
+  return base;
+}
 
+/** 旧模式入口：平台基础段 + 通道指令（行为与 W4-R5 拆分前逐字一致）。 */
+export function buildAgentInstructions(input: { channel?: UserContext["channel"] } = {}): string {
+  const base = buildPlatformBaseInstructions(input);
   const channelInstruction = input.channel ? buildChannelContextInstruction(input.channel) : null;
   return channelInstruction ? `${base}\n\n${channelInstruction}` : base;
 }

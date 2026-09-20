@@ -1,9 +1,19 @@
-# W4 交付：Agent 空间控制面与运行时装配（含 R1-R4 返工）
+# W4 交付：Agent 空间控制面与运行时装配（含 R1-R9 返工）
 
 状态：本地实现与隔离接线验证完成；未切生产、未部署、未迁移真实用户、未启动真实任务或推送。装配模式默认关闭，按 scope 显式启用（`AGENT_SPACE_ASSEMBLY_MODE=scope:<userId,...>`）。
-依据：[W4-agent-space-runtime.md](./W4-agent-space-runtime.md)、[W4 验收返工单](./W4-acceptance-review.md)（R1-R4 均已定向修复）。
+依据：[W4-agent-space-runtime.md](./W4-agent-space-runtime.md)、[W4 验收返工单](./W4-acceptance-review.md)（R1-R4、R5-R9 均已定向修复）。
 
-## 0. 返工摘要（相对 b7eee44）
+## 0. 返工摘要（第二轮 R5-R9，相对 956f9bd）
+
+| 返工项 | 修复 | 证据 |
+| --- | --- | --- |
+| R5 平台常驻指令被删 | `agent-instructions.ts` 拆出 `buildPlatformBaseInstructions({channel, agentSpaceAssembly})`：平台 L1 段（身份/能力边界/事实纪律/工具原则/通道规则）保留，【用户方法论】按模式切换——装配模式下替换为新对象契约（装配注入固定版本、无旧目录发现、修订走草案-确认-版本化），旧模式输出与拆分前逐字一致。三入口最终模型输入 = 平台段 + 装配段 | R5 段测试：captured system 同时含【能力边界】【事实与推断纪律】【工具使用原则】与"Agent Space 装配"，且不含 "methods/ 与 skills/ 目录" |
+| R6 必需正文损坏仍生成输入 | 方法/技能正文读取/校验失败 → **抛错阻断本轮模型调用**（不再降级为 reference-only 成功注入；冻结 resolution 保留为失败证据）；恢复字节后同请求重试成功 | R6 段：篡改 → builder 抛错 + 装配模型调用零增长；恢复 → 同 basisKey 重试成功 |
+| R7 最新创建 Agent 不稳定 | 身份解析改为：已有 basis → **沿用冻结身份**（保留 active 校验）；任务入口 → 依赖声明的显式 Agent 绑定（多绑定拒绝）；无绑定且多 active → **明确拒绝歧义**，绝不按创建时间猜 | R7 段：A 装配后新增激活 B，同请求重试仍 A 且不冲突；两 active 无绑定的新会话请求被拒 |
+| R8 run→revision 链漏核验 | `verifyEntryIdentity` 补齐：修订必须真实存在、同 scope、`revision.task_id === run.task_id`（对齐 W1 快照校验）；不存在/错配/跨 scope 拒绝且不落 basis。**修正了本仓测试自身的错配夹具**（run_w4w_sched 曾错借 task_exec_1 的修订——R8 核验上线后当场拦截） | R8 段：不存在修订 NOT_FOUND、错配修订 ARGUMENT_INVALID、行数不变 |
+| R9 注入记录与实际输入不符 | `recordRunBasisInjection` 改**逐尝试记录**：每次真实注入按本次实际 sections/tools 记为 attempt（与最近一次完全一致则不重复）；预算/工具授权变化的重试产生新尝试，关联同一冻结 resolution；`injection` 暴露最近一次 + `attempts` 历史 | R9 段：预算 24000→1 重试，attempt 2 记录真实截断输入（keptChars≤1），attempt 1 保留在历史 |
+
+## 1. 返工摘要（第一轮 R1-R4，相对 b7eee44）
 
 | 返工项 | 修复 | 证据 |
 | --- | --- | --- |
@@ -26,12 +36,14 @@ run-basis 结构区分三段：`resolution`（冻结解析）/ `injection`（真
 ## 2. 测试证据
 
 ```
-node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 30/30
-npm test    # 720/720（~48s 自终止）
+node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 31/31
+npm test    # 721/721（~48s 自终止）
 npm run build && npx tsc --noEmit   # 0 错误
 ```
 
-关键断言：三真实入口经假模型网关捕获最终 system prompt 含 "Agent Space 装配（<entryKind>）" 与 pinned versionId/checksum/正文；空授权清单下注入工具为空数组；injection.workspace=null；关闭模式旧 instructions 逐字保留且零 basis 写入；伪/跨域/错配身份拒绝且不落行；同 key 双 scope 不冲突；升级后冻结重试返回原版本；空依赖任务空集；pin 旧正式版本执行；必需依赖不满足阻断。
+关键断言：三真实入口经假模型网关捕获最终 system prompt 同时含平台 L1 段与 "Agent Space 装配（<entryKind>）"（pinned versionId/checksum/正文）；空授权清单下注入服务工具为空数组；injection.workspace=null；关闭模式旧 instructions 逐字保留且零 basis 写入；伪/跨域/错配身份（含 run→revision 链）拒绝且不落行；同 key 双 scope 不冲突；升级后冻结重试返回原版本、身份不因新增 Agent 漂移；空依赖任务空集；pin 旧正式版本执行；必需依赖不满足与必需正文校验失败阻断（模型零装配调用）；预算变化重试的注入记录逐尝试反映实际输入。
+
+**工具断言口径**：`injection.tools` 记录的是经装配下发的**服务工具**；外部 MCP 数据工具是另一条传入模型的路径（`toolsets`），不在此清单内也不因装配模式被无差别禁用。隔离环境无外部 MCP，测试断言"记录的服务工具 ⊆ 模型请求工具"。**generic automation 覆盖口径**：验证到 runtime agent 的 handleMessage 接缝（启用 scope 由 runner 自身的 `assemblyEntryAnnotation` 标注入口），未驱动 generic runner 完整上游执行流程——不将手动标注等同全入口覆盖。
 
 ## 3. 边界与待决
 

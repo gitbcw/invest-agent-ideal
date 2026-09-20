@@ -394,6 +394,7 @@ async function buildScheduledTurnDeps(
     },
     conversationId: input.conversationId,
     messageId: input.messageId,
+    channel: input.userContext.channel,
     entryKind: "scheduled",
     taskId: input.taskId ?? undefined,
     runId: input.runId ?? undefined,

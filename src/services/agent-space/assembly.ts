@@ -83,12 +83,23 @@ export interface ResolvedRunBasisContent {
   context: { conversationId: string | null; taskId: string | null; runId: string | null };
 }
 
-export interface RunBasisInjection {
-  /** 实际注入到模型边界的内容段与预算裁剪记录（真实入口接线回写）。 */
+export interface InjectionAttempt {
+  attemptNo: number;
   sections: Array<{ section: string; originalChars: number; keptChars: number; reason?: string }>;
   tools: string[];
   workspace: null;
   injectedAt: string;
+}
+
+export interface RunBasisInjection {
+  /** 最近一次真实注入（与该次实际发送的模型输入一致；R9 逐尝试记录）。 */
+  sections: InjectionAttempt["sections"];
+  tools: string[];
+  workspace: null;
+  injectedAt: string;
+  attemptNo: number;
+  /** 逐尝试历史：预算/工具授权变化的重试产生新尝试，关联同一冻结 resolution。 */
+  attempts: InjectionAttempt[];
 }
 
 export interface RunBasisRecord {
@@ -199,11 +210,15 @@ export function assembleAndRecordRunBasis(input: {
   return rowToRecord(stored, input.basisKey);
 }
 
-/** 真实入口接线回写实际注入记录（一次性；重放返回既有注入）。 */
+/**
+ * 真实入口接线回写**本次尝试**的实际注入记录（返工 R9）：预算或工具授权
+ * 变化的重试产生新尝试（关联同一冻结 resolution）；与最近一次完全一致的
+ * 尝试不重复记录。记录与该次实际发送的模型输入一致。
+ */
 export function recordRunBasisInjection(
   scope: UserScope,
   basisKey: string,
-  injection: Omit<RunBasisInjection, "injectedAt">,
+  injection: { sections: InjectionAttempt["sections"]; tools: string[]; workspace: null },
 ): RunBasisRecord {
   assertScopeValid(scope);
   const storedKey = scopedBasisKey(scope, basisKey);
@@ -212,15 +227,36 @@ export function recordRunBasisInjection(
   if (existing.user_id !== scope.userId || existing.project_id !== scope.projectId || existing.instance_id !== scope.instanceId) {
     throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "run basis belongs to another scope");
   }
-  if (existing.injection_json) return rowToRecord(existing, basisKey);
-  const payload = JSON.stringify({ ...injection, injectedAt: nowIso() });
-  const changes = sqlite
-    .prepare("UPDATE agent_space_run_basis SET injection_json=? WHERE basis_key=? AND injection_json IS NULL")
-    .run(payload, storedKey);
-  if (changes.changes !== 1) {
-    throw new AgentSpaceError("AGENT_SPACE_IDEMPOTENCY_CONFLICT", "injection already recorded concurrently");
+  const previous = existing.injection_json ? (JSON.parse(existing.injection_json) as { attempts: InjectionAttempt[] }) : { attempts: [] as InjectionAttempt[] };
+  const last = previous.attempts[previous.attempts.length - 1];
+  const sameAsLast = last
+    && JSON.stringify({ sections: last.sections, tools: last.tools }) === JSON.stringify({ sections: injection.sections, tools: injection.tools });
+  if (!sameAsLast) {
+    const attempt: InjectionAttempt = {
+      attemptNo: previous.attempts.length + 1,
+      sections: injection.sections,
+      tools: injection.tools,
+      workspace: null,
+      injectedAt: nowIso(),
+    };
+    const attempts = [...previous.attempts, attempt];
+    const stored = { ...attempt, attempts };
+    sqlite
+      .prepare("UPDATE agent_space_run_basis SET injection_json=? WHERE basis_key=?")
+      .run(JSON.stringify(stored), storedKey);
   }
   return rowToRecord(readBasisRow(storedKey)!, basisKey);
+}
+
+/** 按（scope, basisKey）查找已冻结 basis；不存在返回 null（稳定身份解析用）。 */
+export function findRunBasis(scope: UserScope, basisKey: string): RunBasisRecord | null {
+  assertScopeValid(scope);
+  const row = readBasisRow(scopedBasisKey(scope, basisKey));
+  if (!row) return null;
+  if (row.user_id !== scope.userId || row.project_id !== scope.projectId || row.instance_id !== scope.instanceId) {
+    throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "run basis belongs to another scope");
+  }
+  return rowToRecord(row, basisKey);
 }
 
 /** 最小查询面（scoped；冻结回放/审计用）。 */
@@ -300,6 +336,18 @@ function verifyEntryIdentity(scope: UserScope, identity: BasisRequestIdentity): 
     }
     if (run.user_id !== scope.userId || run.project_id !== scope.projectId || run.instance_id !== scope.instanceId) {
       throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "run belongs to another scope");
+    }
+    // 返工 R8：run→revision→task 链——修订必须真实存在、同 scope、属于该 task
+    // （对齐 W1 快照校验），不存在/错配/跨 scope 一律拒绝且不落 basis。
+    const revision = sqlite
+      .prepare("SELECT task_id, user_id, project_id, instance_id FROM automation_task_revisions WHERE revision_id=?")
+      .get(run.revision_id) as { task_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!revision) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation revision ${run.revision_id} for run ${identity.runId}`);
+    if (revision.task_id !== run.task_id) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `revision ${run.revision_id} belongs to task ${revision.task_id}, not ${run.task_id}`);
+    }
+    if (revision.user_id !== scope.userId || revision.project_id !== scope.projectId || revision.instance_id !== scope.instanceId) {
+      throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "revision belongs to another scope");
     }
   }
   // 依赖声明的执行 Agent 与本次 Agent 不一致 → 归属错配拒绝。

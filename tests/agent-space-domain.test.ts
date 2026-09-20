@@ -1759,11 +1759,23 @@ test("W4 rework R2-R4: identity chain, scoped keys, frozen replay, deps-only ass
   const stubBasis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "scheduled", basisKey: "schedule:stub:1", taskId: "task_state_stub", actor: "u" });
   assert.ok(stubBasis.resolution.skipped.some((s) => s.kind === "agent_state"), "agent_state deps resolve to the explicit stub without blocking");
 
-  // —— 注入回写与 execution 段 ——
+  // —— 注入回写与 execution 段（R9 逐尝试契约）——
   const injected = space.recordRunBasisInjection(scopeA, "frozen:1", { sections: [{ section: "method:x", originalChars: 10, keptChars: 5, reason: "content-budget-truncated" }], tools: ["t1"], workspace: null });
   assert.equal(injected.injection!.tools[0], "t1");
+  assert.equal(injected.injection!.attemptNo, 1);
   assert.equal(injected.execution.status, "pending-w5");
-  assert.equal(space.recordRunBasisInjection(scopeA, "frozen:1", { sections: [], tools: [], workspace: null }).injection!.tools[0], "t1", "injection replay returns the recorded injection");
+  // 与最近一次完全一致的尝试不重复记录
+  const replayed = space.recordRunBasisInjection(scopeA, "frozen:1", { sections: [{ section: "method:x", originalChars: 10, keptChars: 5, reason: "content-budget-truncated" }], tools: ["t1"], workspace: null });
+  assert.equal(replayed.injection!.attemptNo, 1, "identical attempts do not append");
+  assert.equal(replayed.injection!.attempts.length, 1);
+  // 不同的真实输入 → 新尝试（关联同一冻结 resolution），记录反映本次实际发送
+  const changed = space.recordRunBasisInjection(scopeA, "frozen:1", { sections: [], tools: [], workspace: null });
+  assert.equal(changed.injection!.attemptNo, 2, "changed input appends a new attempt");
+  assert.equal(changed.injection!.tools.length, 0);
+  assert.equal(changed.injection!.attempts.length, 2, "attempt history links to the same frozen resolution");
+  assert.equal(changed.injection!.attempts[0]!.tools[0], "t1");
+  // 收尾：停用本组 Agent，避免影响后续组的唯一-active 前提（R7 歧义拒绝）
+  space.setAgentStatus(scopeA, agent.agent_id, "disabled", "user:a");
 });
 
 test("W4 rework R1: real-entry wiring — isolated injection captures the final model context", async (t) => {
@@ -1875,8 +1887,12 @@ test("W4 rework R1: real-entry wiring — isolated injection captures the final 
 
   // —— scheduled 真实入口（runScheduledAgentTask 直连 runMastraTurn 的接缝）——
   db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_w4w_sched',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  // R8：run→revision→task 链必须真实匹配（旧夹具错借 task_exec_1 的修订）
+  db.sqlite.prepare(`INSERT INTO automation_task_revisions (revision_id,task_id,user_id,project_id,instance_id,revision,name,description,schedule_json,inputs_json,output_json,delivery_json,created_at)
+                     VALUES ('rev_w4w_sched','task_w4w_sched',?,?,?,1,'W4W调度修订','w4w','{}','[]','{"mode":"agent"}','{}',?)`)
+    .run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now);
   db.sqlite.prepare(`INSERT INTO automation_task_runs (run_id,task_id,revision_id,user_id,project_id,instance_id,origin,idempotency_key,attempt,status,claimed_at,started_at,created_at,updated_at)
-                     VALUES ('run_w4w_sched','task_w4w_sched','rev_w1_1',?,?,?,'manual','idem-w4w-sched',1,'succeeded',?,?,?,?)`)
+                     VALUES ('run_w4w_sched','task_w4w_sched','rev_w4w_sched',?,?,?,'manual','idem-w4w-sched',1,'succeeded',?,?,?,?)`)
     .run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now, now);
   space.upsertTaskDependency({ scope: scopeA, taskId: "task_w4w_sched", kind: "method", refId: method.method_id, versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
   const { runScheduledAgentTaskForTest } = await import("../src/runtime/scheduled-tasks.js");
@@ -1912,4 +1928,155 @@ test("W4 rework R1: real-entry wiring — isolated injection captures the final 
   const legacySystem = systemPromptOf(legacyCapture);
   assert.ok(!legacySystem.includes("Agent Space 装配"), "mode-off keeps legacy instructions");
   assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_run_basis").get() as { n: number }).n, basisBefore, "mode-off writes no basis rows");
+  // 收尾：停用本组 Agent，保证后续组的唯一-active 前提（R7 歧义拒绝）
+  space.setAgentStatus(scopeA, agent.agent_id, "disabled", "user:a");
+});
+
+test("W4 rework R5-R9 at the model boundary: platform base, content blocking, stable identity, revision chain, per-attempt injection", async (t) => {
+  const { db, space } = await fixture;
+  const { randomUUID } = await import("node:crypto");
+  const http = await import("node:http");
+  const { readFileSync: rf, writeFileSync: wf } = await import("node:fs");
+
+  const captured: Array<{ body: Record<string, unknown> }> = [];
+  const server = http.createServer((request, response) => {
+    let requestBody = "";
+    request.on("data", (chunk: Buffer) => { requestBody += chunk.toString(); });
+    request.on("end", () => {
+      captured.push({ body: JSON.parse(requestBody) as Record<string, unknown> });
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write('data: {"id":"w4b","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n');
+      response.write('data: {"id":"w4b","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as { port: number };
+  t.after(() => { server.close(); });
+
+  const agentA = space.createAgent({ scope: scopeA, name: "R5R9助手A", actor: "user:a" });
+  space.setAgentStatus(scopeA, agentA.agent_id, "active", "user:a");
+  const skill = space.upsertSkill({ domain: "user", scope: scopeA, slug: "r59-skill", name: "R59技能", actor: "user:a" });
+  const sv = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_1", contentChecksum: W2_CHK_1 },
+    origin: "private_edit", actor: "user:a",
+  });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s1", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv.version_id, versionId: sv.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
+  space.installSkill({ scope: scopeA, agentId: agentA.agent_id, skillId: skill.skill_id, source: "private", versionId: sv.version_id, installedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_install", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agentA.agent_id, versionId: sv.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } }), actor: "user:a" });
+  const method = space.createMethod({ scope: scopeA, name: "R59方法", actor: "user:a" });
+  const mv = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: mv.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: mv.version_id, versionId: mv.version_id, extraBinding: { methodId: method.method_id, adopt: "true" } }), actor: "user:a" });
+
+  const previousEnv = { ...process.env };
+  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${address.port}/v1`;
+  process.env.OPENAI_API_KEY = "w4b-test-key";
+  process.env.MASTRA_DEFAULT_MODEL = "w4b-test-model";
+  process.env.AGENT_SPACE_ASSEMBLY_MODE = `scope:${scopeA.userId}`;
+  t.after(() => {
+    for (const key of ["OPENAI_BASE_URL", "OPENAI_API_KEY", "MASTRA_DEFAULT_MODEL", "AGENT_SPACE_ASSEMBLY_MODE", "AGENT_SPACE_CONTENT_BUDGET_CHARS"] as const) {
+      if (previousEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = previousEnv[key];
+    }
+  });
+
+  const { createRuntimeAgent } = await import("../src/runtime/agent.js");
+  const { buildAgentSpaceTurnOptions } = await import("../src/runtime/agent-space-context.js");
+  const runtimeAgent = createRuntimeAgent();
+  const systemPromptOf = (capture: { body: Record<string, unknown> }): string => {
+    const messages = capture.body.messages as Array<{ role: string; content: unknown }>;
+    const system = messages.find((m) => m.role === "system") ?? messages[0]!;
+    return typeof system.content === "string" ? system.content : JSON.stringify(system.content);
+  };
+  const assemblyCaptures = () => captured.filter((c) => systemPromptOf(c).includes("Agent Space 装配"));
+
+  // —— R5：平台 L1 段与装配段同时在场，旧目录发现不再出现 ——
+  const r5MessageId = randomUUID();
+  await runtimeAgent.handleMessage({
+    id: r5MessageId, from: scopeA.userId, timestamp: Date.now(),
+    content: { text: "R5 平台段验证" },
+    context: { conversationId: "conv_w1", channel: "api", userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId },
+  });
+  const r5System = systemPromptOf(assemblyCaptures()[assemblyCaptures().length - 1]!);
+  assert.match(r5System, /【能力边界】/, "platform capability boundary survives assembly mode");
+  assert.match(r5System, /【事实与推断纪律】/, "platform fact discipline survives assembly mode");
+  assert.match(r5System, /【工具使用原则】/, "platform tool doctrine survives assembly mode");
+  assert.match(r5System, /Agent Space 装配（conversation）/, "assembly section coexists with the platform base");
+  assert.match(r5System, /【用户方法论（Agent Space 装配）】/, "methodology is rewritten to the new object contract");
+  assert.ok(!r5System.includes("methods/ 与 skills/ 目录"), "legacy workspace discovery guidance never reappears");
+
+  // —— R7：稳定执行身份——新增 Agent 不换身份、不冲突；多 active 无绑定明确拒绝 ——
+  const r7Key = `conversation:conv_w1:message:${r5MessageId}`;
+  assert.equal(space.getRunBasis(scopeA, r7Key).resolution.agent.agentId, agentA.agent_id);
+  const agentB = space.createAgent({ scope: scopeA, name: "R5R9助手B", actor: "user:a" });
+  space.setAgentStatus(scopeA, agentB.agent_id, "active", "user:b");
+  const r7Retry = await buildAgentSpaceTurnOptions({
+    scope: scopeA, conversationId: "conv_w1", messageId: r5MessageId, channel: "api",
+    grantedTools: {}, toolAllowlist: null,
+  });
+  assert.equal(space.getRunBasis(scopeA, r7Key).resolution.agent.agentId, agentA.agent_id, "same request retries keep the frozen identity after a new agent appears");
+  void r7Retry;
+  await assert.rejects(
+    () => buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: "conv_w1", messageId: randomUUID(), channel: "api", grantedTools: {}, toolAllowlist: null }),
+    /multiple agents|explicit task binding|refusing to guess/,
+    "new unbound conversation requests with multiple active agents are rejected explicitly",
+  );
+
+  // —— R6：必需正文校验失败 → 阻断（真实入口零装配模型调用）；恢复后同请求重试成功 ——
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_r59',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  db.sqlite.prepare(`INSERT INTO automation_task_revisions (revision_id,task_id,user_id,project_id,instance_id,revision,name,description,schedule_json,inputs_json,output_json,delivery_json,created_at)
+                     VALUES ('rev_r59','task_r59',?,?,?,1,'R59修订','r59','{}','[]','{"mode":"agent"}','{}',?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now);
+  db.sqlite.prepare(`INSERT INTO automation_task_runs (run_id,task_id,revision_id,user_id,project_id,instance_id,origin,idempotency_key,attempt,status,claimed_at,started_at,created_at,updated_at)
+                     VALUES ('run_r59','task_r59','rev_r59',?,?,?,'manual','idem-r59',1,'succeeded',?,?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now, now);
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_r59", kind: "method", refId: method.method_id, versionPolicy: "pinned", pinnedVersionId: mv.version_id, agentId: agentA.agent_id, actor: "user:a" });
+  const registry = await import("../src/mastra/workspace-registry.js");
+  const entry = await registry.mastraWorkspaceRegistry.resolve(scopeA);
+  const assetFile = path.join(entry!.projectRoot, "assets", "asset_w2", "versions", "ver_w2_1", "strategy.md");
+  const originalBytes = rf(assetFile);
+  wf(assetFile, Buffer.concat([originalBytes, Buffer.from("r6-tampered")]));
+  const beforeR6 = assemblyCaptures().length;
+  await assert.rejects(
+    () => buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: `automation-run:r6`, messageId: randomUUID(), entryKind: "generic_automation", taskId: "task_r59", runId: "run_r59", grantedTools: {}, toolAllowlist: [] }),
+    /AGENT_SPACE_VERSION_INVALID: required method content .* blocking the model call/,
+    "required method content verification failure blocks the model call",
+  );
+  assert.equal(assemblyCaptures().length, beforeR6, "zero assembly model calls while content is broken");
+  wf(assetFile, originalBytes);
+  const r6Recovered = await buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: `automation-run:r6`, messageId: randomUUID(), entryKind: "generic_automation", taskId: "task_r59", runId: "run_r59", grantedTools: {}, toolAllowlist: [] });
+  assert.match(r6Recovered.instructions, /Agent Space 装配（generic_automation）/, "restored bytes let the same request retry succeed");
+
+  // —— R9：预算变化 → 实际输入与注入记录一致（新尝试，非旧记录顶名）——
+  const r9Key = r6Recovered.basisKey;
+  const first = space.getRunBasis(scopeA, r9Key);
+  const bodySection = first.injection!.sections.find((s) => s.section.startsWith("method:"))!;
+  assert.ok(bodySection.keptChars > 0, "attempt 1 injects the full method body");
+  process.env.AGENT_SPACE_CONTENT_BUDGET_CHARS = "1";
+  const r9Retry = await buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: `automation-run:r6`, messageId: randomUUID(), entryKind: "generic_automation", taskId: "task_r59", runId: "run_r59", grantedTools: {}, toolAllowlist: [] });
+  assert.ok(!r9Retry.instructions.includes("正文第一版"), "the retried prompt no longer contains the method body under the tiny budget");
+  const second = space.getRunBasis(scopeA, r9Key);
+  assert.equal(second.injection!.attemptNo, 2, "a changed budget appends a new injection attempt");
+  assert.equal(second.injection!.sections.find((s) => s.section.startsWith("method:"))!.keptChars <= 1, true, "attempt 2 records the real truncated input");
+  assert.equal(second.injection!.attempts[0]!.sections.find((s) => s.section.startsWith("method:"))!.keptChars, bodySection.keptChars, "attempt history preserves attempt 1");
+  delete process.env.AGENT_SPACE_CONTENT_BUDGET_CHARS;
+
+  // —— R8：run→revision→task 错配一律拒绝且不落 basis ——
+  const basisBeforeR8 = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_run_basis").get() as { n: number }).n;
+  db.sqlite.prepare("UPDATE automation_task_runs SET revision_id='rev_missing' WHERE run_id='run_w1_1'").run();
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agentA.agent_id, entryKind: "scheduled", basisKey: "schedule:r8missing:1", taskId: "task_exec_1", runId: "run_w1_1", actor: "u" }),
+    "AGENT_SPACE_NOT_FOUND",
+  );
+  db.sqlite.prepare("UPDATE automation_task_runs SET revision_id='rev_w4w_sched' WHERE run_id='run_w1_1'").run();
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agentA.agent_id, entryKind: "scheduled", basisKey: "schedule:r8mismatch:1", taskId: "task_exec_1", runId: "run_w1_1", actor: "u" }),
+    "AGENT_SPACE_ARGUMENT_INVALID",
+  );
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_run_basis").get() as { n: number }).n, basisBeforeR8, "revision mismatches write no basis rows");
+  // 工具口径：注入记录的是服务工具；外部数据工具是另一条路径（本隔离环境无外部 MCP）
+  const capturedToolNames = ((captured[captured.length - 1]!.body.tools as Array<{ function?: { name?: string }; name?: string }>) ?? []).map((tool) => tool.function?.name ?? tool.name ?? "");
+  const injectionTools = second.injection!.tools;
+  for (const name of injectionTools) assert.ok(capturedToolNames.includes(name), "recorded service tools are a subset of the model request tools");
+  // 收尾：停用两个 Agent，保持后续组环境干净
+  space.setAgentStatus(scopeA, agentA.agent_id, "disabled", "user:a");
+  space.setAgentStatus(scopeA, agentB.agent_id, "disabled", "user:b");
 });

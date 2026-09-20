@@ -14,6 +14,7 @@ import { sqlite } from "../db/index.js";
 import {
   AgentSpaceError,
   assembleAndRecordRunBasis,
+  findRunBasis,
   getRunBasis,
   readMethodVersionContent,
   recordRunBasisInjection,
@@ -21,6 +22,10 @@ import {
   type RunBasisInjection,
 } from "../services/agent-space/index.js";
 import { getVersionRow as getSkillVersionRow, readSkillVersionContentBytes } from "../services/agent-space/skills.js";
+import { buildPlatformBaseInstructions } from "./agent-instructions.js";
+import type { UserContext } from "../lib/user-context.js";
+
+type UserContextChannel = UserContext["channel"];
 
 export const AGENT_SPACE_ASSEMBLY_MODE_ENV = "AGENT_SPACE_ASSEMBLY_MODE";
 export const AGENT_SPACE_CONTENT_BUDGET_ENV = "AGENT_SPACE_CONTENT_BUDGET_CHARS";
@@ -43,23 +48,64 @@ export function detectAssemblyEntryKind(taskType: string | null | undefined): As
   return "conversation";
 }
 
-function resolveScopeActiveAgentId(scope: { userId: string; projectId: string; instanceId: string }): string {
-  // 多个 active Agent 时取最新创建的一个（每 scope 单 Agent 是常态；歧义时
-  // 宁取最新，不静默混用旧装配）。
-  const row = sqlite
+/**
+ * 稳定执行身份（返工 R7）：已有 basis 的请求沿用**冻结身份**（并保留当前
+ * 停用校验）；新请求优先用任务依赖声明的显式 Agent 绑定；无绑定且同 scope
+ * 存在多个 active Agent 时**明确拒绝歧义**——绝不按创建时间猜测。
+ */
+function resolveAssemblyAgentId(input: {
+  scope: { userId: string; projectId: string; instanceId: string };
+  basisKey: string;
+  taskId?: string | null;
+}): string {
+  // 1) 冻结身份回用：同请求重试不因新增 Agent 换身份。
+  const frozen = findRunBasis(input.scope, input.basisKey);
+  if (frozen) {
+    const agentId = frozen.resolution.agent.agentId;
+    const agent = sqlite
+      .prepare("SELECT status FROM agent_space_agents WHERE agent_id=?")
+      .get(agentId) as { status: string } | undefined;
+    if (!agent || agent.status !== "active") {
+      throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `frozen assembly agent ${agentId} is no longer active; refusing to swap identity silently`);
+    }
+    return agentId;
+  }
+  // 2) 任务入口：依赖声明的执行 Agent 绑定（唯一才可信）。
+  if (input.taskId) {
+    const depAgents = sqlite
+      .prepare(`SELECT DISTINCT agent_id FROM agent_space_task_dependencies WHERE task_id=? AND agent_id IS NOT NULL`)
+      .all(input.taskId) as Array<{ agent_id: string }>;
+    if (depAgents.length === 1) {
+      const agent = sqlite
+        .prepare("SELECT status FROM agent_space_agents WHERE agent_id=?")
+        .get(depAgents[0]!.agent_id) as { status: string } | undefined;
+      if (!agent || agent.status !== "active") {
+        throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `task-bound agent ${depAgents[0]!.agent_id} is not active`);
+      }
+      return depAgents[0]!.agent_id;
+    }
+    if (depAgents.length > 1) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `task dependencies declare ${depAgents.length} different agents; the execution agent must be explicit`);
+    }
+  }
+  // 3) 无绑定：scope 内 active Agent 恰好一个才可解析，否则明确拒绝。
+  const actives = sqlite
     .prepare(
       `SELECT agent_id FROM agent_space_agents
-       WHERE user_id=? AND project_id=? AND instance_id=? AND status='active'
-       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+       WHERE user_id=? AND project_id=? AND instance_id=? AND status='active'`,
     )
-    .get(scope.userId, scope.projectId, scope.instanceId) as { agent_id: string } | undefined;
-  if (!row) {
+    .all(input.scope.userId, input.scope.projectId, input.scope.instanceId) as Array<{ agent_id: string }>;
+  if (actives.length === 1) return actives[0]!.agent_id;
+  if (actives.length === 0) {
     throw new AgentSpaceError(
       "AGENT_SPACE_INVALID_TRANSITION",
       "agent-space assembly mode requires an active agent for the scope; refusing to fall back to the legacy workspace",
     );
   }
-  return row.agent_id;
+  throw new AgentSpaceError(
+    "AGENT_SPACE_ARGUMENT_INVALID",
+    `scope has ${actives.length} active agents and no explicit task binding; the execution agent must be explicit (refusing to guess by creation time)`,
+  );
 }
 
 export interface AssemblyTurnOptions {
@@ -84,6 +130,8 @@ export async function buildAgentSpaceTurnOptions(input: {
   scope: { userId: string; projectId: string; instanceId: string };
   conversationId: string;
   messageId: string;
+  /** 入口通道（平台 L1 通道呈现规则需要；缺省无通道段）。 */
+  channel?: string | null;
   /** 入口显式标注优先（generic_automation/scheduled）；缺省按 taskType 识别。 */
   entryKind?: AssemblyEntryKind;
   taskType?: string | null;
@@ -93,12 +141,12 @@ export async function buildAgentSpaceTurnOptions(input: {
   toolAllowlist?: readonly string[] | null;
 }): Promise<AssemblyTurnOptions> {
   const entryKind = input.entryKind ?? detectAssemblyEntryKind(input.taskType);
-  const agentId = resolveScopeActiveAgentId(input.scope);
   const basisKey = entryKind === "conversation"
     ? `conversation:${input.conversationId}:message:${input.messageId}`
     : input.runId
       ? `run:${input.runId}:basis`
       : `task:${input.taskId}:message:${input.messageId}`;
+  const agentId = resolveAssemblyAgentId({ scope: input.scope, basisKey, taskId: entryKind === "conversation" ? null : input.taskId });
   const basis = assembleAndRecordRunBasis({
     scope: input.scope,
     agentId,
@@ -134,12 +182,18 @@ export async function buildAgentSpaceTurnOptions(input: {
       ...(fit.keptChars < fit.originalChars ? { reason: "content-budget-truncated" } : {}),
     });
   };
+  // 返工 R6：已解析且需注入的方法/技能正文读取/校验失败 → **阻断本轮模型
+  // 调用**（不标成 reference-only 成功注入）；解析 basis 保留为失败证据。
+  // 恢复正确字节后同请求可重试成功（resolution 冻结，注入重算）。
   for (const method of basis.resolution.methods) {
-    let content: string | null = null;
+    let content: string;
     try {
       content = (await readMethodVersionContent(input.scope, method.versionId)).bytes.toString("utf8");
     } catch (error) {
-      sections.push({ section: `method:${method.methodId}`, originalChars: 0, keptChars: 0, reason: `content read failed: ${(error as Error).message}` });
+      throw new AgentSpaceError(
+        "AGENT_SPACE_VERSION_INVALID",
+        `required method content ${method.methodId}@${method.versionId} failed verification (${(error as Error).message}); blocking the model call`,
+      );
     }
     pushContent(
       `method:${method.methodId}`,
@@ -148,11 +202,14 @@ export async function buildAgentSpaceTurnOptions(input: {
     );
   }
   for (const skill of basis.resolution.skills) {
-    let content: string | null = null;
+    let content: string;
     try {
       content = (await readSkillVersionContentBytes(getSkillVersionRow(skill.versionId))).toString("utf8");
     } catch (error) {
-      sections.push({ section: `skill:${skill.skillId}`, originalChars: 0, keptChars: 0, reason: `content read failed: ${(error as Error).message}` });
+      throw new AgentSpaceError(
+        "AGENT_SPACE_VERSION_INVALID",
+        `required skill content ${skill.skillId}@${skill.versionId} failed verification (${(error as Error).message}); blocking the model call`,
+      );
     }
     pushContent(
       `skill:${skill.skillId}`,
@@ -173,6 +230,14 @@ export async function buildAgentSpaceTurnOptions(input: {
   for (const item of basis.resolution.pruned) lines.push(`- pruned: ${item.kind}:${item.ref} — ${item.reason}`);
   lines.push("未装配的内容（含任何旧 Workspace/默认技能）不可用；不要引用不存在的工具或文件。");
 
+  // 返工 R5：平台 L1 基础段（身份/能力边界/事实纪律/工具原则/通道规则 +
+  // 新对象契约方法论）与装配段组合——退出旧 Workspace 不等于删除平台纪律。
+  const platformBase = buildPlatformBaseInstructions({
+    ...(input.channel ? { channel: input.channel as UserContextChannel } : {}),
+    agentSpaceAssembly: true,
+  });
+  const instructions = `${platformBase}\n\n${lines.join("\n")}`;
+
   // 受限工具：授权即清单（数组即清单——空数组=零授权；null=无清单概念，
   // 以服务层授予集为准）。
   const allow = input.toolAllowlist ? new Set(input.toolAllowlist) : null;
@@ -185,7 +250,7 @@ export async function buildAgentSpaceTurnOptions(input: {
     tools: Object.keys(tools),
     workspace: null,
   });
-  return { instructions: lines.join("\n"), tools, basisKey };
+  return { instructions, tools, basisKey };
 }
 
 /** 测试/运维读取已记录注入与冻结 basis（幂等）。 */
