@@ -21,6 +21,8 @@ process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
 // W2：固定版本字节读取走 mastra 项目注册表（唯一存储根来源）。
 process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
+// W3：系统域技能内容引用走系统模板根。
+process.env.SYSTEM_SKILLS_TEMPLATE_ROOT = path.join(root, "templates");
 mkdirSync(path.join(root, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 
@@ -37,6 +39,9 @@ const W2_CHK_1 = sha256Of(W2_BODY_V1);
 const W2_CHK_2 = sha256Of(W2_BODY_V2);
 const CONTENT_W2_1 = { assetId: "asset_w2", assetVersionId: "ver_w2_1", contentChecksum: W2_CHK_1 } as const;
 const CONTENT_W2_2 = { assetId: "asset_w2", assetVersionId: "ver_w2_2", contentChecksum: W2_CHK_2 } as const;
+// W3 系统模板：真实字节落模板根，checksum 由真实字节计算。
+const SYS_TPL_BODY = Buffer.from("# 系统默认技能\n场景：盯盘提醒\n步骤：引用既有方法\n输出：简报\n失败处置：告警\n", "utf8");
+const SYS_TPL_CHK = sha256Of(SYS_TPL_BODY);
 
 const fixture = (async () => {
   const db = await import("../src/db/index.js");
@@ -115,6 +120,10 @@ const fixture = (async () => {
                   VALUES (?,'asset_w2',?,?,?,1,'strategy.md','markdown','text/markdown',?,?,?,'system',?)`)
         .run(vid, scopeA.userId, scopeA.projectId, scopeA.instanceId, body.length, sha256Of(body), `assets/asset_w2/versions/${vid}/strategy.md`, now);
   }
+  // W3：系统模板根落真实模板文件（系统域技能版本的 canonical 内容）。
+  const tplDir = path.join(root, "templates", "sys-default-skill");
+  mkdirSync(tplDir, { recursive: true });
+  writeFileSync(path.join(tplDir, "SKILL.md"), SYS_TPL_BODY);
   return { db, space };
 })();
 
@@ -1326,4 +1335,138 @@ test("W2: method paths — pinned byte reads, readopt rollback, small-change for
   assert.equal(pinned.versionId, v2.version_id);
   assert.ok((await space.readMethodVersionContent(scopeA, pinned.versionId!)).bytes.equals(W2_BODY_V2), "run-referenced version reproduces exact bytes");
   void snap;
+});
+
+test("W3: catalog privacy, release immutability, default manifest, derivation, removal, runtime pinned resolution", async () => {
+  const { db, space } = await fixture;
+
+  // —— 目录隐私：private 不进市场枚举，跨用户详情 fail-closed ——
+  const skill = space.upsertSkill({ domain: "user", scope: scopeA, slug: "w3-skill", name: "W3技能", actor: "user:a" });
+  const sv1 = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_1", contentChecksum: W2_CHK_1 },
+    origin: "private_edit", actor: "user:a",
+  });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv1.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s1", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv1.version_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
+  const privateRelease = space.publishSkillRelease({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv1.version_id, releaseVersion: "1.0.0-private", visibility: "private", publishedBy: "user:a", actor: "user:a" });
+  const publicRelease = space.publishSkillRelease({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv1.version_id, releaseVersion: "1.0.0", visibility: "public", publishedBy: "user:a", actor: "user:a" });
+  const catalog = space.listSkillCatalog();
+  assert.ok(catalog.some((c) => c.releaseId === publicRelease.releaseId), "public release is listed");
+  assert.ok(!catalog.some((c) => c.releaseId === privateRelease.releaseId), "private release never enters the catalog");
+  expectAgentSpaceError(() => space.getReleaseDetailForInstaller(scopeB, privateRelease.releaseId), "AGENT_SPACE_VISIBILITY_INVALID");
+
+  // —— 发布不可变：同 skill 重复 releaseVersion 明确冲突；私有后续版本不改发布行 ——
+  expectAgentSpaceError(
+    () => space.publishSkillRelease({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv1.version_id, releaseVersion: "1.0.0", visibility: "public", publishedBy: "user:a", actor: "user:a" }),
+    "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+  );
+  const sv2 = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_2", contentChecksum: W2_CHK_2 },
+    origin: "private_edit", actor: "user:a",
+  });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv2.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s2", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv2.version_id, versionId: sv2.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
+  const frozen = space.getReleaseDetailForInstaller(scopeA, publicRelease.releaseId);
+  assert.equal(frozen.versionId, sv1.version_id, "release keeps pinning its frozen version after later private edits");
+  assert.equal(frozen.contentChecksum, W2_CHK_1);
+  // is_default 仅系统域可携带
+  expectAgentSpaceError(
+    () => space.publishSkillRelease({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv2.version_id, releaseVersion: "2.0.0", visibility: "public", publishedBy: "user:a", isDefault: true, actor: "user:a" }),
+    "AGENT_SPACE_ARGUMENT_INVALID",
+  );
+
+  // —— 默认清单：系统技能（模板内容）→ owner 批准 → public+default 发布 ——
+  const sysSkill = space.upsertSkill({ domain: "system", scope: null, slug: "sys-default-brief", name: "默认简报", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const sysv = await space.addSkillVersion({
+    domain: "system", scope: null, skillId: sysSkill.skill_id,
+    contentRef: { contentRefType: "system_template", systemTemplatePath: "sys-default-skill/SKILL.md", contentChecksum: SYS_TPL_CHK },
+    origin: "system_seed", ownerToken: OWNER_TOKEN, actor: "owner",
+  });
+  space.approveSkillVersion({ domain: "system", scope: null, skillId: sysSkill.skill_id, versionId: sysv.version_id, approvedBy: "owner", approvalRef: "owner-decision:2026-09-20/w3-sys-approve", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const sysRel1 = space.publishSkillRelease({ domain: "system", scope: null, skillId: sysSkill.skill_id, versionId: sysv.version_id, releaseVersion: "1.0.0", visibility: "public", publishedBy: "owner", isDefault: true, ownerToken: OWNER_TOKEN, actor: "owner" });
+
+  const agentD = space.createAgent({ scope: scopeA, name: "默认清单助手D", actor: "user:a" });
+  const first = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentD.agent_id, actor: "system" });
+  assert.equal(first.appliedInstallationIds.length, 1, "first apply seeds the default skill");
+  const manifestD = space.getInstalledSkillManifest(scopeA, agentD.agent_id);
+  assert.equal(manifestD[0]!.skillId, sysSkill.skill_id);
+  assert.equal(manifestD[0]!.releaseId, sysRel1.releaseId);
+  assert.equal(manifestD[0]!.source, "release");
+  // 幂等：重复 apply 零新增
+  const second = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentD.agent_id, actor: "system" });
+  assert.equal(second.appliedInstallationIds.length, 0);
+  assert.ok(second.skippedSkillIds.includes(sysSkill.skill_id));
+
+  // 默认升级不改变存量安装：发布新默认 release，新 Agent 拿新版，老 Agent 原样
+  const sysRel2 = space.publishSkillRelease({ domain: "system", scope: null, skillId: sysSkill.skill_id, versionId: sysv.version_id, releaseVersion: "1.1.0", visibility: "public", publishedBy: "owner", isDefault: true, ownerToken: OWNER_TOKEN, actor: "owner" });
+  const agentE = space.createAgent({ scope: scopeA, name: "默认清单助手E", actor: "user:a" });
+  space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentE.agent_id, actor: "system" });
+  assert.equal(space.getInstalledSkillManifest(scopeA, agentE.agent_id)[0]!.releaseId, sysRel2.releaseId, "new agents get the new default release");
+  space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentD.agent_id, actor: "system" });
+  assert.equal(space.getInstalledSkillManifest(scopeA, agentD.agent_id)[0]!.releaseId, sysRel1.releaseId, "existing installs are never touched by default upgrades");
+
+  // —— 移除：授权决定；移除后运行解析拒绝；重放零副作用；重装是新安装行 ——
+  const removeRef = await authz(scopeA, "um_w1_install", { operation: "skill.remove", objectType: "agent_space_agent_skill_installation", objectId: agentD.agent_id, versionId: null, extraBinding: { skillId: sysSkill.skill_id } });
+  const removed = space.removeInstalledSkill({ scope: scopeA, agentId: agentD.agent_id, skillId: sysSkill.skill_id, approvalRef: removeRef, actor: "user:a" });
+  assert.equal(removed.status, "removed");
+  await assert.rejects(() => space.resolveInstalledSkillContent(scopeA, agentD.agent_id, sysSkill.skill_id), /AGENT_SPACE_NOT_FOUND/, "removed skills never resolve at runtime");
+  const removeAudits = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='agent.skill.removed'").get() as { n: number }).n;
+  const removedReplay = space.removeInstalledSkill({ scope: scopeA, agentId: agentD.agent_id, skillId: sysSkill.skill_id, approvalRef: removeRef, actor: "user:a" });
+  assert.equal(removedReplay.status, "removed");
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='agent.skill.removed'").get() as { n: number }).n, removeAudits, "removal replay adds no audit");
+  // 移除是显式决定：重跑默认清单不复活
+  const afterRemove = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentD.agent_id, actor: "system" });
+  assert.equal(afterRemove.appliedInstallationIds.length, 0, "removed default skills stay removed");
+  // 重装：新凭证走 installSkill，产出新安装行
+  const reinstallRef = await authz(scopeA, "um_w1_upgrade", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agentD.agent_id, versionId: sysv.version_id, extraBinding: { skillId: sysSkill.skill_id, source: "release", releaseId: sysRel1.releaseId } });
+  const reinstalled = space.installSkill({ scope: scopeA, agentId: agentD.agent_id, skillId: sysSkill.skill_id, source: "release", releaseId: sysRel1.releaseId, versionId: sysv.version_id, installedBy: "user:a", approvalRef: reinstallRef, actor: "user:a" });
+  assert.equal(reinstalled.status, "installed");
+  assert.notEqual(reinstalled.installation_id, removed.installationId, "reinstall creates a fresh installation row");
+
+  // —— 派生：市场安装后的定制 = 私有派生，血缘可追溯；私有来源拒绝 ——
+  const derived = await space.derivePrivateSkillFromRelease({
+    scope: scopeB, releaseId: publicRelease.releaseId, slug: "derived-w3-skill", name: "派生W3技能",
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_b1", assetVersionId: "ver_b1", contentChecksum: "chk_b1" },
+    actor: "user:b",
+  });
+  assert.equal(derived.skill.derived_from_release_id, publicRelease.releaseId, "derivation records its release lineage");
+  assert.equal(derived.version.derived_from_version_id, sv1.version_id, "derivation records the source version");
+  assert.equal(derived.version.status, "draft", "derived skill starts as the deriver's private draft");
+  await assert.rejects(
+    () => space.derivePrivateSkillFromRelease({
+      scope: scopeB, releaseId: privateRelease.releaseId, slug: "derived-illegal", name: "越权派生",
+      contentRef: { contentRefType: "user_asset_version", assetId: "asset_b1", assetVersionId: "ver_b1", contentChecksum: "chk_b1" },
+      actor: "user:b",
+    }),
+    /AGENT_SPACE_VISIBILITY_INVALID/,
+  );
+  await assert.rejects(
+    () => space.derivePrivateSkillFromRelease({
+      scope: scopeB, releaseId: publicRelease.releaseId, slug: "derived-w3-skill", name: "slug冲突",
+      contentRef: { contentRefType: "user_asset_version", assetId: "asset_b1", assetVersionId: "ver_b1", contentChecksum: "chk_b1" },
+      actor: "user:b",
+    }),
+    /AGENT_SPACE_ARGUMENT_INVALID/,
+  );
+
+  // —— 运行时只返回已安装固定版本；越权/未安装拒绝 ——
+  const agentR = space.createAgent({ scope: scopeA, name: "运行解析助手", actor: "user:a" });
+  const runInstallRef = await authz(scopeA, "um_w1_c", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agentR.agent_id, versionId: sv2.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } });
+  space.installSkill({ scope: scopeA, agentId: agentR.agent_id, skillId: skill.skill_id, source: "private", versionId: sv2.version_id, installedBy: "user:a", approvalRef: runInstallRef, actor: "user:a" });
+  // 私有继续升级到 v3 并批准：已安装 Agent 的运行解析仍钉住 v2
+  const sv3 = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_1", contentChecksum: W2_CHK_1 },
+    origin: "private_edit", actor: "user:a",
+  });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv3.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s3", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv3.version_id, versionId: sv3.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
+  const resolved = await space.resolveInstalledSkillContent(scopeA, agentR.agent_id, skill.skill_id);
+  assert.equal(resolved.versionId, sv2.version_id, "runtime resolves the installed fixed version, not the latest private edit");
+  assert.ok(resolved.bytes.equals(W2_BODY_V2), "runtime bytes come from the pinned version");
+  assert.equal(resolved.checksum, W2_CHK_2);
+  await assert.rejects(() => space.resolveInstalledSkillContent(scopeA, agentR.agent_id, sysSkill.skill_id), /AGENT_SPACE_NOT_FOUND/, "uninstalled skills never resolve");
+  await assert.rejects(() => space.resolveInstalledSkillContent(scopeB, agentR.agent_id, skill.skill_id), /AGENT_SPACE_SCOPE_MISMATCH/, "cross-scope agents never resolve");
+  // 系统模板内容解析：字节数与模板一致
+  const sysResolved = await space.resolveInstalledSkillContent(scopeA, agentE.agent_id, sysSkill.skill_id);
+  assert.ok(sysResolved.bytes.equals(SYS_TPL_BODY), "system-template installs read verified template bytes");
 });

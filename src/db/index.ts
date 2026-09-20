@@ -1945,6 +1945,7 @@ function ensureAgentSpaceTables() {
       slug TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
       current_private_version_id TEXT,
+      derived_from_release_id TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       UNIQUE(domain, user_id, project_id, instance_id, slug)
     );
@@ -1962,6 +1963,7 @@ function ensureAgentSpaceTables() {
       status TEXT NOT NULL DEFAULT 'draft',
       approved_by TEXT, approved_at TEXT, approval_ref TEXT,
       supersedes_version_id TEXT,
+      derived_from_version_id TEXT,
       idempotency_key TEXT,
       created_at TEXT NOT NULL,
       UNIQUE(skill_id, version_number)
@@ -1981,6 +1983,7 @@ function ensureAgentSpaceTables() {
       content_checksum TEXT NOT NULL,
       visibility TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'published',
+      is_default INTEGER NOT NULL DEFAULT 0,
       published_by TEXT, published_at TEXT NOT NULL,
       idempotency_key TEXT,
       created_at TEXT NOT NULL,
@@ -2198,6 +2201,10 @@ function ensureAgentSpaceTables() {
   ensureColumn("agent_space_workflows", "owner_id", "TEXT");
   // R9②：凭证行记录成功操作的稳定结果（幂等回放返回既有结果）。
   ensureColumn("agent_space_authorizations", "result_json", "TEXT");
+  // W3：默认发布标记与私有派生血缘（发布不可变 + 派生可追溯）。
+  ensureColumn("agent_space_skill_releases", "is_default", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("agent_space_skills", "derived_from_release_id", "TEXT");
+  ensureColumn("agent_space_skill_versions", "derived_from_version_id", "TEXT");
   markMigration(migrationKey);
 }
 

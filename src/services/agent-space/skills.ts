@@ -12,6 +12,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { sqlite } from "../../db/index.js";
+import { readUserAssetVersion } from "../user-assets.js";
 import {
   AgentSpaceError,
   assertDomainRowShape,
@@ -56,6 +57,8 @@ export interface AddSkillVersionInput {
   skillId: string;
   contentRef: SkillContentRef;
   origin: "private_edit" | "system_seed" | "release_import";
+  /** 派生血缘：本版本派生自某个发布版本的 versionId（W3 派生可追溯）。 */
+  derivedFromVersionId?: string;
   ownerToken?: string;
   actor: string;
 }
@@ -71,6 +74,7 @@ type SkillRow = {
   description: string | null;
   status: string;
   current_private_version_id: string | null;
+  derived_from_release_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -94,6 +98,7 @@ type SkillVersionRow = {
   approved_at: string | null;
   approval_ref: string | null;
   supersedes_version_id: string | null;
+  derived_from_version_id: string | null;
   created_at: string;
 };
 
@@ -110,6 +115,7 @@ type ReleaseRow = {
   content_checksum: string;
   visibility: ReleaseVisibility;
   status: "published" | "retired";
+  is_default: number;
   published_by: string | null;
   published_at: string;
   created_at: string;
@@ -256,13 +262,14 @@ export async function addSkillVersion(input: AddSkillVersionInput): Promise<Skil
         `INSERT INTO agent_space_skill_versions (
            version_id, skill_id, domain, user_id, project_id, instance_id, version_number,
            content_ref_type, asset_id, asset_version_id, system_template_path, content_checksum,
-           origin, status, supersedes_version_id, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+           origin, status, supersedes_version_id, derived_from_version_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
       )
       .run(versionId, input.skillId, input.domain, input.scope?.userId ?? null, input.scope?.projectId ?? null,
            input.scope?.instanceId ?? null, nextNumber, verified.contentRefType, verified.assetId ?? null,
            verified.assetVersionId ?? null, verified.systemTemplatePath ?? null,
-           verified.contentChecksum, input.origin, skill.current_private_version_id, nowIso());
+           verified.contentChecksum, input.origin, skill.current_private_version_id,
+           input.derivedFromVersionId ?? null, nowIso());
     sqlite.prepare("UPDATE agent_space_skills SET updated_at=? WHERE skill_id=?").run(nowIso(), input.skillId);
     recordAgentSpaceAudit({
       domain: input.domain,
@@ -353,11 +360,16 @@ export function publishSkillRelease(input: {
   releaseVersion: string;
   visibility: ReleaseVisibility;
   publishedBy: string;
+  /** 默认清单标记：仅系统域发布可携带（owner 令牌治理的目录策略）。 */
+  isDefault?: boolean;
   ownerToken?: string;
   actor: string;
 }): { releaseId: string; versionId: string; contentChecksum: string; visibility: ReleaseVisibility } {
   assertDomainRowShape(input.domain, input.scope);
   requireSystemWriteAuthorization(input.domain, input.ownerToken, "system skill publish");
+  if (input.isDefault && input.domain !== "system") {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "default-manifest releases can only be published in the system domain");
+  }
   const skill = getSkillRow(input.skillId);
   assertSkillScope(skill, input.domain, input.scope);
   const version = getVersionRow(input.versionId);
@@ -370,6 +382,16 @@ export function publishSkillRelease(input: {
   if (!["public", "shared", "private"].includes(input.visibility)) {
     throw new AgentSpaceError("AGENT_SPACE_VISIBILITY_INVALID", input.visibility);
   }
+  // 发布不可变：同一 skill 的 release_version 唯一，重复发布明确冲突。
+  const duplicate = sqlite
+    .prepare("SELECT release_id FROM agent_space_skill_releases WHERE skill_id=? AND release_version=?")
+    .get(input.skillId, input.releaseVersion) as { release_id: string } | undefined;
+  if (duplicate) {
+    throw new AgentSpaceError(
+      "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+      `release version ${input.releaseVersion} already exists for this skill (${duplicate.release_id}); published releases are immutable`,
+    );
+  }
   const tx = sqlite.transaction(() => {
     const releaseId = newId("srel");
     const now = nowIso();
@@ -378,12 +400,12 @@ export function publishSkillRelease(input: {
         `INSERT INTO agent_space_skill_releases (
            release_id, skill_id, domain, user_id, project_id, instance_id,
            release_version, version_id, content_ref_type, content_checksum,
-           visibility, status, published_by, published_at, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?)`,
+           visibility, status, is_default, published_by, published_at, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?)`,
       )
       .run(releaseId, input.skillId, input.domain, input.scope?.userId ?? null, input.scope?.projectId ?? null,
            input.scope?.instanceId ?? null, input.releaseVersion, input.versionId, version.content_ref_type,
-           version.content_checksum, input.visibility, input.publishedBy, now, now);
+           version.content_checksum, input.visibility, input.isDefault ? 1 : 0, input.publishedBy, now, now);
     recordAgentSpaceAudit({
       domain: input.domain,
       scope: input.scope,
@@ -392,7 +414,7 @@ export function publishSkillRelease(input: {
       objectType: "agent_space_skill_release",
       objectId: releaseId,
       toStatus: "published",
-      detail: { skillId: input.skillId, versionId: input.versionId, releaseVersion: input.releaseVersion, visibility: input.visibility },
+      detail: { skillId: input.skillId, versionId: input.versionId, releaseVersion: input.releaseVersion, visibility: input.visibility, isDefault: input.isDefault === true },
     });
     return releaseId;
   });
@@ -500,6 +522,201 @@ export function getSkillVersion(domain: AgentSpaceScopeDomain, scope: UserScope 
   const skill = getSkillRow(row.skill_id);
   assertSkillScope(skill, domain, scope);
   return row;
+}
+
+// ---------- W3：目录、派生与内容读取 ----------
+
+export interface SkillCatalogEntry {
+  releaseId: string;
+  skillId: string;
+  slug: string;
+  name: string;
+  domain: AgentSpaceScopeDomain;
+  releaseVersion: string;
+  versionId: string;
+  contentRefType: string;
+  contentChecksum: string;
+  isDefault: boolean;
+  publishedAt: string;
+}
+
+/**
+ * 市场目录（W3）：只呈现 public + published 的发布（含系统默认标记）；
+ * private/shared 不进任何目录枚举面。目录只暴露元数据与 checksum，不吐正文。
+ */
+export function listSkillCatalog(): SkillCatalogEntry[] {
+  return (
+    sqlite
+      .prepare(
+        `SELECT r.release_id, r.skill_id, s.slug, s.name, r.domain, r.release_version, r.version_id,
+                r.content_ref_type, r.content_checksum, r.is_default, r.published_at
+         FROM agent_space_skill_releases r JOIN agent_space_skills s ON s.skill_id = r.skill_id
+         WHERE r.visibility='public' AND r.status='published'
+         ORDER BY r.published_at DESC`,
+      )
+      .all() as Array<{
+        release_id: string; skill_id: string; slug: string; name: string; domain: AgentSpaceScopeDomain;
+        release_version: string; version_id: string; content_ref_type: string; content_checksum: string;
+        is_default: number; published_at: string;
+      }>
+  ).map((r) => ({
+      releaseId: r.release_id,
+      skillId: r.skill_id,
+      slug: r.slug,
+      name: r.name,
+      domain: r.domain,
+      releaseVersion: r.release_version,
+      versionId: r.version_id,
+      contentRefType: r.content_ref_type,
+      contentChecksum: r.content_checksum,
+      isDefault: r.is_default === 1,
+      publishedAt: r.published_at,
+    }));
+}
+
+/**
+ * 安装方视角的发布详情（W3）：可见性规则与安装一致——private 仅属主、
+ * shared 跨用户 fail-closed、public+published 开放；retired 拒绝。
+ */
+export function getReleaseDetailForInstaller(
+  installerScope: UserScope,
+  releaseId: string,
+): SkillCatalogEntry & { visibility: ReleaseVisibility; status: string } {
+  const release = getReleaseRow(releaseId);
+  assertReleaseInstallableBy(release, installerScope);
+  const skill = getSkillRow(release.skill_id);
+  return {
+    releaseId: release.release_id,
+    skillId: release.skill_id,
+    slug: skill.slug,
+    name: skill.name,
+    domain: release.domain,
+    releaseVersion: release.release_version,
+    versionId: release.version_id,
+    contentRefType: release.content_ref_type,
+    contentChecksum: release.content_checksum,
+    isDefault: release.is_default === 1,
+    publishedAt: release.published_at,
+    visibility: release.visibility,
+    status: release.status,
+  };
+}
+
+/**
+ * 市场安装后的定制 = 私有派生（W3）：以发布为血缘起点创建用户私有技能，
+ * 首版内容必须是派生者自己 scope 内的真实资产版本（正文归派生者所有，
+ * 不跨 scope 复制字节）；血缘列记录来源 release/version，可追溯、可审计。
+ * 来源发布的可见性规则与安装一致。
+ */
+export async function derivePrivateSkillFromRelease(input: {
+  scope: UserScope;
+  releaseId: string;
+  slug: string;
+  name: string;
+  description?: string;
+  /** 派生者自己 scope 内的内容引用（定制后的正文）。 */
+  contentRef: SkillContentRef;
+  actor: string;
+}): Promise<{ skill: SkillRow; version: SkillVersionRow }> {
+  assertScopeValid(input.scope);
+  const release = getReleaseRow(input.releaseId);
+  assertReleaseInstallableBy(release, input.scope);
+  const existing = sqlite
+    .prepare(
+      `SELECT skill_id FROM agent_space_skills
+       WHERE domain='user' AND COALESCE(user_id,'')=? AND COALESCE(project_id,'')=? AND COALESCE(instance_id,'')=? AND slug=?`,
+    )
+    .get(input.scope.userId, input.scope.projectId, input.scope.instanceId, input.slug) as { skill_id: string } | undefined;
+  if (existing) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `slug ${input.slug} already exists in this scope`);
+  }
+  const verified = await verifySkillContentRef("user", input.scope, input.contentRef);
+  const now = nowIso();
+  const tx = sqlite.transaction(() => {
+    const skillId = newId("skill");
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_skills (
+           skill_id, domain, user_id, project_id, instance_id, slug, name, description,
+           status, current_private_version_id, derived_from_release_id, created_at, updated_at
+         ) VALUES (?, 'user', ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?, ?)`,
+      )
+      .run(skillId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.slug, input.name,
+           input.description ?? null, input.releaseId, now, now);
+    const versionId = newId("sver");
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_skill_versions (
+           version_id, skill_id, domain, user_id, project_id, instance_id, version_number,
+           content_ref_type, asset_id, asset_version_id, system_template_path, content_checksum,
+           origin, status, supersedes_version_id, derived_from_version_id, created_at
+         ) VALUES (?, ?, 'user', ?, ?, ?, 1, ?, ?, ?, ?, ?, 'release_import', 'draft', NULL, ?, ?)`,
+      )
+      .run(versionId, skillId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+           verified.contentRefType, verified.assetId ?? null, verified.assetVersionId ?? null,
+           verified.systemTemplatePath ?? null, verified.contentChecksum, release.version_id, now);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "skill.derived_from_release",
+      objectType: "agent_space_skill",
+      objectId: skillId,
+      toStatus: "draft",
+      detail: { releaseId: input.releaseId, derivedFromVersionId: release.version_id, slug: input.slug, versionId },
+    });
+    return { skillId, versionId };
+  });
+  const { skillId, versionId } = tx();
+  return { skill: getSkillRow(skillId), version: getVersionRow(versionId) };
+}
+
+/**
+ * 技能版本字节读取（W3）：user_asset_version 走 scoped 校验读取；
+ * system_template 在模板根内做包含校验 + 字节 checksum 校验。
+ * 供运行时固定版本解析使用（agents.ts resolveInstalledSkillContent）。
+ */
+export async function readSkillVersionContentBytes(version: SkillVersionRow): Promise<Buffer> {
+  if (version.content_ref_type === "user_asset_version") {
+    if (!version.user_id || !version.asset_id || !version.asset_version_id) {
+      throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", "skill version has an incomplete user-asset content ref");
+    }
+    const read = await readUserAssetVersion({
+      userId: version.user_id, projectId: version.project_id ?? "", instanceId: version.instance_id ?? "",
+      assetId: version.asset_id, versionId: version.asset_version_id,
+    });
+    return read.bytes;
+  }
+  if (version.content_ref_type === "system_template") {
+    if (!version.system_template_path || path.isAbsolute(version.system_template_path) || version.system_template_path.includes("..")) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "systemTemplatePath must be a relative path inside the template root");
+    }
+    const root = path.resolve(process.env.SYSTEM_SKILLS_TEMPLATE_ROOT || path.join(process.cwd(), "templates", "skills"));
+    const absolute = path.join(root, version.system_template_path);
+    if (!absolute.startsWith(root + path.sep)) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "systemTemplatePath escapes template root");
+    }
+    const bytes = await readFile(absolute);
+    const actual = createHash("sha256").update(bytes).digest("hex");
+    if (actual !== version.content_checksum) {
+      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `system template checksum mismatch for ${version.system_template_path}`);
+    }
+    return bytes;
+  }
+  throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", `unknown contentRefType ${version.content_ref_type}`);
+}
+
+/** 默认清单候选（W3）：is_default + published + public 的系统发布，按技能取最新。 */
+export function listDefaultReleases(): ReleaseRow[] {
+  const rows = sqlite
+    .prepare(
+      `SELECT * FROM agent_space_skill_releases
+       WHERE is_default=1 AND status='published' AND visibility='public'
+       ORDER BY published_at DESC, rowid DESC`,
+    )
+    .all() as ReleaseRow[];
+  const bySkill = new Map<string, ReleaseRow>();
+  for (const row of rows) if (!bySkill.has(row.skill_id)) bySkill.set(row.skill_id, row);
+  return [...bySkill.values()];
 }
 
 export type { SkillRow, SkillVersionRow, ReleaseRow };

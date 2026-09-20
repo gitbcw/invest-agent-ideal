@@ -22,6 +22,8 @@ import {
   assertReleaseInstallableBy,
   getReleaseRow as getSkillReleaseRow,
   getVersionRow as getSkillVersionRow,
+  listDefaultReleases,
+  readSkillVersionContentBytes,
 } from "./skills.js";
 import { resolveMethodVersion } from "./methods.js";
 
@@ -253,6 +255,209 @@ export function listInstalledSkills(scope: UserScope, agentId: string): Installa
   const bySkill = new Map<string, InstallationRow>();
   for (const row of rows) if (!bySkill.has(row.skill_id)) bySkill.set(row.skill_id, row);
   return [...bySkill.values()];
+}
+
+// ---------- W3：默认清单、移除与运行时固定版本解析 ----------
+
+/**
+ * 默认技能清单（W3）：为新建 Agent 生成初始安装。默认目录是 owner 治理的
+ * 系统策略（系统域发布须 owner 令牌，is_default 仅系统域可携带），因此本入口
+ * 是受信服务入口，不走用户授权凭证；approval_ref='default-manifest' 是来源
+ * 标记而非凭证。幂等：已存在任一状态安装行（含 removed）的技能不再注入——
+ * 默认集变化/升级不触碰存量安装，升级与移除都是用户的显式决定。
+ */
+export function applyDefaultSkillManifest(input: {
+  scope: UserScope;
+  agentId: string;
+  actor: string;
+}): { appliedInstallationIds: string[]; skippedSkillIds: string[] } {
+  assertScopeValid(input.scope);
+  const agent = getAgent(input.scope, input.agentId);
+  if (agent.status === "disabled") {
+    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "disabled agent cannot receive the default manifest");
+  }
+  const defaults = listDefaultReleases();
+  const tx = sqlite.transaction(() => {
+    const applied: string[] = [];
+    const skipped: string[] = [];
+    for (const release of defaults) {
+      const existing = sqlite
+        .prepare(
+          `SELECT installation_id FROM agent_space_agent_skill_installations
+           WHERE agent_id=? AND skill_id=? AND user_id=? AND project_id=? AND instance_id=? LIMIT 1`,
+        )
+        .get(input.agentId, release.skill_id, input.scope.userId, input.scope.projectId, input.scope.instanceId) as
+        | { installation_id: string }
+        | undefined;
+      if (existing) {
+        skipped.push(release.skill_id);
+        continue;
+      }
+      const installationId = newId("skinst");
+      const now = nowIso();
+      sqlite
+        .prepare(
+          `INSERT INTO agent_space_agent_skill_installations (
+             installation_id, agent_id, user_id, project_id, instance_id, skill_id,
+             source, release_id, release_version, version_id, status, installed_by, installed_at, approval_ref, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 'release', ?, ?, ?, 'installed', 'system-default', ?, 'default-manifest', ?)`,
+        )
+        .run(installationId, input.agentId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+             release.skill_id, release.release_id, release.release_version, release.version_id, now, now);
+      recordAgentSpaceAudit({
+        scope: input.scope,
+        actor: input.actor,
+        action: "agent.skill.default_applied",
+        objectType: "agent_space_agent_skill_installation",
+        objectId: installationId,
+        toStatus: "installed",
+        detail: { agentId: input.agentId, skillId: release.skill_id, releaseId: release.release_id, versionId: release.version_id, origin: "default-manifest" },
+      });
+      applied.push(installationId);
+    }
+    return { appliedInstallationIds: applied, skippedSkillIds: skipped };
+  });
+  return tx();
+}
+
+/**
+ * 显式移除安装（W3）：用户决定，走授权凭证（operation=skill.remove，绑定
+ * agentId+skillId）；R9 契约同安装——核验+消耗+状态转换+审计+结果记录同事务，
+ * 重放返回原结果。安装行保留（status=removed）供追溯，运行解析随即拒绝。
+ */
+export function removeInstalledSkill(input: {
+  scope: UserScope;
+  agentId: string;
+  skillId: string;
+  approvalRef: string;
+  ownerToken?: string;
+  actor: string;
+}): { installationId: string; status: "removed" } {
+  assertScopeValid(input.scope);
+  getAgent(input.scope, input.agentId);
+  const tx = sqlite.transaction(() => {
+    const approval = verifyAuthorization(
+      input.scope,
+      { operation: "skill.remove", objectType: "agent_space_agent_skill_installation", objectId: input.agentId, versionId: null, extraBinding: { skillId: input.skillId } },
+      input.approvalRef,
+      input.ownerToken,
+    );
+    if (approval.replayed) {
+      const stored = approval.replayResult as { installationId: string };
+      const row = getInstallationRow(input.scope, stored.installationId);
+      return { installationId: row.installation_id, status: row.status };
+    }
+    const installed = sqlite
+      .prepare(
+        `SELECT * FROM agent_space_agent_skill_installations
+         WHERE agent_id=? AND skill_id=? AND user_id=? AND project_id=? AND instance_id=? AND status='installed'`,
+      )
+      .get(input.agentId, input.skillId, input.scope.userId, input.scope.projectId, input.scope.instanceId) as InstallationRow | undefined;
+    if (!installed) {
+      throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "skill is not installed for this agent");
+    }
+    sqlite
+      .prepare("UPDATE agent_space_agent_skill_installations SET status='removed' WHERE installation_id=?")
+      .run(installed.installation_id);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "agent.skill.removed",
+      objectType: "agent_space_agent_skill_installation",
+      objectId: installed.installation_id,
+      fromStatus: "installed",
+      toStatus: "removed",
+      detail: { agentId: input.agentId, skillId: input.skillId, versionId: installed.version_id, approvalRef: input.approvalRef },
+    });
+    recordAuthorizationOutcome(approval.authorizationId, { installationId: installed.installation_id });
+    return { installationId: installed.installation_id, status: "removed" as const };
+  });
+  return tx();
+}
+
+export interface InstalledSkillManifestEntry {
+  skillId: string;
+  slug: string;
+  name: string;
+  installationId: string;
+  source: "release" | "private";
+  releaseId: string | null;
+  releaseVersion: string | null;
+  versionId: string;
+  contentRefType: string;
+  contentChecksum: string;
+  systemTemplatePath: string | null;
+  skillDerivedFromReleaseId: string | null;
+  versionDerivedFromVersionId: string | null;
+  installedAt: string;
+}
+
+/** Agent 安装清单读模型（W3）：每技能一行——已安装的固定版本 + 内容定位元数据。 */
+export function getInstalledSkillManifest(scope: UserScope, agentId: string): InstalledSkillManifestEntry[] {
+  assertScopeValid(scope);
+  getAgent(scope, agentId);
+  return (
+    sqlite
+      .prepare(
+        `SELECT i.skill_id, s.slug, s.name, i.installation_id, i.source, i.release_id, i.release_version,
+                i.version_id, v.content_ref_type, v.content_checksum, v.system_template_path,
+                s.derived_from_release_id, v.derived_from_version_id, i.installed_at
+         FROM agent_space_agent_skill_installations i
+         JOIN agent_space_skills s ON s.skill_id = i.skill_id
+         JOIN agent_space_skill_versions v ON v.version_id = i.version_id
+         WHERE i.agent_id=? AND i.user_id=? AND i.project_id=? AND i.instance_id=? AND i.status='installed'`,
+      )
+      .all(agentId, scope.userId, scope.projectId, scope.instanceId) as Array<{
+        skill_id: string; slug: string; name: string; installation_id: string; source: "release" | "private";
+        release_id: string | null; release_version: string | null; version_id: string; content_ref_type: string;
+        content_checksum: string; system_template_path: string | null; derived_from_release_id: string | null;
+        derived_from_version_id: string | null; installed_at: string;
+      }>
+  ).map((r) => ({
+      skillId: r.skill_id,
+      slug: r.slug,
+      name: r.name,
+      installationId: r.installation_id,
+      source: r.source,
+      releaseId: r.release_id,
+      releaseVersion: r.release_version,
+      versionId: r.version_id,
+      contentRefType: r.content_ref_type,
+      contentChecksum: r.content_checksum,
+      systemTemplatePath: r.system_template_path,
+      skillDerivedFromReleaseId: r.derived_from_release_id,
+      versionDerivedFromVersionId: r.derived_from_version_id,
+      installedAt: r.installed_at,
+    }));
+}
+
+/**
+ * 运行时固定版本解析（W3）：只认该 Agent 当前安装行钉住的版本——私有后续
+ * 升级/发布变化不影响已安装 Agent；未安装/已移除/已 superseded 的技能一律
+ * 拒绝；越权（跨 scope Agent）拒绝。返回固定版本元数据与校验后的字节。
+ */
+export async function resolveInstalledSkillContent(
+  scope: UserScope,
+  agentId: string,
+  skillId: string,
+): Promise<{ versionId: string; checksum: string; bytes: Buffer }> {
+  assertScopeValid(scope);
+  getAgent(scope, agentId);
+  const installed = sqlite
+    .prepare(
+      `SELECT * FROM agent_space_agent_skill_installations
+       WHERE agent_id=? AND skill_id=? AND user_id=? AND project_id=? AND instance_id=? AND status='installed'`,
+    )
+    .get(agentId, skillId, scope.userId, scope.projectId, scope.instanceId) as InstallationRow | undefined;
+  if (!installed) {
+    throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `skill ${skillId} is not installed for agent ${agentId}`);
+  }
+  const version = getSkillVersionRow(installed.version_id);
+  if (version.status === "draft") {
+    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "installed version must be formal; draft skills never resolve at runtime");
+  }
+  const bytes = await readSkillVersionContentBytes(version);
+  return { versionId: version.version_id, checksum: version.content_checksum, bytes };
 }
 
 /** 方法绑定：pinned 必须指向已批准正式版本；current 跟随 methods.current_version_id。 */
