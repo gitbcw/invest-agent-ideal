@@ -1,48 +1,41 @@
-# W4 交付：Agent 空间控制面与运行时装配
+# W4 交付：Agent 空间控制面与运行时装配（含 R1-R4 返工）
 
-状态：本地实现与隔离 DB 验证完成；未真实切换或删除旧 Workspace、未接线生产入口、未部署、未迁移真实用户。
-依据：[W4-agent-space-runtime.md](./W4-agent-space-runtime.md)、W1-W3 已通过验收的域契约。W5 状态注册面未开工，agent_state 在依赖与状态包中以**明确标注的空接口桩**呈现（fail-closed）。
+状态：本地实现与隔离接线验证完成；未切生产、未部署、未迁移真实用户、未启动真实任务或推送。装配模式默认关闭，按 scope 显式启用（`AGENT_SPACE_ASSEMBLY_MODE=scope:<userId,...>`）。
+依据：[W4-agent-space-runtime.md](./W4-agent-space-runtime.md)、[W4 验收返工单](./W4-acceptance-review.md)（R1-R4 均已定向修复）。
 
-## 0. 装配顺序与不变量
+## 0. 返工摘要（相对 b7eee44）
 
-装配严格按执行稿顺序：**认证 scope → 固定已安装 Skill/绑定 Method/asset grant 版本 → 按任务 dependencies 收窄 → 预算 State Packet → 记录可解释 run-basis**。
-
-- **版本装配即固定**：basis 内一切引用都是具体 versionId + checksum（技能=安装行钉住版本；方法=`resolveMethodVersion` 解析结果；W2/W3 校验读取路径按 versionId 取回字节）。并发升级/换绑不改变已记录的 basis；下一轮重新解析才拿新版本。
-- **未绑定/禁用/跨 scope 不进入上下文**：Agent 必须 active（draft/disabled 明确拒绝）；方法绑定解析失败记 skipped（含原因，不静默）；过期 grant 记 pruned；跨 scope 读取拒绝。
-- **任务收窄**：automation/scheduled 入口按 `agent_space_task_dependencies` 严格交集——未声明依赖的装配项 pruned（not-in-task-dependencies）、依赖 pin 与装配版本不一致 skipped、声明了但装配缺失（未安装/未绑定/未授权）skipped 并说明；无依赖记录的任务不收窄。agent_state 依赖 → 明确标注的 W5 桩 skipped。
-- **预算状态包**：有效 lesson/workflow（`listEffectiveState`）按 `stateBudgetChars`（缺省 20000）预算截断，超出条目记 truncation（原因 state-budget-exceeded）；`stateOffset` 分页取余；`agentState` 槽位 status="stub" 明确标注待 W5。
-- **run-basis 可解释且幂等**：`agent_space_run_basis` 表（basis_key UNIQUE）；同 key 同内容返回既有记录，同 key 不同内容 `IDEMPOTENCY_CONFLICT`（一个入口键只装配一次）；记录含 Agent、各对象固定版本、资产、状态包摘要、pruned/skipped/truncations 全量原因、入口上下文（conversation/task/run）。
-- **旧 Workspace 隔离**：装配模块零 fs 依赖（不 list/grep/discover 旧 Workspace）；测试断言工作区目录为空时装配完整可用——关闭旧 default-load 不影响新对象提供依赖。未来兼容读取必须显式、按需、可观察并写入 run-basis（本模块不提供隐式兼容读取）。
-
-## 1. 新增 API（`src/services/agent-space/assembly.ts`）
-
-| API | 语义 | 失败契约 |
+| 返工项 | 修复 | 证据 |
 | --- | --- | --- |
-| `assembleAndRecordRunBasis({scope, agentId, entryKind, basisKey, conversationId?, taskId?, runId?, stateBudgetChars?, stateOffset?, actor})` | 解析并原子记录一次运行依据；entryKind ∈ conversation / generic_automation / scheduled（conversation 须 conversationId，任务类须 taskId） | Agent 不存在/跨 scope `NOT_FOUND`/`SCOPE_MISMATCH`；非 active `INVALID_TRANSITION`；缺入口上下文 `ARGUMENT_INVALID`；同 key 异内容 `IDEMPOTENCY_CONFLICT` |
-| `getRunBasis(scope, basisKey)` | scoped 最小查询面（幂等回放/审计） | 缺失 `NOT_FOUND`；跨 scope `SCOPE_MISMATCH` |
+| R1 三个枚举值≠三入口接线 | **真实入口接线**：`runtime/agent.ts` 模型边界（conversation 与 generic automation 共用 `createRuntimeAgent().handleMessage`）+ `runtime/scheduled-tasks.ts` 直连 `runMastraTurn` 的独立接缝（scheduled 不经过 runtime agent）。启用时 instructions/tools/workspace 来自装配与固定版本内容，**不回落旧 Workspace 挂载/默认技能发现，装配失败即本轮失败**；`generic-automation-runner.ts` 在启用 scope 显式标注入口。隔离测试以本地假模型网关捕获**真实入口最终发给模型的 messages/tools**，验证 pinned 内容/checksum/受限工具/无工作区注入；关闭时行为逐字不变（零 basis 写入） | 测试组 "W4 rework R1: real-entry wiring"（conversation/generic_automation/scheduled 三入口捕获 + mode-off 对照） |
+| R2 入口身份与幂等范围 | 身份链核验：conversation→`conversation_sessions`（存在+scope）；task→`automation_tasks`；run→`automation_task_runs`（run→task 归属+scope）；依赖声明的执行 Agent 与本次 Agent 错配拒绝；**非法输入不落 basis/审计**。basis_key 存储**按 scope 命名空间**（不同 scope 同 key 互不冲突）；**冻结回放**：同 scope 同请求重试直接返回已冻结 basis（配置升级不拒绝合法重试），不同请求复用同 key 才冲突 | 测试组 R2 段（伪 conversation/task/run、跨 scope、同 key 双 scope、升级后冻结重试） |
+| R3 空依赖放宽 + 资产未固定版本 | 任务装配**严格按依赖**：无依赖=显式空集（skipped 记 `task-declares-no-dependencies`，旧任务未迁移即未就绪）；依赖 **pin 的正式版本直接执行**（Agent 已升级不迫使其跳版本，origin=task-dependency-pinned）；资产解析 **versionId+checksum** 并保留 **input/output 角色**（latest 在装配起点解析成具体版本）；必需依赖无法解析（如仅草稿方法）**阻断且不落 basis**；未声明依赖的技能/资产不进入任务上下文 | 测试组 R3 段 |
+| R4 状态桩实际检索全用户经验 | State Packet 改为**真正的空桩**：lesson/workflow 一律空、`agentState.note="not-integrated-until-W5: W4 loads no long-term state"`；不再调用 `listEffectiveState`；预算/分页/截断移到真实注入面（R1 内容预算 `AGENT_SPACE_CONTENT_BUDGET_CHARS`，逐段 keptChars/truncation 记录进 injection） | 测试组 R4 段 + 注入记录断言 |
 
-Schema：新增 `agent_space_run_basis`（第 21 张 agent_space 表；basis_id PK / basis_key UNIQUE / scope 三列 / agent_id / entry_kind / conversation_id / task_id / run_id / basis_json / created_at）+ drizzle 镜像；表计数测试 20→21。
+run-basis 结构区分三段：`resolution`（冻结解析）/ `injection`（真实入口回写的实际注入段、工具清单、workspace=null；一次性写入，重放返回既有）/ `execution: {status:"pending-w5"}`（W5 待接，不宣称已覆盖）。
+
+## 1. 接线与 API
+
+**装配服务（`src/services/agent-space/assembly.ts`）**：`assembleAndRecordRunBasis` / `recordRunBasisInjection` / `getRunBasis`。Schema：`agent_space_run_basis` 增加 `request_json`（请求身份，冻结回放比对）与 `injection_json`（注入回写）列。
+
+**运行时接线（`src/runtime/agent-space-context.ts`）**：
+- `isAgentSpaceAssemblyModeEnabled(userId)`——默认 off；`on`/`scope:<ids>` 显式启用。
+- `buildAgentSpaceTurnOptions({scope, conversationId, messageId, entryKind?, taskType?, taskId?, runId?, grantedTools, toolAllowlist?})`——冻结解析 → 方法/技能固定版本正文按预算注入（截断逐段记录）→ 资产注入 role+version+checksum 引用 → 授权即清单限制工具（空数组=零授权）→ 回写 injection → 返回模型边界 options（无 workspace）。
+- 入口：`runtime/agent.ts`（conversation + generic automation，显式标注 `_agentSpaceAssembly` 优先）；`scheduled-tasks.ts`（`buildScheduledTurnDeps` 接缝，`runScheduledAgentTaskForTest` 供隔离测试）；`generic-automation-runner.ts`（启用 scope 显式标注）。
 
 ## 2. 测试证据
 
-`tests/agent-space-domain.test.ts` 新增组 "W4: runtime assembly — pinned run-basis, task narrowing, budget truncation, isolation"：
-
-- conversation 入口：固定版本装配（技能=安装行版本、方法=解析版本+checksum、资产、有效 lesson 入状态包、agentState 桩标注）；同 key 幂等回放。
-- **并发隔离**：技能升级 + 重装后，已记录 basis 仍持旧 versionId；下一 key 解析拿新版本；同 key 内容变化冲突。
-- generic_automation/scheduled 入口：依赖交集（covered 保留、未声明资产 pruned、pin 不一致 skipped、未绑定方法 skipped missing、agent_state 桩 skipped）。
-- 预算截断：极小预算产生 truncation 记录；offset 越界返回空页不报错。
-- 拒绝矩阵：draft/disabled Agent、跨 scope Agent、跨 scope 读 basis、任务入口缺 taskId。
-- Workspace 隔离：工作区根目录为空时装配完整可用（结构性：assembly.ts 无 fs import）。
-
 ```
-node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 29/29
-npm test    # 719/719（~47s 自终止）
+node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 30/30
+npm test    # 720/720（~48s 自终止）
 npm run build && npx tsc --noEmit   # 0 错误
 ```
 
-## 3. 待决项与交接
+关键断言：三真实入口经假模型网关捕获最终 system prompt 含 "Agent Space 装配（<entryKind>）" 与 pinned versionId/checksum/正文；空授权清单下注入工具为空数组；injection.workspace=null；关闭模式旧 instructions 逐字保留且零 basis 写入；伪/跨域/错配身份拒绝且不落行；同 key 双 scope 不冲突；升级后冻结重试返回原版本；空依赖任务空集；pin 旧正式版本执行；必需依赖不满足阻断。
 
-- **未接线生产**：三类入口的装配调用点（conversation turn / generic runner / scheduler）待接口稳定后接入；当前为纯服务层能力，模型与调度不可达。运行中输入输出/写入/交付的回填记录（run-basis 的后续段）随 W5 任务面落地。
-- agent_state 注册面（W5）：依赖登记仍 fail-closed；状态包槽位 stub 待 W5 换真实注册表。
-- 兼容读取旧 Workspace 的显式入口（如需）单独设计：按需、可观察、写入 run-basis；默认不挂载。
-- 新技能内容存储的备份/恢复验证按裁决留在 W6/W7。
+## 3. 边界与待决
+
+- **未切生产**：装配模式默认关闭；未部署、未切换真实用户、未启动真实任务/推送。W5 前不将 run-basis 宣称为完整执行链（execution 段明确 pending-w5）。
+- scheduled 生产调用点的 taskId 多为调度器内部标识，未必是 automation_tasks 行——启用装配模式前须先落任务注册（W5 任务面对齐），否则身份链会明确拒绝。
+- agent_state 依赖与状态包为明确空桩（W5）；依赖登记仍 fail-closed。
+- 显式兼容读取旧 Workspace（如需）单独设计；内容存储备份/恢复验证留 W6/W7。

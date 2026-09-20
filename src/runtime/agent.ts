@@ -18,6 +18,7 @@ import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { recordModelFeedback, resolveAutoModel } from "../services/model-health.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
+import { buildAgentSpaceTurnOptions, isAgentSpaceAssemblyModeEnabled } from "./agent-space-context.js";
 import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../mastra/external-mcp.js";
 import {
   applyInteractiveExternalToolDiscovery,
@@ -446,7 +447,32 @@ export function createRuntimeAgent(): RuntimeAgent {
             maxSteps,
             ...(message.context?._onProgress ? { onProgress: message.context._onProgress as import("./protocol.js").AgentTurnProgressCallback } : {}),
           } as Parameters<typeof runMastraTurn>[0];
-          const turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: grantedServiceTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
+          // W4-R1：Agent Space 装配模式（默认关闭，按 scope 显式启用）。
+          // 启用后 instructions/tools/workspace 来自装配与固定版本内容，
+          // 不回落旧 Workspace 挂载/默认技能发现；装配失败即本轮失败。
+          let turnDeps: { agentOptions: { instructions: unknown; tools: Record<string, unknown>; workspace?: unknown } };
+          if (isAgentSpaceAssemblyModeEnabled(userContext.userId)) {
+            // 入口显式标注（_agentSpaceAssembly）优先；未标注时按 taskType 识别。
+            const annotated = typeof message.context?._agentSpaceAssembly === "string" ? message.context._agentSpaceAssembly : null;
+            const assemblyOptions = await buildAgentSpaceTurnOptions({
+              scope: {
+                userId: userContext.userId,
+                projectId: userContext.projectId ?? "invest-agent",
+                instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId),
+              },
+              conversationId,
+              messageId: message.id,
+              entryKind: annotated === "generic_automation" || annotated === "scheduled" ? annotated : undefined,
+              taskType: typeof userContext.taskType === "string" ? userContext.taskType : null,
+              taskId: typeof message.context?.taskId === "string" ? message.context.taskId : undefined,
+              runId: typeof message.context?.runId === "string" ? message.context.runId : undefined,
+              grantedTools: grantedServiceTools,
+              toolAllowlist: Array.isArray(userContext.mcpAllowedTools) ? (userContext.mcpAllowedTools as string[]) : null,
+            });
+            turnDeps = { agentOptions: { instructions: assemblyOptions.instructions, tools: assemblyOptions.tools } };
+          } else {
+            turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: grantedServiceTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
+          }
           // W1-P3 自动路由轮内兜底：首字超时（45s）或可重试的上游错误时，沿自动链换下一顺位模型重试。
           // 2026-08-18 加强：从只允许一跳扩展到走完整条自动链（默认最多 3 次兜底），
           // 并把网关 upstream 错误（如 Upstream error: 400）纳入可重试签名。

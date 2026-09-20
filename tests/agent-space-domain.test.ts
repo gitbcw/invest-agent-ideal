@@ -120,6 +120,8 @@ const fixture = (async () => {
                   VALUES (?,'asset_w2',?,?,?,1,'strategy.md','markdown','text/markdown',?,?,?,'system',?)`)
         .run(vid, scopeA.userId, scopeA.projectId, scopeA.instanceId, body.length, sha256Of(body), `assets/asset_w2/versions/${vid}/strategy.md`, now);
   }
+  seed.prepare("UPDATE user_assets SET current_version_id='ver_w2_1' WHERE asset_id='asset_w2'").run();
+  seed.prepare("UPDATE user_assets SET current_version_id='ver_a1' WHERE asset_id='asset_a1'").run();
   // W3：系统模板根落真实模板文件（系统域技能版本的 canonical 内容）。
   const tplDir = path.join(root, "templates", "sys-default-skill");
   mkdirSync(tplDir, { recursive: true });
@@ -1636,13 +1638,13 @@ test("W3-R2: default manifest is a one-time init event; later default kinds neve
   assert.equal(retried.appliedInstallationIds.length, 1, "retry after repair completes the full init consistently");
 });
 
-test("W4: runtime assembly — pinned run-basis, task narrowing, budget truncation, isolation", async () => {
+test("W4 rework R2-R4: identity chain, scoped keys, frozen replay, deps-only assembly, empty state stub", async () => {
   const { db, space } = await fixture;
 
-  // 基础装配：active Agent + 已装技能（真实字节）+ 方法绑定（current）+ 资产授权 + 有效 lesson
-  const agent = space.createAgent({ scope: scopeA, name: "W4装配助手", actor: "user:a" });
+  // 装配环境：active Agent + 已装技能 + 方法绑定 + 授权资产
+  const agent = space.createAgent({ scope: scopeA, name: "W4R助手", actor: "user:a" });
   space.setAgentStatus(scopeA, agent.agent_id, "active", "user:a");
-  const skill = space.upsertSkill({ domain: "user", scope: scopeA, slug: "w4-skill", name: "W4技能", actor: "user:a" });
+  const skill = space.upsertSkill({ domain: "user", scope: scopeA, slug: "w4r-skill", name: "W4R技能", actor: "user:a" });
   const sv1 = await space.addSkillVersion({
     domain: "user", scope: scopeA, skillId: skill.skill_id,
     contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_1", contentChecksum: W2_CHK_1 },
@@ -1650,29 +1652,48 @@ test("W4: runtime assembly — pinned run-basis, task narrowing, budget truncati
   });
   space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv1.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s1", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv1.version_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
   space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv1.version_id, installedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_install", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agent.agent_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } }), actor: "user:a" });
-  const method = space.createMethod({ scope: scopeA, name: "W4方法", actor: "user:a" });
+  const method = space.createMethod({ scope: scopeA, name: "W4R方法", actor: "user:a" });
   const mv1 = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
   space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: mv1.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: mv1.version_id, versionId: mv1.version_id, extraBinding: { methodId: method.method_id, adopt: "true" } }), actor: "user:a" });
   space.bindMethod({ scope: scopeA, agentId: agent.agent_id, methodId: method.method_id, versionPolicy: "current", actor: "user:a" });
   space.grantAsset({ scope: scopeA, agentId: agent.agent_id, assetId: "asset_w2", grantedBy: "user:a", actor: "user:a" });
-  const lesson = space.createStateCandidate({ scope: scopeA, kind: "lesson", title: "W4经验", content: { trigger: "t", guidance: "g" }, ownerKind: "conversation", ownerId: "conv_w1", actor: "agent" });
-  space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, expectedVersionId: lesson.versionId, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_lesson2", { operation: "state.approve", objectType: "agent_space_lesson", objectId: lesson.objectId, versionId: lesson.versionId, extraBinding: { kind: "lesson" } }), actor: "user:a" });
 
-  // conversation 入口：可解释 run-basis（固定版本 + 状态包 + 桩标注）
-  const basis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:1", conversationId: "conv_w1", actor: "user:a" });
-  assert.equal(basis.skills.length, 1);
-  assert.equal(basis.skills[0]!.versionId, sv1.version_id, "skills pin the installed fixed version");
-  assert.equal(basis.methods[0]!.versionId, mv1.version_id);
-  assert.equal(basis.methods[0]!.contentChecksum, W2_CHK_1);
-  assert.equal(basis.assets[0]!.assetId, "asset_w2");
-  assert.ok(basis.statePacket.lessons.some((l) => l.objectId === lesson.objectId), "effective lessons enter the state packet");
-  assert.equal(basis.statePacket.agentState.status, "stub", "agent_state is a clearly-marked W5 stub");
-  assert.equal(basis.pruned.length + basis.skipped.length, 0);
-  // 幂等回放：同 key 同内容返回既有记录
-  const replay = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:1", conversationId: "conv_w1", actor: "user:a" });
-  assert.equal(replay.basisId, basis.basisId);
+  // —— R2：伪身份拒绝且不落 basis/审计 ——
+  const basisCount = () => (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_run_basis").get() as { n: number }).n;
+  const before = basisCount();
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conv-fake:1", conversationId: "conv_missing", actor: "u" }),
+    "AGENT_SPACE_NOT_FOUND",
+  );
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "task-fake:1", taskId: "task_missing", actor: "u" }),
+    "AGENT_SPACE_NOT_FOUND",
+  );
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "run-fake:1", taskId: "task_exec_1", runId: "run_missing", actor: "u" }),
+    "AGENT_SPACE_NOT_FOUND",
+  );
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeB, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conv-cross:1", conversationId: "conv_w1", actor: "u" }),
+    "AGENT_SPACE_SCOPE_MISMATCH",
+  );
+  assert.equal(basisCount(), before, "rejected identities write no basis rows");
 
-  // 并发更新不替换本轮版本：升级技能 + 方法采用 v2 → 已记录 basis 不变；重新解析拿新版本
+  // —— R2：不同 scope 同 key 互不冲突 ——
+  const convA = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "shared-key:1", conversationId: "conv_w1", actor: "u" });
+  const agentB = space.createAgent({ scope: scopeB, name: "W4R助手B", actor: "user:b" });
+  space.setAgentStatus(scopeB, agentB.agent_id, "active", "user:b");
+  db.sqlite.prepare(`INSERT INTO conversation_sessions (conversation_id,user_id,project_id,instance_id,assistant_id,channel,title,last_message_preview,message_count,status,created_at,updated_at) VALUES ('conv_w1_b',?,?,?,'a','w','','',1,'active',?,?)`).run(scopeB.userId, scopeB.projectId, scopeB.instanceId, now, now);
+  const convB = space.assembleAndRecordRunBasis({ scope: scopeB, agentId: agentB.agent_id, entryKind: "conversation", basisKey: "shared-key:1", conversationId: "conv_w1_b", actor: "u" });
+  assert.notEqual(convA.basisId, convB.basisId, "same basisKey in different scopes never collides");
+  // 同 key 不同请求（换 Agent）→ 冲突
+  expectAgentSpaceError(
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "shared-key:1", taskId: "task_exec_1", actor: "u" }),
+    "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+  );
+
+  // —— R2：冻结回放——配置升级后同请求重试仍返回原 basis ——
+  const frozen = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "frozen:1", conversationId: "conv_w1", actor: "u" });
   const sv2 = await space.addSkillVersion({
     domain: "user", scope: scopeA, skillId: skill.skill_id,
     contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_2", contentChecksum: W2_CHK_2 },
@@ -1680,77 +1701,215 @@ test("W4: runtime assembly — pinned run-basis, task narrowing, budget truncati
   });
   space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv2.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s2", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv2.version_id, versionId: sv2.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
   space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv2.version_id, installedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_upgrade", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agent.agent_id, versionId: sv2.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } }), actor: "user:a" });
-  const reread = space.getRunBasis(scopeA, "conversation:conv_w1:turn:1");
-  assert.equal(reread.skills[0]!.versionId, sv1.version_id, "recorded basis keeps this round's versions after concurrent upgrades");
-  const basis2 = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:2", conversationId: "conv_w1", actor: "user:a" });
-  assert.equal(basis2.skills[0]!.versionId, sv2.version_id, "the next round resolves the new fixed version");
-  // 同 key 内容变化 → 幂等冲突
-  expectAgentSpaceError(
-    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:1", conversationId: "conv_w1", actor: "user:a" }),
-    "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
-  );
+  const retried = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "frozen:1", conversationId: "conv_w1", actor: "u" });
+  assert.equal(retried.basisId, frozen.basisId, "same request retries read the frozen basis");
+  assert.equal(retried.resolution.skills[0]!.versionId, sv1.version_id, "frozen basis keeps this round's versions despite upgrades");
+  assert.equal(space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "frozen:2", conversationId: "conv_w1", actor: "u" }).resolution.skills[0]!.versionId, sv2.version_id, "a new key resolves the upgraded version");
 
-  // generic_automation 入口：任务依赖收窄（agent_state 依赖经直写行模拟 W5 后注册面）
-  space.upsertTaskDependency({ scope: scopeA, taskId: "task_exec_1", kind: "skill", refId: skill.skill_id, versionPolicy: "pinned", pinnedVersionId: sv2.version_id, agentId: agent.agent_id, actor: "user:a" });
-  space.upsertTaskDependency({ scope: scopeA, taskId: "task_exec_1", kind: "method", refId: method.method_id, versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
-  db.sqlite.prepare(
-    `INSERT INTO agent_space_task_dependencies (dependency_id, task_id, user_id, project_id, instance_id, agent_id, kind, ref_id, version_policy, pinned_version_id, metadata_json, created_at, updated_at)
-     VALUES ('tdep_w4_state', 'task_exec_1', ?, ?, ?, ?, 'agent_state', 'w4-state-slot', 'latest', NULL, NULL, ?, ?)`,
-  ).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, agent.agent_id, now, now);
-  const autoBasis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "run:run_w1_2:basis", taskId: "task_exec_1", runId: "run_w1_2", actor: "user:a" });
-  assert.equal(autoBasis.entryKind, "generic_automation");
-  assert.equal(autoBasis.skills.length, 1, "dependency-covered skill stays");
-  assert.equal(autoBasis.methods.length, 1);
-  assert.ok(autoBasis.skipped.some((s) => s.kind === "agent_state" && s.reason.includes("W5")), "agent_state deps resolve to the marked stub");
-  assert.ok(autoBasis.skipped.every((s) => s.kind !== "asset") && autoBasis.pruned.every((p) => p.kind !== "asset") || autoBasis.pruned.some((p) => p.kind === "asset" && p.reason === "not-in-task-dependencies"), "assets outside dependencies are pruned with a reason");
-  assert.ok(autoBasis.pruned.some((p) => p.kind === "asset" && p.ref === "asset_w2"), "granted-but-undeclared asset is pruned");
-  // 依赖 pin 旧版本 → 安装已是新版本 → skipped 且不进上下文
-  space.upsertTaskDependency({ scope: scopeA, taskId: "task_exec_1", kind: "skill", refId: skill.skill_id, versionPolicy: "pinned", pinnedVersionId: sv1.version_id, agentId: agent.agent_id, actor: "user:a" });
-  const pinMismatch = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "run:pin-mismatch:basis", taskId: "task_exec_1", actor: "user:a" });
-  assert.equal(pinMismatch.skills.length, 0, "version-mismatched dependency does not enter context");
-  assert.ok(pinMismatch.skipped.some((s) => s.kind === "skill" && s.reason.includes("pins version")), "mismatch is explained in skipped");
-  // 声明了但装配缺失的依赖（真实存在、Agent 未绑定）→ skipped 说明
-  const method2 = space.createMethod({ scope: scopeA, name: "W4未绑定方法", actor: "user:a" });
-  const mv2b = space.addMethodVersion({ scope: scopeA, methodId: method2.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
-  space.approveMethodVersion({ scope: scopeA, methodId: method2.method_id, versionId: mv2b.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_m", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: mv2b.version_id, versionId: mv2b.version_id, extraBinding: { methodId: method2.method_id, adopt: "true" } }), actor: "user:a" });
-  space.upsertTaskDependency({ scope: scopeA, taskId: "task_exec_1", kind: "method", refId: method2.method_id, versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
-  const missingDep = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "scheduled", basisKey: "schedule:w4:1", taskId: "task_exec_1", actor: "user:a" });
-  assert.equal(missingDep.entryKind, "scheduled");
-  assert.ok(missingDep.skipped.some((s) => s.ref === method2.method_id && s.reason.includes("missing from the agent assembly")), "unbound-but-declared dependency is explained as missing");
+  // —— R4：状态包真空桩 ——
+  assert.deepEqual(frozen.resolution.statePacket.lessons, []);
+  assert.deepEqual(frozen.resolution.statePacket.workflows, []);
+  assert.equal(frozen.resolution.statePacket.agentState.status, "stub");
+  assert.match(frozen.resolution.statePacket.agentState.note, /not-integrated-until-W5/);
 
-  // 预算截断：极小预算下 state packet 截断有记录，offset 分页可取余
-  const tiny = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:3", conversationId: "conv_w1", stateBudgetChars: 1, actor: "user:a" });
-  assert.ok(tiny.truncations.length >= 1, "budget truncations are recorded");
-  assert.equal(tiny.statePacket.budgetChars, 1);
-  const paged = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:4", conversationId: "conv_w1", stateBudgetChars: 20000, stateOffset: tiny.statePacket.totalEntries, actor: "user:a" });
-  assert.equal(paged.statePacket.lessons.length + paged.statePacket.workflows.length, 0, "offset past the end yields an empty page without error");
+  // —— conversation 装配内容：资产带 version+checksum ——
+  assert.ok(frozen.resolution.assets.some((a) => a.assetId === "asset_w2" && a.versionId && a.contentChecksum === W2_CHK_1), "conversation assets carry version+checksum");
 
-  // 拒绝矩阵：未启用/禁用 Agent、跨 scope、缺入口上下文
-  const draftAgent = space.createAgent({ scope: scopeA, name: "W4草稿助手", actor: "user:a" });
+  // —— R3：任务无依赖 = 显式空集 ——
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_empty',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  const emptyBasis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "run:empty:1", taskId: "task_empty", actor: "u" });
+  assert.equal(emptyBasis.resolution.skills.length + emptyBasis.resolution.methods.length + emptyBasis.resolution.assets.length, 0, "no-dependency tasks assemble an explicit empty set, never the agent's full inventory");
+  assert.ok(emptyBasis.resolution.skipped.some((s) => s.kind === "task" && s.reason.includes("task-declares-no-dependencies")), "legacy-not-ready marker is explicit");
+
+  // —— R3：依赖 pin 的旧正式版本直接执行（Agent 已升级不迫使其跳版本）——
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_pin',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_pin", kind: "skill", refId: skill.skill_id, versionPolicy: "pinned", pinnedVersionId: sv1.version_id, agentId: agent.agent_id, actor: "user:a" });
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_pin", kind: "method", refId: method.method_id, versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_pin", kind: "asset_input", refId: "asset_w2", versionPolicy: "pinned", pinnedVersionId: "ver_w2_1", agentId: agent.agent_id, actor: "user:a" });
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_pin", kind: "asset_output", refId: "asset_a1", versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
+  const pinnedBasis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "run:pin:1", taskId: "task_pin", actor: "u" });
+  assert.equal(pinnedBasis.resolution.skills[0]!.versionId, sv1.version_id, "task-pinned old formal version executes even after the agent upgraded");
+  assert.equal(pinnedBasis.resolution.skills[0]!.origin, "task-dependency-pinned");
+  assert.equal(pinnedBasis.resolution.methods[0]!.versionId, mv1.version_id);
+  const inputAsset = pinnedBasis.resolution.assets.find((a) => a.role === "input")!;
+  assert.equal(inputAsset.versionId, "ver_w2_1", "pinned asset dependency carries its version");
+  assert.equal(inputAsset.contentChecksum, W2_CHK_1);
+  const outputAsset = pinnedBasis.resolution.assets.find((a) => a.role === "output")!;
+  assert.ok(outputAsset.versionId && outputAsset.contentChecksum, "latest asset dependency resolves version+checksum at assembly time");
+  // 未声明依赖的已装技能/资产不进入任务装配
+  assert.equal(pinnedBasis.resolution.skills.length, 1);
+
+  // —— R3：必需依赖不满足 → 阻断（不落 basis）——
+  // 依赖即任务侧授权：方法存在且解析成功即满足；真正的“不满足”是声明了
+  // 无法解析出正式版本的方法（仅草稿、无采用版本）。
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_missing_dep',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  const draftOnlyMethod = space.createMethod({ scope: scopeA, name: "W4R仅草稿方法", actor: "user:a" });
+  space.addMethodVersion({ scope: scopeA, methodId: draftOnlyMethod.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_missing_dep", kind: "method", refId: draftOnlyMethod.method_id, versionPolicy: "latest", actor: "user:a" });
+  const beforeBlocked = basisCount();
   expectAgentSpaceError(
-    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: draftAgent.agent_id, entryKind: "conversation", basisKey: "conversation:draft:1", conversationId: "conv_w1", actor: "user:a" }),
-    "AGENT_SPACE_INVALID_TRANSITION",
+    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "generic_automation", basisKey: "run:blocked:1", taskId: "task_missing_dep", actor: "u" }),
+    "AGENT_SPACE_VERSION_INVALID",
   );
-  space.setAgentStatus(scopeA, agent.agent_id, "disabled", "user:a");
-  expectAgentSpaceError(
-    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:5", conversationId: "conv_w1", actor: "user:a" }),
-    "AGENT_SPACE_INVALID_TRANSITION",
-  );
+  assert.equal(basisCount(), beforeBlocked, "blocked assemblies write no basis rows");
+  // agent_state 依赖是明确桩，不阻断
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_state_stub',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  db.sqlite.prepare(`INSERT INTO agent_space_task_dependencies (dependency_id, task_id, user_id, project_id, instance_id, agent_id, kind, ref_id, version_policy, pinned_version_id, metadata_json, created_at, updated_at)
+     VALUES ('tdep_w4r_state', 'task_state_stub', ?, ?, ?, ?, 'agent_state', 'w4r-state-slot', 'latest', NULL, NULL, ?, ?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, agent.agent_id, now, now);
+  const stubBasis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "scheduled", basisKey: "schedule:stub:1", taskId: "task_state_stub", actor: "u" });
+  assert.ok(stubBasis.resolution.skipped.some((s) => s.kind === "agent_state"), "agent_state deps resolve to the explicit stub without blocking");
+
+  // —— 注入回写与 execution 段 ——
+  const injected = space.recordRunBasisInjection(scopeA, "frozen:1", { sections: [{ section: "method:x", originalChars: 10, keptChars: 5, reason: "content-budget-truncated" }], tools: ["t1"], workspace: null });
+  assert.equal(injected.injection!.tools[0], "t1");
+  assert.equal(injected.execution.status, "pending-w5");
+  assert.equal(space.recordRunBasisInjection(scopeA, "frozen:1", { sections: [], tools: [], workspace: null }).injection!.tools[0], "t1", "injection replay returns the recorded injection");
+});
+
+test("W4 rework R1: real-entry wiring — isolated injection captures the final model context", async (t) => {
+  const { db, space } = await fixture;
+  const { randomUUID } = await import("node:crypto");
+  const http = await import("node:http");
+
+  // 本地假模型网关：捕获真实入口最终发给模型的 messages/tools。
+  const captured: Array<{ body: Record<string, unknown> }> = [];
+  const server = http.createServer((request, response) => {
+    let requestBody = "";
+    request.on("data", (chunk: Buffer) => { requestBody += chunk.toString(); });
+    request.on("end", () => {
+      captured.push({ body: JSON.parse(requestBody) as Record<string, unknown> });
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write('data: {"id":"w4","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"ok-w4"},"finish_reason":null}]}\n\n');
+      response.write('data: {"id":"w4","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as { port: number };
+  t.after(() => { server.close(); });
+
+  // 装配环境：active Agent + 已装技能（真实字节）+ 方法绑定。
+  const agent = space.createAgent({ scope: scopeA, name: "W4W助手", actor: "user:a" });
   space.setAgentStatus(scopeA, agent.agent_id, "active", "user:a");
-  expectAgentSpaceError(
-    () => space.assembleAndRecordRunBasis({ scope: scopeB, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:cross:1", conversationId: "conv_w1", actor: "user:b" }),
-    "AGENT_SPACE_SCOPE_MISMATCH",
-  );
-  expectAgentSpaceError(
-    () => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "scheduled", basisKey: "schedule:no-task:1", actor: "user:a" }),
-    "AGENT_SPACE_ARGUMENT_INVALID",
-  );
-  expectAgentSpaceError(() => space.getRunBasis(scopeB, "conversation:conv_w1:turn:1"), "AGENT_SPACE_SCOPE_MISMATCH");
+  const skill = space.upsertSkill({ domain: "user", scope: scopeA, slug: "w4w-skill", name: "W4W技能", actor: "user:a" });
+  const sv = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_1", contentChecksum: W2_CHK_1 },
+    origin: "private_edit", actor: "user:a",
+  });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s1", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv.version_id, versionId: sv.version_id, extraBinding: { skillId: skill.skill_id } }), actor: "user:a" });
+  space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv.version_id, installedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_install", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agent.agent_id, versionId: sv.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } }), actor: "user:a" });
+  const method = space.createMethod({ scope: scopeA, name: "W4W方法", actor: "user:a" });
+  const mv = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: mv.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: mv.version_id, versionId: mv.version_id, extraBinding: { methodId: method.method_id, adopt: "true" } }), actor: "user:a" });
+  space.bindMethod({ scope: scopeA, agentId: agent.agent_id, methodId: method.method_id, versionPolicy: "current", actor: "user:a" });
 
-  // 旧 Workspace 隔离：装配只走 DB 读模型；工作区目录为空也能完整装配
-  const { readdirSync } = await import("node:fs");
-  const workspaceEntries = readdirSync(process.env.WORKSPACE_ROOT!);
-  assert.equal(workspaceEntries.length, 0, "the fixture workspace root stays empty; assembly never reads it");
-  const stillWorks = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:turn:6", conversationId: "conv_w1", actor: "user:a" });
-  assert.ok(stillWorks.basisId);
+  const previousEnv = { ...process.env };
+  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${address.port}/v1`;
+  process.env.OPENAI_API_KEY = "w4-test-key";
+  process.env.MASTRA_DEFAULT_MODEL = "w4-test-model";
+  process.env.AGENT_SPACE_ASSEMBLY_MODE = `scope:${scopeA.userId}`;
+  t.after(() => {
+    for (const key of ["OPENAI_BASE_URL", "OPENAI_API_KEY", "MASTRA_DEFAULT_MODEL", "AGENT_SPACE_ASSEMBLY_MODE"] as const) {
+      if (previousEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = previousEnv[key];
+    }
+  });
+
+  const { createRuntimeAgent } = await import("../src/runtime/agent.js");
+  const systemPromptOf = (capture: { body: Record<string, unknown> }): string => {
+    const messages = capture.body.messages as Array<{ role: string; content: unknown }>;
+    const system = messages.find((m) => m.role === "system") ?? messages[0]!;
+    return typeof system.content === "string" ? system.content : JSON.stringify(system.content);
+  };
+
+  // —— conversation 真实入口：装配模式启用 ——
+  const runtimeAgent = createRuntimeAgent();
+  const convMessageId = randomUUID();
+  const convResponse = await runtimeAgent.handleMessage({
+    id: convMessageId,
+    from: scopeA.userId,
+    timestamp: Date.now(),
+    content: { text: "W4 装配模式验证" },
+    context: { conversationId: "conv_w1", channel: "api", userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId },
+  });
+  assert.equal(convResponse.content?.type ?? "text", "text");
+  const convCapture = captured[captured.length - 1]!;
+  const convSystem = systemPromptOf(convCapture);
+  assert.match(convSystem, /Agent Space 装配（conversation）/);
+  assert.match(convSystem, new RegExp(mv.version_id), "method content arrives with its pinned version id");
+  assert.match(convSystem, /量价方法 W2 v1/, "pinned method body content is injected");
+  assert.match(convSystem, new RegExp(W2_CHK_1), "checksums arrive at the model boundary");
+  assert.match(convSystem, /not-integrated-until-W5/, "state stub is explicit in the injected context");
+  const convBasis = space.getRunBasis(scopeA, `conversation:conv_w1:message:${convMessageId}`);
+  assert.equal(convBasis.resolution.methods[0]!.versionId, mv.version_id);
+  assert.ok(convBasis.injection, "injection is recorded at the real entry");
+  assert.equal(convBasis.injection!.workspace, null, "no workspace is mounted in assembly mode");
+
+  // —— generic automation 真实入口（经 runtime agent + 显式标注 + 授权即清单）——
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_w4w',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_w4w", kind: "method", refId: method.method_id, versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
+  const autoMessageId = randomUUID();
+  await runtimeAgent.handleMessage({
+    id: autoMessageId,
+    from: scopeA.userId,
+    timestamp: Date.now(),
+    content: { text: "W4 自动化装配验证" },
+    context: {
+      conversationId: `automation-run:${autoMessageId}`,
+      channel: "automation",
+      userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId,
+      taskId: "task_w4w",
+      _agentSpaceAssembly: "generic_automation",
+      mcpAllowedTools: [],
+    },
+  });
+  const autoBasis = space.getRunBasis(scopeA, `task:task_w4w:message:${autoMessageId}`);
+  assert.equal(autoBasis.resolution.entryKind, "generic_automation");
+  assert.equal(autoBasis.resolution.methods.length, 1, "task assembly is dependency-scoped");
+  assert.equal(autoBasis.resolution.skills.length, 0, "undeclared skills never enter the task context");
+  const autoCapture = captured[captured.length - 1]!;
+  const autoSystem = systemPromptOf(autoCapture);
+  assert.match(autoSystem, /Agent Space 装配（generic_automation）/);
+  assert.deepEqual(autoBasis.injection!.tools, [], "the empty allowlist restricts tools at the model boundary");
+
+  // —— scheduled 真实入口（runScheduledAgentTask 直连 runMastraTurn 的接缝）——
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_w4w_sched',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  db.sqlite.prepare(`INSERT INTO automation_task_runs (run_id,task_id,revision_id,user_id,project_id,instance_id,origin,idempotency_key,attempt,status,claimed_at,started_at,created_at,updated_at)
+                     VALUES ('run_w4w_sched','task_w4w_sched','rev_w1_1',?,?,?,'manual','idem-w4w-sched',1,'succeeded',?,?,?,?)`)
+    .run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now, now);
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_w4w_sched", kind: "method", refId: method.method_id, versionPolicy: "latest", agentId: agent.agent_id, actor: "user:a" });
+  const { runScheduledAgentTaskForTest } = await import("../src/runtime/scheduled-tasks.js");
+  const schedMessageId = randomUUID();
+  const schedRunId = "run_w4w_sched";
+  await runScheduledAgentTaskForTest({
+    userContext: { userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId, channel: "api", conversationId: `scheduler:w4w:${scopeA.userId}` },
+    promptText: "W4 scheduled 装配验证",
+    conversationId: `scheduler:w4w:${scopeA.userId}`,
+    messageId: schedMessageId,
+    mode: "w4-wiring-test",
+    runId: schedRunId,
+    taskId: "task_w4w_sched",
+  });
+  const schedBasis = space.getRunBasis(scopeA, `run:${schedRunId}:basis`);
+  assert.equal(schedBasis.resolution.entryKind, "scheduled");
+  assert.equal(schedBasis.resolution.methods.length, 1);
+  const schedCapture = captured[captured.length - 1]!;
+  assert.match(systemPromptOf(schedCapture), /Agent Space 装配（scheduled）/);
+
+  // —— 默认关闭：未启用 scope 行为不变（旧 instructions，零 basis 写入）——
+  process.env.AGENT_SPACE_ASSEMBLY_MODE = "off";
+  const basisBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_run_basis").get() as { n: number }).n;
+  const legacyMessageId = randomUUID();
+  await runtimeAgent.handleMessage({
+    id: legacyMessageId,
+    from: scopeB.userId,
+    timestamp: Date.now(),
+    content: { text: "W4 关闭模式验证" },
+    context: { conversationId: "conv_w1", channel: "api", userId: scopeB.userId, projectId: scopeB.projectId, instanceId: scopeB.instanceId },
+  });
+  const legacyCapture = captured[captured.length - 1]!;
+  const legacySystem = systemPromptOf(legacyCapture);
+  assert.ok(!legacySystem.includes("Agent Space 装配"), "mode-off keeps legacy instructions");
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_run_basis").get() as { n: number }).n, basisBefore, "mode-off writes no basis rows");
 });

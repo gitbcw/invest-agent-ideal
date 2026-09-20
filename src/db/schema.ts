@@ -1534,6 +1534,8 @@ export const agentSpaceRunBasis = sqliteTable("agent_space_run_basis", {
   conversationId: text("conversation_id"),
   taskId: text("task_id"),
   runId: text("run_id"),
+  requestJson: text("request_json").notNull().default("{}"),
   basisJson: text("basis_json").notNull(),
+  injectionJson: text("injection_json"),
   createdAt: text("created_at").notNull(),
 });

@@ -2199,7 +2199,9 @@ function ensureAgentSpaceTables() {
       agent_id TEXT NOT NULL,
       entry_kind TEXT NOT NULL,
       conversation_id TEXT, task_id TEXT, run_id TEXT,
+      request_json TEXT NOT NULL DEFAULT '{}',
       basis_json TEXT NOT NULL,
+      injection_json TEXT,
       created_at TEXT NOT NULL
     );
   `);
@@ -2220,6 +2222,9 @@ function ensureAgentSpaceTables() {
   ensureColumn("agent_space_skill_versions", "derived_from_version_id", "TEXT");
   // 返工 W3-R2：默认清单是一次性的 Agent 初始化事件，完成后不再自动扩容。
   ensureColumn("agent_space_agents", "default_manifest_applied_at", "TEXT");
+  // 返工 W4-R2：run-basis 冻结回放需要请求身份；W4-R1 接线回写实际注入。
+  ensureColumn("agent_space_run_basis", "request_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("agent_space_run_basis", "injection_json", "TEXT");
   markMigration(migrationKey);
 }
 

@@ -5,6 +5,7 @@ import { logger } from "../lib/logger.js";
 
 import { createRuntimeAgent } from "../runtime/agent.js";
 import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
+import { assemblyEntryAnnotation } from "../runtime/agent-space-context.js";
 import { OUTPUT_VOLUME_POLICY } from "../runtime/spreadsheet-output-policy.js";
 import { serverTimeFact } from "../runtime/mobile-prompt.js";
 import { ACTIVE_BACKEND, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
@@ -698,6 +699,9 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       // mcpAllowedTools is the precise per-run grant below. The original
       // scheduled-automation marker expands to every read tool.
       taskType: GENERIC_AUTOMATION_CONTEXT_TASK_TYPE,
+      // W4-R1：Agent Space 装配模式启用时显式标注入口（runtime/agent.ts
+      // 模型边界按标注走装配路径）；未启用时不携带、行为不变。
+      ...assemblyEntryAnnotation("generic_automation", input.scope.userId),
       ...(pinnedModel ? { model: pinnedModel } : {}),
       mcpAllowedTools: toolAllowlist,
       expectedReviewKind: reviewTarget?.kind,

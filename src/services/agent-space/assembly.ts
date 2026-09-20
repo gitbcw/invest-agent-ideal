@@ -1,18 +1,22 @@
 /**
- * W4：Agent 空间控制面与运行时装配。
+ * W4（返工后）：Agent 空间控制面与运行时装配。
  *
- * 装配顺序（W4 执行稿）：认证 scope → 固定已安装 Skill / 绑定 Method /
- * asset grant 版本 → 按任务 dependencies 收窄 → 取得预算 State Packet →
- * 记录可解释 run-basis（Agent、版本、资产、状态、裁剪/跳过原因）。
- *
- * 边界：
- * - 只读 DB 读模型 + 域服务解析；不触碰旧 Workspace（无任何 fs/list/grep/
- *   discover 路径）；兼容读取必须显式、按需、可观察（未来入口）并写入
- *   run-basis——本模块不提供隐式兼容读取。
- * - 版本在装配时固定为具体 versionId + checksum：并发更新（升级/换绑）不
- *   替换本轮 basis；正文按 versionId 随后经 W2/W3 校验读取路径取回。
- * - agent_state 注册面在 W5 落地：依赖与状态包中以明确标注的桩呈现，
- *   fail-closed，不猜测内容。
+ * 装配顺序（W4 执行稿）：认证 scope → 固定已安装 Skill/绑定 Method/asset grant
+ * 版本 → 按任务 dependencies 收窄 → State Packet → 记录可解释 run-basis。
+ * 返工要点（W4 验收 R1-R4）：
+ * - 入口身份链必须真实：conversation/task/run 均核对存在、scope 与归属
+ *   （run→task 链、依赖声明的执行 Agent）；非法输入不落 basis/审计。
+ * - basis_key 按 scope 命名空间（存储键含 scope 限定），不同 scope 同 key
+ *   互不冲突；同 scope 同请求重试读取**已冻结** basis（配置升级不拒绝合法
+ *   重试），不同请求复用同 key 才冲突。
+ * - 任务入口严格按依赖装配：无依赖=显式空集（旧任务标记未就绪）；依赖
+ *   pin 的正式版本直接执行（Agent 已升级不迫使其跳版本）；资产解析
+ *   version+checksum 并保留 input/output 角色；必需依赖不满足**阻断**
+ *   （不把空装配当可运行成功）。
+ * - State Packet 是真正的空桩：lesson/workflow 也为空，明确
+ *   not-integrated-until-W5，不检索任何长期状态。
+ * - run-basis 区分 resolution（解析）/ injection（实际注入与裁剪，由真实
+ *   入口接线回写）/ execution（W5 待接）。
  */
 import { sqlite } from "../../db/index.js";
 import {
@@ -26,7 +30,7 @@ import {
 import { resolveMethodVersion } from "./methods.js";
 import { getInstalledSkillManifest } from "./agents.js";
 import { listTaskDependencies } from "./tasks.js";
-import { listEffectiveState } from "./state.js";
+import { getVersionRow as getSkillVersionRow } from "./skills.js";
 
 export type AssemblyEntryKind = "conversation" | "generic_automation" | "scheduled";
 
@@ -36,54 +40,86 @@ export interface PruneSkipRecord {
   reason: string;
 }
 
-export interface TruncationRecord {
-  section: string;
-  originalChars: number;
-  keptChars: number;
-  reason: string;
+export interface ResolvedSkillEntry {
+  skillId: string;
+  versionId: string;
+  source: "release" | "private";
+  releaseId: string | null;
+  contentRefType: string;
+  contentChecksum: string;
+  origin: "installed" | "task-dependency-pinned";
 }
 
-export interface StatePacketEntry {
-  objectType: "lesson" | "workflow";
-  objectId: string;
+export interface ResolvedMethodEntry {
+  methodId: string;
   versionId: string;
-  title: string;
-  contentChars: number;
+  versionPolicy: "pinned" | "current";
+  contentChecksum: string;
+  assetVersionId: string | null;
+  origin: "binding" | "task-dependency-pinned";
+}
+
+export interface ResolvedAssetEntry {
+  assetId: string;
+  role: "input" | "output" | "grant";
+  versionId: string;
+  contentChecksum: string;
+  origin: "grant" | "task-dependency-pinned" | "task-dependency-current";
 }
 
 export interface ResolvedRunBasisContent {
   entryKind: AssemblyEntryKind;
   agent: { agentId: string; name: string };
-  skills: Array<{ skillId: string; versionId: string; source: "release" | "private"; releaseId: string | null; contentRefType: string; contentChecksum: string }>;
-  methods: Array<{ methodId: string; versionId: string; versionPolicy: "pinned" | "current"; contentChecksum: string; assetVersionId: string | null }>;
-  assets: Array<{ assetId: string }>;
+  skills: ResolvedSkillEntry[];
+  methods: ResolvedMethodEntry[];
+  assets: ResolvedAssetEntry[];
   statePacket: {
-    lessons: StatePacketEntry[];
-    workflows: StatePacketEntry[];
+    lessons: never[];
+    workflows: never[];
     agentState: { status: "stub"; note: string };
-    budgetChars: number;
-    usedChars: number;
-    offset: number;
-    totalEntries: number;
-    hasMore: boolean;
   };
   pruned: PruneSkipRecord[];
   skipped: PruneSkipRecord[];
-  truncations: TruncationRecord[];
   context: { conversationId: string | null; taskId: string | null; runId: string | null };
 }
 
-export interface RunBasisRecord extends ResolvedRunBasisContent {
+export interface RunBasisInjection {
+  /** 实际注入到模型边界的内容段与预算裁剪记录（真实入口接线回写）。 */
+  sections: Array<{ section: string; originalChars: number; keptChars: number; reason?: string }>;
+  tools: string[];
+  workspace: null;
+  injectedAt: string;
+}
+
+export interface RunBasisRecord {
   basisId: string;
   basisKey: string;
+  resolution: ResolvedRunBasisContent;
+  injection: RunBasisInjection | null;
+  execution: { status: "pending-w5" };
   createdAt: string;
 }
 
-const DEFAULT_STATE_BUDGET_CHARS = 20000;
+interface BasisRequestIdentity {
+  agentId: string;
+  entryKind: AssemblyEntryKind;
+  conversationId: string | null;
+  taskId: string | null;
+  runId: string | null;
+}
+
+const STATE_STUB_NOTE = "not-integrated-until-W5: W4 loads no long-term state (lessons/workflows stay empty by design)";
+
+/** 存储键按 scope 命名空间：不同 scope 的同名 basisKey 永不冲突。 */
+function scopedBasisKey(scope: UserScope, basisKey: string): string {
+  return `${scope.userId}|${scope.projectId}|${scope.instanceId}|${basisKey}`;
+}
 
 /**
- * 解析并记录一次运行依据（run-basis）。幂等：同 basisKey 且内容一致返回既有
- * 记录；内容不同为冲突（同一入口键的装配发生了不可解释的变化）。
+ * 解析并记录一次运行依据（run-basis）。
+ * 幂等（冻结语义）：同 scope 同 key 且请求身份一致 → 直接返回已冻结 basis
+ * （配置随后升级不影响合法重试）；请求身份不同 → 冲突。非法入口身份在
+ * 记录前拒绝（不落 basis/审计）。
  */
 export function assembleAndRecordRunBasis(input: {
   scope: UserScope;
@@ -93,26 +129,38 @@ export function assembleAndRecordRunBasis(input: {
   conversationId?: string | null;
   taskId?: string | null;
   runId?: string | null;
-  stateBudgetChars?: number;
-  stateOffset?: number;
   actor: string;
 }): RunBasisRecord {
   assertScopeValid(input.scope);
   if (!input.basisKey?.trim()) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "basisKey is required");
-  const content = resolveRunBasisContent(input);
-  const payload = JSON.stringify(content);
-  const existing = sqlite
-    .prepare("SELECT basis_id, basis_json, created_at FROM agent_space_run_basis WHERE basis_key=?")
-    .get(input.basisKey) as { basis_id: string; basis_json: string; created_at: string } | undefined;
+  const identity: BasisRequestIdentity = {
+    agentId: input.agentId,
+    entryKind: input.entryKind,
+    conversationId: input.conversationId ?? null,
+    taskId: input.taskId ?? null,
+    runId: input.runId ?? null,
+  };
+  // 冻结回放先于一切解析：同请求重试读已冻结 basis，不重算、不因配置漂移拒绝。
+  const storedKey = scopedBasisKey(input.scope, input.basisKey);
+  const existing = readBasisRow(storedKey);
   if (existing) {
-    if (existing.basis_json !== payload) {
+    const storedIdentity = JSON.parse(existing.request_json) as BasisRequestIdentity;
+    if (
+      storedIdentity.agentId !== identity.agentId || storedIdentity.entryKind !== identity.entryKind
+      || storedIdentity.conversationId !== identity.conversationId || storedIdentity.taskId !== identity.taskId
+      || storedIdentity.runId !== identity.runId
+    ) {
       throw new AgentSpaceError(
         "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
-        `run basis ${input.basisKey} already exists with different content; assembly for one key must be recorded once`,
+        `run basis ${input.basisKey} already exists for a different request in this scope`,
       );
     }
-    return { basisId: existing.basis_id, basisKey: input.basisKey, createdAt: existing.created_at, ...content };
+    return rowToRecord(existing, input.basisKey);
   }
+  // 入口身份链核验 + 解析（任何失败都在写入之前抛出）。
+  verifyEntryIdentity(input.scope, identity);
+  const resolution = resolveRunBasisContent(input.scope, identity);
+  const payload = JSON.stringify(resolution);
   const basisId = newId("rbasis");
   const now = nowIso();
   const tx = sqlite.transaction(() => {
@@ -120,12 +168,13 @@ export function assembleAndRecordRunBasis(input: {
       .prepare(
         `INSERT INTO agent_space_run_basis (
            basis_id, basis_key, domain, user_id, project_id, instance_id,
-           agent_id, entry_kind, conversation_id, task_id, run_id, basis_json, created_at
-         ) VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           agent_id, entry_kind, conversation_id, task_id, run_id,
+           request_json, basis_json, injection_json, created_at
+         ) VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       )
-      .run(basisId, input.basisKey, input.scope.userId, input.scope.projectId, input.scope.instanceId,
-           input.agentId, input.entryKind, input.conversationId ?? null, input.taskId ?? null,
-           input.runId ?? null, payload, now);
+      .run(basisId, storedKey, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+           input.agentId, input.entryKind, identity.conversationId, identity.taskId, identity.runId,
+           JSON.stringify(identity), payload, now);
     recordAgentSpaceAudit({
       scope: input.scope,
       actor: input.actor,
@@ -137,226 +186,310 @@ export function assembleAndRecordRunBasis(input: {
         basisKey: input.basisKey,
         entryKind: input.entryKind,
         agentId: input.agentId,
-        skills: content.skills.length,
-        methods: content.methods.length,
-        assets: content.assets.length,
-        pruned: content.pruned.length,
-        skipped: content.skipped.length,
+        skills: resolution.skills.length,
+        methods: resolution.methods.length,
+        assets: resolution.assets.length,
+        pruned: resolution.pruned.length,
+        skipped: resolution.skipped.length,
       },
     });
   });
   tx();
-  return { basisId, basisKey: input.basisKey, createdAt: now, ...content };
+  const stored = readBasisRow(storedKey)!;
+  return rowToRecord(stored, input.basisKey);
 }
 
-/** 最小查询面：按 scope 读取 run-basis（幂等回放/审计用）。 */
+/** 真实入口接线回写实际注入记录（一次性；重放返回既有注入）。 */
+export function recordRunBasisInjection(
+  scope: UserScope,
+  basisKey: string,
+  injection: Omit<RunBasisInjection, "injectedAt">,
+): RunBasisRecord {
+  assertScopeValid(scope);
+  const storedKey = scopedBasisKey(scope, basisKey);
+  const existing = readBasisRow(storedKey);
+  if (!existing) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `run basis ${basisKey}`);
+  if (existing.user_id !== scope.userId || existing.project_id !== scope.projectId || existing.instance_id !== scope.instanceId) {
+    throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "run basis belongs to another scope");
+  }
+  if (existing.injection_json) return rowToRecord(existing, basisKey);
+  const payload = JSON.stringify({ ...injection, injectedAt: nowIso() });
+  const changes = sqlite
+    .prepare("UPDATE agent_space_run_basis SET injection_json=? WHERE basis_key=? AND injection_json IS NULL")
+    .run(payload, storedKey);
+  if (changes.changes !== 1) {
+    throw new AgentSpaceError("AGENT_SPACE_IDEMPOTENCY_CONFLICT", "injection already recorded concurrently");
+  }
+  return rowToRecord(readBasisRow(storedKey)!, basisKey);
+}
+
+/** 最小查询面（scoped；冻结回放/审计用）。 */
 export function getRunBasis(scope: UserScope, basisKey: string): RunBasisRecord {
   assertScopeValid(scope);
-  const row = sqlite
-    .prepare("SELECT * FROM agent_space_run_basis WHERE basis_key=?")
-    .get(basisKey) as
-    | {
-        basis_id: string; basis_key: string; user_id: string; project_id: string; instance_id: string;
-        basis_json: string; created_at: string;
-      }
-    | undefined;
+  const row = readBasisRow(scopedBasisKey(scope, basisKey));
   if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `run basis ${basisKey}`);
   if (row.user_id !== scope.userId || row.project_id !== scope.projectId || row.instance_id !== scope.instanceId) {
     throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "run basis belongs to another scope");
   }
-  return { basisId: row.basis_id, basisKey: row.basis_key, createdAt: row.created_at, ...(JSON.parse(row.basis_json) as ResolvedRunBasisContent) };
+  return rowToRecord(row, basisKey);
 }
 
-function resolveRunBasisContent(input: {
-  scope: UserScope;
-  agentId: string;
-  entryKind: AssemblyEntryKind;
-  conversationId?: string | null;
-  taskId?: string | null;
-  runId?: string | null;
-  stateBudgetChars?: number;
-  stateOffset?: number;
-}): ResolvedRunBasisContent {
-  const { scope } = input;
-  // 1) 认证 scope → Agent 必须真实存在、同 scope 且处于 active（未启用/禁用
-  //    的 Agent 不进入上下文）。
+interface BasisRow {
+  basis_id: string; basis_key: string; user_id: string; project_id: string; instance_id: string;
+  request_json: string; basis_json: string; injection_json: string | null; created_at: string;
+}
+
+function readBasisRow(storedKey: string): BasisRow | undefined {
+  return sqlite
+    .prepare("SELECT basis_id, basis_key, user_id, project_id, instance_id, request_json, basis_json, injection_json, created_at FROM agent_space_run_basis WHERE basis_key=?")
+    .get(storedKey) as BasisRow | undefined;
+}
+
+function rowToRecord(row: BasisRow, callerKey: string): RunBasisRecord {
+  return {
+    basisId: row.basis_id,
+    basisKey: callerKey,
+    resolution: JSON.parse(row.basis_json) as ResolvedRunBasisContent,
+    injection: row.injection_json ? (JSON.parse(row.injection_json) as RunBasisInjection) : null,
+    execution: { status: "pending-w5" },
+    createdAt: row.created_at,
+  };
+}
+
+// ---------- 入口身份链（返工 R2） ----------
+
+function verifyEntryIdentity(scope: UserScope, identity: BasisRequestIdentity): void {
+  // Agent：真实存在、同 scope、active。
   const agent = sqlite
-    .prepare("SELECT agent_id, name, status, user_id, project_id, instance_id FROM agent_space_agents WHERE agent_id=?")
-    .get(input.agentId) as
-    | { agent_id: string; name: string; status: string; user_id: string; project_id: string; instance_id: string }
-    | undefined;
-  if (!agent) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `agent ${input.agentId}`);
+    .prepare("SELECT status, user_id, project_id, instance_id FROM agent_space_agents WHERE agent_id=?")
+    .get(identity.agentId) as { status: string; user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!agent) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `agent ${identity.agentId}`);
   if (agent.user_id !== scope.userId || agent.project_id !== scope.projectId || agent.instance_id !== scope.instanceId) {
     throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "agent belongs to another scope");
   }
   if (agent.status !== "active") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `agent is ${agent.status}; only active agents assemble a run basis`);
   }
-  if (input.entryKind === "conversation" && !input.conversationId) {
-    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "conversation entries require conversationId");
+  if (identity.entryKind === "conversation") {
+    if (!identity.conversationId) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "conversation entries require conversationId");
+    const conversation = sqlite
+      .prepare("SELECT user_id, project_id, instance_id FROM conversation_sessions WHERE conversation_id=?")
+      .get(identity.conversationId) as { user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!conversation) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `conversation ${identity.conversationId}`);
+    if (conversation.user_id !== scope.userId || conversation.project_id !== scope.projectId || conversation.instance_id !== scope.instanceId) {
+      throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "conversation belongs to another scope");
+    }
+    return;
   }
-  if (input.entryKind !== "conversation" && !input.taskId) {
-    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${input.entryKind} entries require taskId`);
+  // 任务类入口：task 真实存在且同 scope；run（如提供）必须属于该 task 且同 scope。
+  if (!identity.taskId) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${identity.entryKind} entries require taskId`);
+  const task = sqlite
+    .prepare("SELECT user_id, project_id, instance_id FROM automation_tasks WHERE task_id=?")
+    .get(identity.taskId) as { user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!task) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation task ${identity.taskId}`);
+  if (task.user_id !== scope.userId || task.project_id !== scope.projectId || task.instance_id !== scope.instanceId) {
+    throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "task belongs to another scope");
   }
+  if (identity.runId) {
+    const run = sqlite
+      .prepare("SELECT task_id, revision_id, user_id, project_id, instance_id FROM automation_task_runs WHERE run_id=?")
+      .get(identity.runId) as { task_id: string; revision_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!run) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation run ${identity.runId}`);
+    if (run.task_id !== identity.taskId) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `run ${identity.runId} belongs to task ${run.task_id}, not ${identity.taskId}`);
+    }
+    if (run.user_id !== scope.userId || run.project_id !== scope.projectId || run.instance_id !== scope.instanceId) {
+      throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "run belongs to another scope");
+    }
+  }
+  // 依赖声明的执行 Agent 与本次 Agent 不一致 → 归属错配拒绝。
+  const depAgents = sqlite
+    .prepare(`SELECT DISTINCT agent_id FROM agent_space_task_dependencies WHERE task_id=? AND agent_id IS NOT NULL`)
+    .all(identity.taskId) as Array<{ agent_id: string }>;
+  for (const dep of depAgents) {
+    if (dep.agent_id !== identity.agentId) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `task dependencies are bound to another agent (${dep.agent_id})`);
+    }
+  }
+}
 
-  const pruned: PruneSkipRecord[] = [];
+// ---------- 装配解析（返工 R3/R4） ----------
+
+function resolveRunBasisContent(scope: UserScope, identity: BasisRequestIdentity): ResolvedRunBasisContent {
+  const agentRow = sqlite
+    .prepare("SELECT agent_id, name FROM agent_space_agents WHERE agent_id=?")
+    .get(identity.agentId) as { agent_id: string; name: string };
   const skipped: PruneSkipRecord[] = [];
-  const truncations: TruncationRecord[] = [];
+  const pruned: PruneSkipRecord[] = [];
 
-  // 2) 固定已安装 Skill / 绑定 Method / asset grant 版本。
-  const installedSkills = getInstalledSkillManifest(scope, input.agentId);
-  const skills: ResolvedRunBasisContent["skills"] = installedSkills.map((s) => ({
-    skillId: s.skillId, versionId: s.versionId, source: s.source, releaseId: s.releaseId,
-    contentRefType: s.contentRefType, contentChecksum: s.contentChecksum,
-  }));
+  if (identity.entryKind === "conversation") {
+    // 交互入口：Agent 自有装配（安装/绑定/授权），无任务收窄。
+    const manifest = getInstalledSkillManifest(scope, identity.agentId);
+    const skills: ResolvedSkillEntry[] = manifest.map((s) => ({
+      skillId: s.skillId, versionId: s.versionId, source: s.source, releaseId: s.releaseId,
+      contentRefType: s.contentRefType, contentChecksum: s.contentChecksum, origin: "installed",
+    }));
+    const methods = resolveBoundMethods(scope, identity.agentId, skipped);
+    const grants = sqlite
+      .prepare(
+        `SELECT asset_id, expires_at FROM agent_space_agent_asset_grants
+         WHERE agent_id=? AND user_id=? AND project_id=? AND instance_id=? AND status='active'`,
+      )
+      .all(identity.agentId, scope.userId, scope.projectId, scope.instanceId) as Array<{ asset_id: string; expires_at: string | null }>;
+    const now = nowIso();
+    const assets: ResolvedAssetEntry[] = [];
+    for (const grant of grants) {
+      if (grant.expires_at && grant.expires_at <= now) {
+        pruned.push({ kind: "asset", ref: grant.asset_id, reason: "grant-expired" });
+        continue;
+      }
+      assets.push({ ...resolveAssetVersion(scope, grant.asset_id, null), role: "grant", origin: "grant" });
+    }
+    return {
+      entryKind: identity.entryKind,
+      agent: { agentId: agentRow.agent_id, name: agentRow.name },
+      skills, methods, assets,
+      statePacket: emptyStatePacket(),
+      pruned, skipped,
+      context: { conversationId: identity.conversationId, taskId: null, runId: null },
+    };
+  }
+
+  // 任务入口：严格按依赖装配。无依赖 = 显式空集（旧任务未迁移即未就绪）。
+  const deps = listTaskDependencies(scope, identity.taskId!);
+  if (deps.length === 0) {
+    skipped.push({
+      kind: "task",
+      ref: identity.taskId!,
+      reason: "task-declares-no-dependencies: explicit empty assembly (legacy tasks must declare dependencies before agent-space execution)",
+    });
+    return {
+      entryKind: identity.entryKind,
+      agent: { agentId: agentRow.agent_id, name: agentRow.name },
+      skills: [], methods: [], assets: [],
+      statePacket: emptyStatePacket(),
+      pruned, skipped,
+      context: { conversationId: null, taskId: identity.taskId, runId: identity.runId },
+    };
+  }
+  const installed = new Map(getInstalledSkillManifest(scope, identity.agentId).map((s) => [s.skillId, s]));
+  const boundSkipped: PruneSkipRecord[] = [];
+  const bound = new Map(resolveBoundMethods(scope, identity.agentId, boundSkipped).map((m) => [m.methodId, m]));
+  const skills: ResolvedSkillEntry[] = [];
+  const methods: ResolvedMethodEntry[] = [];
+  const assets: ResolvedAssetEntry[] = [];
+  const stateDeps: PruneSkipRecord[] = [];
+  for (const dep of deps) {
+    if (dep.kind === "agent_state") {
+      stateDeps.push({ kind: "agent_state", ref: dep.ref_id, reason: "agent_state registry lands in W5 (explicit stub; not blocking)" });
+      continue;
+    }
+    if (dep.kind === "skill") {
+      if (dep.pinned_version_id) {
+        // 依赖 pin 的正式版本直接执行（Agent 已升级不迫使其跳版本）。
+        const version = getSkillVersionRow(dep.pinned_version_id);
+        if (version.skill_id !== dep.ref_id) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `pinned skill version does not belong to ${dep.ref_id}`);
+        if (version.status !== "approved" && version.status !== "superseded") {
+          throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `required skill dependency ${dep.ref_id} pins a ${version.status} version; blocked`);
+        }
+        skills.push({
+          skillId: dep.ref_id, versionId: version.version_id, source: "private", releaseId: null,
+          contentRefType: version.content_ref_type, contentChecksum: version.content_checksum, origin: "task-dependency-pinned",
+        });
+        continue;
+      }
+      const installedEntry = installed.get(dep.ref_id);
+      if (!installedEntry) {
+        throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `required skill dependency ${dep.ref_id} is not installed for the agent; blocked`);
+      }
+      skills.push({
+        skillId: installedEntry.skillId, versionId: installedEntry.versionId, source: installedEntry.source,
+        releaseId: installedEntry.releaseId, contentRefType: installedEntry.contentRefType,
+        contentChecksum: installedEntry.contentChecksum, origin: "installed",
+      });
+      continue;
+    }
+    if (dep.kind === "method") {
+      // resolveMethodVersion 统一强制采用约束与版本归属（pin 或 current）。
+      const resolved = resolveMethodVersion(scope, dep.ref_id, dep.pinned_version_id ?? undefined);
+      methods.push({
+        methodId: dep.ref_id, versionId: resolved.version.version_id,
+        versionPolicy: dep.pinned_version_id ? "pinned" : "current",
+        contentChecksum: resolved.version.content_checksum, assetVersionId: resolved.version.asset_version_id,
+        origin: dep.pinned_version_id ? "task-dependency-pinned" : "binding",
+      });
+      continue;
+    }
+    // asset_input / asset_output：保留角色，解析 version+checksum。
+    const resolvedAsset = resolveAssetVersion(scope, dep.ref_id, dep.pinned_version_id);
+    assets.push({
+      ...resolvedAsset,
+      role: dep.kind === "asset_input" ? "input" : "output",
+      origin: dep.pinned_version_id ? "task-dependency-pinned" : "task-dependency-current",
+    });
+  }
+  skipped.push(...stateDeps);
+  return {
+    entryKind: identity.entryKind,
+    agent: { agentId: agentRow.agent_id, name: agentRow.name },
+    skills, methods, assets,
+    statePacket: emptyStatePacket(),
+    pruned, skipped,
+    context: { conversationId: null, taskId: identity.taskId, runId: identity.runId },
+  };
+}
+
+function resolveBoundMethods(scope: UserScope, agentId: string, skipped: PruneSkipRecord[]): ResolvedMethodEntry[] {
   const bindings = sqlite
     .prepare(
       `SELECT method_id, version_policy, pinned_version_id FROM agent_space_agent_method_bindings
        WHERE agent_id=? AND user_id=? AND project_id=? AND instance_id=? AND status='active'`,
     )
-    .all(input.agentId, scope.userId, scope.projectId, scope.instanceId) as Array<{
+    .all(agentId, scope.userId, scope.projectId, scope.instanceId) as Array<{
       method_id: string; version_policy: "pinned" | "current"; pinned_version_id: string | null;
     }>;
-  const methods: ResolvedRunBasisContent["methods"] = [];
+  const methods: ResolvedMethodEntry[] = [];
   for (const binding of bindings) {
+    // 绑定解析失败（retired/约束阻断等）跳过并留原因——装配是读模型，不因
+    // 单个绑定失败而整体失败；任务入口的必需依赖则由依赖路径阻断。
     try {
       const resolved = resolveMethodVersion(scope, binding.method_id, binding.version_policy === "pinned" ? binding.pinned_version_id ?? undefined : undefined);
       methods.push({
-        methodId: binding.method_id,
-        versionId: resolved.version.version_id,
-        versionPolicy: binding.version_policy,
-        contentChecksum: resolved.version.content_checksum,
-        assetVersionId: resolved.version.asset_version_id,
+        methodId: binding.method_id, versionId: resolved.version.version_id,
+        versionPolicy: binding.version_policy, contentChecksum: resolved.version.content_checksum,
+        assetVersionId: resolved.version.asset_version_id, origin: "binding",
       });
     } catch (error) {
       skipped.push({ kind: "method", ref: binding.method_id, reason: (error as Error).message });
     }
   }
-  const grants = sqlite
-    .prepare(
-      `SELECT asset_id, expires_at FROM agent_space_agent_asset_grants
-       WHERE agent_id=? AND user_id=? AND project_id=? AND instance_id=? AND status='active'`,
-    )
-    .all(input.agentId, scope.userId, scope.projectId, scope.instanceId) as Array<{ asset_id: string; expires_at: string | null }>;
-  const now = nowIso();
-  const assets: ResolvedRunBasisContent["assets"] = [];
-  for (const grant of grants) {
-    if (grant.expires_at && grant.expires_at <= now) {
-      pruned.push({ kind: "asset", ref: grant.asset_id, reason: "grant-expired" });
-      continue;
-    }
-    assets.push({ assetId: grant.asset_id });
-  }
-
-  // 3) 按任务 dependencies 收窄（automation/scheduled 入口）。无依赖记录的
-  //    任务不收窄（basis 记录 no-dependencies-defined），有依赖则严格交集，
-  //    未覆盖项一律 pruned/skipped 且写明原因。
-  let narrowedSkills = skills;
-  let narrowedMethods = methods;
-  let narrowedAssets = assets;
-  const deps = input.taskId ? listTaskDependencies(scope, input.taskId) : [];
-  if (input.taskId && deps.length > 0) {
-    const depSkills = new Map(deps.filter((d) => d.kind === "skill").map((d) => [d.ref_id, d]));
-    const depMethods = new Map(deps.filter((d) => d.kind === "method").map((d) => [d.ref_id, d]));
-    const depAssets = new Map(deps.filter((d) => d.kind === "asset_input" || d.kind === "asset_output").map((d) => [d.ref_id, d]));
-    narrowedSkills = [];
-    for (const s of skills) {
-      const dep = depSkills.get(s.skillId);
-      if (!dep) {
-        pruned.push({ kind: "skill", ref: s.skillId, reason: "not-in-task-dependencies" });
-        continue;
-      }
-      if (dep.pinned_version_id && dep.pinned_version_id !== s.versionId) {
-        skipped.push({ kind: "skill", ref: s.skillId, reason: `dependency pins version ${dep.pinned_version_id} but ${s.versionId} is installed` });
-        continue;
-      }
-      narrowedSkills.push(s);
-    }
-    narrowedMethods = [];
-    for (const m of methods) {
-      const dep = depMethods.get(m.methodId);
-      if (!dep) {
-        pruned.push({ kind: "method", ref: m.methodId, reason: "not-in-task-dependencies" });
-        continue;
-      }
-      if (dep.pinned_version_id && dep.pinned_version_id !== m.versionId) {
-        skipped.push({ kind: "method", ref: m.methodId, reason: `dependency pins version ${dep.pinned_version_id} but resolver returned ${m.versionId}` });
-        continue;
-      }
-      narrowedMethods.push(m);
-    }
-    narrowedAssets = [];
-    for (const a of assets) {
-      if (!depAssets.has(a.assetId)) {
-        pruned.push({ kind: "asset", ref: a.assetId, reason: "not-in-task-dependencies" });
-        continue;
-      }
-      narrowedAssets.push(a);
-    }
-    for (const dep of deps) {
-      if (dep.kind === "agent_state") {
-        skipped.push({ kind: "agent_state", ref: dep.ref_id, reason: "agent_state registry lands in W5 (W1 fail-closed stub)" });
-        continue;
-      }
-      const pool = dep.kind === "skill" ? narrowedSkills.map((x) => x.skillId) : dep.kind === "method" ? narrowedMethods.map((x) => x.methodId) : narrowedAssets.map((x) => x.assetId);
-      if (!pool.includes(dep.ref_id)) {
-        skipped.push({ kind: dep.kind, ref: dep.ref_id, reason: "declared dependency missing from the agent assembly (not installed/bound/granted or version mismatch)" });
-      }
-    }
-  }
-
-  // 4) 预算 State Packet：有效 lesson/workflow 按 offset 分页、按字符预算
-  //    截断，超出部分写明原因；agent_state 为明确标注的 W5 桩。
-  const budgetChars = input.stateBudgetChars ?? DEFAULT_STATE_BUDGET_CHARS;
-  const offset = input.stateOffset ?? 0;
-  if (offset < 0) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "stateOffset must be >= 0");
-  const effective = [
-    ...listEffectiveState({ scope, kind: "lesson" }).map((e) => ({ objectType: "lesson" as const, ...e })),
-    ...listEffectiveState({ scope, kind: "workflow" }).map((e) => ({ objectType: "workflow" as const, ...e })),
-  ];
-  const paged = effective.slice(offset);
-  const lessons: StatePacketEntry[] = [];
-  const workflows: StatePacketEntry[] = [];
-  let usedChars = 0;
-  let hasMore = false;
-  for (let i = 0; i < paged.length; i += 1) {
-    const entry = paged[i]!;
-    const chars = JSON.stringify(entry.content ?? {}).length;
-    if (usedChars + chars > budgetChars && (lessons.length > 0 || workflows.length > 0)) {
-      hasMore = true;
-      for (const rest of paged.slice(i)) {
-        truncations.push({ section: `state.${rest.objectType}:${rest.objectId}`, originalChars: JSON.stringify(rest.content ?? {}).length, keptChars: 0, reason: "state-budget-exceeded" });
-      }
-      break;
-    }
-    if (chars > budgetChars) {
-      truncations.push({ section: `state.${entry.objectType}:${entry.objectId}`, originalChars: chars, keptChars: budgetChars, reason: "entry-exceeds-state-budget; content truncated to a preview" });
-    }
-    usedChars += Math.min(chars, budgetChars);
-    const record: StatePacketEntry = { objectType: entry.objectType, objectId: entry.objectId, versionId: entry.versionId, title: entry.title, contentChars: chars };
-    if (entry.objectType === "lesson") lessons.push(record);
-    else workflows.push(record);
-  }
-
-  return {
-    entryKind: input.entryKind,
-    agent: { agentId: agent.agent_id, name: agent.name },
-    skills: narrowedSkills,
-    methods: narrowedMethods,
-    assets: narrowedAssets,
-    statePacket: {
-      lessons,
-      workflows,
-      agentState: { status: "stub", note: "agent_state registry lands in W5; the packet reserves a clearly-marked empty slot (fail-closed)" },
-      budgetChars,
-      usedChars,
-      offset,
-      totalEntries: effective.length,
-      hasMore,
-    },
-    pruned,
-    skipped,
-    truncations,
-    context: { conversationId: input.conversationId ?? null, taskId: input.taskId ?? null, runId: input.runId ?? null },
-  };
+  return methods;
 }
+
+function resolveAssetVersion(scope: UserScope, assetId: string, pinnedVersionId: string | null): { assetId: string; versionId: string; contentChecksum: string } {
+  const asset = sqlite
+    .prepare("SELECT current_version_id, user_id, project_id, instance_id FROM user_assets WHERE asset_id=?")
+    .get(assetId) as { current_version_id: string | null; user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!asset) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `user asset ${assetId}`);
+  if (asset.user_id !== scope.userId || asset.project_id !== scope.projectId || asset.instance_id !== scope.instanceId) {
+    throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "asset belongs to another scope");
+  }
+  const versionId = pinnedVersionId ?? asset.current_version_id;
+  if (!versionId) {
+    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `asset ${assetId} has no resolvable version; blocked`);
+  }
+  const version = sqlite
+    .prepare("SELECT asset_id, checksum, user_id, project_id, instance_id FROM user_asset_versions WHERE version_id=?")
+    .get(versionId) as { asset_id: string; checksum: string; user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!version) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `user asset version ${versionId}`);
+  if (version.asset_id !== assetId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `asset version ${versionId} does not belong to ${assetId}`);
+  if (version.user_id !== scope.userId || version.project_id !== scope.projectId || version.instance_id !== scope.instanceId) {
+    throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "asset version belongs to another scope");
+  }
+  return { assetId, versionId, contentChecksum: version.checksum };
+}
+
+function emptyStatePacket(): ResolvedRunBasisContent["statePacket"] {
+  return { lessons: [], workflows: [], agentState: { status: "stub", note: STATE_STUB_NOTE } };
+}
+

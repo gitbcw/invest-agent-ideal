@@ -26,6 +26,7 @@ import { runMastraTurn } from "../mastra/run-turn.js";
 import { resolveAutoModel } from "../services/model-health.js";
 import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../mastra/external-mcp.js";
 import { buildAgentInstructions } from "./agent-instructions.js";
+import { buildAgentSpaceTurnOptions, isAgentSpaceAssemblyModeEnabled } from "./agent-space-context.js";
 
 const SCHEDULED_AGENT_TIMEOUT_MS =
   Number(process.env.SCHEDULED_AGENT_TIMEOUT_MS) || 600_000;
@@ -373,6 +374,39 @@ interface ScheduledAgentTaskInput {
   taskId?: string;
 }
 
+/**
+ * W4-R1：scheduled 入口的模型边界接缝——Agent Space 装配模式启用时
+ * （按 scope），instructions/tools 来自装配与固定版本内容且不挂载
+ * workspace；未启用时保持原有 buildAgentInstructions + mastraTools。
+ */
+async function buildScheduledTurnDeps(
+  input: ScheduledAgentTaskInput,
+  mastraTools: Record<string, unknown>,
+): Promise<{ agentOptions: { instructions: unknown; tools: Record<string, unknown>; workspace?: unknown } }> {
+  if (!isAgentSpaceAssemblyModeEnabled(input.userContext.userId)) {
+    return { agentOptions: { instructions: buildAgentInstructions(), tools: mastraTools } };
+  }
+  const options = await buildAgentSpaceTurnOptions({
+    scope: {
+      userId: input.userContext.userId,
+      projectId: input.userContext.projectId ?? DEFAULT_PROJECT_ID,
+      instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID,
+    },
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    entryKind: "scheduled",
+    taskId: input.taskId ?? undefined,
+    runId: input.runId ?? undefined,
+    grantedTools: mastraTools,
+  });
+  return { agentOptions: { instructions: options.instructions, tools: options.tools } };
+}
+
+/** W4-R1 隔离接线测试入口：真实 scheduled 模型边界（默认关闭装配模式时行为不变）。 */
+export async function runScheduledAgentTaskForTest(input: ScheduledAgentTaskInput) {
+  return runScheduledAgentTask(input);
+}
+
 async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
   const startedAt = Date.now();
   try {
@@ -408,7 +442,7 @@ async function runScheduledAgentTask(input: ScheduledAgentTaskInput) {
           instanceId: input.userContext.instanceId ?? DEFAULT_INSTANCE_ID,
         },
         toolsets: observedToolsets,
-      }, { agentOptions: { instructions: buildAgentInstructions(), tools: mastraTools } });
+      }, await buildScheduledTurnDeps(input, mastraTools));
       const reply = mastraResult.text;
       await recordAgentTrace({
         traceId: input.messageId,
