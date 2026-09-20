@@ -1231,6 +1231,7 @@ export function initDb() {
   ensureGenericAutomationTaskMigration();
   migrateLegacyAcpTracesToAgentTraces();
   dropLegacyAlertsTable();
+  ensureAgentSpaceTables();
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_username ON platform_users(username);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_roles_name ON platform_roles(name);
@@ -1868,6 +1869,298 @@ function ensureGenericAutomationTaskMigration() {
   if (hasMigration(migrationKey)) return;
   // Generic revision columns are additive. Existing CSV/XLSX revisions keep
   // their legacy source/working fields and remain readable by old callers.
+  markMigration(migrationKey);
+}
+
+/**
+ * W1（docs/agent-space-execution/W1-domain-contracts.md，v3 总纲 §5）：Agent
+ * 空间对象域。全部为增量新表，不复制既有业务事实——Method/Skill 内容以
+ * user_asset 版本为底座只存引用；Task 快照只存装配引用；T-524 状态对象
+ * 优先引用 trace/message/run/delivery。用户域对象强制 user/project/instance
+ * scope；系统域（domain='system'）scope 列为 NULL 与用户域物理分域。
+ * 回滚：DROP agent_space_* 表集合（见 W1-delivery.md 恢复说明）。
+ */
+function ensureAgentSpaceTables() {
+  const migrationKey = "agent_space_v1";
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS agent_space_audit_logs (
+      audit_id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL DEFAULT 'user',
+      user_id TEXT, project_id TEXT, instance_id TEXT,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      object_type TEXT NOT NULL, object_id TEXT NOT NULL,
+      from_status TEXT, to_status TEXT,
+      detail_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_space_audit_object
+      ON agent_space_audit_logs(object_type, object_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_space_audit_scope
+      ON agent_space_audit_logs(user_id, project_id, instance_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS agent_space_methods (
+      method_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      name TEXT NOT NULL, description TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      current_version_id TEXT,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(user_id, project_id, instance_id, name)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_method_idem
+      ON agent_space_methods(user_id, project_id, instance_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_space_method_versions (
+      version_id TEXT PRIMARY KEY,
+      method_id TEXT NOT NULL,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      version_number INTEGER NOT NULL,
+      content_ref_type TEXT NOT NULL DEFAULT 'user_asset_version',
+      asset_id TEXT, asset_version_id TEXT,
+      content_checksum TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      origin TEXT NOT NULL DEFAULT 'user',
+      adoption_note TEXT,
+      approved_by TEXT, approved_at TEXT, approval_ref TEXT,
+      supersedes_version_id TEXT,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(method_id, version_number)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_method_version_idem
+      ON agent_space_method_versions(user_id, project_id, instance_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_agent_space_method_versions_method
+      ON agent_space_method_versions(method_id, version_number);
+
+    CREATE TABLE IF NOT EXISTS agent_space_skills (
+      skill_id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL,
+      user_id TEXT, project_id TEXT, instance_id TEXT,
+      slug TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      current_private_version_id TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(domain, user_id, project_id, instance_id, slug)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_skill_versions (
+      version_id TEXT PRIMARY KEY,
+      skill_id TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      user_id TEXT, project_id TEXT, instance_id TEXT,
+      version_number INTEGER NOT NULL,
+      content_ref_type TEXT NOT NULL,
+      asset_id TEXT, asset_version_id TEXT, system_template_path TEXT,
+      content_checksum TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      approved_by TEXT, approved_at TEXT, approval_ref TEXT,
+      supersedes_version_id TEXT,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(skill_id, version_number)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_skill_version_idem
+      ON agent_space_skill_versions(user_id, project_id, instance_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_space_skill_releases (
+      release_id TEXT PRIMARY KEY,
+      skill_id TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      user_id TEXT, project_id TEXT, instance_id TEXT,
+      release_version TEXT NOT NULL,
+      version_id TEXT NOT NULL,
+      content_ref_type TEXT NOT NULL,
+      content_checksum TEXT NOT NULL,
+      visibility TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'published',
+      published_by TEXT, published_at TEXT NOT NULL,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(skill_id, release_version)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_release_idem
+      ON agent_space_skill_releases(user_id, project_id, instance_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_agent_space_release_visibility
+      ON agent_space_skill_releases(visibility, status, created_at);
+
+    CREATE TABLE IF NOT EXISTS agent_space_agents (
+      agent_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      name TEXT NOT NULL, description TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(user_id, project_id, instance_id, name)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_agent_idem
+      ON agent_space_agents(user_id, project_id, instance_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_space_agent_skill_installations (
+      installation_id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      skill_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      release_id TEXT, release_version TEXT,
+      version_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'installed',
+      installed_by TEXT, installed_at TEXT NOT NULL,
+      approval_ref TEXT,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_space_install_agent_skill
+      ON agent_space_agent_skill_installations(agent_id, skill_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS agent_space_agent_method_bindings (
+      binding_id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      method_id TEXT NOT NULL,
+      version_policy TEXT NOT NULL,
+      pinned_version_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(agent_id, method_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_agent_asset_grants (
+      grant_id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      permission TEXT NOT NULL DEFAULT 'read',
+      granted_by TEXT, granted_at TEXT NOT NULL,
+      expires_at TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(agent_id, asset_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_task_dependencies (
+      dependency_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      agent_id TEXT,
+      kind TEXT NOT NULL,
+      ref_id TEXT NOT NULL,
+      version_policy TEXT NOT NULL,
+      pinned_version_id TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(task_id, kind, ref_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_task_run_snapshots (
+      snapshot_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      agent_id TEXT,
+      assembly_json TEXT NOT NULL,
+      assembly_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(run_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_facts (
+      fact_id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL DEFAULT 'user',
+      user_id TEXT, project_id TEXT, instance_id TEXT,
+      event_type TEXT NOT NULL,
+      source_type TEXT NOT NULL, source_id TEXT NOT NULL,
+      summary_json TEXT,
+      occurred_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_fact_natural
+      ON agent_space_facts(
+        COALESCE(user_id, ''), COALESCE(project_id, ''), COALESCE(instance_id, ''),
+        event_type, source_id);
+
+    CREATE TABLE IF NOT EXISTS agent_space_lessons (
+      lesson_id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL DEFAULT 'user',
+      user_id TEXT, project_id TEXT, instance_id TEXT,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      evidence_state TEXT NOT NULL DEFAULT 'hypothesis',
+      origin TEXT NOT NULL DEFAULT 'agent',
+      current_version_id TEXT,
+      approved_by TEXT, approved_at TEXT, approval_ref TEXT,
+      expires_at TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_lesson_versions (
+      version_id TEXT PRIMARY KEY,
+      lesson_id TEXT NOT NULL,
+      content_json TEXT NOT NULL,
+      supersedes_version_id TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_workflows (
+      workflow_id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL DEFAULT 'user',
+      user_id TEXT, project_id TEXT, instance_id TEXT,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      origin TEXT NOT NULL DEFAULT 'agent',
+      current_version_id TEXT,
+      approved_by TEXT, approved_at TEXT, approval_ref TEXT,
+      expires_at TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_workflow_versions (
+      version_id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      content_json TEXT NOT NULL,
+      supersedes_version_id TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_space_commitments (
+      commitment_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content_json TEXT NOT NULL,
+      commitment_kind TEXT NOT NULL,
+      trigger_json TEXT,
+      completion_criteria TEXT,
+      executor_type TEXT, executor_task_id TEXT,
+      authorization_ref TEXT,
+      status TEXT NOT NULL DEFAULT 'proposed',
+      version_number INTEGER NOT NULL DEFAULT 1,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_commitment_idem
+      ON agent_space_commitments(user_id, project_id, instance_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_space_commitment_fulfillments (
+      fulfillment_id TEXT PRIMARY KEY,
+      commitment_id TEXT NOT NULL,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      due_at TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      run_id TEXT, result_ref_json TEXT, delivery_ref_json TEXT,
+      commitment_version_number INTEGER NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(commitment_id, due_at)
+    );
+  `);
   markMigration(migrationKey);
 }
 

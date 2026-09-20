@@ -1162,3 +1162,327 @@ export const automationTaskAssetBindings = sqliteTable("automation_task_asset_bi
   versionId: text("version_id"),
   createdAt: text("created_at").notNull(),
 });
+
+// ---- Agent Space domain (W1, docs/agent-space-execution/W1-domain-contracts.md) ----
+// 新对象只保存语义与引用（Method/Skill 内容底座是 user_asset 版本；快照只存
+// 装配引用），既有 user_assets/automation/trace/review-memory 继续作为事实源。
+
+/** Unified lifecycle audit for every agent_space_* object. */
+export const agentSpaceAuditLogs = sqliteTable("agent_space_audit_logs", {
+  auditId: text("audit_id").primaryKey(),
+  domain: text("domain").notNull().default("user"),
+  userId: text("user_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
+  actor: text("actor").notNull(),
+  action: text("action").notNull(),
+  objectType: text("object_type").notNull(),
+  objectId: text("object_id").notNull(),
+  fromStatus: text("from_status"),
+  toStatus: text("to_status"),
+  detailJson: text("detail_json"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** User method system identity; formal versions live in agent_space_method_versions. */
+export const agentSpaceMethods = sqliteTable("agent_space_methods", {
+  methodId: text("method_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("draft"),
+  currentVersionId: text("current_version_id"),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Immutable-on-approval method versions referencing user_asset version bytes. */
+export const agentSpaceMethodVersions = sqliteTable("agent_space_method_versions", {
+  versionId: text("version_id").primaryKey(),
+  methodId: text("method_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  versionNumber: integer("version_number").notNull(),
+  contentRefType: text("content_ref_type").notNull().default("user_asset_version"),
+  assetId: text("asset_id"),
+  assetVersionId: text("asset_version_id"),
+  contentChecksum: text("content_checksum").notNull(),
+  status: text("status").notNull().default("draft"),
+  origin: text("origin").notNull().default("user"),
+  adoptionNote: text("adoption_note"),
+  approvedBy: text("approved_by"),
+  approvedAt: text("approved_at"),
+  approvalRef: text("approval_ref"),
+  supersedesVersionId: text("supersedes_version_id"),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Skill registry; domain='system' rows keep user scope columns NULL. */
+export const agentSpaceSkills = sqliteTable("agent_space_skills", {
+  skillId: text("skill_id").primaryKey(),
+  domain: text("domain").notNull(),
+  userId: text("user_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
+  slug: text("slug").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("draft"),
+  currentPrivateVersionId: text("current_private_version_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Private skill versions (approved ones immutable; drafts are editable input only). */
+export const agentSpaceSkillVersions = sqliteTable("agent_space_skill_versions", {
+  versionId: text("version_id").primaryKey(),
+  skillId: text("skill_id").notNull(),
+  domain: text("domain").notNull(),
+  userId: text("user_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
+  versionNumber: integer("version_number").notNull(),
+  contentRefType: text("content_ref_type").notNull(),
+  assetId: text("asset_id"),
+  assetVersionId: text("asset_version_id"),
+  systemTemplatePath: text("system_template_path"),
+  contentChecksum: text("content_checksum").notNull(),
+  origin: text("origin").notNull(),
+  status: text("status").notNull().default("draft"),
+  approvedBy: text("approved_by"),
+  approvedAt: text("approved_at"),
+  approvalRef: text("approval_ref"),
+  supersedesVersionId: text("supersedes_version_id"),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Published skill releases; pin version_id + checksum, decoupled from later private edits. */
+export const agentSpaceSkillReleases = sqliteTable("agent_space_skill_releases", {
+  releaseId: text("release_id").primaryKey(),
+  skillId: text("skill_id").notNull(),
+  domain: text("domain").notNull(),
+  userId: text("user_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
+  releaseVersion: text("release_version").notNull(),
+  versionId: text("version_id").notNull(),
+  contentRefType: text("content_ref_type").notNull(),
+  contentChecksum: text("content_checksum").notNull(),
+  visibility: text("visibility").notNull(),
+  status: text("status").notNull().default("published"),
+  publishedBy: text("published_by"),
+  publishedAt: text("published_at").notNull(),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Agent identity in the control plane (config read-model base). */
+export const agentSpaceAgents = sqliteTable("agent_space_agents", {
+  agentId: text("agent_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  status: text("status").notNull().default("draft"),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Append-only installation ledger; latest installed row per (agent, skill) is current. */
+export const agentSpaceAgentSkillInstallations = sqliteTable("agent_space_agent_skill_installations", {
+  installationId: text("installation_id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  skillId: text("skill_id").notNull(),
+  source: text("source").notNull(),
+  releaseId: text("release_id"),
+  releaseVersion: text("release_version"),
+  versionId: text("version_id").notNull(),
+  status: text("status").notNull().default("installed"),
+  installedBy: text("installed_by"),
+  installedAt: text("installed_at").notNull(),
+  approvalRef: text("approval_ref"),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Agent-to-method binding with explicit version policy. */
+export const agentSpaceAgentMethodBindings = sqliteTable("agent_space_agent_method_bindings", {
+  bindingId: text("binding_id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  methodId: text("method_id").notNull(),
+  versionPolicy: text("version_policy").notNull(),
+  pinnedVersionId: text("pinned_version_id"),
+  status: text("status").notNull().default("active"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Asset authorization grants; bytes stay behind the scoped user-assets service. */
+export const agentSpaceAgentAssetGrants = sqliteTable("agent_space_agent_asset_grants", {
+  grantId: text("grant_id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  assetId: text("asset_id").notNull(),
+  permission: text("permission").notNull().default("read"),
+  grantedBy: text("granted_by"),
+  grantedAt: text("granted_at").notNull(),
+  expiresAt: text("expires_at"),
+  status: text("status").notNull().default("active"),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Task dependency pins (skill/method/asset/state) for version fixing. */
+export const agentSpaceTaskDependencies = sqliteTable("agent_space_task_dependencies", {
+  dependencyId: text("dependency_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  agentId: text("agent_id"),
+  kind: text("kind").notNull(),
+  refId: text("ref_id").notNull(),
+  versionPolicy: text("version_policy").notNull(),
+  pinnedVersionId: text("pinned_version_id"),
+  metadataJson: text("metadata_json"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Immutable per-run assembly record; references only, never content bodies. */
+export const agentSpaceTaskRunSnapshots = sqliteTable("agent_space_task_run_snapshots", {
+  snapshotId: text("snapshot_id").primaryKey(),
+  runId: text("run_id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  agentId: text("agent_id"),
+  assemblyJson: text("assembly_json").notNull(),
+  assemblyHash: text("assembly_hash").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** T-524 AgentFact: service-observed events referencing existing records. */
+export const agentSpaceFacts = sqliteTable("agent_space_facts", {
+  factId: text("fact_id").primaryKey(),
+  domain: text("domain").notNull().default("user"),
+  userId: text("user_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
+  eventType: text("event_type").notNull(),
+  sourceType: text("source_type").notNull(),
+  sourceId: text("source_id").notNull(),
+  summaryJson: text("summary_json"),
+  occurredAt: text("occurred_at").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** T-524 AgentLesson header; approval is bound to the specific version. */
+export const agentSpaceLessons = sqliteTable("agent_space_lessons", {
+  lessonId: text("lesson_id").primaryKey(),
+  domain: text("domain").notNull().default("user"),
+  userId: text("user_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
+  title: text("title").notNull(),
+  status: text("status").notNull().default("draft"),
+  evidenceState: text("evidence_state").notNull().default("hypothesis"),
+  origin: text("origin").notNull().default("agent"),
+  currentVersionId: text("current_version_id"),
+  approvedBy: text("approved_by"),
+  approvedAt: text("approved_at"),
+  approvalRef: text("approval_ref"),
+  expiresAt: text("expires_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const agentSpaceLessonVersions = sqliteTable("agent_space_lesson_versions", {
+  versionId: text("version_id").primaryKey(),
+  lessonId: text("lesson_id").notNull(),
+  contentJson: text("content_json").notNull(),
+  supersedesVersionId: text("supersedes_version_id"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** T-524 AgentWorkflow: approvable work instructions, same lifecycle as lessons. */
+export const agentSpaceWorkflows = sqliteTable("agent_space_workflows", {
+  workflowId: text("workflow_id").primaryKey(),
+  domain: text("domain").notNull().default("user"),
+  userId: text("user_id"),
+  projectId: text("project_id"),
+  instanceId: text("instance_id"),
+  title: text("title").notNull(),
+  status: text("status").notNull().default("draft"),
+  origin: text("origin").notNull().default("agent"),
+  currentVersionId: text("current_version_id"),
+  approvedBy: text("approved_by"),
+  approvedAt: text("approved_at"),
+  approvalRef: text("approval_ref"),
+  expiresAt: text("expires_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const agentSpaceWorkflowVersions = sqliteTable("agent_space_workflow_versions", {
+  versionId: text("version_id").primaryKey(),
+  workflowId: text("workflow_id").notNull(),
+  contentJson: text("content_json").notNull(),
+  supersedesVersionId: text("supersedes_version_id"),
+  createdAt: text("created_at").notNull(),
+});
+
+/** T-524 AgentCommitment: long-term promise; automation task is one executor. */
+export const agentSpaceCommitments = sqliteTable("agent_space_commitments", {
+  commitmentId: text("commitment_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  title: text("title").notNull(),
+  contentJson: text("content_json").notNull(),
+  commitmentKind: text("commitment_kind").notNull(),
+  triggerJson: text("trigger_json"),
+  completionCriteria: text("completion_criteria"),
+  executorType: text("executor_type"),
+  executorTaskId: text("executor_task_id"),
+  authorizationRef: text("authorization_ref"),
+  status: text("status").notNull().default("proposed"),
+  versionNumber: integer("version_number").notNull().default(1),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** Per-period fulfillment ledger bound to the commitment version it served. */
+export const agentSpaceCommitmentFulfillments = sqliteTable("agent_space_commitment_fulfillments", {
+  fulfillmentId: text("fulfillment_id").primaryKey(),
+  commitmentId: text("commitment_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  dueAt: text("due_at"),
+  status: text("status").notNull().default("pending"),
+  runId: text("run_id"),
+  resultRefJson: text("result_ref_json"),
+  deliveryRefJson: text("delivery_ref_json"),
+  commitmentVersionNumber: integer("commitment_version_number").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
