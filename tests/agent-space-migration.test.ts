@@ -1,0 +1,448 @@
+/**
+ * W6 隔离迁移演练域测试。
+ *
+ * 覆盖 W6 执行稿验收面：
+ * - 门禁消费：服务层逐项重验（不信 gate 列表），owner-review 不进自动导入；
+ * - staging：备份字节实读 + sha256 双核对，缺失/漂移逐项拦截；
+ * - 导入：data_asset 不 method 化、method 归档 draft（不 approve/不 adopt）、
+ *   幂等重放零新增；逐项 scope/hash/可见性核对；
+ * - 必测三场景：mg 四因子与 KP 独立（缺账本显式失败，不推断空仓）、
+ *   111 一次性回测不变成长久方法（模板/策略双目标留在 owner-review）、
+ *   dyk 撤回旧策略只归档（draft 不可 pin）且核心模型在队列中可发现；
+ * - 旧 default-load 关闭后，导入对象经授权采用提供交互与任务 run-basis；
+ * - 演练脚本两阶段（导入 + 回滚恢复）端到端通过。
+ */
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+const root = mkdtempSync(path.join(os.tmpdir(), "invest-agent-w6-migration-"));
+process.env.NODE_ENV = "test";
+process.env.DB_PATH = path.join(root, "w6.db");
+process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
+process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
+process.env.SYSTEM_SKILLS_TEMPLATE_ROOT = path.join(root, "templates");
+mkdirSync(path.join(root, "workspaces"), { recursive: true });
+process.once("exit", () => rmSync(root, { recursive: true, force: true }));
+
+const sc = {
+  mg: { userId: "mg", projectId: "invest-agent", instanceId: "invest-agent-mg" },
+  u111: { userId: "111", projectId: "invest-agent", instanceId: "invest-agent-111" },
+  dyk: { userId: "dyk", projectId: "invest-agent", instanceId: "invest-agent-dyk" },
+  outsider: { userId: "w6-outsider", projectId: "invest-agent", instanceId: "invest-agent-w6-outsider" },
+};
+
+/** 同步服务调用的拒绝断言（upsert/approve 等为同步 throw）。 */
+function assertThrows(fn: () => unknown, pattern: RegExp, message?: string): void {
+  try {
+    fn();
+  } catch (error) {
+    assert.match((error as Error).message, pattern, message);
+    return;
+  }
+  assert.fail(message ?? `expected throw matching ${pattern}`);
+}
+
+const OWNER_TOKEN = "w6-test-owner-token";
+const sha256Of = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
+
+// ---- mini W0 fixture：真实字节、真实 hash ----
+const FF_BODY = Buffer.from("# 控盘度综合评分 V1.1\n四因子可计算实现；与 V1.0 控盘度（KP）两套口径。\n", "utf8");
+const KP_BODY = Buffer.from("# 控盘度指标 V1.0（KP 观察版）\n历史定位，禁止默认采用。\n", "utf8");
+const DYK_STRATEGY_BODY = Buffer.from("# Strategy Rules (dyk)\n撤回的旧策略，仅归档保全。\n", "utf8");
+const DYK_CORE_BODY = Buffer.from("# 核心公司资质六维模型\n恢复可发现性候选。\n", "utf8");
+const XLSX_PREFIX = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04]); // 仅用于漂移/缺失反例的非导入字节
+const MG_LEDGER_BODY = Buffer.from("mg 四因子明细 2026-08-25（fixture 用 md，避免 xlsx 结构校验）\n", "utf8");
+const U111_DAILY_BODY = Buffer.from("# 2026-09-17 日复盘\n模板输出。\n", "utf8");
+const U111_T337_BODY = Buffer.from("T-337 一次性回测 staged output（fixture 用 md）\n", "utf8");
+const U111_STRATEGY_BODY = Buffer.from("# 111 strategy rules\n策略与呈现拆分中。\n", "utf8");
+const DRIFT_BODY = Buffer.from("备份实际字节与 manifest hash 不一致（漂移拦截反例）", "utf8");
+const FAKE_AUTO_BODY = Buffer.from("# 伪装进 autoImportable 的受限项\n", "utf8");
+const UNCLASSIFIED_BODY = Buffer.from("# 未分类文件\n", "utf8");
+
+interface FixtureSpec {
+  id: string;
+  user: keyof typeof sc;
+  itemPath: string;
+  classification: string;
+  disposition: string;
+  blockedReasons: string[];
+  body: Buffer | null; // null = 备份缺失
+  sourceHashOverride?: string; // 制造漂移
+  constraints?: unknown[];
+  links?: Array<Record<string, unknown>>;
+  gate: "auto" | "ownerReview";
+}
+
+const SPECS: FixtureSpec[] = [
+  {
+    id: "mg:liveProjectRoot:methods/控盘度综合评分.md", user: "mg", itemPath: "methods/控盘度综合评分.md",
+    classification: "method", disposition: "migrate-candidate", blockedReasons: [], body: FF_BODY,
+    links: [{ id: "mg-four-factor", targetPath: "methods/four-factor-score-v1.1.md", role: "direct-content-source", consumers: ["at_ff_consumer"] }],
+    gate: "auto",
+  },
+  {
+    id: "mg:liveProjectRoot:deliveries/2026-08-25_持仓与关注股日复盘_控盘度V1.1_四因子版.md", user: "mg",
+    itemPath: "deliveries/2026-08-25_持仓与关注股日复盘_控盘度V1.1_四因子版.md",
+    classification: "data_asset", disposition: "migrate-candidate", blockedReasons: [], body: MG_LEDGER_BODY, gate: "auto",
+  },
+  {
+    id: "mg:liveProjectRoot:methods/控盘度指标V1.0.md", user: "mg", itemPath: "methods/控盘度指标V1.0.md",
+    classification: "method", disposition: "candidate-owner-review",
+    blockedReasons: ["owner-review-required", "historical-not-default(历史定位，禁止默认采用)"],
+    body: KP_BODY,
+    constraints: [{ ref: "mg-kp-old", constraint: "historical-not-default(历史定位，禁止默认采用)" }],
+    links: [{ id: "mg-kp-old", targetPath: "history/kp-observation-v1.0.md", role: "direct-content-source" }],
+    gate: "ownerReview",
+  },
+  {
+    // 门禁放行（hash 存在且 W0 记录回读一致），staging 时备份文件已不在 → 拦截。
+    id: "mg:liveProjectRoot:deliveries/缺失备份反例.txt", user: "mg", itemPath: "deliveries/缺失备份反例.txt",
+    classification: "data_asset", disposition: "migrate-candidate", blockedReasons: [],
+    body: null, sourceHashOverride: sha256Of(Buffer.from("缺失备份反例的 manifest 记录字节")), gate: "auto",
+  },
+  {
+    id: "mg:liveProjectRoot:deliveries/漂移反例.txt", user: "mg", itemPath: "deliveries/漂移反例.txt",
+    classification: "data_asset", disposition: "migrate-candidate", blockedReasons: [], body: DRIFT_BODY,
+    sourceHashOverride: "0".repeat(64), gate: "auto",
+  },
+  {
+    id: "mg:liveProjectRoot:methods/伪装AUTO受限项.md", user: "mg", itemPath: "methods/伪装AUTO受限项.md",
+    classification: "method", disposition: "migrate-candidate", blockedReasons: [], body: FAKE_AUTO_BODY,
+    constraints: [{ ref: "x", constraint: "hold-ambiguity" }], gate: "auto",
+  },
+  {
+    id: "111:liveProjectRoot:reports/daily/2026-09-17.md", user: "u111", itemPath: "reports/daily/2026-09-17.md",
+    classification: "data_asset", disposition: "migrate-candidate", blockedReasons: [], body: U111_DAILY_BODY, gate: "auto",
+  },
+  {
+    id: "111:liveProjectRoot:deliveries/T-337-stagedOutput-验收.md", user: "u111", itemPath: "deliveries/T-337-stagedOutput-验收.md",
+    classification: "data_asset", disposition: "migrate-candidate", blockedReasons: [], body: U111_T337_BODY, gate: "auto",
+  },
+  {
+    id: "111:liveProjectRoot:methods/strategy-rules.md", user: "u111", itemPath: "methods/strategy-rules.md",
+    classification: "method", disposition: "candidate-owner-review",
+    blockedReasons: ["owner-review-required", "split-in-progress(拆分未验证，不得自动作为完整 Method 采用)"],
+    body: U111_STRATEGY_BODY,
+    constraints: [{ ref: "111-strategy", constraint: "split-in-progress(拆分未验证，不得自动作为完整 Method 采用)" }],
+    links: [
+      { id: "111-strategy", targetPath: "methods/strategy-rules.md", role: "identity" },
+      { id: "111-daily-review", targetPath: "workflows/daily-review.md", role: "split-source", consumers: ["migrated_scheduled-daily-review_fa57baa2"] },
+    ],
+    gate: "ownerReview",
+  },
+  {
+    id: "dyk:liveProjectRoot:methods/strategy-rules.md", user: "dyk", itemPath: "methods/strategy-rules.md",
+    classification: "method", disposition: "migrate-candidate", blockedReasons: [], body: DYK_STRATEGY_BODY,
+    links: [{ id: "dyk-strategy", targetPath: "methods/strategy-rules.md", role: "identity", disposition: "preserve-current" }],
+    gate: "auto",
+  },
+  {
+    id: "dyk:liveProjectRoot:assets/migrated/knowledge/methods/fundamental.md", user: "dyk",
+    itemPath: "assets/migrated/knowledge/methods/fundamental.md",
+    classification: "method", disposition: "candidate-owner-review",
+    blockedReasons: ["owner-review-required", "restore-candidate(恢复可发现性候选，未接入运行)"],
+    body: DYK_CORE_BODY,
+    constraints: [{ ref: "dyk-core-qualification", constraint: "restore-candidate(恢复可发现性候选，未接入运行)" }],
+    links: [{ id: "dyk-core-qualification", targetPath: "methods/core-company-qualification.md", role: "direct-content-source" }],
+    gate: "ownerReview",
+  },
+  {
+    id: "dyk:liveProjectRoot:reports/daily/未分类反例.md", user: "dyk", itemPath: "reports/daily/未分类反例.md",
+    classification: "unclassified", disposition: "migrate-candidate", blockedReasons: [], body: UNCLASSIFIED_BODY, gate: "auto",
+  },
+];
+
+const userInstanceId: Record<keyof typeof sc, string> = { mg: "invest-agent-mg", u111: "invest-agent-111", dyk: "invest-agent-dyk", outsider: "invest-agent-w6-outsider" };
+
+function manifestEntryOf(spec: FixtureSpec): Record<string, unknown> {
+  const sourceHash = spec.sourceHashOverride ?? (spec.body ? sha256Of(spec.body) : "");
+  return {
+    id: spec.id,
+    scope: { user: sc[spec.user].userId, projectId: "invest-agent", instanceId: userInstanceId[spec.user], scopeVerifiedBy: "fixture" },
+    source: "liveProjectRoot",
+    path: spec.itemPath,
+    kind: "file",
+    sha256: sourceHash,
+    size: spec.body?.length ?? 0,
+    mtime: "2026-09-20T00:00:00.000Z",
+    classification: spec.classification,
+    disposition: spec.disposition,
+    confidence: "high",
+    blockedReasons: spec.blockedReasons,
+    contextEntry: { readable: true, defaultInject: "none", entryClass: "on-demand" },
+    evidenceRefs: ["FIXTURE"],
+    consumers: [],
+    objectLinks: { reconciliationLinks: spec.links ?? [], adoptionConstraints: spec.constraints ?? [] },
+    backup: {
+      backupPath: `runtime-data/projects/fixture-${sc[spec.user].userId}/${spec.itemPath}`,
+      coverage: "covered",
+      readbackResult: "readback-match-manifest",
+      readbackHash: sourceHash,
+      driftSinceScan: "unchanged",
+    },
+  };
+}
+
+const w0Root = path.join(root, "w0");
+const backupRoot = path.join(root, "backup");
+const copyRoot = path.join(root, "isolated-copy");
+
+const fixture = (async () => {
+  mkdirSync(w0Root, { recursive: true });
+  const users: Record<string, { items: unknown[] }> = {};
+  for (const spec of SPECS) {
+    const userId = sc[spec.user].userId;
+    (users[userId] ??= { items: [] }).items.push(manifestEntryOf(spec));
+    if (spec.body) {
+      const abs = path.join(backupRoot, `runtime-data/projects/fixture-${userId}`, spec.itemPath);
+      mkdirSync(path.dirname(abs), { recursive: true });
+      writeFileSync(abs, spec.body);
+    }
+  }
+  writeFileSync(path.join(w0Root, "manifest.json"), JSON.stringify({ schemaVersion: 2, users }));
+  writeFileSync(
+    path.join(w0Root, "import-gate.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: "2026-09-20T16:10:00+08:00",
+      rules: { autoImportable: "fixture" },
+      autoImportable: SPECS.filter((s) => s.gate === "auto").map((s) => s.id),
+      ownerReview: SPECS.filter((s) => s.gate === "ownerReview").map((s) => s.id),
+      blocked: {},
+    }),
+  );
+
+  const db = await import("../src/db/index.js");
+  db.initDb();
+  db.sqlite.prepare("INSERT INTO settings (key, value) VALUES ('agent_space.owner_admin_token', ?)").run(OWNER_TOKEN);
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  for (const key of ["mg", "u111", "dyk"] as const) await registerTestProject(sc[key]);
+  return { db, space: await import("../src/services/agent-space/index.js") };
+})();
+
+test("W6 门禁：服务层逐项重验，owner-review 不进自动导入", async () => {
+  const { space } = await fixture;
+  const inputs = space.loadW0MigrationInputs(w0Root);
+  const autoIds = inputs.autoItems.map((i) => i.itemId);
+  // 9 个 gate auto 中：受限伪装项、未分类项被服务层拦截；漂移/缺失两项仍在
+  // （staging 才拦字节），干净 auto 为 5 项。
+  assert.deepEqual(new Set(autoIds), new Set([
+    "mg:liveProjectRoot:methods/控盘度综合评分.md",
+    "mg:liveProjectRoot:deliveries/2026-08-25_持仓与关注股日复盘_控盘度V1.1_四因子版.md",
+    "mg:liveProjectRoot:deliveries/缺失备份反例.txt",
+    "mg:liveProjectRoot:deliveries/漂移反例.txt",
+    "111:liveProjectRoot:reports/daily/2026-09-17.md",
+    "111:liveProjectRoot:deliveries/T-337-stagedOutput-验收.md",
+    "dyk:liveProjectRoot:methods/strategy-rules.md",
+  ]));
+  const skippedIds = inputs.skipped.map((s) => s.itemId).sort();
+  assert.deepEqual(skippedIds, ["dyk:liveProjectRoot:reports/daily/未分类反例.md", "mg:liveProjectRoot:methods/伪装AUTO受限项.md"]);
+  assert.match(inputs.skipped.find((s) => s.itemId.includes("伪装"))!.reason, /adoption-constraints-present/);
+  assert.match(inputs.skipped.find((s) => s.itemId.includes("未分类"))!.reason, /classification=unclassified/);
+  // owner-review 可发现性清单：KP/111 策略/dyk 核心模型三关键项字段完整。
+  const queue = inputs.ownerReviewQueue;
+  assert.equal(queue.length, 3);
+  const kp = queue.find((e) => e.itemId.includes("控盘度指标V1.0"))!;
+  assert.ok(kp.adoptionConstraints.some((c) => c.startsWith("historical-not-default")), "KP 约束保留");
+  assert.ok(kp.reconciliationTargets.includes("history/kp-observation-v1.0.md"));
+  assert.ok(kp.backupPath && kp.sha256, "KP 备份位置与 hash 可发现");
+  const core = queue.find((e) => e.itemId.includes("fundamental"))!;
+  assert.ok(core.adoptionConstraints.some((c) => c.startsWith("restore-candidate")));
+  assert.ok(core.reconciliationTargets.includes("methods/core-company-qualification.md"));
+  const s111 = queue.find((e) => e.itemId === "111:liveProjectRoot:methods/strategy-rules.md")!;
+  assert.deepEqual(s111.reconciliationTargets.sort(), ["methods/strategy-rules.md", "workflows/daily-review.md"]);
+});
+
+test("W6 staging：备份字节实读双核对，缺失/漂移逐项拦截", async () => {
+  const { space } = await fixture;
+  const inputs = space.loadW0MigrationInputs(w0Root);
+  const staged = space.stageMigrationCopies(inputs.autoItems, backupRoot, copyRoot);
+  const byId = new Map(staged.outcomes.map((o) => [o.itemId, o]));
+  assert.equal(staged.outcomes.filter((o) => o.status === "staged").length, 5);
+  assert.match(byId.get("mg:liveProjectRoot:deliveries/缺失备份反例.txt")!.reason!, /backup-unreadable/);
+  assert.match(byId.get("mg:liveProjectRoot:deliveries/漂移反例.txt")!.reason!, /hash-drift/);
+  const ff = byId.get("mg:liveProjectRoot:methods/控盘度综合评分.md")!;
+  assert.equal(ff.copyHash, sha256Of(FF_BODY), "副本 hash 与源字节一致");
+});
+
+test("W6 导入：归档态 method、data_asset 不 method 化、幂等重放零新增", async () => {
+  const { space, db } = await fixture;
+  const inputs = space.loadW0MigrationInputs(w0Root);
+  const staged = space.stageMigrationCopies(inputs.autoItems, backupRoot, copyRoot);
+  const importable = inputs.autoItems.filter((i) => staged.staged.has(i.itemId));
+  assert.equal(importable.length, 5);
+  const first = await space.importStagedMigration(importable, staged.staged, copyRoot);
+  assert.deepEqual(first.failures, []);
+
+  const mgMethod = first.outcomes.find((o) => o.itemId.endsWith("控盘度综合评分.md"))!;
+  assert.equal(mgMethod.objectType, "method");
+  const dykMethod = first.outcomes.find((o) => o.itemId === "dyk:liveProjectRoot:methods/strategy-rules.md")!;
+  assert.equal(dykMethod.objectType, "method");
+  // data_asset 一律不建 method；111 无任何 method。
+  for (const o of first.outcomes) {
+    if (o.objectType === "asset") assert.ok(!o.methodId, `${o.itemId} 不得 method 化`);
+  }
+  assert.equal(first.outcomes.filter((o) => o.scope.userId === "111" && o.objectType === "method").length, 0);
+  assert.equal(first.outcomes.filter((o) => o.scope.userId === "111").length, 2, "111 只导入两项资产");
+
+  // 幂等重放：同 key 二跑零新增、对象 ID 不变。
+  const before = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM user_assets").get() as { n: number }).n;
+  const second = await space.importStagedMigration(importable, staged.staged, copyRoot);
+  const after = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM user_assets").get() as { n: number }).n;
+  assert.equal(after, before, "重放不新增资产行");
+  assert.ok(second.outcomes.every((o) => o.idempotentReplay));
+  for (let i = 0; i < first.outcomes.length; i++) {
+    assert.equal(second.outcomes[i]!.assetId, first.outcomes[i]!.assetId);
+  }
+
+  // 逐项核对：scope/hash/同 scope 可读/跨 scope 拒绝/归档态。
+  const verify = await space.verifyMigrationImport(first.outcomes, sc.outsider);
+  for (const v of verify) {
+    assert.ok(v.scopeOk && v.storedHashMatchesSource && v.sameScopeReadable && v.crossScopeRejected, v.itemId);
+    if (v.itemId === "mg:liveProjectRoot:methods/控盘度综合评分.md" || v.itemId === "dyk:liveProjectRoot:methods/strategy-rules.md") {
+      assert.equal(v.archivedMethodState, true, `${v.itemId} 必须归档态`);
+    }
+  }
+  // 存储字节与源 hash 一致（受控副本内容未变形）。
+  const stored = await import("../src/services/user-assets.js").then((m) =>
+    m.readUserAssetVersion({ ...sc.mg, assetId: mgMethod.assetId, versionId: mgMethod.assetVersionId }));
+  assert.equal(sha256Of(Buffer.from(stored.bytes)), sha256Of(FF_BODY));
+
+  // dyk 归档版本行：draft + origin migration + 空约束。
+  const dykVersion = space.getMigrationMethodVersion(sc.dyk, dykMethod.methodVersionId!);
+  assert.equal(dykVersion.status, "draft");
+  assert.equal(dykVersion.origin, "migration");
+  assert.deepEqual(dykVersion.adoptionConstraints, []);
+});
+
+test("W6 S1：mg 四因子与 KP 独立；缺账本显式失败，不推断空仓", async () => {
+  const { space, db } = await fixture;
+  const inputs = space.loadW0MigrationInputs(w0Root);
+  const staged = space.stageMigrationCopies(inputs.autoItems, backupRoot, copyRoot);
+  const importable = inputs.autoItems.filter((i) => staged.staged.has(i.itemId));
+  const imported = await space.importStagedMigration(importable, staged.staged, copyRoot);
+
+  // KP V1.0（owner-review）不在库：mg 的 method 恰为四因子一个。
+  const mgMethods = space.listMigrationMethods(sc.mg);
+  assert.equal(mgMethods.length, 1);
+  assert.match(mgMethods[0]!.name, /控盘度综合评分/);
+  const kpQueue = inputs.ownerReviewQueue.find((e) => e.itemId.includes("控盘度指标V1.0"))!;
+  assert.ok(!imported.outcomes.some((o) => o.itemId === kpQueue.itemId), "KP 不得被导入");
+
+  const now = new Date().toISOString();
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at)
+                     VALUES ('w6_task_kp',?,?,?,'active',1,?,?)`).run(sc.mg.userId, sc.mg.projectId, sc.mg.instanceId, now, now);
+  // 模拟账本资产不在迁移集（keep-authoritative 留旧库）：依赖注册必须显式失败。
+  assertThrows(
+    () => space.upsertTaskDependency({ scope: sc.mg, taskId: "w6_task_kp", kind: "asset_input", refId: "asset_w6_missing_paper_ledger", versionPolicy: "pinned", pinnedVersionId: "version_w6_missing", actor: "w6-test" }),
+    /user asset asset_w6_missing_paper_ledger not found/,
+    "缺失账本必须显式失败",
+  );
+  const basisRows = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_run_basis").get() as { n: number }).n;
+  assert.equal(basisRows, 0, "缺账本任务不得产生任何 run basis（不推断空仓）");
+});
+
+test("W6 S3：dyk 撤回旧策略只归档；draft 不可 pin 为运行依赖；授权采用路径仍开放", async () => {
+  const { space, db } = await fixture;
+  const inputs = space.loadW0MigrationInputs(w0Root);
+  const staged = space.stageMigrationCopies(inputs.autoItems, backupRoot, copyRoot);
+  const importable = inputs.autoItems.filter((i) => staged.staged.has(i.itemId));
+  const imported = await space.importStagedMigration(importable, staged.staged, copyRoot);
+  const dykMethod = imported.outcomes.find((o) => o.itemId === "dyk:liveProjectRoot:methods/strategy-rules.md")!;
+
+  const now = new Date().toISOString();
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at)
+                     VALUES ('w6_task_dyk',?,?,?,'active',1,?,?)`).run(sc.dyk.userId, sc.dyk.projectId, sc.dyk.instanceId, now, now);
+  assertThrows(
+    () => space.upsertTaskDependency({ scope: sc.dyk, taskId: "w6_task_dyk", kind: "method", refId: dykMethod.methodId!, versionPolicy: "pinned", pinnedVersionId: dykMethod.methodVersionId!, actor: "w6-test" }),
+    /only formal versions resolve/,
+    "归档 draft 不得成为运行绑定",
+  );
+
+  // 对照：四因子（无约束）走 owner 授权 approve+adopt 后可绑定——归档不阻塞授权采用。
+  const mgMethod = imported.outcomes.find((o) => o.itemId.endsWith("控盘度综合评分.md"))!;
+  const { approveMethodVersion, createAgent, bindMethod, assembleAndRecordRunBasis } = space;
+  approveMethodVersion({
+    scope: sc.mg, methodId: mgMethod.methodId!, versionId: mgMethod.methodVersionId!,
+    approvedBy: "w6-test-owner", approvalRef: "owner-decision:w6-four-factor",
+    ownerToken: OWNER_TOKEN, adopt: true, actor: "w6-test",
+  });
+  const agent = createAgent({ scope: sc.mg, name: "W6 演练 Agent", actor: "w6-test" });
+  space.setAgentStatus(sc.mg, agent.agent_id, "active", "w6-test");
+  bindMethod({ scope: sc.mg, agentId: agent.agent_id, methodId: mgMethod.methodId!, versionPolicy: "pinned", pinnedVersionId: mgMethod.methodVersionId!, actor: "w6-test" });
+
+  // run-basis：交互与任务入口都能从导入对象取得依赖；basis 不含旧 workspace 路径。
+  db.sqlite.prepare(`INSERT INTO conversation_sessions (conversation_id,user_id,project_id,instance_id,assistant_id,channel,title,last_message_preview,message_count,status,created_at,updated_at)
+                     VALUES ('w6_conv',?,?,?,'invest-agent-mg','weixin','W6','',1,'active',?,?)`)
+    .run(sc.mg.userId, sc.mg.projectId, sc.mg.instanceId, now, now);
+  const convBasis = assembleAndRecordRunBasis({ scope: sc.mg, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:w6_conv:message:w6_msg", conversationId: "w6_conv", actor: "w6-test" });
+  assert.equal(convBasis.resolution.methods.length, 1);
+  assert.equal(convBasis.resolution.methods[0]!.versionId, mgMethod.methodVersionId);
+  const convBasisJson = JSON.stringify(convBasis);
+  assert.ok(!convBasisJson.includes(backupRoot) && !convBasisJson.includes(w0Root), "basis 不得携带旧 workspace/备份路径");
+
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at)
+                     VALUES ('w6_task_ff',?,?,?,'active',1,?,?)`).run(sc.mg.userId, sc.mg.projectId, sc.mg.instanceId, now, now);
+  db.sqlite.prepare(`INSERT INTO automation_task_revisions (revision_id,task_id,user_id,project_id,instance_id,revision,name,schedule_json,inputs_json,output_json,delivery_json,created_at)
+                     VALUES ('w6_rev_ff','w6_task_ff',?,?,?,1,'W6四因子任务','{}','[]','{"mode":"agent"}','{}',?)`)
+    .run(sc.mg.userId, sc.mg.projectId, sc.mg.instanceId, now);
+  db.sqlite.prepare(`INSERT INTO automation_task_runs (run_id,task_id,revision_id,user_id,project_id,instance_id,origin,idempotency_key,attempt,status,claimed_at,started_at,created_at,updated_at)
+                     VALUES ('w6_run_ff','w6_task_ff','w6_rev_ff',?,?,?,'manual','w6-idem',1,'succeeded',?,?,?,?)`)
+    .run(sc.mg.userId, sc.mg.projectId, sc.mg.instanceId, now, now, now, now);
+  space.upsertTaskDependency({ scope: sc.mg, taskId: "w6_task_ff", kind: "method", refId: mgMethod.methodId!, versionPolicy: "pinned", pinnedVersionId: mgMethod.methodVersionId!, actor: "w6-test" });
+  const taskBasis = assembleAndRecordRunBasis({ scope: sc.mg, agentId: agent.agent_id, entryKind: "scheduled", basisKey: "run:w6_run_ff:basis", taskId: "w6_task_ff", runId: "w6_run_ff", actor: "w6-test" });
+  assert.equal(taskBasis.resolution.methods.length, 1, "任务装配封闭于声明依赖");
+  assert.equal(taskBasis.resolution.methods[0]!.methodId, mgMethod.methodId);
+});
+
+test("W6 演练脚本两阶段：fixture 导入全绿，回滚恢复到导入前快照", { timeout: 120_000 }, async () => {
+  await fixture;
+  const runRoot = path.join(root, "rehearsal-run");
+  const scriptEnv = {
+    ...process.env,
+    DB_PATH: path.join(runRoot, "isolated.db"),
+    WORKSPACE_ROOT: path.join(runRoot, "workspaces"),
+    RUNTIME_DATA_ROOT: path.join(runRoot, "runtime"),
+    MASTRA_PROJECTS_ROOT: path.join(runRoot, "projects"),
+    SYSTEM_SKILLS_TEMPLATE_ROOT: path.join(runRoot, "templates"),
+    NODE_ENV: "test",
+    WORKSPACE_BACKEND: "mastra",
+  };
+  mkdirSync(path.join(runRoot, "workspaces"), { recursive: true });
+  const script = path.join(import.meta.dirname, "..", "scripts", "agent-space", "w6-rehearsal.mjs");
+  const run = (extra: string[]) => spawnSync(process.execPath, ["--import", "tsx", script, ...extra], { env: scriptEnv, encoding: "utf8" });
+  const importRun = run(["--w0-root", w0Root, "--backup-root", backupRoot, "--out-root", runRoot, "--phase", "import", "--selftest"]);
+  assert.equal(importRun.status, 0, `import phase failed:\n${importRun.stdout}\n${importRun.stderr}`);
+  const report = JSON.parse(readFileSync(path.join(runRoot, "report.json"), "utf8")) as {
+    pass: boolean; counts: { imported: number; ownerReviewQueue: number }; checks: Array<{ name: string; pass: boolean }>;
+  };
+  assert.equal(report.pass, true);
+  assert.equal(report.counts.imported, 5, "fixture 干净项 5 个全部导入");
+  assert.equal(report.counts.ownerReviewQueue, 3);
+  for (const required of [
+    "isolated-workspace-root-empty (旧 default-load 关闭)",
+    "S1 old KP stays owner-review (not imported)",
+    "S1 missing ledger fails loudly (no empty-position inference)",
+    "S1 KP task leaves no run basis",
+    "S2 111 imports no method (回测/日报保持资产)",
+    "S2 one-off backtest imported as asset only",
+    "S3 archived draft cannot pin as task dependency",
+    "S3 dyk core model discoverable in owner-review queue",
+    "run-basis conversation resolves four-factor",
+    "run-basis task assembly closed to declared deps",
+  ]) {
+    const found = report.checks.find((c) => c.name === required);
+    assert.ok(found?.pass, `演练脚本缺检查或未过：${required}`);
+  }
+  const snapshot = path.join(runRoot, "04-rollback", "pre-snapshot.db");
+  const rollbackRun = run(["--w0-root", w0Root, "--phase", "rollback-verify", "--snapshot", snapshot, "--out-root", runRoot]);
+  assert.equal(rollbackRun.status, 0, `rollback phase failed:\n${rollbackRun.stdout}\n${rollbackRun.stderr}`);
+  const rollbackReport = JSON.parse(readFileSync(path.join(runRoot, "report-rollback.json"), "utf8")) as { pass: boolean };
+  assert.equal(rollbackReport.pass, true, "回滚恢复后导入对象必须清零");
+});
