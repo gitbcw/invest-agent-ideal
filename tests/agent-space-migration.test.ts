@@ -401,6 +401,74 @@ test("W6 S3：dyk 撤回旧策略只归档；draft 不可 pin 为运行依赖；
   assert.equal(taskBasis.resolution.methods[0]!.methodId, mgMethod.methodId);
 });
 
+test("W7 注册脚本：adopt 后可 pin 到 active 任务，未 adopt/非 active 拒绝", async (t) => {
+  const { space, db } = await fixture;
+  // 组自洽（组间可能并发）：不依赖其他组的前置状态，任务与采用都在本组内就绪。
+  const ffItemId = "mg:liveProjectRoot:methods/控盘度综合评分.md";
+  const now = new Date().toISOString();
+  db.sqlite.prepare(`INSERT OR IGNORE INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at)
+                     VALUES ('w7_task_ff',?,?,?,'active',1,?,?)`).run(sc.mg.userId, sc.mg.projectId, sc.mg.instanceId, now, now);
+  const ffVersionRow = db.sqlite
+    .prepare("SELECT asset_id AS assetId, version_id AS versionId FROM user_asset_versions WHERE idempotency_key=?")
+    .get(`w6:${ffItemId}`) as { assetId: string; versionId: string } | undefined;
+  assert.ok(ffVersionRow, "四因子内容底座应已由导入组/本组导入就绪（幂等键可查）");
+  const ffMethodRow = db.sqlite
+    .prepare("SELECT method_id AS methodId, current_version_id AS currentVersionId FROM agent_space_methods WHERE idempotency_key=?")
+    .get(`w6:${ffItemId}:method`) as { methodId: string; currentVersionId: string | null };
+  if (!ffMethodRow.currentVersionId) {
+    // 本组先于 adopt 组执行时自行完成授权采用（owner 路径，幂等场景内只做一次）。
+    const versionId = db.sqlite
+      .prepare("SELECT version_id AS v FROM agent_space_method_versions WHERE method_id=? AND status='draft' ORDER BY rowid LIMIT 1")
+      .get(ffMethodRow.methodId) as { v: string };
+    space.approveMethodVersion({
+      scope: sc.mg, methodId: ffMethodRow.methodId, versionId: versionId.v,
+      approvedBy: "w6-test-owner", approvalRef: "owner-decision:w7-script-test",
+      ownerToken: OWNER_TOKEN, adopt: true, actor: "w7-test",
+    });
+  }
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at)
+                     VALUES ('w7_task_paused',?,?,?,'paused',1,?,?)`).run(sc.mg.userId, sc.mg.projectId, sc.mg.instanceId, now, now);
+  const unadopted = space.createMethod({ scope: sc.mg, name: "W7未采用方法", actor: "w7-test" });
+  space.addMethodVersion({
+    scope: sc.mg, methodId: unadopted.method_id,
+    contentRef: { assetId: ffVersionRow.assetId, assetVersionId: ffVersionRow.versionId, contentChecksum: sha256Of(FF_BODY) },
+    actor: "w7-test",
+  });
+
+  const planPath = path.join(root, "w7-dep-plan.json");
+  writeFileSync(planPath, JSON.stringify([
+    { userId: "mg", methodItemId: ffItemId, taskIds: ["w7_task_ff"] },
+    { userId: "mg", methodItemId: ffItemId, taskIds: ["w7_task_paused"] },
+    { userId: "mg", methodItemId: "mg:liveProjectRoot:methods/不存在的方法.md", taskIds: ["w7_task_ff"] },
+  ]));
+  const script = path.join(import.meta.dirname, "..", "scripts", "agent-space", "w7-register-task-deps.mjs");
+  const runScript = (extra: string[]) => spawnSync(process.execPath, ["--import", "tsx", script, ...extra], { encoding: "utf8" });
+  t.after(() => { rmSync(planPath, { force: true }); });
+
+  // dry-run：合法项标 dry-run，非法项带原因拒绝，退出码 1。
+  const dry = runScript(["--plan", planPath]);
+  // 脚本 stdout 可能混入 db 初始化 INFO 日志；报告是最后一个完整 JSON 对象。
+  const jsonOf = (out: string) => JSON.parse(out.slice(out.indexOf("{")));
+  const dryReport = jsonOf(dry.stdout) as { ok: boolean; results: Array<{ taskId?: string; status: string; reason?: string }> };
+  assert.equal(dry.status, 1, "存在非法项时 dry-run 也应非零退出");
+  assert.ok(dryReport.results.some((r) => r.taskId === "w7_task_ff" && r.status === "dry-run"));
+  assert.match(dryReport.results.find((r) => r.taskId === "w7_task_paused")!.reason!, /task is paused/);
+  assert.match(dryReport.results.find((r) => !r.taskId)!.reason!, /method not imported/);
+
+  // confirm：合法项注册成功且幂等重跑零新增。
+  const okPlanPath = path.join(root, "w7-dep-plan-ok.json");
+  writeFileSync(okPlanPath, JSON.stringify([{ userId: "mg", methodItemId: ffItemId, taskIds: ["w7_task_ff"] }]));
+  t.after(() => { rmSync(okPlanPath, { force: true }); });
+  const first = runScript(["--plan", okPlanPath, "--confirm"]);
+  assert.equal(first.status, 0, first.stderr);
+  const deps = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_task_dependencies WHERE task_id='w7_task_ff' AND kind='method'").get() as { n: number }).n;
+  assert.equal(deps, 1);
+  const second = runScript(["--plan", okPlanPath, "--confirm"]);
+  assert.equal(second.status, 0);
+  const depsAfter = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_task_dependencies WHERE task_id='w7_task_ff' AND kind='method'").get() as { n: number }).n;
+  assert.equal(depsAfter, 1, "重跑幂等零新增");
+});
+
 test("W6 演练脚本两阶段：fixture 导入全绿，回滚恢复到导入前快照", { timeout: 120_000 }, async () => {
   await fixture;
   const runRoot = path.join(root, "rehearsal-run");
