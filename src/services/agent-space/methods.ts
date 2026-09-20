@@ -256,28 +256,29 @@ export function approveMethodVersion(input: ApproveMethodVersionInput): { method
   if (version.status !== "draft") {
     throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${version.status}`);
   }
-  const approval = verifyAuthorization(
-    input.scope,
-    { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { methodId: input.methodId } },
-    input.approvalRef,
-    input.ownerToken,
-  );
   const constraints = parseAdoptionConstraints(version.adoption_constraints);
   const blocksDefault = constraints.filter((c) => BLOCKS_DEFAULT_ADOPTION.includes(c));
-  let adopt = input.adopt !== false;
-  if (blocksDefault.length > 0 && adopt) {
-    if (approval.kind !== "owner-decision") {
-      throw new AgentSpaceError(
-        "AGENT_SPACE_ADOPTION_CONSTRAINT",
-        `version carries ${blocksDefault.join(",")}; default adoption requires an owner decision, not a conversation approval`,
-      );
-    }
-    if (constraints.some((c) => BLOCKS_RUN_BINDING.includes(c))) {
-      // historical-not-default：连 owner 也不能把它变成默认运行版本，只能批准为历史正式版本。
-      adopt = false;
-    }
-  }
   const tx = sqlite.transaction(() => {
+    // R9：凭证核验+消耗与业务变更、审计同事务（失败整体回滚，凭证不失耗）。
+    const approval = verifyAuthorization(
+      input.scope,
+      { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { methodId: input.methodId } },
+      input.approvalRef,
+      input.ownerToken,
+    );
+    let adopt = input.adopt !== false;
+    if (blocksDefault.length > 0 && adopt) {
+      if (approval.kind !== "owner-decision") {
+        throw new AgentSpaceError(
+          "AGENT_SPACE_ADOPTION_CONSTRAINT",
+          `version carries ${blocksDefault.join(",")}; default adoption requires an owner decision, not a conversation approval`,
+        );
+      }
+      if (constraints.some((c) => BLOCKS_RUN_BINDING.includes(c))) {
+        // historical-not-default：连 owner 也不能把它变成默认运行版本，只能批准为历史正式版本。
+        adopt = false;
+      }
+    }
     const now = nowIso();
     sqlite
       .prepare(

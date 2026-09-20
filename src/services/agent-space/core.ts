@@ -199,27 +199,31 @@ export function registerUserAuthorization(input: RegisterAuthorizationInput): { 
          input.extraBinding ? JSON.stringify(input.extraBinding) : "") as { authorization_id: string } | undefined;
   if (naturalKey) return { authorizationId: naturalKey.authorization_id, duplicated: true };
   const authorizationId = newId("authz");
-  sqlite
-    .prepare(
-      `INSERT INTO agent_space_authorizations (
-         authorization_id, user_id, project_id, instance_id, subject_user,
-         operation, object_type, object_id, version_id, extra_binding_json,
-         source_kind, source_ref, status, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'conversation', ?, 'active', ?)`,
-    )
-    .run(authorizationId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.subjectUser,
-         input.operation, input.objectType, input.objectId, input.versionId ?? null,
-         input.extraBinding ? JSON.stringify(input.extraBinding) : null,
-         `conversation:${input.sourceMessageId}`, nowIso());
-  recordAgentSpaceAudit({
-    scope: input.scope,
-    actor: input.actor,
-    action: "authorization.registered",
-    objectType: "agent_space_authorization",
-    objectId: authorizationId,
-    toStatus: "active",
-    detail: { operation: input.operation, boundObjectType: input.objectType, boundObjectId: input.objectId, versionId: input.versionId ?? null, sourceMessageId: input.sourceMessageId, subjectUser: input.subjectUser },
+  // R9：登记与登记审计同事务（失败无半成品，重试不重复）。
+  const tx = sqlite.transaction(() => {
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_authorizations (
+           authorization_id, user_id, project_id, instance_id, subject_user,
+           operation, object_type, object_id, version_id, extra_binding_json,
+           source_kind, source_ref, status, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'conversation', ?, 'active', ?)`,
+      )
+      .run(authorizationId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.subjectUser,
+           input.operation, input.objectType, input.objectId, input.versionId ?? null,
+           input.extraBinding ? JSON.stringify(input.extraBinding) : null,
+           `conversation:${input.sourceMessageId}`, nowIso());
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "authorization.registered",
+      objectType: "agent_space_authorization",
+      objectId: authorizationId,
+      toStatus: "active",
+      detail: { operation: input.operation, boundObjectType: input.objectType, boundObjectId: input.objectId, versionId: input.versionId ?? null, sourceMessageId: input.sourceMessageId, subjectUser: input.subjectUser },
+    });
   });
+  tx();
   return { authorizationId, duplicated: false };
 }
 
@@ -275,14 +279,17 @@ export function verifyAuthorization(
         `authorization ${row.authorization_id} is bound to a different target (${mismatches.join(", ")}); replay across object/action/version is rejected`,
       );
     }
-    if (row.status !== "active") {
+    // R9：active → 本次消耗；consumed 且绑定匹配 → 幂等放行（重试走完整
+    // 业务路径，由业务幂等契约决定结果）；其余状态（如 revoked）拒绝。
+    if (row.status !== "active" && row.status !== "consumed") {
       throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", `authorization is ${row.status}`);
     }
-    if (!row.consumed_at) {
-      sqlite.prepare("UPDATE agent_space_authorizations SET consumed_at=?, status='consumed' WHERE authorization_id=? AND consumed_at IS NULL")
+    if (row.status === "active") {
+      // 注意：本函数必须在调用方的业务事务内调用，使消耗与业务变更、
+      // 审计原子提交（better-sqlite3 环境事务）。
+      sqlite.prepare("UPDATE agent_space_authorizations SET consumed_at=?, status='consumed' WHERE authorization_id=? AND status='active'")
         .run(nowIso(), row.authorization_id);
     }
-    // 已 consumed 的同绑定重放幂等放行（同一合法操作的重试）。
     return { kind: "authorization", ref: row.authorization_id, authorizationId: row.authorization_id };
   }
   const ownerMatch = /^owner-decision:(.+)$/.exec(trimmed);

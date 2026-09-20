@@ -295,18 +295,18 @@ export function approveSkillVersion(input: {
   if (version.status !== "draft") {
     throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${version.status}`);
   }
-  // 系统域批准必须走 owner 决策；用户域接受同 scope 会话消息或 owner 决策。
+  // 系统域批准必须走 owner 决策；用户域须绑定式授权（核验在事务内执行）。
   if (input.domain === "system") {
     requireOwnerAuthorization(input.ownerToken, "system skill approval");
-  } else {
+  }
+  const tx = sqlite.transaction(() => {
+    // R9：核验+消耗与业务变更、审计同事务。
     verifyAuthorization(
       input.scope as UserScope,
       { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { skillId: input.skillId } },
       input.approvalRef,
       input.ownerToken,
     );
-  }
-  const tx = sqlite.transaction(() => {
     const now = nowIso();
     sqlite
       .prepare("UPDATE agent_space_skill_versions SET status='approved', approved_by=?, approved_at=?, approval_ref=? WHERE version_id=? AND status='draft'")

@@ -225,20 +225,7 @@ export function approveStateCandidate(input: {
 }): void {
   const domain = input.domain ?? "user";
   assertDomainRowShape(domain, input.scope);
-  if (domain === "user") {
-    verifyAuthorization(
-      input.scope as UserScope,
-      {
-        operation: "state.approve",
-        objectType: input.kind === "lesson" ? "agent_space_lesson" : "agent_space_workflow",
-        objectId: input.objectId,
-        versionId: input.expectedVersionId,
-        extraBinding: { kind: input.kind },
-      },
-      input.approvalRef,
-      input.ownerToken,
-    );
-  } else {
+  if (domain !== "user") {
     throw new AgentSpaceError("AGENT_SPACE_OWNER_AUTH_REQUIRED", "system-domain state approval is not exposed in W1");
   }
   const table: StateObjectTable = input.kind === "lesson" ? "agent_space_lessons" : "agent_space_workflows";
@@ -262,6 +249,19 @@ export function approveStateCandidate(input: {
     );
   }
   const tx = sqlite.transaction(() => {
+    // R9：核验+消耗与业务变更、审计同事务（失败整体回滚）。
+    verifyAuthorization(
+      input.scope as UserScope,
+      {
+        operation: "state.approve",
+        objectType: input.kind === "lesson" ? "agent_space_lesson" : "agent_space_workflow",
+        objectId: input.objectId,
+        versionId: input.expectedVersionId,
+        extraBinding: { kind: input.kind },
+      },
+      input.approvalRef,
+      input.ownerToken,
+    );
     const now = nowIso();
     if (status === "active") {
       sqlite
@@ -547,12 +547,6 @@ export function activateCommitment(input: {
 }): void {
   assertScopeValid(input.scope);
   const row = getCommitmentRow(input.scope, input.commitmentId);
-  verifyAuthorization(
-    input.scope,
-    { operation: "commitment.activate", objectType: "agent_space_commitment", objectId: input.commitmentId, versionId: null, extraBinding: { executorTaskId: input.executorTaskId } },
-    input.authorizationRef,
-    input.ownerToken,
-  );
   if (row.status !== "proposed" && row.status !== "paused") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot activate commitment in status ${row.status}`);
   }
@@ -564,6 +558,13 @@ export function activateCommitment(input: {
   }
   assertRowScope(executor, input.scope);
   const tx = sqlite.transaction(() => {
+    // R9：核验+消耗与激活写入、审计同事务。
+    verifyAuthorization(
+      input.scope,
+      { operation: "commitment.activate", objectType: "agent_space_commitment", objectId: input.commitmentId, versionId: null, extraBinding: { executorTaskId: input.executorTaskId } },
+      input.authorizationRef,
+      input.ownerToken,
+    );
     sqlite
       .prepare("UPDATE agent_space_commitments SET status='active', authorization_ref=?, executor_task_id=?, updated_at=? WHERE commitment_id=?")
       .run(input.authorizationRef, input.executorTaskId, nowIso(), input.commitmentId);

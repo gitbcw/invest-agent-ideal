@@ -828,3 +828,82 @@ test("R8: snapshots reject draft/null/fabricated/category-mismatch/hold-bypass e
     "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
   );
 });
+
+test("R9: authorization consumption is atomic with the business mutation; retry after rollback succeeds", async () => {
+  const { db, space } = await fixture;
+  const lesson = space.createStateCandidate({
+    scope: scopeA, kind: "lesson", title: "授权事务",
+    content: { trigger: "t", guidance: "v1" },
+    ownerKind: "conversation", ownerId: "conv_w1", actor: "agent",
+  });
+  const authRef = await authz(scopeA, "um_w1_lesson", { operation: "state.approve", objectType: "agent_space_lesson", objectId: lesson.objectId, versionId: lesson.versionId, extraBinding: { kind: "lesson" } });
+  const authzId = authRef.slice("authorization:".length);
+
+  // 注入：lesson.approved 审计失败 → 整体回滚
+  db.sqlite.exec(`
+    CREATE TRIGGER w1_fail_lesson_approve_audit
+    BEFORE INSERT ON agent_space_audit_logs
+    WHEN NEW.action = 'lesson.approved'
+    BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;
+  `);
+  let threw = false;
+  try {
+    space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, expectedVersionId: lesson.versionId, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
+  } catch {
+    threw = true;
+  }
+  assert.ok(threw, "audit failure surfaces");
+  // 回滚后：对象仍是 draft、凭证未被消耗、无半成品审计
+  const lessonRow = db.sqlite.prepare("SELECT status FROM agent_space_lessons WHERE lesson_id=?").get(lesson.objectId) as { status: string };
+  assert.equal(lessonRow.status, "draft", "business change rolled back");
+  const authzRow = db.sqlite.prepare("SELECT status, consumed_at FROM agent_space_authorizations WHERE authorization_id=?").get(authzId) as { status: string; consumed_at: string | null };
+  assert.equal(authzRow.status, "active", "authorization consumption rolled back with the business mutation");
+  assert.equal(authzRow.consumed_at, null);
+  const halfAudit = db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='lesson.approved' AND object_id=?").get(lesson.objectId) as { n: number };
+  assert.equal(halfAudit.n, 0);
+
+  // 移除故障后重试：同一凭证完整成功
+  db.sqlite.exec("DROP TRIGGER w1_fail_lesson_approve_audit");
+  space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, expectedVersionId: lesson.versionId, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
+  const after = db.sqlite.prepare("SELECT status FROM agent_space_lessons WHERE lesson_id=?").get(lesson.objectId) as { status: string };
+  assert.equal(after.status, "active", "retry completes the full business path");
+  const consumed = db.sqlite.prepare("SELECT status FROM agent_space_authorizations WHERE authorization_id=?").get(authzId) as { status: string };
+  assert.equal(consumed.status, "consumed");
+
+  // 成功后同凭证重放：核验放行（幂等），由业务幂等契约收口（此处再次批准→对象仍 active 且无待批准修订 → 明确拒绝而非凭证错误）
+  let replayError: Error | undefined;
+  try {
+    space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, expectedVersionId: lesson.versionId, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
+  } catch (error) {
+    replayError = error as Error;
+  }
+  assert.ok(replayError, "replay reaches business semantics");
+  assert.ok(!replayError!.message.startsWith("AGENT_SPACE_APPROVAL_REQUIRED"), `replay must not be blocked at the credential layer (${replayError!.message})`);
+});
+
+test("R9: revoked authorization is rejected; method approve replay consumes atomically", async () => {
+  const { db, space } = await fixture;
+  const method = space.createMethod({ scope: scopeA, name: "R9方法", actor: "user:a" });
+  const v = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_A, actor: "user:a" });
+  const authRef = await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v.version_id, versionId: v.version_id, extraBinding: { methodId: method.method_id } });
+  space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v.version_id, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
+  // 成功后重放：凭证层放行，业务层 IMMUTABLE（正式版本不可变）
+  let replayError: Error | undefined;
+  try {
+    space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v.version_id, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
+  } catch (error) {
+    replayError = error as Error;
+  }
+  assert.ok(replayError?.message.startsWith("AGENT_SPACE_IMMUTABLE"), `replay must reach business immutability, got ${replayError?.message}`);
+  // revoked 凭证拒绝（用新 draft 版本使业务前置检查放行、直达凭证层）
+  const authzId = authRef.slice("authorization:".length);
+  const method3 = space.createMethod({ scope: scopeA, name: "R9-revoked方法", actor: "user:a" });
+  const v3 = space.addMethodVersion({ scope: scopeA, methodId: method3.method_id, contentRef: CONTENT_A, actor: "user:a" });
+  const revokedRef = await authz(scopeA, "um_w1_2", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v3.version_id, versionId: v3.version_id, extraBinding: { methodId: method3.method_id } });
+  db.sqlite.prepare("UPDATE agent_space_authorizations SET status='revoked' WHERE authorization_id=?").run(revokedRef.slice("authorization:".length));
+  expectAgentSpaceError(
+    () => space.approveMethodVersion({ scope: scopeA, methodId: method3.method_id, versionId: v3.version_id, approvedBy: "user:a", approvalRef: revokedRef, actor: "user:a" }),
+    "AGENT_SPACE_APPROVAL_REQUIRED",
+  );
+  void authzId;
+});

@@ -1,6 +1,6 @@
 # W1 交付：新对象契约与数据库基础
 
-状态：本地实现与隔离 DB 验证完成（含 R1-R5 与 R6-R8 两轮返工）；未导入任何真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
+状态：本地实现与隔离 DB 验证完成（含 R1-R5、R6-R8、R9 三轮返工）；未导入任何真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
 依据：[W1-domain-contracts.md](./W1-domain-contracts.md)、[v3 总纲](../agent-space-workspace-exit-design-v3.md) §5-W1、[W0 验收第三次结论](./W0-acceptance-review.md)、[W1 验收返工单](./W1-acceptance-review.md)（R1-R5 与 R6-R8 均已修复并落为可失败测试）。
 
 ## 0. R1-R5 返工摘要（相对首版 e85db6f）
@@ -15,6 +15,7 @@
 | approvalRef 任意字符串 | ~~`verifyApprovalRef` 仅验消息存在~~ → R6 升级为绑定式授权凭证（见下） | — |
 | R6 消息存在≠用户批准 | 新增 `agent_space_authorizations` 授权登记表：`registerUserAuthorization` 核验来源消息（同 scope、role=user、status=sent）并绑定主体/scope/操作/对象/版本/附加字段（extraBinding 计入自然键）；`verifyAuthorization` 只认 `authorization:<id>`（绑定全匹配，同绑定重放幂等、跨对象/动作/版本拒绝）或 `owner-decision:<ref>`+令牌；assistant/failed/superseded 消息不能登记；裸 `conversation:` 不再是凭证 | "R6: message existence is not authorization" 组 + 直接复现 |
 | R7 初始草稿修订指针矛盾 | `reviseStateCandidate` 区分两态：首次草稿（从未批准）修订直接替换 `current_version_id`（旧确认随之失效）；active 修订走 `draft_version_id` 且同时只允许一个待批准；新增 `discardStateRevision`（撤销/拒绝待批准修订，不动对象状态与有效版本）；approve 的可批准指针口径与实际指针一致（draft=current、active=draft） | "R7: initial-draft revision" 组：批准 v2 成功、旧确认冲突、连续修订拒绝、discard 后 active 保留 |
+| R9 授权消耗非原子/重试被消耗态拒绝 | `verifyAuthorization` 的核验+消耗移入各业务事务内（better-sqlite3 环境事务：授权消耗、业务变更、审计原子提交，失败整体回滚、凭证不失耗）；`consumed` 且绑定匹配→凭证层幂等放行（重试走完整业务路径，由业务幂等契约收口）；`revoked` 拒绝；`registerUserAuthorization` 登记与登记审计同事务 | "R9: authorization consumption is atomic" ×2 组 + 直接复现（注入审计失败→回滚→凭证 active→重试成功→重放进业务层） |
 | R8 快照接受未解析草稿/伪依据 | 装配条目必须携带具体已解析正式 versionId（null 拒绝；latest/current 是解析策略非延迟）；类别必须与所在数组一致；checksum 由服务端从版本行读取盖章（调用方提供值必须与实际一致）；method 复用 `resolveMethodVersion`（含"未采纳 current 的 hold/split 约束版本不得 pin"绕过拦截）；校验 assembly.agent 与顶层 agentId 一致、run.revision 归属 | "R8: snapshots reject..." 组：draft/null/伪 checksum/类别错位/双 Agent 不一致/hold 绕过全拒绝、正常装配盖章成功 |
 
 ## 1. 代码位置
@@ -57,7 +58,7 @@ Commitment:  proposed ──activate(可核对授权 + 执行器同 scope)──
 Fulfillment: pending → running → satisfied | failed_needs_attention | skipped（run 引用校验同 scope）
 ```
 
-批准凭证契约（R6 后）：`authorization:<id>`——由可信入口 `registerUserAuthorization` 登记（来源消息必须同 scope、role=user、status=sent；绑定主体/scope/操作/objectId/versionId/extraBinding，extraBinding 计入幂等自然键），核验时绑定全匹配、同绑定重放幂等、跨对象/动作/版本重放拒绝；或 `owner-decision:<ref>` + owner 令牌（目标绑定入审计）。裸消息 id、assistant/failed/superseded 消息、任意字符串一律不是凭证。
+批准凭证契约（R6 后）：`authorization:<id>`——由可信入口 `registerUserAuthorization` 登记（来源消息必须同 scope、role=user、status=sent；绑定主体/scope/操作/objectId/versionId/extraBinding，extraBinding 计入幂等自然键），核验时绑定全匹配、同绑定重放幂等、跨对象/动作/版本重放拒绝；或 `owner-decision:<ref>` + owner 令牌（目标绑定入审计）。裸消息 id、assistant/failed/superseded 消息、任意字符串一律不是凭证。核验与消耗在业务事务内执行（R9）：失败整体回滚、凭证不失耗；成功后同凭证重放在凭证层放行、由业务幂等契约收口；revoked 凭证拒绝。
 
 ## 4. API 列表（`src/services/agent-space/`）
 
@@ -71,8 +72,8 @@ Fulfillment: pending → running → satisfied | failed_needs_attention | skippe
 ## 5. 验证证据
 
 ```
-node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 18/18
-npm test    # 708/708（~47s 自终止）
+node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 20/20
+npm test    # 710/710（~47s 自终止）
 npm run build && npx tsc --noEmit   # 0 错误
 ```
 

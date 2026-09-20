@@ -165,13 +165,14 @@ export function installSkill(input: {
     // R2：可见性/发布状态/属主判定在服务层强制（public 跨用户、private 属主、shared fail-closed）。
     assertReleaseInstallableBy(release, input.scope);
   }
-  verifyAuthorization(
-    input.scope,
-    { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: input.agentId, versionId: input.versionId, extraBinding: { skillId: input.skillId, source: input.source } },
-    input.approvalRef,
-    input.ownerToken,
-  );
   const tx = sqlite.transaction(() => {
+    // R9：核验+消耗与安装写入、审计同事务。
+    verifyAuthorization(
+      input.scope,
+      { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: input.agentId, versionId: input.versionId, extraBinding: { skillId: input.skillId, source: input.source } },
+      input.approvalRef,
+      input.ownerToken,
+    );
     const previous = sqlite
       .prepare(
         `SELECT * FROM agent_space_agent_skill_installations
