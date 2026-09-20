@@ -2080,3 +2080,212 @@ test("W4 rework R5-R9 at the model boundary: platform base, content blocking, st
   space.setAgentStatus(scopeA, agentA.agent_id, "disabled", "user:a");
   space.setAgentStatus(scopeA, agentB.agent_id, "disabled", "user:b");
 });
+
+test("W4 rework round 3 (R5/R6/R9 residual): channel policy at real entries, content-block zero model calls, legacy injection upgrade replay", async (t) => {
+  const { db, space } = await fixture;
+  const { randomUUID } = await import("node:crypto");
+  const http = await import("node:http");
+  const { readFileSync: rf, writeFileSync: wf } = await import("node:fs");
+
+  const captured: Array<{ body: Record<string, unknown> }> = [];
+  const server = http.createServer((request, response) => {
+    let requestBody = "";
+    request.on("data", (chunk: Buffer) => { requestBody += chunk.toString(); });
+    request.on("end", () => {
+      captured.push({ body: JSON.parse(requestBody) as Record<string, unknown> });
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write('data: {"id":"w4c","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n');
+      response.write('data: {"id":"w4c","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as { port: number };
+  t.after(() => { server.close(); });
+
+  const agent = space.createAgent({ scope: scopeA, name: "R3轮助手", actor: "user:a" });
+  space.setAgentStatus(scopeA, agent.agent_id, "active", "user:a");
+  const skill2 = space.upsertSkill({ domain: "user", scope: scopeA, slug: "r3-skill2", name: "R3技能2", actor: "user:a" });
+  const sv2 = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill2.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_w2", assetVersionId: "ver_w2_2", contentChecksum: W2_CHK_2 },
+    origin: "private_edit", actor: "user:a",
+  });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill2.skill_id, versionId: sv2.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_s2", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv2.version_id, versionId: sv2.version_id, extraBinding: { skillId: skill2.skill_id } }), actor: "user:a" });
+  space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill2.skill_id, source: "private", versionId: sv2.version_id, installedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_install", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agent.agent_id, versionId: sv2.version_id, extraBinding: { skillId: skill2.skill_id, source: "private" } }), actor: "user:a" });
+  const r3Method = space.createMethod({ scope: scopeA, name: "R3轮方法", actor: "user:a" });
+  const r3mv = space.addMethodVersion({ scope: scopeA, methodId: r3Method.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  space.approveMethodVersion({ scope: scopeA, methodId: r3Method.method_id, versionId: r3mv.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: r3mv.version_id, versionId: r3mv.version_id, extraBinding: { methodId: r3Method.method_id, adopt: "true" } }), actor: "user:a" });
+  space.bindMethod({ scope: scopeA, agentId: agent.agent_id, methodId: r3Method.method_id, versionPolicy: "current", actor: "user:a" });
+
+  const previousEnv = { ...process.env };
+  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${address.port}/v1`;
+  process.env.OPENAI_API_KEY = "w4c-test-key";
+  process.env.MASTRA_DEFAULT_MODEL = "w4c-test-model";
+  process.env.AGENT_SPACE_ASSEMBLY_MODE = `scope:${scopeA.userId}`;
+  t.after(() => {
+    for (const key of ["OPENAI_BASE_URL", "OPENAI_API_KEY", "MASTRA_DEFAULT_MODEL", "AGENT_SPACE_ASSEMBLY_MODE", "AGENT_SPACE_CONTENT_BUDGET_CHARS"] as const) {
+      if (previousEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = previousEnv[key];
+    }
+  });
+
+  const { createRuntimeAgent } = await import("../src/runtime/agent.js");
+  const { buildAgentSpaceTurnOptions } = await import("../src/runtime/agent-space-context.js");
+  const { buildAgentInstructions, buildPlatformBaseInstructions } = await import("../src/runtime/agent-instructions.js");
+  const runtimeAgent = createRuntimeAgent();
+  const systemPromptOf = (capture: { body: Record<string, unknown> }): string => {
+    const messages = capture.body.messages as Array<{ role: string; content: unknown }>;
+    const system = messages.find((m) => m.role === "system") ?? messages[0]!;
+    return typeof system.content === "string" ? system.content : JSON.stringify(system.content);
+  };
+  const assemblyCaptures = () => captured.filter((c) => systemPromptOf(c).includes("Agent Space 装配"));
+  const toolNamesOf = (capture: { body: Record<string, unknown> }): string[] =>
+    ((capture.body.tools as Array<{ function?: { name?: string }; name?: string }>) ?? []).map((tool) => tool.function?.name ?? tool.name ?? "");
+
+  // —— R5 续：web / weixin-mobile 真实入口捕获通道规则 ——
+  const webMessageId = randomUUID();
+  const webIndex = assemblyCaptures().length;
+  await runtimeAgent.handleMessage({
+    id: webMessageId, from: scopeA.userId, timestamp: Date.now(),
+    content: { text: "R5 web 通道验证" },
+    context: { conversationId: "conv_w1", channel: "web", userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId },
+  });
+  assert.equal(assemblyCaptures().length, webIndex + 1, "the web turn reached the model boundary");
+  const webSystem = systemPromptOf(assemblyCaptures()[webIndex]!);
+  assert.match(webSystem, /【通道上下文】这是一条来自门户网页聊天的消息/, "web channel policy is composed into the assembly-mode system prompt");
+  const weixinMessageId = randomUUID();
+  const weixinIndex = assemblyCaptures().length;
+  // 微信通道有 onboarding 门：先补完成初始化状态，消息才能到达模型边界
+  const { MastraUserPreferenceStore } = await import("../src/services/user-preferences.js");
+  const prefStore = new MastraUserPreferenceStore(scopeA.userId, scopeA.instanceId, scopeA.projectId);
+  await prefStore.writeOnboardingState({
+    version: 1, status: "completed", current_step: "completed",
+    steps: {}, completed_at: new Date().toISOString(), updated_at: new Date().toISOString(), notes: "",
+  } as never);
+  await runtimeAgent.handleMessage({
+    id: weixinMessageId, from: scopeA.userId, timestamp: Date.now(),
+    content: { text: "R5 微信通道验证" },
+    context: { conversationId: "conv_w1", channel: "weixin-mobile", userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId },
+  });
+  assert.equal(assemblyCaptures().length, weixinIndex + 1, "the weixin-mobile turn reached the model boundary (onboarding completed)");
+  assert.match(systemPromptOf(assemblyCaptures()[weixinIndex]!), /【通道上下文】这是一条来自微信用户的消息/, "weixin-mobile channel policy is composed into the assembly-mode system prompt");
+  void weixinMessageId;
+  // 旧模式同通道不重复拼接（平台段内一次、无二次追加）
+  const legacyWeb = buildAgentInstructions({ channel: "web" });
+  assert.equal(legacyWeb.split("【通道上下文】").length - 1, 1, "legacy mode appends the channel section exactly once");
+  assert.ok(buildPlatformBaseInstructions({ agentSpaceAssembly: true }).includes("【事实与推断纪律】"));
+
+  // —— R6 真实入口证据：Method 校验失败 → 装配模型调用零增长；恢复后同请求成功 ——
+  const registry = await import("../src/mastra/workspace-registry.js");
+  const entry = await registry.mastraWorkspaceRegistry.resolve(scopeA);
+  const v1File = path.join(entry!.projectRoot, "assets", "asset_w2", "versions", "ver_w2_1", "strategy.md");
+  const v1Original = rf(v1File);
+  wf(v1File, Buffer.concat([v1Original, Buffer.from("r6-real-tampered")]));
+  const beforeBlocked = assemblyCaptures().length;
+  const r6MessageId = randomUUID();
+  await runtimeAgent.handleMessage({
+    id: r6MessageId, from: scopeA.userId, timestamp: Date.now(),
+    content: { text: "R6 真实入口阻断验证" },
+    context: { conversationId: "conv_w1", channel: "api", userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId },
+  });
+  assert.equal(assemblyCaptures().length, beforeBlocked, "real conversation entry makes ZERO assembly model calls while required method content is broken");
+  const blockedBasis = space.findRunBasis(scopeA, `conversation:conv_w1:message:${r6MessageId}`);
+  assert.ok(blockedBasis === null || blockedBasis.injection === null, "a blocked entry never records a successful injection (resolution may remain as failure evidence)");
+  wf(v1File, v1Original);
+  await runtimeAgent.handleMessage({
+    id: r6MessageId, from: scopeA.userId, timestamp: Date.now(),
+    content: { text: "R6 真实入口阻断验证（恢复后重试）" },
+    context: { conversationId: "conv_w1", channel: "api", userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId },
+  });
+  assert.equal(assemblyCaptures().length, beforeBlocked + 1, "the same request succeeds at the real entry after bytes are restored");
+
+  // —— R6 真实入口证据（Skill 内容缺失，scheduled 接缝）——
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at) VALUES ('task_r3',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  db.sqlite.prepare(`INSERT INTO automation_task_revisions (revision_id,task_id,user_id,project_id,instance_id,revision,name,description,schedule_json,inputs_json,output_json,delivery_json,created_at)
+                     VALUES ('rev_r3','task_r3',?,?,?,1,'R3修订','r3','{}','[]','{"mode":"agent"}','{}',?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now);
+  db.sqlite.prepare(`INSERT INTO automation_task_runs (run_id,task_id,revision_id,user_id,project_id,instance_id,origin,idempotency_key,attempt,status,claimed_at,started_at,created_at,updated_at)
+                     VALUES ('run_r3','task_r3','rev_r3',?,?,?,'manual','idem-r3',1,'succeeded',?,?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now, now);
+  space.upsertTaskDependency({ scope: scopeA, taskId: "task_r3", kind: "skill", refId: skill2.skill_id, versionPolicy: "pinned", pinnedVersionId: sv2.version_id, agentId: agent.agent_id, actor: "user:a" });
+  const { runScheduledAgentTaskForTest } = await import("../src/runtime/scheduled-tasks.js");
+  const v2File = path.join(entry!.projectRoot, "assets", "asset_w2", "versions", "ver_w2_2", "strategy.md");
+  const v2Original = rf(v2File);
+  wf(v2File, Buffer.concat([v2Original, Buffer.from("r3-skill-broken")]));
+  const beforeSkillBlocked = assemblyCaptures().length;
+  let skillBlockSurfaced = false;
+  try {
+    await runScheduledAgentTaskForTest({
+    userContext: { userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId, channel: "api", conversationId: `scheduler:r3:${scopeA.userId}` },
+    promptText: "R3 skill 缺失阻断验证",
+    conversationId: `scheduler:r3:${scopeA.userId}`,
+    messageId: randomUUID(),
+    mode: "w4-round3-test",
+    runId: "run_r3",
+    taskId: "task_r3",
+    });
+  } catch {
+    skillBlockSurfaced = true;
+  }
+  void skillBlockSurfaced;
+  assert.equal(assemblyCaptures().length, beforeSkillBlocked, "real scheduled entry makes ZERO assembly model calls while required skill content is missing (the entry reports the failure instead)");
+  wf(v2File, v2Original);
+  await runScheduledAgentTaskForTest({
+    userContext: { userId: scopeA.userId, projectId: scopeA.projectId, instanceId: scopeA.instanceId, channel: "api", conversationId: `scheduler:r3:${scopeA.userId}` },
+    promptText: "R3 skill 恢复重试验证",
+    conversationId: `scheduler:r3:${scopeA.userId}`,
+    messageId: randomUUID(),
+    mode: "w4-round3-test",
+    runId: "run_r3",
+    taskId: "task_r3",
+  });
+  assert.equal(assemblyCaptures().length, beforeSkillBlocked + 1, "the scheduled entry retries successfully after the skill bytes are restored");
+
+  // —— R9 续：旧 injection JSON（956f9bd 合法结构）升级重放不崩溃、不丢历史 ——
+  const r9MessageId = randomUUID();
+  const first = await buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: "conv_w1", messageId: r9MessageId, channel: "api", grantedTools: {}, toolAllowlist: null });
+  void first;
+  const r9Key = `conversation:conv_w1:message:${r9MessageId}`;
+  // 模拟 956f9bd 的真实存量形态：同一份真实注入内容，去掉 attemptNo/attempts
+  const realFirst = space.getRunBasis(scopeA, r9Key).injection!;
+  const legacyJson = JSON.stringify({
+    sections: realFirst.sections,
+    tools: realFirst.tools,
+    workspace: null,
+    injectedAt: "2026-09-20T00:00:00.000Z",
+  });
+  db.sqlite.prepare("UPDATE agent_space_run_basis SET injection_json=? WHERE basis_key=?").run(
+    legacyJson,
+    `${scopeA.userId}|${scopeA.projectId}|${scopeA.instanceId}|${r9Key}`,
+  );
+  const upgradedIdentical = await buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: "conv_w1", messageId: r9MessageId, channel: "api", grantedTools: {}, toolAllowlist: null });
+  void upgradedIdentical;
+  let upgraded = space.getRunBasis(scopeA, r9Key);
+  assert.equal(upgraded.injection!.attemptNo, 1, "legacy record normalizes as attempt 1 (no crash)");
+  assert.equal(upgraded.injection!.injectedAt, "2026-09-20T00:00:00.000Z", "the legacy timestamp survives normalization");
+  assert.equal(upgraded.injection!.attempts.length, 1, "normalization does not duplicate history");
+  // 预算变化重试 → 追加 attempt 2；重复升级不重复历史
+  process.env.AGENT_SPACE_CONTENT_BUDGET_CHARS = "1";
+  const budgetRetry = await buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: "conv_w1", messageId: r9MessageId, channel: "api", grantedTools: {}, toolAllowlist: null });
+  delete process.env.AGENT_SPACE_CONTENT_BUDGET_CHARS;
+  assert.ok(!budgetRetry.instructions.includes("正文第二版"), "budget retry really sends truncated input");
+  upgraded = space.getRunBasis(scopeA, r9Key);
+  assert.equal(upgraded.injection!.attemptNo, 2, "budget change appends attempt 2 after normalization");
+  assert.equal(upgraded.injection!.attempts[0]!.injectedAt, "2026-09-20T00:00:00.000Z", "attempt 1 keeps the legacy timestamp");
+
+  // —— R9 真实入口逐尝试比对：非空服务工具授权变化，捕获请求与该次记录一致 ——
+  // 用上一轮 web 会话捕获到的真实服务工具名作为非空授权清单
+  const knownServiceTool = toolNamesOf(assemblyCaptures()[webIndex]!).find(() => true) ?? "";
+  const convToolMessageId = randomUUID();
+  const r9convKey = `conversation:conv_w1:message:${convToolMessageId}`;
+  const withTool = await buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: "conv_w1", messageId: convToolMessageId, channel: "api", grantedTools: knownServiceTool ? { [knownServiceTool]: {} } : {}, toolAllowlist: null });
+  assert.ok(withTool.tools && Object.keys(withTool.tools).length > 0, "non-empty service tool authorization is granted for the comparison case");
+  const attempt1 = space.getRunBasis(scopeA, r9convKey).injection!;
+  const withoutTool = await buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: "conv_w1", messageId: convToolMessageId, channel: "api", grantedTools: {}, toolAllowlist: [] });
+  assert.equal(Object.keys(withoutTool.tools).length, 0, "the authorization change really changes the injected tools");
+  const attempt2 = space.getRunBasis(scopeA, r9convKey).injection!;
+  assert.equal(attempt2.attemptNo, 2, "an authorization change appends a new attempt");
+  assert.deepEqual(attempt1.tools, [knownServiceTool], "attempt 1 records the granted tool");
+  assert.deepEqual(attempt2.tools, [], "attempt 2 records the empty grant");
+
+  space.setAgentStatus(scopeA, agent.agent_id, "disabled", "user:a");
+});

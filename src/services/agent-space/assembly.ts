@@ -211,6 +211,27 @@ export function assembleAndRecordRunBasis(input: {
 }
 
 /**
+ * 注入记录归一化（返工 R9 续）：956f9bd 产生的合法旧结构没有 attempts
+ * 数组——读取时**无损归一化**为第一条历史尝试（保留原时间戳/sections/
+ * tools），不清库、不重写；重复升级不重复历史。
+ */
+function parseInjectionAttempts(raw: string): InjectionAttempt[] {
+  const parsed = JSON.parse(raw) as Partial<InjectionAttempt> & { attempts?: unknown };
+  if (Array.isArray(parsed.attempts) && parsed.attempts.length > 0) return parsed.attempts as InjectionAttempt[];
+  if (Array.isArray(parsed.attempts) && parsed.attempts.length === 0) {
+    // 空尝试数组视为未注入。
+    return [];
+  }
+  return [{
+    attemptNo: 1,
+    sections: parsed.sections ?? [],
+    tools: parsed.tools ?? [],
+    workspace: null,
+    injectedAt: parsed.injectedAt ?? nowIso(),
+  }];
+}
+
+/**
  * 真实入口接线回写**本次尝试**的实际注入记录（返工 R9）：预算或工具授权
  * 变化的重试产生新尝试（关联同一冻结 resolution）；与最近一次完全一致的
  * 尝试不重复记录。记录与该次实际发送的模型输入一致。
@@ -227,19 +248,19 @@ export function recordRunBasisInjection(
   if (existing.user_id !== scope.userId || existing.project_id !== scope.projectId || existing.instance_id !== scope.instanceId) {
     throw new AgentSpaceError("AGENT_SPACE_SCOPE_MISMATCH", "run basis belongs to another scope");
   }
-  const previous = existing.injection_json ? (JSON.parse(existing.injection_json) as { attempts: InjectionAttempt[] }) : { attempts: [] as InjectionAttempt[] };
-  const last = previous.attempts[previous.attempts.length - 1];
+  const previousAttempts = existing.injection_json ? parseInjectionAttempts(existing.injection_json) : [];
+  const last = previousAttempts[previousAttempts.length - 1];
   const sameAsLast = last
     && JSON.stringify({ sections: last.sections, tools: last.tools }) === JSON.stringify({ sections: injection.sections, tools: injection.tools });
   if (!sameAsLast) {
     const attempt: InjectionAttempt = {
-      attemptNo: previous.attempts.length + 1,
+      attemptNo: previousAttempts.length + 1,
       sections: injection.sections,
       tools: injection.tools,
       workspace: null,
       injectedAt: nowIso(),
     };
-    const attempts = [...previous.attempts, attempt];
+    const attempts = [...previousAttempts, attempt];
     const stored = { ...attempt, attempts };
     sqlite
       .prepare("UPDATE agent_space_run_basis SET injection_json=? WHERE basis_key=?")
@@ -282,11 +303,17 @@ function readBasisRow(storedKey: string): BasisRow | undefined {
 }
 
 function rowToRecord(row: BasisRow, callerKey: string): RunBasisRecord {
+  let injection: RunBasisInjection | null = null;
+  if (row.injection_json) {
+    const attempts = parseInjectionAttempts(row.injection_json);
+    const latest = attempts[attempts.length - 1];
+    injection = latest ? { ...latest, attempts } : null;
+  }
   return {
     basisId: row.basis_id,
     basisKey: callerKey,
     resolution: JSON.parse(row.basis_json) as ResolvedRunBasisContent,
-    injection: row.injection_json ? (JSON.parse(row.injection_json) as RunBasisInjection) : null,
+    injection,
     execution: { status: "pending-w5" },
     createdAt: row.created_at,
   };

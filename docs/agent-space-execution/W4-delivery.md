@@ -22,7 +22,14 @@
 | R3 空依赖放宽 + 资产未固定版本 | 任务装配**严格按依赖**：无依赖=显式空集（skipped 记 `task-declares-no-dependencies`，旧任务未迁移即未就绪）；依赖 **pin 的正式版本直接执行**（Agent 已升级不迫使其跳版本，origin=task-dependency-pinned）；资产解析 **versionId+checksum** 并保留 **input/output 角色**（latest 在装配起点解析成具体版本）；必需依赖无法解析（如仅草稿方法）**阻断且不落 basis**；未声明依赖的技能/资产不进入任务上下文 | 测试组 R3 段 |
 | R4 状态桩实际检索全用户经验 | State Packet 改为**真正的空桩**：lesson/workflow 一律空、`agentState.note="not-integrated-until-W5: W4 loads no long-term state"`；不再调用 `listEffectiveState`；预算/分页/截断移到真实注入面（R1 内容预算 `AGENT_SPACE_CONTENT_BUDGET_CHARS`，逐段 keptChars/truncation 记录进 injection） | 测试组 R4 段 + 注入记录断言 |
 
-run-basis 结构区分三段：`resolution`（冻结解析）/ `injection`（真实入口回写的实际注入段、工具清单、workspace=null；一次性写入，重放返回既有）/ `execution: {status:"pending-w5"}`（W5 待接，不宣称已覆盖）。
+run-basis 结构区分三段：`resolution`（冻结解析）/ `injection`（真实入口回写的实际注入段、工具清单、workspace=null；**逐尝试记录**——预算/工具授权变化的重试追加新尝试并关联同一冻结 resolution，与最近一次完全一致不重复；956f9bd 旧结构读取时无损归一化为第一条历史尝试，保留原时间戳/内容，不清库）/ `execution: {status:"pending-w5"}`（W5 待接，不宣称已覆盖）。
+
+## 第三轮返工（R5 续/R9 续 + 真实入口证据补齐，相对 c64b662）
+
+- **R5 续**：通道段（`buildChannelContextInstruction`）并入 `buildPlatformBaseInstructions` 统一拼接——新模式与旧模式同源、不重复拼接；web 与 weixin-mobile **真实入口**捕获的最终 system prompt 分别含各自【通道上下文】规则；旧模式同通道输出保持一次拼接（agent-instructions 3/3 测试通过）。
+- **R9 续**：旧 injection JSON（956f9bd 合法结构，无 attempts）读取时**无损归一化**为第一条历史尝试——同请求重试不崩溃、原时间戳/sections/tools 保留、不重复历史；预算/授权变化正确追加。升级重放测试使用上一版**真实注入内容**的旧形态。
+- **R6 真实入口证据**：Method 校验失败（conversation 真实入口）与 Skill 固定字节缺失（scheduled 真实接缝）都断言**装配模型调用零增长**（此前仅 builder 级证据）；恢复字节后同请求在真实入口重试成功。阻断轮的 resolution basis 可保留为失败证据，但注入记录必为空。
+- **R9 真实证据**：非空服务工具授权变化逐尝试比对——attempt 1 记录授权工具、attempt 2 记录空授权，与各次实际发送一致。
 
 ## 1. 接线与 API
 
@@ -36,8 +43,8 @@ run-basis 结构区分三段：`resolution`（冻结解析）/ `injection`（真
 ## 2. 测试证据
 
 ```
-node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 31/31
-npm test    # 721/721（~48s 自终止）
+node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts tests/agent-instructions.test.ts   # 32/32 + 3/3
+npm test    # 722/722（~48s 自终止）
 npm run build && npx tsc --noEmit   # 0 错误
 ```
 

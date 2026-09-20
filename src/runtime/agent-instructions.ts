@@ -19,6 +19,10 @@ const LEGACY_METHODOLOGY = "【用户方法论】用户的个人投资方法存�
 
 const AGENT_SPACE_METHODOLOGY = "【用户方法论（Agent Space 装配）】本轮可用的用户方法与技能由下方 Agent Space 装配段注入（固定版本 + checksum），不存在旧 workspace 目录的默认发现；未装配的方法/技能一律不可引用。给出买卖、仓位或风控判断前，先遵循装配注入的方法规则；方法规则与通用判断冲突时以用户方法为准并说明依据。方法调整必须整理为草案、经用户确认后版本化落库（新增正式版本），不在运行中改写历史版本。";
 
+/**
+ * 平台 L1 基础段（含通道呈现规则）。装配模式与旧模式共用：通道指令在此
+ * 拼接（W4 返工 R5 续——此前仅旧入口拼接，新模式传参无效）。
+ */
 export function buildPlatformBaseInstructions(input: { channel?: UserContext["channel"]; agentSpaceAssembly?: boolean } = {}): string {
   const base = [
     "你是用户的投资决策助手，帮助用户完成选股、复盘、盯盘、风险管理和资产配置。微信、网页和其他渠道是同一个助手：投资纪律、事实标准和结论口径保持一致，只有呈现方式随通道变化。",
@@ -34,12 +38,12 @@ export function buildPlatformBaseInstructions(input: { channel?: UserContext["ch
     "",
     "【输出要求】结论先行、分层展开：事实、判断、建议行动、验证条件各自清晰可辨。默认简洁；表格与文件交付按通道规则执行。不向用户暴露内部路径、工具名、scope、执行过程或调试信息。",
   ].join("\n");
-  return base;
-}
-
-/** 旧模式入口：平台基础段 + 通道指令（行为与 W4-R5 拆分前逐字一致）。 */
-export function buildAgentInstructions(input: { channel?: UserContext["channel"] } = {}): string {
-  const base = buildPlatformBaseInstructions(input);
+  // 通道段在此统一拼接（R5 续）：新模式与旧模式共用，不重复拼接。
   const channelInstruction = input.channel ? buildChannelContextInstruction(input.channel) : null;
   return channelInstruction ? `${base}\n\n${channelInstruction}` : base;
+}
+
+/** 旧模式入口：与平台基础段同源（含通道段），输出与拆分前逐字一致。 */
+export function buildAgentInstructions(input: { channel?: UserContext["channel"] } = {}): string {
+  return buildPlatformBaseInstructions(input);
 }
