@@ -303,7 +303,7 @@ export function approveSkillVersion(input: {
   const tx = sqlite.transaction(() => {
     // R9：核验+消耗与业务变更、审计同事务。
     const approval = verifyAuthorization(
-      input.scope as UserScope,
+      input.scope,
       { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { skillId: input.skillId } },
       input.approvalRef,
       input.ownerToken,
@@ -314,10 +314,6 @@ export function approveSkillVersion(input: {
     }
     const current = getVersionRow(input.versionId);
     if (current.status !== "draft") {
-      if (current.approval_ref === input.approvalRef) {
-        // owner-decision 无凭证行：业务行上的同依据回放返回既有结果。
-        return current;
-      }
       throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${current.status}`);
     }
     const now = nowIso();

@@ -258,9 +258,16 @@ export function approveMethodVersion(input: ApproveMethodVersionInput): { method
   const blocksDefault = constraints.filter((c) => BLOCKS_DEFAULT_ADOPTION.includes(c));
   const tx = sqlite.transaction(() => {
     // R9：凭证核验+消耗与业务变更、审计同事务（失败整体回滚，凭证不失耗）。
+    // adopt 影响结果（是否采为当前版本），纳入完整操作绑定（验收 R9 第五轮）。
     const approval = verifyAuthorization(
       input.scope,
-      { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { methodId: input.methodId } },
+      {
+        operation: "method.version.approve",
+        objectType: "agent_space_method_version",
+        objectId: input.versionId,
+        versionId: input.versionId,
+        extraBinding: { methodId: input.methodId, adopt: input.adopt !== false ? "true" : "false" },
+      },
       input.approvalRef,
       input.ownerToken,
     );
@@ -272,10 +279,6 @@ export function approveMethodVersion(input: ApproveMethodVersionInput): { method
     }
     const current = getVersionRow(input.scope, input.versionId);
     if (current.status !== "draft") {
-      if (current.approval_ref === input.approvalRef) {
-        // owner-decision 无凭证行：业务行上的同依据回放同样返回既有结果。
-        return { method: getMethodRow(input.scope, input.methodId), version: current };
-      }
       throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${current.status}`);
     }
     let adopt = input.adopt !== false;

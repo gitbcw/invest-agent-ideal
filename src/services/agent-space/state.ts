@@ -235,7 +235,7 @@ export function approveStateCandidate(input: {
   const tx = sqlite.transaction(() => {
     // R9：核验+消耗与业务变更、审计同事务（失败整体回滚）。
     const approval = verifyAuthorization(
-      input.scope as UserScope,
+      input.scope,
       {
         operation: "state.approve",
         objectType: input.kind === "lesson" ? "agent_space_lesson" : "agent_space_workflow",
@@ -247,7 +247,8 @@ export function approveStateCandidate(input: {
       input.ownerToken,
     );
     // R9②：已成功操作的幂等回放——返回原结果（void），不重新执行转换，
-    // 也不恢复后来被停用/拒绝的对象。
+    // 也不恢复后来被停用/拒绝的对象。授权凭证与 owner 决策记录都携带稳定
+    // 结果，回放不依赖可变业务行。
     if (approval.replayed) return;
     // 事务内重读当前状态（预读不作为转换依据）。
     const fresh = getStateRow(table, input.objectId);
@@ -255,10 +256,6 @@ export function approveStateCandidate(input: {
     const status = fresh.status as string;
     const currentVersionId = fresh.current_version_id as string | null;
     const draftVersionId = fresh.draft_version_id as string | null;
-    // owner-decision 无凭证行路径的业务回放：同依据已把同版本批准为有效版本。
-    if (status !== "draft" && fresh.approval_ref === input.approvalRef && currentVersionId === input.expectedVersionId) {
-      return;
-    }
     if (status !== "draft" && status !== "active") {
       throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot approve ${input.kind} in status ${status}`);
     }
@@ -575,15 +572,11 @@ export function activateCommitment(input: {
       input.ownerToken,
     );
     // R9②：已成功操作的幂等回放——返回原结果（void），后续 paused/cancelled
-    // 状态保持不变，不被回放恢复成 active。
+    // 状态保持不变，不被回放恢复成 active（授权凭证与 owner 决策记录同机制）。
     if (approval.replayed) return;
     // 事务内重读状态（预读不作为转换依据）。
     const current = getCommitmentRow(input.scope, input.commitmentId);
     if (String(current.status) !== "proposed" && String(current.status) !== "paused") {
-      // owner-decision 无凭证行路径的业务回放：同依据+同执行器已激活过。
-      if (current.authorization_ref === input.authorizationRef && current.executor_task_id === input.executorTaskId) {
-        return;
-      }
       throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot activate commitment in status ${String(current.status)}`);
     }
     sqlite

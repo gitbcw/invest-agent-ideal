@@ -1,7 +1,7 @@
 # W1 交付：新对象契约与数据库基础
 
-状态：本地实现与隔离 DB 验证完成（含 R1-R5、R6-R8、R9 四轮返工）；未导入任何真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
-依据：[W1-domain-contracts.md](./W1-domain-contracts.md)、[v3 总纲](../agent-space-workspace-exit-design-v3.md) §5-W1、[W0 验收第三次结论](./W0-acceptance-review.md)、[W1 验收返工单](./W1-acceptance-review.md)（R1-R5、R6-R8、R9 前三轮均已修复；R9 第四轮补齐业务幂等回放、完整绑定与主体校验）。
+状态：本地实现与隔离 DB 验证完成（含 R1-R5、R6-R8、R9 五轮返工）；未导入任何真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
+依据：[W1-domain-contracts.md](./W1-domain-contracts.md)、[v3 总纲](../agent-space-workspace-exit-design-v3.md) §5-W1、[W0 验收第三次结论](./W0-acceptance-review.md)、[W1 验收返工单](./W1-acceptance-review.md)（R1-R5、R6-R8、R9 前四轮均已修复；R9 第五轮补齐 owner 通道稳定操作记录与 adopt/releaseId 完整绑定）。
 
 ## 0. R1-R5 返工摘要（相对首版 e85db6f）
 
@@ -16,8 +16,9 @@
 | R6 消息存在≠用户批准 | 新增 `agent_space_authorizations` 授权登记表：`registerUserAuthorization` 核验来源消息（同 scope、role=user、status=sent）并绑定主体/scope/操作/对象/版本/附加字段（extraBinding 计入自然键）；`verifyAuthorization` 只认 `authorization:<id>`（绑定全匹配，同绑定重放幂等、跨对象/动作/版本拒绝）或 `owner-decision:<ref>`+令牌；assistant/failed/superseded 消息不能登记；裸 `conversation:` 不再是凭证 | "R6: message existence is not authorization" 组 + 直接复现 |
 | R7 初始草稿修订指针矛盾 | `reviseStateCandidate` 区分两态：首次草稿（从未批准）修订直接替换 `current_version_id`（旧确认随之失效）；active 修订走 `draft_version_id` 且同时只允许一个待批准；新增 `discardStateRevision`（撤销/拒绝待批准修订，不动对象状态与有效版本）；approve 的可批准指针口径与实际指针一致（draft=current、active=draft） | "R7: initial-draft revision" 组：批准 v2 成功、旧确认冲突、连续修订拒绝、discard 后 active 保留 |
 | R9 授权消耗非原子/重试被消耗态拒绝 | `verifyAuthorization` 的核验+消耗移入各业务事务内（better-sqlite3 环境事务：授权消耗、业务变更、审计原子提交，失败整体回滚、凭证不失耗）；`revoked` 拒绝；`registerUserAuthorization` 登记与登记审计同事务 | "R9: authorization consumption is atomic" 组 + 直接复现（注入审计失败→回滚→凭证 active→重试成功） |
-| R9 第四轮：业务幂等回放不完整（install 重放新增行/审计；重放以 IMMUTABLE/VERSION_INVALID 收口） | 每条成功授权操作与稳定结果关联：凭证行新增 `result_json`（消耗同事务写入 `recordAuthorizationOutcome`）；五条授权写路径（方法批准/技能批准/安装升级/状态批准/承诺激活）重放一律返回既有结果、零副作用、不重复转换——安装重放返回原安装行（即使已被后续升级 superseded，不降级当前安装），状态/承诺回放不恢复后来停用/暂停的对象；owner-decision 无凭证行，由业务行 `approval_ref` 同依据匹配兜底回放；消费后业务校验失败（如约束挡采用）随事务回滚凭证 | "R9: install/approve/activate replays return recorded outcomes" 组（行数/审计/安装行 id/不降级逐项断言）+ "revoked … returns the recorded outcome" 组 + 直接复现 17 项 |
+| R9 第四轮：业务幂等回放不完整（install 重放新增行/审计；重放以 IMMUTABLE/VERSION_INVALID 收口） | 每条成功授权操作与稳定结果关联：凭证行新增 `result_json`（消耗同事务写入 `recordAuthorizationOutcome`）；五条授权写路径（方法批准/技能批准/安装升级/状态批准/承诺激活）重放一律返回既有结果、零副作用、不重复转换——安装重放返回原安装行（即使已被后续升级 superseded，不降级当前安装），状态/承诺回放不恢复后来停用/暂停的对象；消费后业务校验失败（如约束挡采用）随事务回滚凭证 | "R9: install/approve/activate replays return recorded outcomes" 组（行数/审计/安装行 id/不降级逐项断言）+ "revoked … returns the recorded outcome" 组 + 直接复现 |
 | R9 第四轮：extraBinding 仅比对调用方子集 / 主体未校验 | extraBinding 规范化（键排序稳定序列化，键序无关）且按**完整键集合**比较（缺/多/改键均拒绝）；登记主体校验：`subjectUser` 必须等于 scope 本人（可信 scope 派生，冒名登记拒绝且零残留）；自然键查重用规范化形态 | "R9: extraBinding full-key comparison, canonical dedupe, subject validation" 组 + 直接复现 |
+| R9 第五轮：owner 通道依赖可变业务行判断回放（暂停承诺被重放复活）；adopt/releaseId 未入绑定 | owner 决策也落**稳定操作记录**：首个执行随业务事务原子写入 `agent_space_authorizations`（source_kind='owner_decision'，status=consumed，结果同事务记入 result_json），此后同 ref+同绑定重放返回记录结果、不重新执行业务、不复活暂停/停用对象；同 ref 换绑定（含 adopt/releaseId/versionId/执行器）拒绝——一个 ref 只命名一个操作。拆除全部可变业务行回放判定（approval_ref 匹配/sameRef/激活兜底），五路径统一走凭证/记录双通道回放。`adopt`（方法批准是否采为 current）与 `releaseId`（release 安装来源）纳入完整操作绑定，普通凭证与 owner 记录同规则 | "R9: owner-decision channel keeps stable operation records" 组（暂停不复活/审计零新增/换 adopt·release·执行器拒绝）+ 直接复现 15 项 |
 | R8 快照接受未解析草稿/伪依据 | 装配条目必须携带具体已解析正式 versionId（null 拒绝；latest/current 是解析策略非延迟）；类别必须与所在数组一致；checksum 由服务端从版本行读取盖章（调用方提供值必须与实际一致）；method 复用 `resolveMethodVersion`（含"未采纳 current 的 hold/split 约束版本不得 pin"绕过拦截）；校验 assembly.agent 与顶层 agentId 一致、run.revision 归属 | "R8: snapshots reject..." 组：draft/null/伪 checksum/类别错位/双 Agent 不一致/hold 绕过全拒绝、正常装配盖章成功 |
 
 ## 1. 代码位置
@@ -27,7 +28,7 @@
 | 建表迁移（幂等，checkpoint `agent_space_v1`；R3/R4/R9 增量列经 ensureColumn 演进） | `src/db/index.ts` `ensureAgentSpaceTables()` |
 | Drizzle 类型镜像 | `src/db/schema.ts`（`agent_space_*` 20 张） |
 | 域服务 | `src/services/agent-space/`：`core.ts`（scope/错误/审计/幂等冲突/owner 授权/可核对批准/授权结果记录/字段白名单）、`methods.ts`、`skills.ts`、`agents.ts`、`tasks.ts`、`state.ts`、`index.ts` |
-| 隔离测试 | `tests/agent-space-domain.test.ts`（22 组；fixture 以真实事实源行种子：会话消息、资产版本、任务/修订/运行） |
+| 隔离测试 | `tests/agent-space-domain.test.ts`（23 组；fixture 以真实事实源行种子：会话消息、资产版本、任务/修订/运行） |
 
 ## 2. Schema 映射（表 → 契约对象）
 
@@ -42,7 +43,7 @@
 | TaskDependency | `agent_space_task_dependencies` | task/agent/ref 全部真实归属校验；agent_state fail-closed |
 | TaskRunSnapshot | `agent_space_task_run_snapshots` | append-only；UNIQUE(run_id)；装配白名单字段+全链校验；同 run 异载荷冲突 |
 | T-524 Fact / Lesson(+v) / Workflow(+v) / Commitment / 履约 | `agent_space_facts` / `_lessons` `_lesson_versions` / `_workflows` `_workflow_versions` / `_commitments` / `_commitment_fulfillments` | fact 自然键幂等；lesson/workflow 挂 owner(conversation/task/agent)+内容白名单；批准绑 expectedVersionId；修订走 draft_version_id；承诺激活须可核对授权+同 scope 执行器 |
-| 可信授权登记（R6） | `agent_space_authorizations` | 批准凭证绑定主体/scope/操作/对象/版本/extraBinding（规范化形态计入唯一自然键）；来源消息 role=user 且 status=sent；主体=scope 本人；`result_json` 记录成功操作的稳定结果供幂等回放 |
+| 可信授权登记（R6） | `agent_space_authorizations` | 批准凭证绑定主体/scope/操作/对象/版本/extraBinding（规范化形态计入唯一自然键）；来源消息 role=user 且 status=sent；主体=scope 本人；`result_json` 记录成功操作的稳定结果供幂等回放；owner 决策同表落稳定操作记录（source_kind='owner_decision'，一个 ref 只命名一个操作） |
 | 统一审计 | `agent_space_audit_logs` | 与业务写同事务；记录 from/to、批准依据形态、W0 约束 |
 
 ## 3. 状态转换（服务层校验）
@@ -60,7 +61,7 @@ Commitment:  proposed ──activate(可核对授权 + 执行器同 scope)──
 Fulfillment: pending → running → satisfied | failed_needs_attention | skipped（run 引用校验同 scope）
 ```
 
-批准凭证契约（R6/R9 后）：`authorization:<id>`——由可信入口 `registerUserAuthorization` 登记（来源消息必须同 scope、role=user、status=sent；绑定主体/scope/操作/objectId/versionId/extraBinding，主体必须等于 scope 本人，extraBinding 以键排序规范化形态计入幂等自然键），核验时按完整键集合比对绑定（缺/多/改键均拒绝，键序无关）、跨对象/动作/版本重放拒绝；或 `owner-decision:<ref>` + owner 令牌（目标绑定入审计）。裸消息 id、assistant/failed/superseded 消息、任意字符串一律不是凭证。核验与消耗在业务事务内执行（R9）：失败整体回滚、凭证不失耗；成功操作把稳定结果记入凭证 `result_json`（与消耗同事务），**同请求重放直接返回既有结果、零副作用**（不重复审计/版本/安装，不重新执行状态转换，不恢复后来停用/暂停的对象，不把后续安装降回旧版本）；`revoked` 凭证即使绑定匹配也拒绝；consumed 无结果记录按 fail-closed 拒绝。owner-decision 无凭证行，重放由业务行 `approval_ref` 同依据匹配兜底，换目标/版本仍拒绝。
+批准凭证契约（R6/R9 后）：`authorization:<id>`——由可信入口 `registerUserAuthorization` 登记（来源消息必须同 scope、role=user、status=sent；绑定主体/scope/操作/objectId/versionId/extraBinding，主体必须等于 scope 本人，extraBinding 以键排序规范化形态计入幂等自然键），核验时按完整键集合比对绑定（缺/多/改键均拒绝，键序无关）、跨对象/动作/版本重放拒绝；或 `owner-decision:<ref>` + owner 令牌——首个执行随业务事务落稳定操作记录（source_kind='owner_decision'）。影响结果的参数计入完整操作绑定：方法批准含 `adopt`（是否采为当前版本），release 安装含 `releaseId`。裸消息 id、assistant/failed/superseded 消息、任意字符串一律不是凭证。核验与消耗/记录创建在业务事务内执行（R9）：失败整体回滚、凭证不失耗；成功操作把稳定结果记入凭证 `result_json`（与消耗同事务），**同请求重放（普通凭证与 owner 记录同机制）直接返回既有结果、零副作用**（不重复审计/版本/安装，不重新执行状态转换，不恢复后来停用/暂停的对象，不把后续安装降回旧版本）；`revoked` 凭证即使绑定匹配也拒绝；consumed 无结果记录按 fail-closed 拒绝；owner ref 换绑定拒绝（一个 ref 只命名一个操作）。
 
 ## 4. API 列表（`src/services/agent-space/`）
 
@@ -74,12 +75,12 @@ Fulfillment: pending → running → satisfied | failed_needs_attention | skippe
 ## 5. 验证证据
 
 ```
-node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 22/22
-npm test    # 712/712（~47s 自终止）
+node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 23/23
+npm test    # 713/713（~47s 自终止）
 npm run build && npx tsc --noEmit   # 0 错误
 ```
 
-覆盖：建表幂等重放；带数据升级重放（旧域+新域行保留）；夹具重置（非恢复语义）；R1-R5 全部反例（见 §0 表）；审计失败注入回滚（业务与授权登记两类）；幂等冲突；scope 拒绝矩阵；快照引用-only 断言；五条授权写路径的成功回放（行数/审计/安装行 id/不降级/不复活逐项断言）、revoked 拒绝、完整键集合比对、冒名主体拒绝、登记审计失败零残留。
+覆盖：建表幂等重放；带数据升级重放（旧域+新域行保留）；夹具重置（非恢复语义）；R1-R5 全部反例（见 §0 表）；审计失败注入回滚（业务与授权登记两类）；幂等冲突；scope 拒绝矩阵；快照引用-only 断言；五条授权写路径的成功回放（普通凭证与 owner 通道：行数/审计/安装行 id/不降级/暂停·停用不复活逐项断言）、revoked 拒绝、完整键集合比对、adopt/releaseId 换绑定拒绝、冒名主体拒绝、登记审计失败零残留。
 
 ## 6. 恢复说明（R5 修正后）
 

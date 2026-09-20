@@ -157,32 +157,21 @@ export function installSkill(input: {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to skill");
   }
   const tx = sqlite.transaction(() => {
-    // R9：核验+消耗与安装写入、审计同事务。
+    // R9：核验+消耗与安装写入、审计同事务。releaseId 影响安装结果（发布来源
+    // 与发布版本号），release 安装纳入完整操作绑定（验收 R9 第五轮）。
+    const installExtra: Record<string, string> = { skillId: input.skillId, source: input.source };
+    if (input.source === "release") installExtra.releaseId = input.releaseId ?? "";
     const approval = verifyAuthorization(
       input.scope,
-      { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: input.agentId, versionId: input.versionId, extraBinding: { skillId: input.skillId, source: input.source } },
+      { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: input.agentId, versionId: input.versionId, extraBinding: installExtra },
       input.approvalRef,
       input.ownerToken,
     );
     // R9②：已成功操作的幂等回放——返回首次安装行本身（可能已被后续升级
-    // superseded），不把当前安装降回旧版本、不新增安装/审计。
+    // superseded），不把当前安装降回旧版本、不新增安装/审计。授权凭证与
+    // owner 决策记录都携带稳定结果，回放不依赖可变业务行。
     if (approval.replayed) {
       return getInstallationRow(input.scope, (approval.replayResult as { installationId: string }).installationId);
-    }
-    // owner-decision 等无凭证行路径的业务回放：同一依据已为该 agent+skill
-    // 产生过安装 → 返回既有行，不重复 supersede/插入/审计。
-    const sameRef = sqlite
-      .prepare(
-        `SELECT * FROM agent_space_agent_skill_installations
-         WHERE agent_id=? AND skill_id=? AND approval_ref=?
-         ORDER BY created_at DESC LIMIT 1`,
-      )
-      .get(input.agentId, input.skillId, input.approvalRef) as InstallationRow | undefined;
-    if (sameRef) {
-      if (sameRef.version_id !== input.versionId || sameRef.source !== input.source) {
-        throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", "approval ref is already bound to a different install target");
-      }
-      return sameRef;
     }
     // 业务校验在消费之后、写入之前执行：失败随事务回滚，凭证不失耗。
     const currentVersion = getSkillVersionRow(input.versionId);
