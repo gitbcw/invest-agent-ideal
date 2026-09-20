@@ -1296,6 +1296,7 @@ export const agentSpaceAgents = sqliteTable("agent_space_agents", {
   description: text("description"),
   status: text("status").notNull().default("draft"),
   idempotencyKey: text("idempotency_key"),
+  defaultManifestAppliedAt: text("default_manifest_applied_at"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

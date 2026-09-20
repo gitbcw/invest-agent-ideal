@@ -260,17 +260,19 @@ export function listInstalledSkills(scope: UserScope, agentId: string): Installa
 // ---------- W3：默认清单、移除与运行时固定版本解析 ----------
 
 /**
- * 默认技能清单（W3）：为新建 Agent 生成初始安装。默认目录是 owner 治理的
- * 系统策略（系统域发布须 owner 令牌，is_default 仅系统域可携带），因此本入口
- * 是受信服务入口，不走用户授权凭证；approval_ref='default-manifest' 是来源
- * 标记而非凭证。幂等：已存在任一状态安装行（含 removed）的技能不再注入——
- * 默认集变化/升级不触碰存量安装，升级与移除都是用户的显式决定。
+ * 默认技能清单（W3，返工 W3-R2）：**一次性的 Agent 初始化事件**。首次执行
+ * 冻结当时的默认清单（空清单也记录完成），此后平台新增/升级默认发布都不会
+ * 再给该 Agent 自动扩容——后续增删只能走显式授权安装/移除。默认目录是 owner
+ * 治理的系统策略（系统域发布须 owner 令牌，is_default 仅系统域可携带），因此
+ * 本入口是受信服务入口，不走用户授权凭证；approval_ref='default-manifest'
+ * 是来源标记而非凭证。初始化整体单事务：失败回滚（标记不落、安装不落），
+ * 重试从头执行得到一致结果；已初始化 Agent 重跑为纯 no-op（零写入零审计）。
  */
 export function applyDefaultSkillManifest(input: {
   scope: UserScope;
   agentId: string;
   actor: string;
-}): { appliedInstallationIds: string[]; skippedSkillIds: string[] } {
+}): { appliedInstallationIds: string[]; skippedSkillIds: string[]; alreadyInitialized: boolean } {
   assertScopeValid(input.scope);
   const agent = getAgent(input.scope, input.agentId);
   if (agent.status === "disabled") {
@@ -278,6 +280,12 @@ export function applyDefaultSkillManifest(input: {
   }
   const defaults = listDefaultReleases();
   const tx = sqlite.transaction(() => {
+    const agentRow = sqlite
+      .prepare("SELECT default_manifest_applied_at FROM agent_space_agents WHERE agent_id=?")
+      .get(input.agentId) as { default_manifest_applied_at: string | null };
+    if (agentRow.default_manifest_applied_at) {
+      return { appliedInstallationIds: [] as string[], skippedSkillIds: [] as string[], alreadyInitialized: true };
+    }
     const applied: string[] = [];
     const skipped: string[] = [];
     for (const release of defaults) {
@@ -315,7 +323,26 @@ export function applyDefaultSkillManifest(input: {
       });
       applied.push(installationId);
     }
-    return { appliedInstallationIds: applied, skippedSkillIds: skipped };
+    // 冻结清单：初始化完成标记 + 汇总审计（含当时默认集、实际安装与跳过）。
+    const now = nowIso();
+    sqlite
+      .prepare("UPDATE agent_space_agents SET default_manifest_applied_at=?, updated_at=? WHERE agent_id=?")
+      .run(now, now, input.agentId);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "agent.default_manifest_applied",
+      objectType: "agent_space_agent",
+      objectId: input.agentId,
+      toStatus: "initialized",
+      detail: {
+        defaultReleaseIds: defaults.map((r) => r.release_id),
+        appliedInstallationIds: applied,
+        skippedSkillIds: skipped,
+        emptyManifest: defaults.length === 0,
+      },
+    });
+    return { appliedInstallationIds: applied, skippedSkillIds: skipped, alreadyInitialized: false };
   });
   return tx();
 }

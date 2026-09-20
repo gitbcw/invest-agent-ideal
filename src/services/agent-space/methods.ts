@@ -484,6 +484,17 @@ export function readoptMethodVersion(input: {
     if (freshMethod.current_version_id === input.versionId) {
       throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "version is already the adopted current version");
     }
+    // 返工 W2-R1：history-only 版本永远不能成为 current——readopt 的语义就是
+    // 成为 current，因此 owner 通道也不能通过回退绕过运行阻断约束（与
+    // approve/resolve 路径统一）。拒绝随事务回滚：current/版本状态/凭证/审计
+    // 均不变。历史读取仍走 getMethodVersion/readMethodVersionContent。
+    const blocksRun = constraints.filter((c) => BLOCKS_RUN_BINDING.includes(c));
+    if (blocksRun.length > 0) {
+      throw new AgentSpaceError(
+        "AGENT_SPACE_ADOPTION_CONSTRAINT",
+        `version carries ${blocksRun.join(",")}; history-only versions can never become the current version, readopt included`,
+      );
+    }
     if (blocksDefault.length > 0 && approval.kind !== "owner-decision") {
       throw new AgentSpaceError(
         "AGENT_SPACE_ADOPTION_CONSTRAINT",

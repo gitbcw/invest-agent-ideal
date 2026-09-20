@@ -2001,6 +2001,7 @@ function ensureAgentSpaceTables() {
       name TEXT NOT NULL, description TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
       idempotency_key TEXT,
+      default_manifest_applied_at TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       UNIQUE(user_id, project_id, instance_id, name)
     );
@@ -2205,6 +2206,8 @@ function ensureAgentSpaceTables() {
   ensureColumn("agent_space_skill_releases", "is_default", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("agent_space_skills", "derived_from_release_id", "TEXT");
   ensureColumn("agent_space_skill_versions", "derived_from_version_id", "TEXT");
+  // 返工 W3-R2：默认清单是一次性的 Agent 初始化事件，完成后不再自动扩容。
+  ensureColumn("agent_space_agents", "default_manifest_applied_at", "TEXT");
   markMigration(migrationKey);
 }
 

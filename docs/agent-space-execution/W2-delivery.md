@@ -1,7 +1,13 @@
 # W2 交付：用户方法与数据资产路径
 
-状态：本地实现与隔离 DB 验证完成；未迁移真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
-依据：[W2-methods-assets.md](./W2-methods-assets.md)、W1 域契约（R1-R9 已全部通过验收）。执行说明：W2 与 W3 由同一执行 Agent **顺序**执行（W2 先提交，W3 后提交），共享文件（db/index.ts、core.ts、tests/agent-space-domain.test.ts）无并行写入。
+状态：本地实现与隔离 DB 验证完成（含返工 W2-R1）；未迁移真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
+依据：[W2-methods-assets.md](./W2-methods-assets.md)、W1 域契约（R1-R9 已全部通过验收）、[W2/W3 验收返工单](./W2-W3-acceptance-review.md)。执行说明：W2 与 W3 由同一执行 Agent **顺序**执行，共享文件无并行写入。
+
+## 返工 W2-R1（readopt 不得绕过历史定位约束）
+
+`readoptMethodVersion` 与 approve/resolve 统一采用约束校验：`historical-not-default`（BLOCKS_RUN_BINDING）版本**永远不能成为 current，owner 通道也不能通过回退绕过**；拒绝随事务回滚——current/版本状态/凭证/审计均不变；历史读取（`getMethodVersion`/`readMethodVersionContent`）不受影响，不靠运行读取放行修复。反例测试组 "W2-R1: readopt can never make history-only versions current (owner channel included)" 覆盖 owner 与普通授权两条通道、拒绝原子性与历史可读。
+
+> 注：本单元的 diff 能力是**元数据级**（checksum/引用对比），不含正文 Diff 界面。
 
 ## 0. 范围与不变量
 
@@ -32,8 +38,8 @@ Schema 变更：无（回退是指针变化，无新表新列）。
 覆盖断言：草稿不在正式历史；pinned 读取返回逐字节正文；superseded 版本仍逐字节重现；同内容两版本独立存在且 diff=identical；readopt 后 resolve 回到 v1、旧 current 转 superseded、重放零新增审计、已 current 再 readopt 明确失败、draft 不可 readopt；篡改背书文件 → `ASSET_CHECKSUM_MISMATCH`、恢复后可读；缺版本 `NOT_FOUND`；默认发现不含历史 versionId；快照固定 v2 → 按 versionId 逐字节重现。
 
 ```
-node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 24/24
-npm test    # 714/714（~47s 自终止）
+node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 含 W2-R1 反例组（28 组全绿）
+npm test    # 718/718（~47s 自终止）
 npm run build && npx tsc --noEmit   # 0 错误
 ```
 

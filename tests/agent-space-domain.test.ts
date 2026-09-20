@@ -1392,10 +1392,11 @@ test("W3: catalog privacy, release immutability, default manifest, derivation, r
   assert.equal(manifestD[0]!.skillId, sysSkill.skill_id);
   assert.equal(manifestD[0]!.releaseId, sysRel1.releaseId);
   assert.equal(manifestD[0]!.source, "release");
-  // 幂等：重复 apply 零新增
+  // 一次性初始化（返工 W3-R2）：重跑是纯 no-op（零写入零审计）
   const second = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentD.agent_id, actor: "system" });
+  assert.equal(second.alreadyInitialized, true);
   assert.equal(second.appliedInstallationIds.length, 0);
-  assert.ok(second.skippedSkillIds.includes(sysSkill.skill_id));
+  assert.equal(second.skippedSkillIds.length, 0);
 
   // 默认升级不改变存量安装：发布新默认 release，新 Agent 拿新版，老 Agent 原样
   const sysRel2 = space.publishSkillRelease({ domain: "system", scope: null, skillId: sysSkill.skill_id, versionId: sysv.version_id, releaseVersion: "1.1.0", visibility: "public", publishedBy: "owner", isDefault: true, ownerToken: OWNER_TOKEN, actor: "owner" });
@@ -1469,4 +1470,168 @@ test("W3: catalog privacy, release immutability, default manifest, derivation, r
   // 系统模板内容解析：字节数与模板一致
   const sysResolved = await space.resolveInstalledSkillContent(scopeA, agentE.agent_id, sysSkill.skill_id);
   assert.ok(sysResolved.bytes.equals(SYS_TPL_BODY), "system-template installs read verified template bytes");
+});
+
+test("W2-R1: readopt can never make history-only versions current (owner channel included)", async () => {
+  const { db, space } = await fixture;
+  const method = space.createMethod({ scope: scopeA, name: "readopt约束方法", actor: "user:a" });
+  const v1 = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v1.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v1.version_id, versionId: v1.version_id, extraBinding: { methodId: method.method_id, adopt: "true" } }), actor: "user:a" });
+  const v2 = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_2, adoptionConstraints: ["historical-not-default"], actor: "user:a" });
+  const v2Approved = space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v2.version_id, approvedBy: "owner", approvalRef: "owner-decision:2026-09-20/w2r1-hist", ownerToken: OWNER_TOKEN, adopt: false, actor: "owner" });
+  assert.equal(v2Approved.method.current_version_id, v1.version_id, "historical-not-default never becomes current at approval");
+
+  // owner 通道 readopt 也拒绝：拒绝随事务回滚，current/版本状态/审计全不变
+  const before = db.sqlite.prepare("SELECT current_version_id FROM agent_space_methods WHERE method_id=?").get(method.method_id) as { current_version_id: string };
+  const readoptAuditsBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='method.version.readopted'").get() as { n: number }).n;
+  expectAgentSpaceError(
+    () => space.readoptMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v2.version_id, approvalRef: "owner-decision:2026-09-20/w2r1-readopt", ownerToken: OWNER_TOKEN, actor: "owner" }),
+    "AGENT_SPACE_ADOPTION_CONSTRAINT",
+  );
+  // 普通授权同样拒绝
+  const normalRef = await authz(scopeA, "um_w1_2", { operation: "method.readopt", objectType: "agent_space_method_version", objectId: v2.version_id, versionId: v2.version_id, extraBinding: { methodId: method.method_id } });
+  expectAgentSpaceError(
+    () => space.readoptMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v2.version_id, approvalRef: normalRef, actor: "user:a" }),
+    "AGENT_SPACE_ADOPTION_CONSTRAINT",
+  );
+  const after = db.sqlite.prepare("SELECT current_version_id FROM agent_space_methods WHERE method_id=?").get(method.method_id) as { current_version_id: string };
+  assert.equal(after.current_version_id, before.current_version_id, "rejected readopt leaves current untouched");
+  assert.equal(space.getMethodVersion(scopeA, v2.version_id).status, "approved");
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='method.version.readopted'").get() as { n: number }).n, readoptAuditsBefore, "rejected readopt writes no audit");
+  // history-only 仍可历史读取（不靠运行放行修复）
+  const hist = await space.readMethodVersionContent(scopeA, v2.version_id);
+  assert.ok(hist.bytes.equals(W2_BODY_V2), "history-only versions stay readable outside runtime adoption");
+});
+
+test("W3-R1: system-template bytes are preserved at publish; template updates/deletions never break installed versions", async () => {
+  const { db, space } = await fixture;
+  const { readFileSync, writeFileSync: wf, rmSync: rmf, mkdirSync: mkd } = await import("node:fs");
+  const tplRoot = process.env.SYSTEM_SKILLS_TEMPLATE_ROOT!;
+  const contentRoot = db.sqlite === db.sqlite ? (process.env.SYSTEM_SKILLS_CONTENT_ROOT || path.join(process.env.RUNTIME_DATA_ROOT!, "system-skill-content")) : "";
+  const storePath = (chk: string) => path.join(contentRoot, chk);
+
+  const mkTpl = (rel: string, body: Buffer) => {
+    mkdirSync(path.join(tplRoot, path.dirname(rel)), { recursive: true });
+    wf(path.join(tplRoot, rel), body);
+  };
+  const OLD = Buffer.from("# W3R1 old\n模板旧版内容\n", "utf8");
+  const NEW = Buffer.from("# W3R1 new\n模板新版内容\n", "utf8");
+  const CHK_OLD = sha256Of(OLD);
+  const CHK_NEW = sha256Of(NEW);
+
+  // 发布 v1（模板旧字节）→ 默认发布 → Agent 安装
+  mkTpl("w3r1-skill/SKILL.md", OLD);
+  const sysSkill = space.upsertSkill({ domain: "system", scope: null, slug: "w3r1-sys", name: "W3R1系统技能", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const sv1 = await space.addSkillVersion({ domain: "system", scope: null, skillId: sysSkill.skill_id, contentRef: { contentRefType: "system_template", systemTemplatePath: "w3r1-skill/SKILL.md", contentChecksum: CHK_OLD }, origin: "system_seed", ownerToken: OWNER_TOKEN, actor: "owner" });
+  space.approveSkillVersion({ domain: "system", scope: null, skillId: sysSkill.skill_id, versionId: sv1.version_id, approvedBy: "owner", approvalRef: "owner-decision:2026-09-20/w3r1-v1", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const rel1 = space.publishSkillRelease({ domain: "system", scope: null, skillId: sysSkill.skill_id, versionId: sv1.version_id, releaseVersion: "1.0.0", visibility: "public", publishedBy: "owner", isDefault: true, ownerToken: OWNER_TOKEN, actor: "owner" });
+  const agentOld = space.createAgent({ scope: scopeA, name: "W3R1旧版助手", actor: "user:a" });
+  space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentOld.agent_id, actor: "system" });
+  assert.ok((await space.resolveInstalledSkillContent(scopeA, agentOld.agent_id, sysSkill.skill_id)).bytes.equals(OLD), "v1 install reads the published bytes");
+
+  // 同路径模板改成新内容 → 发布 v2 → 新 Agent 安装
+  mkTpl("w3r1-skill/SKILL.md", NEW);
+  const sv2 = await space.addSkillVersion({ domain: "system", scope: null, skillId: sysSkill.skill_id, contentRef: { contentRefType: "system_template", systemTemplatePath: "w3r1-skill/SKILL.md", contentChecksum: CHK_NEW }, origin: "system_seed", ownerToken: OWNER_TOKEN, actor: "owner" });
+  space.approveSkillVersion({ domain: "system", scope: null, skillId: sysSkill.skill_id, versionId: sv2.version_id, approvedBy: "owner", approvalRef: "owner-decision:2026-09-20/w3r1-v2", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const rel2 = space.publishSkillRelease({ domain: "system", scope: null, skillId: sysSkill.skill_id, versionId: sv2.version_id, releaseVersion: "2.0.0", visibility: "public", publishedBy: "owner", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const agentNew = space.createAgent({ scope: scopeA, name: "W3R1新版助手", actor: "user:a" });
+  const newInstallRef = await authz(scopeA, "um_w1_upgrade", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agentNew.agent_id, versionId: sv2.version_id, extraBinding: { skillId: sysSkill.skill_id, source: "release", releaseId: rel2.releaseId } });
+  space.installSkill({ scope: scopeA, agentId: agentNew.agent_id, skillId: sysSkill.skill_id, source: "release", releaseId: rel2.releaseId, versionId: sv2.version_id, installedBy: "user:a", approvalRef: newInstallRef, actor: "user:a" });
+
+  // 删除模板原文件：新旧安装都仍按各自固定版本读旧/新字节（内容寻址存储）
+  rmf(path.join(tplRoot, "w3r1-skill/SKILL.md"));
+  assert.ok((await space.resolveInstalledSkillContent(scopeA, agentOld.agent_id, sysSkill.skill_id)).bytes.equals(OLD), "old install keeps reading the OLD bytes after the template changed");
+  assert.ok((await space.resolveInstalledSkillContent(scopeA, agentNew.agent_id, sysSkill.skill_id)).bytes.equals(NEW), "new install reads the NEW bytes");
+
+  // 存储篡改明确拒绝
+  const storedOld = readFileSync(storePath(CHK_OLD));
+  wf(storePath(CHK_OLD), Buffer.concat([storedOld, Buffer.from("tampered")]));
+  await assert.rejects(
+    () => space.resolveInstalledSkillContent(scopeA, agentOld.agent_id, sysSkill.skill_id),
+    /AGENT_SPACE_VERSION_INVALID/,
+    "tampered preserved bytes are rejected",
+  );
+  wf(storePath(CHK_OLD), storedOld);
+
+  // 缺原字节明确阻塞：删掉 v2 存储文件（模板也已删除）→ 读取失败 + 回填报告 blocked
+  rmf(storePath(CHK_NEW));
+  await assert.rejects(
+    () => space.resolveInstalledSkillContent(scopeA, agentNew.agent_id, sysSkill.skill_id),
+    /AGENT_SPACE_VERSION_INVALID/,
+    "missing original bytes block runtime reads",
+  );
+  const backfill1 = await space.backfillSystemTemplateContentStore();
+  assert.ok(backfill1.blocked.some((b) => b.versionId === sv2.version_id), "backfill reports the unrecoverable version as blocked");
+  // 恢复模板为新字节 → 回填可救回 v2，读取恢复
+  mkTpl("w3r1-skill/SKILL.md", NEW);
+  const backfill2 = await space.backfillSystemTemplateContentStore();
+  assert.ok(backfill2.backfilled.includes(sv2.version_id), "backfill restores bytes when the template matches again");
+  assert.ok((await space.resolveInstalledSkillContent(scopeA, agentNew.agent_id, sysSkill.skill_id)).bytes.equals(NEW));
+});
+
+test("W3-R2: default manifest is a one-time init event; later default kinds never auto-expand existing agents", async () => {
+  const { db, space } = await fixture;
+  const { writeFileSync: wf, mkdirSync: mkd } = await import("node:fs");
+
+  // 存量 Agent：在 S2 出现之前初始化（拿到当时的默认集）
+  const agentOld = space.createAgent({ scope: scopeA, name: "W3R2存量助手", actor: "user:a" });
+  const init1 = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentOld.agent_id, actor: "system" });
+  assert.equal(init1.alreadyInitialized, false);
+  const installedAfterInit = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_agent_skill_installations WHERE agent_id=?").get(agentOld.agent_id) as { n: number }).n;
+  assert.ok(installedAfterInit >= 1, "stock agent initialized with the then-current defaults");
+
+  // 平台新增另一种默认技能 S2（不同 skillId）
+  mkd(path.join(process.env.SYSTEM_SKILLS_TEMPLATE_ROOT!, "w3r2-skill"), { recursive: true });
+  const body2 = Buffer.from("# W3R2 第二默认技能\n", "utf8");
+  wf(path.join(process.env.SYSTEM_SKILLS_TEMPLATE_ROOT!, "w3r2-skill", "SKILL.md"), body2);
+  const sys2 = space.upsertSkill({ domain: "system", scope: null, slug: "w3r2-sys", name: "第二默认技能", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const sv = await space.addSkillVersion({ domain: "system", scope: null, skillId: sys2.skill_id, contentRef: { contentRefType: "system_template", systemTemplatePath: "w3r2-skill/SKILL.md", contentChecksum: sha256Of(body2) }, origin: "system_seed", ownerToken: OWNER_TOKEN, actor: "owner" });
+  space.approveSkillVersion({ domain: "system", scope: null, skillId: sys2.skill_id, versionId: sv.version_id, approvedBy: "owner", approvalRef: "owner-decision:2026-09-20/w3r2-approve", ownerToken: OWNER_TOKEN, actor: "owner" });
+  space.publishSkillRelease({ domain: "system", scope: null, skillId: sys2.skill_id, versionId: sv.version_id, releaseVersion: "1.0.0", visibility: "public", publishedBy: "owner", isDefault: true, ownerToken: OWNER_TOKEN, actor: "owner" });
+
+  // owner 反例：已初始化的存量 Agent 重跑初始化 → 纯 no-op，不自动安装 S2
+  const rerun = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentOld.agent_id, actor: "system" });
+  assert.equal(rerun.alreadyInitialized, true);
+  assert.equal(rerun.appliedInstallationIds.length, 0, "re-running init never installs the newly added default kind");
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_agent_skill_installations WHERE agent_id=?").get(agentOld.agent_id) as { n: number }).n, installedAfterInit, "existing agent's install count is frozen at init");
+  assert.ok(!space.getInstalledSkillManifest(scopeA, agentOld.agent_id).some((m) => m.skillId === sys2.skill_id), "S2 is absent until an explicit authorized install");
+  // 新创建的 Agent 初始化拿到全部当前默认（含 S2）——默认分配仅用于创建时
+  const agentFresh = space.createAgent({ scope: scopeA, name: "W3R2新助手", actor: "user:a" });
+  space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentFresh.agent_id, actor: "system" });
+  assert.ok(space.getInstalledSkillManifest(scopeA, agentFresh.agent_id).some((m) => m.skillId === sys2.skill_id), "fresh agents receive the full current default set");
+
+  // 首次空清单也记录完成：清空默认标记 → 新 Agent 初始化（空）→ 标记完成后恢复默认 → 重跑不扩容
+  db.sqlite.exec("UPDATE agent_space_skill_releases SET is_default=0");
+  const agentEmpty = space.createAgent({ scope: scopeA, name: "W3R2空清单助手", actor: "user:a" });
+  const emptyInit = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentEmpty.agent_id, actor: "system" });
+  assert.equal(emptyInit.appliedInstallationIds.length, 0);
+  assert.equal(emptyInit.alreadyInitialized, false, "empty first init still completes and is recorded");
+  db.sqlite.exec("UPDATE agent_space_skill_releases SET is_default=1 WHERE release_version='1.0.0' AND domain='system'");
+  const afterRestore = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentEmpty.agent_id, actor: "system" });
+  assert.equal(afterRestore.alreadyInitialized, true, "completed empty init is never re-expanded");
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_agent_skill_installations WHERE agent_id=?").get(agentEmpty.agent_id) as { n: number }).n, 0);
+
+  // 初始化失败原子回滚：审计失败 → 标记不落、安装不落；修复后重试完整成功
+  db.sqlite.exec("UPDATE agent_space_skill_releases SET is_default=0"); // 只留 S2 一个默认，便于断言
+  db.sqlite.exec("UPDATE agent_space_skill_releases SET is_default=1 WHERE skill_id=(SELECT skill_id FROM agent_space_skills WHERE slug='w3r2-sys')");
+  const agentFlaky = space.createAgent({ scope: scopeA, name: "W3R2故障助手", actor: "user:a" });
+  db.sqlite.exec(`
+    CREATE TRIGGER w3r2_fail_init_audit
+    BEFORE INSERT ON agent_space_audit_logs
+    WHEN NEW.action = 'agent.default_manifest_applied'
+    BEGIN SELECT RAISE(ABORT, 'injected init audit failure'); END;
+  `);
+  let initThrew = false;
+  try {
+    space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentFlaky.agent_id, actor: "system" });
+  } catch {
+    initThrew = true;
+  }
+  assert.ok(initThrew, "init audit failure surfaces");
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_agent_skill_installations WHERE agent_id=?").get(agentFlaky.agent_id) as { n: number }).n, 0, "failed init leaves no installations");
+  assert.equal((db.sqlite.prepare("SELECT default_manifest_applied_at FROM agent_space_agents WHERE agent_id=?").get(agentFlaky.agent_id) as { default_manifest_applied_at: string | null }).default_manifest_applied_at, null, "failed init leaves no completion marker");
+  db.sqlite.exec("DROP TRIGGER w3r2_fail_init_audit");
+  const retried = space.applyDefaultSkillManifest({ scope: scopeA, agentId: agentFlaky.agent_id, actor: "system" });
+  assert.equal(retried.alreadyInitialized, false);
+  assert.equal(retried.appliedInstallationIds.length, 1, "retry after repair completes the full init consistently");
 });

@@ -8,7 +8,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { sqlite } from "../../db/index.js";
@@ -192,7 +192,7 @@ async function verifySkillContentRef(
     if (!ref.systemTemplatePath || path.isAbsolute(ref.systemTemplatePath) || ref.systemTemplatePath.includes("..")) {
       throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "systemTemplatePath must be a relative path inside the template root");
     }
-    const root = path.resolve(process.env.SYSTEM_SKILLS_TEMPLATE_ROOT || path.join(process.cwd(), "templates", "skills"));
+    const root = systemSkillsTemplateRoot();
     const absolute = path.join(root, ref.systemTemplatePath);
     if (!absolute.startsWith(root + path.sep)) {
       throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "systemTemplatePath escapes template root");
@@ -205,6 +205,9 @@ async function verifySkillContentRef(
     if (actual !== ref.contentChecksum) {
       throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `system template checksum mismatch (actual ${actual})`);
     }
+    // 返工 W3-R1：模板只是发布输入；发布即把字节保全进内容寻址存储，
+    // 之后模板原文件更新/删除都不影响已发布版本。
+    await persistSystemSkillContent(bytes, actual);
     return ref;
   }
   throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `unknown contentRefType ${ref.contentRefType}`);
@@ -672,8 +675,8 @@ export async function derivePrivateSkillFromRelease(input: {
 
 /**
  * 技能版本字节读取（W3）：user_asset_version 走 scoped 校验读取；
- * system_template 在模板根内做包含校验 + 字节 checksum 校验。
- * 供运行时固定版本解析使用（agents.ts resolveInstalledSkillContent）。
+ * system_template 优先读内容寻址存储（发布时保全的字节），模板原文件只是
+ * 兜底输入。供运行时固定版本解析使用（agents.ts resolveInstalledSkillContent）。
  */
 export async function readSkillVersionContentBytes(version: SkillVersionRow): Promise<Buffer> {
   if (version.content_ref_type === "user_asset_version") {
@@ -687,22 +690,103 @@ export async function readSkillVersionContentBytes(version: SkillVersionRow): Pr
     return read.bytes;
   }
   if (version.content_ref_type === "system_template") {
-    if (!version.system_template_path || path.isAbsolute(version.system_template_path) || version.system_template_path.includes("..")) {
-      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "systemTemplatePath must be a relative path inside the template root");
+    // 返工 W3-R1：先读内容寻址存储里发布时保全的字节（checksum 校验），
+    // 模板原文件更新/删除不影响已发布版本。
+    const storedPath = systemSkillContentPath(version.content_checksum);
+    if (existsSync(storedPath)) {
+      const bytes = await readFile(storedPath);
+      const actual = createHash("sha256").update(bytes).digest("hex");
+      if (actual !== version.content_checksum) {
+        throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `preserved system-skill content checksum mismatch for ${version.system_template_path ?? version.version_id}`);
+      }
+      return bytes;
     }
-    const root = path.resolve(process.env.SYSTEM_SKILLS_TEMPLATE_ROOT || path.join(process.cwd(), "templates", "skills"));
-    const absolute = path.join(root, version.system_template_path);
-    if (!absolute.startsWith(root + path.sep)) {
-      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "systemTemplatePath escapes template root");
+    // 兜底：预返工时代的存量版本，模板仍与 checksum 一致时可读；不一致即
+    // 明确阻塞（缺原字节），不得猜测重建。
+    if (version.system_template_path && !path.isAbsolute(version.system_template_path) && !version.system_template_path.includes("..")) {
+      const root = systemSkillsTemplateRoot();
+      const absolute = path.join(root, version.system_template_path);
+      if (absolute.startsWith(root + path.sep) && existsSync(absolute)) {
+        const bytes = await readFile(absolute);
+        const actual = createHash("sha256").update(bytes).digest("hex");
+        if (actual === version.content_checksum) return bytes;
+      }
     }
-    const bytes = await readFile(absolute);
-    const actual = createHash("sha256").update(bytes).digest("hex");
-    if (actual !== version.content_checksum) {
-      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `system template checksum mismatch for ${version.system_template_path}`);
-    }
-    return bytes;
+    throw new AgentSpaceError(
+      "AGENT_SPACE_VERSION_INVALID",
+      `original bytes for system-skill version ${version.version_id} are unavailable (not preserved and the template no longer matches); run the content-store backfill before proceeding`,
+    );
   }
   throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", `unknown contentRefType ${version.content_ref_type}`);
+}
+
+// ---------- 系统技能内容寻址存储（返工 W3-R1） ----------
+
+function systemSkillsTemplateRoot(): string {
+  return path.resolve(process.env.SYSTEM_SKILLS_TEMPLATE_ROOT || path.join(process.cwd(), "templates", "skills"));
+}
+
+function systemSkillContentRoot(): string {
+  return path.resolve(
+    process.env.SYSTEM_SKILLS_CONTENT_ROOT
+      || path.join(process.env.RUNTIME_DATA_ROOT || path.join(process.cwd(), "runtime-data"), "system-skill-content"),
+  );
+}
+
+function systemSkillContentPath(checksum: string): string {
+  return path.join(systemSkillContentRoot(), checksum);
+}
+
+/** 发布输入保全：字节按 sha256 内容寻址落存储（wx 独占创建，同内容天然去重）。 */
+async function persistSystemSkillContent(bytes: Buffer, checksum: string): Promise<void> {
+  const storeRoot = systemSkillContentRoot();
+  await mkdir(storeRoot, { recursive: true });
+  const target = path.join(storeRoot, checksum);
+  if (existsSync(target)) return;
+  try {
+    await writeFile(target, bytes, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+    throw error;
+  }
+}
+
+/**
+ * 存量 system_template 版本回填（返工 W3-R1 的增量迁移入口）：对还没有
+ * 保全字节的版本，仅当模板当前内容与版本 checksum 一致时才回填；不一致
+ * 即列为 blocked 明确阻塞，不猜测重建。
+ */
+export async function backfillSystemTemplateContentStore(): Promise<{
+  backfilled: string[];
+  blocked: Array<{ versionId: string; systemTemplatePath: string; reason: string }>;
+}> {
+  const rows = sqlite
+    .prepare(
+      `SELECT version_id, system_template_path, content_checksum
+       FROM agent_space_skill_versions WHERE content_ref_type='system_template'`,
+    )
+    .all() as Array<{ version_id: string; system_template_path: string | null; content_checksum: string }>;
+  const backfilled: string[] = [];
+  const blocked: Array<{ versionId: string; systemTemplatePath: string; reason: string }> = [];
+  for (const row of rows) {
+    if (existsSync(systemSkillContentPath(row.content_checksum))) continue;
+    const tpl = row.system_template_path ?? "";
+    const root = systemSkillsTemplateRoot();
+    const absolute = path.join(root, tpl);
+    let reason = "template path is missing or unsafe";
+    if (tpl && !path.isAbsolute(tpl) && !tpl.includes("..") && absolute.startsWith(root + path.sep) && existsSync(absolute)) {
+      const bytes = await readFile(absolute).catch(() => null);
+      const actual = bytes ? createHash("sha256").update(bytes).digest("hex") : null;
+      if (actual === row.content_checksum) {
+        await persistSystemSkillContent(bytes!, actual!);
+        backfilled.push(row.version_id);
+        continue;
+      }
+      reason = "template content no longer matches the version checksum (original bytes lost)";
+    }
+    blocked.push({ versionId: row.version_id, systemTemplatePath: tpl, reason });
+  }
+  return { backfilled, blocked };
 }
 
 /** 默认清单候选（W3）：is_default + published + public 的系统发布，按技能取最新。 */
