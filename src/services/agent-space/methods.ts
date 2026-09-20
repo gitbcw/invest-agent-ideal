@@ -15,6 +15,7 @@ import {
   newId,
   nowIso,
   recordAgentSpaceAudit,
+  recordAuthorizationOutcome,
   verifyAuthorization,
   type UserScope,
 } from "./core.js";
@@ -253,9 +254,6 @@ export function approveMethodVersion(input: ApproveMethodVersionInput): { method
   if (version.method_id !== input.methodId) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to method");
   }
-  if (version.status !== "draft") {
-    throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${version.status}`);
-  }
   const constraints = parseAdoptionConstraints(version.adoption_constraints);
   const blocksDefault = constraints.filter((c) => BLOCKS_DEFAULT_ADOPTION.includes(c));
   const tx = sqlite.transaction(() => {
@@ -266,6 +264,20 @@ export function approveMethodVersion(input: ApproveMethodVersionInput): { method
       input.approvalRef,
       input.ownerToken,
     );
+    // R9②：已成功操作的幂等回放——返回首次执行记录的既有结果，
+    // 不重新执行状态转换、不新增审计，也不恢复后来停用的对象。
+    if (approval.replayed) {
+      const stored = approval.replayResult as { methodId: string; versionId: string };
+      return { method: getMethodRow(input.scope, stored.methodId), version: getVersionRow(input.scope, stored.versionId) };
+    }
+    const current = getVersionRow(input.scope, input.versionId);
+    if (current.status !== "draft") {
+      if (current.approval_ref === input.approvalRef) {
+        // owner-decision 无凭证行：业务行上的同依据回放同样返回既有结果。
+        return { method: getMethodRow(input.scope, input.methodId), version: current };
+      }
+      throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${current.status}`);
+    }
     let adopt = input.adopt !== false;
     if (blocksDefault.length > 0 && adopt) {
       if (approval.kind !== "owner-decision") {
@@ -313,6 +325,7 @@ export function approveMethodVersion(input: ApproveMethodVersionInput): { method
         adoptionConstraints: constraints,
       },
     });
+    recordAuthorizationOutcome(approval.authorizationId, { methodId: input.methodId, versionId: input.versionId });
     return {
       method: getMethodRow(input.scope, input.methodId),
       version: getVersionRow(input.scope, input.versionId),

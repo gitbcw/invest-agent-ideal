@@ -2167,6 +2167,7 @@ function ensureAgentSpaceTables() {
       source_ref TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       consumed_at TEXT,
+      result_json TEXT,
       created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_authz_natural
@@ -2195,6 +2196,8 @@ function ensureAgentSpaceTables() {
   ensureColumn("agent_space_workflows", "draft_version_id", "TEXT");
   ensureColumn("agent_space_workflows", "owner_kind", "TEXT");
   ensureColumn("agent_space_workflows", "owner_id", "TEXT");
+  // R9②：凭证行记录成功操作的稳定结果（幂等回放返回既有结果）。
+  ensureColumn("agent_space_authorizations", "result_json", "TEXT");
   markMigration(migrationKey);
 }
 

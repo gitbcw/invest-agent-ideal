@@ -14,6 +14,7 @@ import {
   newId,
   nowIso,
   recordAgentSpaceAudit,
+  recordAuthorizationOutcome,
   verifyAuthorization,
   type UserScope,
 } from "./core.js";
@@ -61,6 +62,15 @@ type InstallationRow = {
   approval_ref: string | null;
   created_at: string;
 };
+
+function getInstallationRow(scope: UserScope, installationId: string): InstallationRow {
+  const row = sqlite
+    .prepare("SELECT * FROM agent_space_agent_skill_installations WHERE installation_id=?")
+    .get(installationId) as InstallationRow | undefined;
+  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `installation ${installationId}`);
+  assertRowScope(row, scope);
+  return row;
+}
 
 export function getAgent(scope: UserScope, agentId: string): AgentRow {
   assertScopeValid(scope);
@@ -141,38 +151,60 @@ export function installSkill(input: {
   if (agent.status === "disabled") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "disabled agent cannot install skills");
   }
-  // 先解析安装目标，再核验授权绑定（绑定需要 agentId/skillId/versionId）。
+  // 版本身份校验（解析安装目标，供授权绑定使用）。
   const version = getSkillVersionRow(input.versionId);
   if (version.skill_id !== input.skillId) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to skill");
   }
-  if (input.source === "private") {
-    if (version.domain !== "user") {
-      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "private install requires a user-domain skill version");
-    }
-    assertRowScope(version, input.scope);
-    if (version.status !== "approved") {
-      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "draft skill versions cannot be installed");
-    }
-  } else {
-    if (!input.releaseId) {
-      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "release install requires releaseId");
-    }
-    const release = getSkillReleaseRow(input.releaseId);
-    if (release.version_id !== input.versionId) {
-      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "release does not pin this version");
-    }
-    // R2：可见性/发布状态/属主判定在服务层强制（public 跨用户、private 属主、shared fail-closed）。
-    assertReleaseInstallableBy(release, input.scope);
-  }
   const tx = sqlite.transaction(() => {
     // R9：核验+消耗与安装写入、审计同事务。
-    verifyAuthorization(
+    const approval = verifyAuthorization(
       input.scope,
       { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: input.agentId, versionId: input.versionId, extraBinding: { skillId: input.skillId, source: input.source } },
       input.approvalRef,
       input.ownerToken,
     );
+    // R9②：已成功操作的幂等回放——返回首次安装行本身（可能已被后续升级
+    // superseded），不把当前安装降回旧版本、不新增安装/审计。
+    if (approval.replayed) {
+      return getInstallationRow(input.scope, (approval.replayResult as { installationId: string }).installationId);
+    }
+    // owner-decision 等无凭证行路径的业务回放：同一依据已为该 agent+skill
+    // 产生过安装 → 返回既有行，不重复 supersede/插入/审计。
+    const sameRef = sqlite
+      .prepare(
+        `SELECT * FROM agent_space_agent_skill_installations
+         WHERE agent_id=? AND skill_id=? AND approval_ref=?
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(input.agentId, input.skillId, input.approvalRef) as InstallationRow | undefined;
+    if (sameRef) {
+      if (sameRef.version_id !== input.versionId || sameRef.source !== input.source) {
+        throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", "approval ref is already bound to a different install target");
+      }
+      return sameRef;
+    }
+    // 业务校验在消费之后、写入之前执行：失败随事务回滚，凭证不失耗。
+    const currentVersion = getSkillVersionRow(input.versionId);
+    if (input.source === "private") {
+      if (currentVersion.domain !== "user") {
+        throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "private install requires a user-domain skill version");
+      }
+      assertRowScope(currentVersion, input.scope);
+      if (currentVersion.status !== "approved") {
+        throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "draft skill versions cannot be installed");
+      }
+    } else {
+      if (!input.releaseId) {
+        throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "release install requires releaseId");
+      }
+      const release = getSkillReleaseRow(input.releaseId);
+      if (release.version_id !== input.versionId) {
+        throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "release does not pin this version");
+      }
+      // R2：可见性/发布状态/属主判定在服务层强制（public 跨用户、private 属主、shared fail-closed）。
+      assertReleaseInstallableBy(release, input.scope);
+    }
     const previous = sqlite
       .prepare(
         `SELECT * FROM agent_space_agent_skill_installations
@@ -213,9 +245,8 @@ export function installSkill(input: {
         approvalRef: input.approvalRef,
       },
     });
-    return sqlite
-      .prepare("SELECT * FROM agent_space_agent_skill_installations WHERE installation_id=?")
-      .get(installationId) as InstallationRow;
+    recordAuthorizationOutcome(approval.authorizationId, { installationId });
+    return getInstallationRow(input.scope, installationId);
   });
   return tx();
 }

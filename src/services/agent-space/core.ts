@@ -173,8 +173,27 @@ export interface RegisterAuthorizationInput {
   actor: string;
 }
 
+/**
+ * extraBinding 规范化（验收 R9）：键排序稳定序列化。键序无关、内容可比，
+ * 登记与核验共用同一形态，避免 JSON.stringify 顺序差异进入自然键。
+ */
+export function canonicalExtraBindingJson(extra?: Record<string, string> | null): string {
+  if (!extra) return "";
+  const sorted: Record<string, string> = {};
+  for (const key of Object.keys(extra).sort()) sorted[key] = extra[key];
+  return JSON.stringify(sorted);
+}
+
 export function registerUserAuthorization(input: RegisterAuthorizationInput): { authorizationId: string; duplicated: boolean } {
   assertScopeValid(input.scope);
+  // 主体校验（验收 R9）：批准主体从可信 scope 派生——必须是 scope 本人；
+  // 调用方自报他人主体（冒名）直接拒绝，不落入凭证记录。
+  if (input.subjectUser !== input.scope.userId) {
+    throw new AgentSpaceError(
+      "AGENT_SPACE_ARGUMENT_INVALID",
+      `subjectUser must be the scope's own user (${input.scope.userId}); caller-supplied subject is rejected`,
+    );
+  }
   const message = sqlite
     .prepare("SELECT message_id, role, status, user_id, project_id, instance_id FROM conversation_messages WHERE message_id=?")
     .get(input.sourceMessageId) as
@@ -188,6 +207,7 @@ export function registerUserAuthorization(input: RegisterAuthorizationInput): { 
       `source message must be a delivered user message (got role=${message.role}, status=${message.status})`,
     );
   }
+  const extraBindingJson = canonicalExtraBindingJson(input.extraBinding);
   const naturalKey = sqlite
     .prepare(
       `SELECT authorization_id FROM agent_space_authorizations
@@ -196,7 +216,7 @@ export function registerUserAuthorization(input: RegisterAuthorizationInput): { 
     )
     .get(input.scope.userId, input.scope.projectId, input.scope.instanceId, input.operation, input.objectType,
          input.objectId, input.versionId ?? "", `conversation:${input.sourceMessageId}`,
-         input.extraBinding ? JSON.stringify(input.extraBinding) : "") as { authorization_id: string } | undefined;
+         extraBindingJson) as { authorization_id: string } | undefined;
   if (naturalKey) return { authorizationId: naturalKey.authorization_id, duplicated: true };
   const authorizationId = newId("authz");
   // R9：登记与登记审计同事务（失败无半成品，重试不重复）。
@@ -211,7 +231,7 @@ export function registerUserAuthorization(input: RegisterAuthorizationInput): { 
       )
       .run(authorizationId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.subjectUser,
            input.operation, input.objectType, input.objectId, input.versionId ?? null,
-           input.extraBinding ? JSON.stringify(input.extraBinding) : null,
+           extraBindingJson === "" ? null : extraBindingJson,
            `conversation:${input.sourceMessageId}`, nowIso());
     recordAgentSpaceAudit({
       scope: input.scope,
@@ -235,20 +255,31 @@ export interface AuthorizationBinding {
   extraBinding?: Record<string, string>;
 }
 
+/** verifyAuthorization 的返回：replayed=true 表示这是已成功操作的幂等回放。 */
+export interface VerifiedAuthorization {
+  kind: "authorization" | "owner-decision";
+  ref: string;
+  authorizationId?: string;
+  /** 已成功操作回放：直接携带首次执行记录的稳定结果，调用方不得重放业务转换。 */
+  replayed: boolean;
+  replayResult?: Record<string, unknown>;
+}
+
 /**
- * 批准凭证核验（验收 R6）：只接受
- * - `authorization:<id>`：绑定必须与本次操作的对象/版本/附加字段完全一致；
- *   同一授权对同一目标的合法重放幂等放行，跨对象/动作/版本重放拒绝；
- * - `owner-decision:<ref>`：须 owner 令牌；目标绑定记入审计。
- * 旧的 `conversation:<messageId>` 形态不再作为凭证（消息只是登记授权时的
- * 来源证据）。
+ * 批准凭证核验（验收 R6/R9）：只接受
+ * - `authorization:<id>`：绑定必须与本次操作的对象/版本/附加字段完全一致
+ *   （extraBinding 按完整键集合比较：缺键/多键/改值都是不匹配，键序无关）；
+ *   active → 本次消耗（必须发生在调用方业务事务内）；consumed 且绑定匹配 →
+ *   幂等回放，携带首次成功操作记录的稳定结果；revoked 等其余状态拒绝。
+ * - `owner-decision:<ref>`：须 owner 令牌；无凭证行，回放由业务行 approval_ref
+ *   匹配兜底。旧的 `conversation:<messageId>` 形态不作为凭证。
  */
 export function verifyAuthorization(
   scope: UserScope,
   binding: AuthorizationBinding,
   approvalRef: string,
   ownerToken?: string,
-): { kind: "authorization" | "owner-decision"; ref: string; authorizationId?: string } {
+): VerifiedAuthorization {
   const trimmed = approvalRef?.trim();
   if (!trimmed) throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", "approvalRef is required");
   const authzMatch = /^authorization:([A-Za-z0-9_-]+)$/.exec(trimmed);
@@ -259,7 +290,7 @@ export function verifyAuthorization(
       | {
           authorization_id: string; user_id: string; project_id: string; instance_id: string; subject_user: string;
           operation: string; object_type: string; object_id: string; version_id: string | null;
-          extra_binding_json: string | null; status: string; consumed_at: string | null;
+          extra_binding_json: string | null; status: string; consumed_at: string | null; result_json: string | null;
         }
       | undefined;
     if (!row) throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", `authorization ${authzMatch[1]} not found`);
@@ -269,9 +300,17 @@ export function verifyAuthorization(
     if (row.object_type !== binding.objectType) mismatches.push("objectType");
     if (row.object_id !== binding.objectId) mismatches.push("objectId");
     if ((row.version_id ?? null) !== (binding.versionId ?? null)) mismatches.push("versionId");
-    const extra = row.extra_binding_json ? (JSON.parse(row.extra_binding_json) as Record<string, string>) : {};
-    for (const [key, value] of Object.entries(binding.extraBinding ?? {})) {
-      if (extra[key] !== value) mismatches.push(`extraBinding.${key}`);
+    // R9：extraBinding 完整键集合比较——不能只比对调用方提供的子集。
+    const storedExtra = row.extra_binding_json ? (JSON.parse(row.extra_binding_json) as Record<string, string>) : {};
+    const providedExtra = binding.extraBinding ?? {};
+    const storedKeys = Object.keys(storedExtra).sort().join(",");
+    const providedKeys = Object.keys(providedExtra).sort().join(",");
+    if (storedKeys !== providedKeys) {
+      mismatches.push(`extraBinding key set (${storedKeys || "∅"} != ${providedKeys || "∅"})`);
+    } else {
+      for (const key of Object.keys(providedExtra)) {
+        if (storedExtra[key] !== providedExtra[key]) mismatches.push(`extraBinding.${key}`);
+      }
     }
     if (mismatches.length > 0) {
       throw new AgentSpaceError(
@@ -279,28 +318,59 @@ export function verifyAuthorization(
         `authorization ${row.authorization_id} is bound to a different target (${mismatches.join(", ")}); replay across object/action/version is rejected`,
       );
     }
-    // R9：active → 本次消耗；consumed 且绑定匹配 → 幂等放行（重试走完整
-    // 业务路径，由业务幂等契约决定结果）；其余状态（如 revoked）拒绝。
     if (row.status !== "active" && row.status !== "consumed") {
       throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", `authorization is ${row.status}`);
     }
     if (row.status === "active") {
-      // 注意：本函数必须在调用方的业务事务内调用，使消耗与业务变更、
-      // 审计原子提交（better-sqlite3 环境事务）。
+      // 注意：本函数必须在调用方的业务事务内调用，使消耗与业务变更、审计、
+      // 结果记录原子提交（better-sqlite3 环境事务）。
       sqlite.prepare("UPDATE agent_space_authorizations SET consumed_at=?, status='consumed' WHERE authorization_id=? AND status='active'")
         .run(nowIso(), row.authorization_id);
+      return { kind: "authorization", ref: row.authorization_id, authorizationId: row.authorization_id, replayed: false };
     }
-    return { kind: "authorization", ref: row.authorization_id, authorizationId: row.authorization_id };
+    // consumed 且绑定匹配（R9②）：消耗只发生在成功提交的事务里，因此这里必然
+    // 是同一成功请求的重试——返回首次操作记录的稳定结果，不重新执行业务。
+    if (!row.result_json) {
+      throw new AgentSpaceError(
+        "AGENT_SPACE_APPROVAL_REQUIRED",
+        `authorization ${row.authorization_id} is consumed without a recorded outcome; replay is refused (fail-closed)`,
+      );
+    }
+    return {
+      kind: "authorization",
+      ref: row.authorization_id,
+      authorizationId: row.authorization_id,
+      replayed: true,
+      replayResult: JSON.parse(row.result_json) as Record<string, unknown>,
+    };
   }
   const ownerMatch = /^owner-decision:(.+)$/.exec(trimmed);
   if (ownerMatch) {
     requireOwnerAuthorization(ownerToken, `owner-decision ${ownerMatch[1]}`);
-    return { kind: "owner-decision", ref: ownerMatch[1]! };
+    return { kind: "owner-decision", ref: ownerMatch[1]!, replayed: false };
   }
   throw new AgentSpaceError(
     "AGENT_SPACE_APPROVAL_REQUIRED",
     "approvalRef must be authorization:<id> (bound to this exact operation/object/version) or owner-decision:<ref> (with owner token)",
   );
+}
+
+/**
+ * 把成功授权操作的稳定结果记到凭证上（R9②：授权→结果关联）。
+ * 必须在调用方业务事务内、业务变更与审计之后调用，与消耗原子提交；
+ * owner-decision 无凭证行，其操作记录由业务行 approval_ref + 审计承载。
+ */
+export function recordAuthorizationOutcome(authorizationId: string | undefined, result: Record<string, unknown>): void {
+  if (!authorizationId) return;
+  const changes = sqlite
+    .prepare("UPDATE agent_space_authorizations SET result_json=? WHERE authorization_id=? AND status='consumed'")
+    .run(JSON.stringify(result), authorizationId);
+  if (changes.changes !== 1) {
+    throw new AgentSpaceError(
+      "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+      `authorization ${authorizationId} is not in consumed state; outcome could not be recorded`,
+    );
+  }
 }
 
 const OWNER_ADMIN_SETTINGS_KEY = "agent_space.owner_admin_token";

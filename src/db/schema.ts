@@ -1399,6 +1399,7 @@ export const agentSpaceAuthorizations = sqliteTable("agent_space_authorizations"
   sourceRef: text("source_ref").notNull(),
   status: text("status").notNull().default("active"),
   consumedAt: text("consumed_at"),
+  resultJson: text("result_json"),
   createdAt: text("created_at").notNull(),
 });
 

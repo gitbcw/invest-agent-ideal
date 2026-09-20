@@ -215,10 +215,18 @@ test("methods: lifecycle, version ownership, verifiable approvals, resolution", 
     approvedBy: "user:a", approvalRef: authzM1, actor: "user:a",
   });
   assert.equal(approved.method.current_version_id, v1.version_id);
-  expectAgentSpaceError(
-    () => space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v1.version_id, approvedBy: "user:a", approvalRef: authzM1, actor: "user:a" }),
-    "AGENT_SPACE_IMMUTABLE",
-  );
+  // R9②：成功后同请求重放返回既有结果，无新增审计/状态转换
+  const { db } = await fixture;
+  const auditsBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_id=?").get(v1.version_id) as { n: number }).n;
+  const replay = space.approveMethodVersion({
+    scope: scopeA, methodId: method.method_id, versionId: v1.version_id,
+    approvedBy: "user:a", approvalRef: authzM1, actor: "user:a",
+  });
+  assert.equal(replay.version.status, "approved");
+  assert.equal(replay.version.version_id, v1.version_id);
+  assert.equal(replay.method.current_version_id, v1.version_id);
+  const auditsAfter = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_id=?").get(v1.version_id) as { n: number }).n;
+  assert.equal(auditsAfter, auditsBefore, "replay adds no audit rows");
 
   const v2 = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_A, actor: "user:a" });
   space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v2.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_2", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v2.version_id, versionId: v2.version_id, extraBinding: { methodId: method.method_id } }), actor: "user:a" });
@@ -316,7 +324,7 @@ test("R2/R3: skills — refs, publish visibility, install rules, system domain",
     domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv1.version_id,
     releaseVersion: "1.0.0-shared", visibility: "shared", publishedBy: "user:a", actor: "user:a",
   });
-  const sharedAuthB = await authz(scopeB, "um_w1_b1", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agentB.agent_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id, source: "release", releaseId: sharedRelease.releaseId } });
+  const sharedAuthB = await authz(scopeB, "um_w1_b1", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agentB.agent_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id, source: "release" } });
   expectAgentSpaceError(
     () => space.installSkill({ scope: scopeB, agentId: agentB.agent_id, skillId: skill.skill_id, source: "release", releaseId: sharedRelease.releaseId, versionId: sv1.version_id, installedBy: "user:b", approvalRef: sharedAuthB, actor: "user:b" }),
     "AGENT_SPACE_VISIBILITY_INVALID",
@@ -326,7 +334,7 @@ test("R2/R3: skills — refs, publish visibility, install rules, system domain",
     releaseVersion: "2.0.0", visibility: "public", publishedBy: "user:a", actor: "user:a",
   });
   space.retireSkillRelease({ domain: "user", scope: scopeA, releaseId: publicRelease.releaseId, actor: "user:a" });
-  const retiredAuthB = await authz(scopeB, "um_w1_b1", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agentB.agent_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id, source: "release", releaseId: publicRelease.releaseId } });
+  const retiredAuthB = await authz(scopeB, "um_w1_b1", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agentB.agent_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id, source: "release" } });
   expectAgentSpaceError(
     () => space.installSkill({ scope: scopeB, agentId: agentB.agent_id, skillId: skill.skill_id, source: "release", releaseId: publicRelease.releaseId, versionId: sv1.version_id, installedBy: "user:b", approvalRef: retiredAuthB, actor: "user:b" }),
     "AGENT_SPACE_VERSION_INVALID",
@@ -870,33 +878,38 @@ test("R9: authorization consumption is atomic with the business mutation; retry 
   const consumed = db.sqlite.prepare("SELECT status FROM agent_space_authorizations WHERE authorization_id=?").get(authzId) as { status: string };
   assert.equal(consumed.status, "consumed");
 
-  // 成功后同凭证重放：核验放行（幂等），由业务幂等契约收口（此处再次批准→对象仍 active 且无待批准修订 → 明确拒绝而非凭证错误）
-  let replayError: Error | undefined;
-  try {
-    space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, expectedVersionId: lesson.versionId, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
-  } catch (error) {
-    replayError = error as Error;
-  }
-  assert.ok(replayError, "replay reaches business semantics");
-  assert.ok(!replayError!.message.startsWith("AGENT_SPACE_APPROVAL_REQUIRED"), `replay must not be blocked at the credential layer (${replayError!.message})`);
+  // 成功后同请求重放（R9②）：返回原结果且零副作用——不重复审计、不重复转换
+  const rowBefore = db.sqlite.prepare("SELECT status, current_version_id, draft_version_id, approved_at FROM agent_space_lessons WHERE lesson_id=?").get(lesson.objectId) as Record<string, unknown>;
+  const auditsBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='lesson.approved' AND object_id=?").get(lesson.objectId) as { n: number }).n;
+  space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, expectedVersionId: lesson.versionId, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
+  const rowAfter = db.sqlite.prepare("SELECT status, current_version_id, draft_version_id, approved_at FROM agent_space_lessons WHERE lesson_id=?").get(lesson.objectId) as Record<string, unknown>;
+  assert.deepEqual(rowAfter, rowBefore, "replay leaves the lesson row byte-identical");
+  const auditsAfter = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='lesson.approved' AND object_id=?").get(lesson.objectId) as { n: number }).n;
+  assert.equal(auditsAfter, auditsBefore, "replay adds no audit rows");
+  // 合法回放不得恢复后来被停用的对象：disable 后重放仍是 void 成功且状态不变
+  space.transitionStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, toStatus: "disabled", reason: "later disabled", actor: "user:a" });
+  space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: lesson.objectId, expectedVersionId: lesson.versionId, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
+  const disabled = db.sqlite.prepare("SELECT status FROM agent_space_lessons WHERE lesson_id=?").get(lesson.objectId) as { status: string };
+  assert.equal(disabled.status, "disabled", "replay must not resurrect a later-disabled object");
 });
 
-test("R9: revoked authorization is rejected; method approve replay consumes atomically", async () => {
+test("R9: revoked authorization is rejected; method approve replay returns the recorded outcome", async () => {
   const { db, space } = await fixture;
   const method = space.createMethod({ scope: scopeA, name: "R9方法", actor: "user:a" });
   const v = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_A, actor: "user:a" });
   const authRef = await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v.version_id, versionId: v.version_id, extraBinding: { methodId: method.method_id } });
   space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v.version_id, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
-  // 成功后重放：凭证层放行，业务层 IMMUTABLE（正式版本不可变）
-  let replayError: Error | undefined;
-  try {
-    space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v.version_id, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
-  } catch (error) {
-    replayError = error as Error;
-  }
-  assert.ok(replayError?.message.startsWith("AGENT_SPACE_IMMUTABLE"), `replay must reach business immutability, got ${replayError?.message}`);
-  // revoked 凭证拒绝（用新 draft 版本使业务前置检查放行、直达凭证层）
-  const authzId = authRef.slice("authorization:".length);
+  // 成功后重放（R9②）：返回既有结果，行数与审计零变化
+  const versionsBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_method_versions WHERE method_id=?").get(method.method_id) as { n: number }).n;
+  const auditsBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_id=?").get(v.version_id) as { n: number }).n;
+  const replay = space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v.version_id, approvedBy: "user:a", approvalRef: authRef, actor: "user:a" });
+  assert.equal(replay.version.version_id, v.version_id);
+  assert.equal(replay.version.status, "approved");
+  const versionsAfter = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_method_versions WHERE method_id=?").get(method.method_id) as { n: number }).n;
+  assert.equal(versionsAfter, versionsBefore, "replay creates no version rows");
+  const auditsAfter = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_id=?").get(v.version_id) as { n: number }).n;
+  assert.equal(auditsAfter, auditsBefore, "replay adds no audit rows");
+  // revoked 凭证拒绝（用新 draft 版本使业务路径放行、直达凭证层）
   const method3 = space.createMethod({ scope: scopeA, name: "R9-revoked方法", actor: "user:a" });
   const v3 = space.addMethodVersion({ scope: scopeA, methodId: method3.method_id, contentRef: CONTENT_A, actor: "user:a" });
   const revokedRef = await authz(scopeA, "um_w1_2", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v3.version_id, versionId: v3.version_id, extraBinding: { methodId: method3.method_id } });
@@ -905,5 +918,197 @@ test("R9: revoked authorization is rejected; method approve replay consumes atom
     () => space.approveMethodVersion({ scope: scopeA, methodId: method3.method_id, versionId: v3.version_id, approvedBy: "user:a", approvalRef: revokedRef, actor: "user:a" }),
     "AGENT_SPACE_APPROVAL_REQUIRED",
   );
-  void authzId;
+  // revoked 凭证即使绑定匹配也不能回放成功路径（已成功消耗后被撤销）
+  const method4 = space.createMethod({ scope: scopeA, name: "R9-revoked-replay方法", actor: "user:a" });
+  const v4 = space.addMethodVersion({ scope: scopeA, methodId: method4.method_id, contentRef: CONTENT_A, actor: "user:a" });
+  const revokedReplayRef = await authz(scopeA, "um_w1_m", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v4.version_id, versionId: v4.version_id, extraBinding: { methodId: method4.method_id } });
+  space.approveMethodVersion({ scope: scopeA, methodId: method4.method_id, versionId: v4.version_id, approvedBy: "user:a", approvalRef: revokedReplayRef, actor: "user:a" });
+  db.sqlite.prepare("UPDATE agent_space_authorizations SET status='revoked' WHERE authorization_id=?").run(revokedReplayRef.slice("authorization:".length));
+  expectAgentSpaceError(
+    () => space.approveMethodVersion({ scope: scopeA, methodId: method4.method_id, versionId: v4.version_id, approvedBy: "user:a", approvalRef: revokedReplayRef, actor: "user:a" }),
+    "AGENT_SPACE_APPROVAL_REQUIRED",
+  );
+});
+
+test("R9: install/approve/activate replays return recorded outcomes with zero side effects", async () => {
+  const { db, space } = await fixture;
+  const agent = space.createAgent({ scope: scopeA, name: "回放矩阵助手", actor: "user:a" });
+  const skill = space.upsertSkill({ domain: "user", scope: scopeA, slug: "replay-skill", name: "回放技能", actor: "user:a" });
+  const sv1 = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_a1", assetVersionId: "ver_a1", contentChecksum: "chk_a1" },
+    origin: "private_edit", actor: "user:a",
+  });
+  const skillAuth1 = await authz(scopeA, "um_w1_s1", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv1.version_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id } });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv1.version_id, approvedBy: "user:a", approvalRef: skillAuth1, actor: "user:a" });
+
+  const countInstalls = () =>
+    (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_agent_skill_installations WHERE agent_id=?").get(agent.agent_id) as { n: number }).n;
+  const countInstallAudits = () =>
+    (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_type='agent_space_agent_skill_installation' AND user_id=?").get(scopeA.userId) as { n: number }).n;
+
+  // —— 安装：成功后立即重放 → 返回同一安装行，零新增 ——
+  const installAuth1 = await authz(scopeA, "um_w1_install", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agent.agent_id, versionId: sv1.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } });
+  const inst1 = space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv1.version_id, installedBy: "user:a", approvalRef: installAuth1, actor: "user:a" });
+  const installsBefore = countInstalls();
+  const installAuditsBefore = countInstallAudits();
+  const inst1Replay = space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv1.version_id, installedBy: "user:a", approvalRef: installAuth1, actor: "user:a" });
+  assert.equal(inst1Replay.installation_id, inst1.installation_id, "install replay returns the original installation row");
+  assert.equal(countInstalls(), installsBefore, "install replay inserts nothing");
+  assert.equal(countInstallAudits(), installAuditsBefore, "install replay adds no audit");
+
+  // —— 升级到 v2 后重放 v1 安装 → 返回已 superseded 的原安装行，不把当前安装降级 ——
+  const sv2 = await space.addSkillVersion({
+    domain: "user", scope: scopeA, skillId: skill.skill_id,
+    contentRef: { contentRefType: "user_asset_version", assetId: "asset_a1", assetVersionId: "ver_a1", contentChecksum: "chk_a1" },
+    origin: "private_edit", actor: "user:a",
+  });
+  const skillAuth2 = await authz(scopeA, "um_w1_s2", { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: sv2.version_id, versionId: sv2.version_id, extraBinding: { skillId: skill.skill_id } });
+  space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv2.version_id, approvedBy: "user:a", approvalRef: skillAuth2, actor: "user:a" });
+  const installAuth2 = await authz(scopeA, "um_w1_upgrade", { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: agent.agent_id, versionId: sv2.version_id, extraBinding: { skillId: skill.skill_id, source: "private" } });
+  space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv2.version_id, installedBy: "user:a", approvalRef: installAuth2, actor: "user:a" });
+  const installsAfterUpgrade = countInstalls();
+  const oldReplay = space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv1.version_id, installedBy: "user:a", approvalRef: installAuth1, actor: "user:a" });
+  assert.equal(oldReplay.installation_id, inst1.installation_id, "old-install replay returns the original row");
+  assert.equal(oldReplay.status, "superseded", "replayed installation reflects its later superseded state");
+  assert.equal(space.listInstalledSkills(scopeA, agent.agent_id)[0]!.version_id, sv2.version_id, "replay must not downgrade the current install");
+  assert.equal(countInstalls(), installsAfterUpgrade, "old-install replay inserts nothing");
+
+  // —— 技能批准重放 → 既有版本行，审计零新增 ——
+  const skillAuditsBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_id=?").get(sv2.version_id) as { n: number }).n;
+  const sv2Replay = space.approveSkillVersion({ domain: "user", scope: scopeA, skillId: skill.skill_id, versionId: sv2.version_id, approvedBy: "user:a", approvalRef: skillAuth2, actor: "user:a" });
+  assert.equal(sv2Replay.version_id, sv2.version_id);
+  assert.equal(sv2Replay.status, "approved");
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_id=?").get(sv2.version_id) as { n: number }).n, skillAuditsBefore, "skill approve replay adds no audit");
+
+  // —— owner-decision 安装回放（业务行 approval_ref 兜底）→ 同一安装行 ——
+  const odInst = space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv2.version_id, installedBy: "owner", approvalRef: "owner-decision:2026-09-20/od-install", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const odCount = countInstalls();
+  const odReplay = space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv2.version_id, installedBy: "owner", approvalRef: "owner-decision:2026-09-20/od-install", ownerToken: OWNER_TOKEN, actor: "owner" });
+  assert.equal(odReplay.installation_id, odInst.installation_id, "owner-decision install replay returns the existing row");
+  assert.equal(countInstalls(), odCount, "owner-decision install replay inserts nothing");
+  // 同一 owner-decision 依据换安装目标拒绝
+  expectAgentSpaceError(
+    () => space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv1.version_id, installedBy: "owner", approvalRef: "owner-decision:2026-09-20/od-install", ownerToken: OWNER_TOKEN, actor: "owner" }),
+    "AGENT_SPACE_APPROVAL_REQUIRED",
+  );
+
+  // —— 撤销后的安装凭证：重放拒绝 ——
+  db.sqlite.prepare("UPDATE agent_space_authorizations SET status='revoked' WHERE authorization_id=?").run(installAuth1.slice("authorization:".length));
+  expectAgentSpaceError(
+    () => space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "private", versionId: sv1.version_id, installedBy: "user:a", approvalRef: installAuth1, actor: "user:a" }),
+    "AGENT_SPACE_APPROVAL_REQUIRED",
+  );
+
+  // —— 承诺激活：成功后重放零副作用；后来 paused 不被回放恢复 ——
+  const commitment = space.createCommitment({ scope: scopeA, title: "回放承诺", content: {}, commitmentKind: "one_shot", completionCriteria: "推送成功", idempotencyKey: "replay-cmt", actor: "user:a" });
+  const actAuth = await authz(scopeA, "um_w1_c", { operation: "commitment.activate", objectType: "agent_space_commitment", objectId: commitment.commitmentId, versionId: null, extraBinding: { executorTaskId: "task_exec_1" } });
+  space.activateCommitment({ scope: scopeA, commitmentId: commitment.commitmentId, authorizationRef: actAuth, executorTaskId: "task_exec_1", actor: "user:a" });
+  const actAuditsBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='commitment.activated' AND object_id=?").get(commitment.commitmentId) as { n: number }).n;
+  space.activateCommitment({ scope: scopeA, commitmentId: commitment.commitmentId, authorizationRef: actAuth, executorTaskId: "task_exec_1", actor: "user:a" });
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='commitment.activated' AND object_id=?").get(commitment.commitmentId) as { n: number }).n, actAuditsBefore, "activation replay adds no audit");
+  space.transitionCommitment({ scope: scopeA, commitmentId: commitment.commitmentId, toStatus: "paused", reason: "假期", actor: "user:a" });
+  space.activateCommitment({ scope: scopeA, commitmentId: commitment.commitmentId, authorizationRef: actAuth, executorTaskId: "task_exec_1", actor: "user:a" });
+  const pausedRow = db.sqlite.prepare("SELECT status FROM agent_space_commitments WHERE commitment_id=?").get(commitment.commitmentId) as { status: string };
+  assert.equal(pausedRow.status, "paused", "activation replay must not resurrect a later-paused commitment");
+
+  // —— owner-decision 方法批准回放（业务行 approval_ref 兜底）——
+  const odm = space.createMethod({ scope: scopeA, name: "owner回放方法", actor: "owner" });
+  const odv = space.addMethodVersion({ scope: scopeA, methodId: odm.method_id, contentRef: CONTENT_A, actor: "owner" });
+  space.approveMethodVersion({ scope: scopeA, methodId: odm.method_id, versionId: odv.version_id, approvedBy: "owner", approvalRef: "owner-decision:2026-09-20/od-approve", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const odAuditsBefore = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_id=?").get(odv.version_id) as { n: number }).n;
+  const odReplayResult = space.approveMethodVersion({ scope: scopeA, methodId: odm.method_id, versionId: odv.version_id, approvedBy: "owner", approvalRef: "owner-decision:2026-09-20/od-approve", ownerToken: OWNER_TOKEN, actor: "owner" });
+  assert.equal(odReplayResult.version.status, "approved");
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE object_id=?").get(odv.version_id) as { n: number }).n, odAuditsBefore, "owner-decision approve replay adds no audit");
+
+  // —— 消费后业务校验失败（hold 约束挡采用）→ 凭证随事务回滚、不失耗 ——
+  const holdMethod = space.createMethod({ scope: scopeA, name: "回放hold方法", actor: "user:a" });
+  const holdV = space.addMethodVersion({ scope: scopeA, methodId: holdMethod.method_id, contentRef: CONTENT_A, adoptionConstraints: ["hold-ambiguity"], actor: "user:a" });
+  const holdAuth = await authz(scopeA, "um_w1_2", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: holdV.version_id, versionId: holdV.version_id, extraBinding: { methodId: holdMethod.method_id } });
+  expectAgentSpaceError(
+    () => space.approveMethodVersion({ scope: scopeA, methodId: holdMethod.method_id, versionId: holdV.version_id, approvedBy: "user:a", approvalRef: holdAuth, actor: "user:a" }),
+    "AGENT_SPACE_ADOPTION_CONSTRAINT",
+  );
+  const holdAuthRow = db.sqlite.prepare("SELECT status FROM agent_space_authorizations WHERE authorization_id=?").get(holdAuth.slice("authorization:".length)) as { status: string };
+  assert.equal(holdAuthRow.status, "active", "post-consumption business failure must roll the consumption back");
+});
+
+test("R9: extraBinding full-key comparison, canonical dedupe, subject validation, registration atomicity", async () => {
+  const { db, space } = await fixture;
+
+  // 键序无关：登记 {b,a}，核验 {a,b} → 完整键集合匹配放行
+  const reg = space.registerUserAuthorization({
+    scope: scopeA, subjectUser: scopeA.userId, operation: "test.op",
+    objectType: "test.obj", objectId: "r9-bind-1", versionId: null,
+    extraBinding: { b: "2", a: "1" }, sourceMessageId: "um_w1_snap", actor: "runtime-confirmation",
+  });
+  const verified = space.verifyAuthorization(
+    scopeA,
+    { operation: "test.op", objectType: "test.obj", objectId: "r9-bind-1", versionId: null, extraBinding: { a: "1", b: "2" } },
+    `authorization:${reg.authorizationId}`,
+  );
+  assert.equal(verified.replayed, false);
+
+  // canonical 去重：同绑定换键序再登记 → duplicated 且同 id
+  const dup = space.registerUserAuthorization({
+    scope: scopeA, subjectUser: scopeA.userId, operation: "test.op",
+    objectType: "test.obj", objectId: "r9-bind-1", versionId: null,
+    extraBinding: { a: "1", b: "2" }, sourceMessageId: "um_w1_snap", actor: "runtime-confirmation",
+  });
+  assert.equal(dup.duplicated, true);
+  assert.equal(dup.authorizationId, reg.authorizationId);
+
+  // 缺键 / 多键 / 改值全部拒绝（不能只比对调用方提供的子集）
+  const reg2 = space.registerUserAuthorization({
+    scope: scopeA, subjectUser: scopeA.userId, operation: "test.op",
+    objectType: "test.obj", objectId: "r9-bind-2", versionId: null,
+    extraBinding: { a: "1", b: "2" }, sourceMessageId: "um_w1_1", actor: "runtime-confirmation",
+  });
+  const reg2Ref = `authorization:${reg2.authorizationId}`;
+  const reg2Binding = { operation: "test.op", objectType: "test.obj", objectId: "r9-bind-2", versionId: null };
+  expectAgentSpaceError(() => space.verifyAuthorization(scopeA, { ...reg2Binding, extraBinding: { a: "1" } }, reg2Ref), "AGENT_SPACE_APPROVAL_REQUIRED");
+  expectAgentSpaceError(() => space.verifyAuthorization(scopeA, { ...reg2Binding, extraBinding: { a: "1", b: "2", c: "3" } }, reg2Ref), "AGENT_SPACE_APPROVAL_REQUIRED");
+  expectAgentSpaceError(() => space.verifyAuthorization(scopeA, { ...reg2Binding, extraBinding: { a: "1", b: "changed" } }, reg2Ref), "AGENT_SPACE_APPROVAL_REQUIRED");
+  const intact = db.sqlite.prepare("SELECT status FROM agent_space_authorizations WHERE authorization_id=?").get(reg2.authorizationId) as { status: string };
+  assert.equal(intact.status, "active", "rejected mismatches must not consume the credential");
+
+  // 冒名主体拒绝：subjectUser 与 scope 本人不一致
+  expectAgentSpaceError(
+    () => space.registerUserAuthorization({
+      scope: scopeA, subjectUser: "user:impersonator", operation: "test.op",
+      objectType: "test.obj", objectId: "r9-bind-3", versionId: null,
+      sourceMessageId: "um_w1_2", actor: "runtime-confirmation",
+    }),
+    "AGENT_SPACE_ARGUMENT_INVALID",
+  );
+  const impersonated = db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_authorizations WHERE object_id='r9-bind-3'").get() as { n: number };
+  assert.equal(impersonated.n, 0, "impersonated registration leaves no credential row");
+
+  // 登记审计失败 → 无凭证残留；修复后登记成功
+  db.sqlite.exec(`
+    CREATE TRIGGER w1_fail_authz_register_audit
+    BEFORE INSERT ON agent_space_audit_logs
+    WHEN NEW.action = 'authorization.registered'
+    BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;
+  `);
+  let registerThrew = false;
+  try {
+    space.registerUserAuthorization({
+      scope: scopeA, subjectUser: scopeA.userId, operation: "test.op",
+      objectType: "test.obj", objectId: "r9-bind-4", versionId: null,
+      sourceMessageId: "um_w1_c_resume", actor: "runtime-confirmation",
+    });
+  } catch {
+    registerThrew = true;
+  }
+  assert.ok(registerThrew, "registration audit failure surfaces");
+  const residue = db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_authorizations WHERE object_id='r9-bind-4'").get() as { n: number };
+  assert.equal(residue.n, 0, "failed registration leaves no credential residue");
+  db.sqlite.exec("DROP TRIGGER w1_fail_authz_register_audit");
+  const recovered = space.registerUserAuthorization({
+    scope: scopeA, subjectUser: scopeA.userId, operation: "test.op",
+    objectType: "test.obj", objectId: "r9-bind-4", versionId: null,
+    sourceMessageId: "um_w1_c_resume", actor: "runtime-confirmation",
+  });
+  assert.ok(recovered.authorizationId);
 });

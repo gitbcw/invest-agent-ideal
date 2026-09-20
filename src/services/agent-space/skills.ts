@@ -21,6 +21,7 @@ import {
   newId,
   nowIso,
   recordAgentSpaceAudit,
+  recordAuthorizationOutcome,
   requireOwnerAuthorization,
   verifyAuthorization,
   type AgentSpaceScopeDomain,
@@ -89,6 +90,9 @@ type SkillVersionRow = {
   content_checksum: string;
   origin: string;
   status: SkillVersionStatus;
+  approved_by: string | null;
+  approved_at: string | null;
+  approval_ref: string | null;
   supersedes_version_id: string | null;
   created_at: string;
 };
@@ -292,21 +296,30 @@ export function approveSkillVersion(input: {
   if (version.skill_id !== input.skillId) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to skill");
   }
-  if (version.status !== "draft") {
-    throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${version.status}`);
-  }
   // 系统域批准必须走 owner 决策；用户域须绑定式授权（核验在事务内执行）。
   if (input.domain === "system") {
     requireOwnerAuthorization(input.ownerToken, "system skill approval");
   }
   const tx = sqlite.transaction(() => {
     // R9：核验+消耗与业务变更、审计同事务。
-    verifyAuthorization(
+    const approval = verifyAuthorization(
       input.scope as UserScope,
       { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { skillId: input.skillId } },
       input.approvalRef,
       input.ownerToken,
     );
+    // R9②：已成功操作的幂等回放——返回既有版本行，不重复转换/审计。
+    if (approval.replayed) {
+      return getVersionRow((approval.replayResult as { versionId: string }).versionId);
+    }
+    const current = getVersionRow(input.versionId);
+    if (current.status !== "draft") {
+      if (current.approval_ref === input.approvalRef) {
+        // owner-decision 无凭证行：业务行上的同依据回放返回既有结果。
+        return current;
+      }
+      throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${current.status}`);
+    }
     const now = nowIso();
     sqlite
       .prepare("UPDATE agent_space_skill_versions SET status='approved', approved_by=?, approved_at=?, approval_ref=? WHERE version_id=? AND status='draft'")
@@ -330,9 +343,10 @@ export function approveSkillVersion(input: {
       toStatus: "approved",
       detail: { skillId: input.skillId, approvalRef: input.approvalRef },
     });
-    return input.versionId;
+    recordAuthorizationOutcome(approval.authorizationId, { skillId: input.skillId, versionId: input.versionId });
+    return getVersionRow(input.versionId);
   });
-  return getVersionRow(tx());
+  return tx();
 }
 
 export function publishSkillRelease(input: {
