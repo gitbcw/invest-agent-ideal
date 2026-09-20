@@ -1924,6 +1924,7 @@ function ensureAgentSpaceTables() {
       status TEXT NOT NULL DEFAULT 'draft',
       origin TEXT NOT NULL DEFAULT 'user',
       adoption_note TEXT,
+      adoption_constraints TEXT,
       approved_by TEXT, approved_at TEXT, approval_ref TEXT,
       supersedes_version_id TEXT,
       idempotency_key TEXT,
@@ -2096,6 +2097,8 @@ function ensureAgentSpaceTables() {
       evidence_state TEXT NOT NULL DEFAULT 'hypothesis',
       origin TEXT NOT NULL DEFAULT 'agent',
       current_version_id TEXT,
+      draft_version_id TEXT,
+      owner_kind TEXT, owner_id TEXT,
       approved_by TEXT, approved_at TEXT, approval_ref TEXT,
       expires_at TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -2117,6 +2120,8 @@ function ensureAgentSpaceTables() {
       status TEXT NOT NULL DEFAULT 'draft',
       origin TEXT NOT NULL DEFAULT 'agent',
       current_version_id TEXT,
+      draft_version_id TEXT,
+      owner_kind TEXT, owner_id TEXT,
       approved_by TEXT, approved_at TEXT, approval_ref TEXT,
       expires_at TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -2161,6 +2166,15 @@ function ensureAgentSpaceTables() {
       UNIQUE(commitment_id, due_at)
     );
   `);
+  // W1 返工（验收 R3/R4）增量列：新建表语句已含这些列；
+  // ensureColumn 仅为已初始化过的 W1 隔离库幂等补齐。
+  ensureColumn("agent_space_method_versions", "adoption_constraints", "TEXT");
+  ensureColumn("agent_space_lessons", "draft_version_id", "TEXT");
+  ensureColumn("agent_space_lessons", "owner_kind", "TEXT");
+  ensureColumn("agent_space_lessons", "owner_id", "TEXT");
+  ensureColumn("agent_space_workflows", "draft_version_id", "TEXT");
+  ensureColumn("agent_space_workflows", "owner_kind", "TEXT");
+  ensureColumn("agent_space_workflows", "owner_id", "TEXT");
   markMigration(migrationKey);
 }
 

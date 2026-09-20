@@ -32,7 +32,11 @@ export class AgentSpaceError extends Error {
       | "AGENT_SPACE_VERSION_INVALID"
       | "AGENT_SPACE_SYSTEM_DOMAIN_REQUIRED"
       | "AGENT_SPACE_VISIBILITY_INVALID"
-      | "AGENT_SPACE_ARGUMENT_INVALID",
+      | "AGENT_SPACE_ARGUMENT_INVALID"
+      | "AGENT_SPACE_IDEMPOTENCY_CONFLICT"
+      | "AGENT_SPACE_OWNER_AUTH_REQUIRED"
+      | "AGENT_SPACE_ADOPTION_CONSTRAINT"
+      | "AGENT_SPACE_UNSUPPORTED",
     message: string,
   ) {
     super(`${code}: ${message}`);
@@ -126,4 +130,87 @@ export function findByIdempotencyKey(
     .prepare(`SELECT * FROM ${table} WHERE user_id=? AND project_id=? AND instance_id=? AND idempotency_key=?`)
     .get(scope.userId, scope.projectId, scope.instanceId, idempotencyKey);
   return row as Record<string, unknown> | undefined;
+}
+
+/**
+ * 幂等冲突守卫（验收 R5）：同 key 重放必须与首次内容一致；
+ * 内容不同属于冲突，必须拒绝而不是静默返回旧行。
+ */
+export function assertIdempotencyConsistent(
+  existing: Record<string, unknown> | undefined,
+  contentFingerprint: (row: Record<string, unknown>) => string,
+  expectedFingerprint: string,
+  what: string,
+): void {
+  if (!existing) return;
+  const actual = contentFingerprint(existing);
+  if (actual !== expectedFingerprint) {
+    throw new AgentSpaceError(
+      "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+      `${what}: idempotency key replay with different content (${actual} != ${expectedFingerprint})`,
+    );
+  }
+}
+
+/**
+ * 可核对批准依据（验收 R4）：approvalRef 不能是任意字符串。W1 支持两种形态：
+ * - `conversation:<messageId>`：必须在同 scope 的 conversation_messages 中存在；
+ * - `owner-decision:<ref>`：必须附带 owner 授权（见 requireOwnerAuthorization）。
+ * 其余形态一律拒绝（fail-closed）。
+ */
+export function verifyApprovalRef(
+  scope: UserScope,
+  approvalRef: string,
+  ownerToken?: string,
+): { kind: "conversation" | "owner-decision"; ref: string } {
+  const trimmed = approvalRef?.trim();
+  if (!trimmed) throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", "approvalRef is required");
+  const conversationMatch = /^conversation:([A-Za-z0-9_-]+)$/.exec(trimmed);
+  if (conversationMatch) {
+    const messageId = conversationMatch[1]!;
+    const row = sqlite
+      .prepare("SELECT message_id FROM conversation_messages WHERE message_id=? AND user_id=? AND project_id=? AND instance_id=?")
+      .get(messageId, scope.userId, scope.projectId, scope.instanceId);
+    if (!row) {
+      throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", `approval message ${messageId} not found in scope`);
+    }
+    return { kind: "conversation", ref: messageId };
+  }
+  const ownerMatch = /^owner-decision:(.+)$/.exec(trimmed);
+  if (ownerMatch) {
+    requireOwnerAuthorization(ownerToken, `owner-decision ${ownerMatch[1]}`);
+    return { kind: "owner-decision", ref: ownerMatch[1]! };
+  }
+  throw new AgentSpaceError(
+    "AGENT_SPACE_APPROVAL_REQUIRED",
+    "approvalRef must be conversation:<messageId> (in-scope) or owner-decision:<ref> (with owner token)",
+  );
+}
+
+const OWNER_ADMIN_SETTINGS_KEY = "agent_space.owner_admin_token";
+
+/**
+ * owner/系统域授权（验收 R2）：系统域写操作与 owner 决策不能凭调用方自报
+ * actor 字符串获得权限。令牌来自服务侧 settings（运维写入）或进程环境变量，
+ * 两者都缺位时 fail-closed。测试与运维通过受控入口注入，不经模型可达面。
+ */
+export function requireOwnerAuthorization(token: string | undefined, what: string): void {
+  const provided = token?.trim();
+  if (!provided) {
+    throw new AgentSpaceError("AGENT_SPACE_OWNER_AUTH_REQUIRED", `${what} requires an owner token`);
+  }
+  let expected: string | undefined;
+  const row = sqlite.prepare("SELECT value FROM settings WHERE key=?").get(OWNER_ADMIN_SETTINGS_KEY) as { value: string } | undefined;
+  expected = row?.value?.trim() || process.env.AGENT_SPACE_OWNER_ADMIN_TOKEN?.trim();
+  if (!expected || provided !== expected) {
+    throw new AgentSpaceError("AGENT_SPACE_OWNER_AUTH_REQUIRED", `${what}: owner token mismatch`);
+  }
+}
+
+/** 运行时白名单字段校验（验收 R1）：引用载荷不得携带未声明字段。 */
+export function assertOnlyFields(value: Record<string, unknown>, allowed: readonly string[], what: string): void {
+  const extra = Object.keys(value).filter((k) => !allowed.includes(k));
+  if (extra.length > 0) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${what}: unexpected fields ${extra.join(",")}`);
+  }
 }

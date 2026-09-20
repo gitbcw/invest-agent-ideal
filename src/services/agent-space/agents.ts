@@ -7,15 +7,22 @@
 import { sqlite } from "../../db/index.js";
 import {
   AgentSpaceError,
+  assertIdempotencyConsistent,
   assertRowScope,
   assertScopeValid,
   findByIdempotencyKey,
   newId,
   nowIso,
   recordAgentSpaceAudit,
+  verifyApprovalRef,
   type UserScope,
 } from "./core.js";
-import { getVersionRow as getSkillVersionRow } from "./skills.js";
+import {
+  assertReleaseInstallableBy,
+  getReleaseRow as getSkillReleaseRow,
+  getVersionRow as getSkillVersionRow,
+} from "./skills.js";
+import { parseAdoptionConstraints } from "./methods.js";
 
 export interface CreateAgentInput {
   scope: UserScope;
@@ -67,25 +74,29 @@ export function createAgent(input: CreateAgentInput): AgentRow {
   assertScopeValid(input.scope);
   if (input.idempotencyKey) {
     const existing = findByIdempotencyKey("agent_space_agents", input.scope, input.idempotencyKey);
+    assertIdempotencyConsistent(existing, (row) => String(row.name), input.name, "createAgent");
     if (existing) return existing as unknown as AgentRow;
   }
   const now = nowIso();
-  const agentId = newId("agent");
-  sqlite
-    .prepare(
-      `INSERT INTO agent_space_agents (agent_id, user_id, project_id, instance_id, name, description, status, idempotency_key, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
-    )
-    .run(agentId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.name, input.description ?? null, input.idempotencyKey ?? null, now, now);
-  recordAgentSpaceAudit({
-    scope: input.scope,
-    actor: input.actor,
-    action: "agent.created",
-    objectType: "agent_space_agent",
-    objectId: agentId,
-    toStatus: "draft",
+  const tx = sqlite.transaction(() => {
+    const agentId = newId("agent");
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_agents (agent_id, user_id, project_id, instance_id, name, description, status, idempotency_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
+      )
+      .run(agentId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.name, input.description ?? null, input.idempotencyKey ?? null, now, now);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "agent.created",
+      objectType: "agent_space_agent",
+      objectId: agentId,
+      toStatus: "draft",
+    });
+    return agentId;
   });
-  return getAgent(input.scope, agentId);
+  return getAgent(input.scope, tx());
 }
 
 export function setAgentStatus(scope: UserScope, agentId: string, status: "active" | "disabled", actor: string): AgentRow {
@@ -122,6 +133,7 @@ export function installSkill(input: {
   installedBy: string;
   /** 升级（同技能已有安装）时必须提供；首次安装也记录用户动作依据。 */
   approvalRef: string;
+  ownerToken?: string;
   actor: string;
 }): InstallationRow {
   assertScopeValid(input.scope);
@@ -129,9 +141,7 @@ export function installSkill(input: {
   if (agent.status === "disabled") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "disabled agent cannot install skills");
   }
-  if (!input.approvalRef?.trim()) {
-    throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", "installation requires a user approval reference");
-  }
+  verifyApprovalRef(input.scope, input.approvalRef, input.ownerToken);
   const version = getSkillVersionRow(input.versionId);
   if (version.skill_id !== input.skillId) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to skill");
@@ -145,12 +155,15 @@ export function installSkill(input: {
       throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "draft skill versions cannot be installed");
     }
   } else {
-    const release = sqlite
-      .prepare("SELECT * FROM agent_space_skill_releases WHERE release_id=?")
-      .get(input.releaseId ?? "") as { version_id: string; status: string } | undefined;
-    if (!release || release.version_id !== input.versionId) {
+    if (!input.releaseId) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "release install requires releaseId");
+    }
+    const release = getSkillReleaseRow(input.releaseId);
+    if (release.version_id !== input.versionId) {
       throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "release does not pin this version");
     }
+    // R2：可见性/发布状态/属主判定在服务层强制（public 跨用户、private 属主、shared fail-closed）。
+    assertReleaseInstallableBy(release, input.scope);
   }
   const tx = sqlite.transaction(() => {
     const previous = sqlite
@@ -243,6 +256,13 @@ export function bindMethod(input: {
     }
     if (version.status !== "approved" && version.status !== "superseded") {
       throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "only formal versions can be pinned");
+    }
+    const pinRow = sqlite
+      .prepare("SELECT adoption_constraints FROM agent_space_method_versions WHERE version_id=?")
+      .get(input.pinnedVersionId!) as { adoption_constraints: string | null };
+    const blocked = parseAdoptionConstraints(pinRow.adoption_constraints);
+    if (blocked.includes("historical-not-default")) {
+      throw new AgentSpaceError("AGENT_SPACE_ADOPTION_CONSTRAINT", "historical-not-default versions cannot be bound for runtime");
     }
   }
   const now = nowIso();

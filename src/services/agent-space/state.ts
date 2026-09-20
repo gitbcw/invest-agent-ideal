@@ -1,24 +1,28 @@
 /**
- * T-524 状态对象（W1 契约层）：AgentFact / AgentLesson / AgentWorkflow /
- * AgentCommitment + 履约引用。
+ * T-524 状态对象（W1 契约层；返工 R4/R5）。
  *
- * 语义（docs/agent-self-correction-workspace-design.md v2）：
- * - 事实由服务层记录，只引用既有 message/trace/run/delivery/audit 记录；
- * - 候选（draft）必须经用户批准才 active；批准绑定具体版本与适用范围；
- * - 采用许可与证据状态分离：批准不改变 evidenceState；
- * - draft/过期/拒绝/退役不进入检索（listEffective* 只返回 active 且未过期）；
- * - 承诺与履约分开建模，状态机不复用 lesson；周期承诺履约后仍有效；
- * - 用户级与系统级分域；系统域写入走 owner/ops 调用方。
+ * 语义（T-524 v2 + 验收 R4）：
+ * - 批准绑定预览版本：approve 必须携带 expectedVersionId，修订产生新草稿后
+ *   旧确认不能激活新版本（乐观并发）；
+ * - 提出修订不令原有效版本退出生效：active 对象保持 active，草稿走
+ *   draft_version_id 独立指针；
+ * - 状态对象必须归属会话/任务/Agent（owner_kind/owner_id 经真实记录校验）；
+ * - approvalRef 必须可核对（同 scope 会话消息或 owner 决策）；
+ * - 内容字段按对象类型白名单校验，不接受任意 content。
  */
 import { sqlite } from "../../db/index.js";
 import {
   AgentSpaceError,
+  assertIdempotencyConsistent,
+  assertOnlyFields,
   assertDomainRowShape,
   assertRowScope,
   assertScopeValid,
+  findByIdempotencyKey,
   newId,
   nowIso,
   recordAgentSpaceAudit,
+  verifyApprovalRef,
   type AgentSpaceScopeDomain,
   type UserScope,
 } from "./core.js";
@@ -62,12 +66,17 @@ export function recordAgentFact(input: RecordFactInput): { factId: string; dupli
   return { factId, duplicated: false };
 }
 
-// ---------- Lesson / Workflow 共用生命周期 ----------
+// ---------- Lesson / Workflow ----------
 
 export type LessonStatus = "draft" | "active" | "superseded" | "expired" | "rejected" | "disabled";
 export type EvidenceState = "hypothesis" | "verified_once" | "supported" | "counterexample";
+export type StateOwnerKind = "conversation" | "task" | "agent";
 
 type StateObjectTable = "agent_space_lessons" | "agent_space_workflows";
+
+/** 内容白名单（验收 R4：不接受任意 content）。 */
+const LESSON_CONTENT_FIELDS = ["trigger", "guidance", "applicability"] as const;
+const WORKFLOW_CONTENT_FIELDS = ["scenario", "steps", "expectedOutputs", "failureHandling", "references"] as const;
 
 function getStateRow(table: StateObjectTable, id: string): Record<string, unknown> {
   const row = sqlite.prepare(`SELECT * FROM ${table} WHERE ${table === "agent_space_lessons" ? "lesson_id" : "workflow_id"}=?`).get(id);
@@ -83,59 +92,105 @@ function assertStateScope(row: Record<string, unknown>, domain: AgentSpaceScopeD
   }
 }
 
+/** 归属校验（验收 R4）：状态对象必须挂在真实的会话/任务/Agent 上且同 scope。 */
+function verifyStateOwner(scope: UserScope | null, domain: AgentSpaceScopeDomain, ownerKind: StateOwnerKind, ownerId: string): void {
+  if (domain !== "user") {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "system-domain state objects are owner-managed; owner binding is user-domain only");
+  }
+  if (!scope) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "owner binding requires scope");
+  if (ownerKind === "conversation") {
+    const row = sqlite
+      .prepare("SELECT conversation_id, user_id, project_id, instance_id FROM conversation_sessions WHERE conversation_id=?")
+      .get(ownerId) as { conversation_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `conversation ${ownerId} not found`);
+    assertRowScope(row, scope);
+    return;
+  }
+  if (ownerKind === "task") {
+    const row = sqlite
+      .prepare("SELECT task_id, user_id, project_id, instance_id FROM automation_tasks WHERE task_id=?")
+      .get(ownerId) as { task_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation task ${ownerId} not found`);
+    assertRowScope(row, scope);
+    return;
+  }
+  if (ownerKind === "agent") {
+    const row = sqlite
+      .prepare("SELECT agent_id, user_id, project_id, instance_id FROM agent_space_agents WHERE agent_id=?")
+      .get(ownerId) as { agent_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `agent ${ownerId} not found`);
+    assertRowScope(row, scope);
+    return;
+  }
+  throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `owner kind ${ownerKind}`);
+}
+
 export interface CreateStateCandidateInput {
   domain?: AgentSpaceScopeDomain;
   scope: UserScope | null;
   kind: "lesson" | "workflow";
   title: string;
-  /** 结构化内容（trigger/guidance/applicability 或工作说明步骤），版本化保存。 */
   content: Record<string, unknown>;
+  ownerKind: StateOwnerKind;
+  ownerId: string;
   origin?: "agent" | "owner" | "ops";
   actor: string;
 }
 
-/** 创建候选：draft + 首个内容版本。draft 不进入任何有效检索。 */
+function verifyStateContent(kind: "lesson" | "workflow", content: Record<string, unknown>): void {
+  const allowed = kind === "lesson" ? LESSON_CONTENT_FIELDS : WORKFLOW_CONTENT_FIELDS;
+  assertOnlyFields(content, allowed, `${kind} content`);
+  const requiredStrings = kind === "lesson" ? ["trigger", "guidance"] : ["scenario"];
+  for (const field of requiredStrings) {
+    if (typeof content[field] !== "string" || !(content[field] as string).trim()) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${kind} content.${field} is required`);
+    }
+  }
+  if (kind === "workflow" && !Array.isArray(content.steps)) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "workflow content.steps must be an array");
+  }
+}
+
+/** 创建候选：draft + 首个内容版本 + 归属。draft 不进入任何有效检索。 */
 export function createStateCandidate(input: CreateStateCandidateInput): { objectId: string; versionId: string } {
   const domain = input.domain ?? "user";
   assertDomainRowShape(domain, input.scope);
+  verifyStateContent(input.kind, input.content);
+  verifyStateOwner(input.scope, domain, input.ownerKind, input.ownerId);
   const now = nowIso();
   const isLesson = input.kind === "lesson";
-  const objectId = newId(isLesson ? "lesson" : "wflow");
-  const versionId = newId(isLesson ? "lver" : "wver");
   const tx = sqlite.transaction(() => {
+    const objectId = newId(isLesson ? "lesson" : "wflow");
+    const versionId = newId(isLesson ? "lver" : "wver");
     if (isLesson) {
       sqlite
         .prepare(
           `INSERT INTO agent_space_lessons (
              lesson_id, domain, user_id, project_id, instance_id, title,
-             status, evidence_state, origin, current_version_id, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, 'draft', 'hypothesis', ?, NULL, ?, ?)`,
+             status, evidence_state, origin, current_version_id, draft_version_id, owner_kind, owner_id,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 'draft', 'hypothesis', ?, ?, NULL, ?, ?, ?, ?)`,
         )
         .run(objectId, domain, input.scope?.userId ?? null, input.scope?.projectId ?? null, input.scope?.instanceId ?? null,
-             input.title, input.origin ?? "agent", now, now);
+             input.title, input.origin ?? "agent", versionId, input.ownerKind, input.ownerId, now, now);
+      sqlite
+        .prepare(`INSERT INTO agent_space_lesson_versions (version_id, lesson_id, content_json, created_at) VALUES (?, ?, ?, ?)`)
+        .run(versionId, objectId, JSON.stringify(input.content), now);
     } else {
       sqlite
         .prepare(
           `INSERT INTO agent_space_workflows (
              workflow_id, domain, user_id, project_id, instance_id, title,
-             status, origin, current_version_id, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, NULL, ?, ?)`,
+             status, origin, current_version_id, draft_version_id, owner_kind, owner_id,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, NULL, ?, ?, ?, ?)`,
         )
         .run(objectId, domain, input.scope?.userId ?? null, input.scope?.projectId ?? null, input.scope?.instanceId ?? null,
-             input.title, input.origin ?? "agent", now, now);
+             input.title, input.origin ?? "agent", versionId, input.ownerKind, input.ownerId, now, now);
+      sqlite
+        .prepare(`INSERT INTO agent_space_workflow_versions (version_id, workflow_id, content_json, created_at) VALUES (?, ?, ?, ?)`)
+        .run(versionId, objectId, JSON.stringify(input.content), now);
     }
-    sqlite
-      .prepare(
-        `INSERT INTO ${isLesson ? "agent_space_lesson_versions" : "agent_space_workflow_versions"} (
-           version_id, ${isLesson ? "lesson_id" : "workflow_id"}, content_json, created_at
-         ) VALUES (?, ?, ?, ?)`,
-      )
-      .run(versionId, objectId, JSON.stringify(input.content), now);
-    sqlite
-      .prepare(
-        `UPDATE ${isLesson ? "agent_space_lessons" : "agent_space_workflows"} SET current_version_id=? WHERE ${isLesson ? "lesson_id" : "workflow_id"}=?`,
-      )
-      .run(versionId, objectId);
     recordAgentSpaceAudit({
       domain,
       scope: input.scope,
@@ -144,7 +199,7 @@ export function createStateCandidate(input: CreateStateCandidateInput): { object
       objectType: isLesson ? "agent_space_lesson" : "agent_space_workflow",
       objectId,
       toStatus: "draft",
-      detail: { versionId },
+      detail: { versionId, ownerKind: input.ownerKind, ownerId: input.ownerId },
     });
     return { objectId, versionId };
   });
@@ -152,53 +207,79 @@ export function createStateCandidate(input: CreateStateCandidateInput): { object
 }
 
 /**
- * 批准候选：active 必须绑定具体版本与可核对依据。批准只改采用许可，
- * 不改 evidenceState（证据状态由反例/验证单独演进）。
+ * 批准候选（验收 R4）：
+ * - expectedVersionId 必填——批准绑定的就是用户看到并确认的那个版本；
+ * - active 对象的修订草稿在 draft_version_id 上，批准它才会切换 current；
+ * - approvalRef 必须可核对；批准不改 evidence_state。
  */
 export function approveStateCandidate(input: {
   domain?: AgentSpaceScopeDomain;
   scope: UserScope | null;
   kind: "lesson" | "workflow";
   objectId: string;
+  expectedVersionId: string;
   approvedBy: string;
   approvalRef: string;
+  ownerToken?: string;
   actor: string;
 }): void {
   const domain = input.domain ?? "user";
   assertDomainRowShape(domain, input.scope);
+  if (domain === "user") {
+    verifyApprovalRef(input.scope as UserScope, input.approvalRef, input.ownerToken);
+  } else {
+    throw new AgentSpaceError("AGENT_SPACE_OWNER_AUTH_REQUIRED", "system-domain state approval is not exposed in W1");
+  }
   const table: StateObjectTable = input.kind === "lesson" ? "agent_space_lessons" : "agent_space_workflows";
   const row = getStateRow(table, input.objectId);
   assertStateScope(row, domain, input.scope);
-  if (row.status !== "draft" && row.status !== "disabled") {
-    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot approve ${input.kind} in status ${row.status}`);
+  const status = row.status as string;
+  const currentVersionId = row.current_version_id as string | null;
+  const draftVersionId = row.draft_version_id as string | null;
+  if (status !== "draft" && status !== "active") {
+    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot approve ${input.kind} in status ${status}`);
   }
-  if (!input.approvalRef?.trim()) {
-    throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", "approvalRef is required");
+  // 乐观并发：待批准版本必须是当前可批准指针（draft 对象=current；active 对象=draft 指针）。
+  const approvable = status === "draft" ? currentVersionId : draftVersionId;
+  if (!approvable) {
+    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", status === "active" ? "no pending revision to approve" : "candidate has no version");
   }
-  if (!row.current_version_id) {
-    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "candidate has no version to approve");
+  if (input.expectedVersionId !== approvable) {
+    throw new AgentSpaceError(
+      "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+      `approval bound to version ${input.expectedVersionId} but approvable version is ${approvable}`,
+    );
   }
-  const now = nowIso();
-  sqlite
-    .prepare(
-      `UPDATE ${table} SET status='active', approved_by=?, approved_at=?, approval_ref=?, updated_at=?
-       WHERE ${input.kind === "lesson" ? "lesson_id" : "workflow_id"}=?`,
-    )
-    .run(input.approvedBy, now, input.approvalRef, now, input.objectId);
-  recordAgentSpaceAudit({
-    domain,
-    scope: input.scope,
-    actor: input.actor,
-    action: `${input.kind}.approved`,
-    objectType: table,
-    objectId: input.objectId,
-    fromStatus: String(row.status),
-    toStatus: "active",
-    detail: { approvedBy: input.approvedBy, approvalRef: input.approvalRef, versionId: row.current_version_id },
+  const tx = sqlite.transaction(() => {
+    const now = nowIso();
+    if (status === "active") {
+      sqlite
+        .prepare(`UPDATE ${table} SET current_version_id=?, draft_version_id=NULL, approved_at=?, approval_ref=?, approved_by=?, updated_at=? WHERE ${input.kind === "lesson" ? "lesson_id" : "workflow_id"}=?`)
+        .run(input.expectedVersionId, now, input.approvalRef, input.approvedBy, now, input.objectId);
+    } else {
+      sqlite
+        .prepare(`UPDATE ${table} SET status='active', approved_by=?, approved_at=?, approval_ref=?, updated_at=? WHERE ${input.kind === "lesson" ? "lesson_id" : "workflow_id"}=?`)
+        .run(input.approvedBy, now, input.approvalRef, now, input.objectId);
+    }
+    recordAgentSpaceAudit({
+      domain,
+      scope: input.scope,
+      actor: input.actor,
+      action: `${input.kind}.approved`,
+      objectType: table,
+      objectId: input.objectId,
+      fromStatus: status,
+      toStatus: "active",
+      detail: { approvedBy: input.approvedBy, approvalRef: input.approvalRef, versionId: input.expectedVersionId },
+    });
   });
+  tx();
 }
 
-/** 修订：active 对象产生新 draft 版本并回到 draft（旧版本保留为 superseded 依据）。 */
+/**
+ * 修订：产生新草稿版本（draft_version_id）。active 对象保持 active、
+ * current 不动——提出修订不能令原有效版本退出生效（验收 R4）。
+ */
 export function reviseStateCandidate(input: {
   domain?: AgentSpaceScopeDomain;
   scope: UserScope | null;
@@ -209,36 +290,49 @@ export function reviseStateCandidate(input: {
 }): { versionId: string } {
   const domain = input.domain ?? "user";
   assertDomainRowShape(domain, input.scope);
+  verifyStateContent(input.kind, input.content);
   const table: StateObjectTable = input.kind === "lesson" ? "agent_space_lessons" : "agent_space_workflows";
   const row = getStateRow(table, input.objectId);
   assertStateScope(row, domain, input.scope);
-  if (row.status !== "active" && row.status !== "draft") {
-    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot revise ${input.kind} in status ${row.status}`);
+  const status = row.status as string;
+  if (status !== "active" && status !== "draft") {
+    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot revise ${input.kind} in status ${status}`);
+  }
+  if (status === "active" && row.draft_version_id) {
+    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "a pending revision already exists; approve or reject it first");
   }
   const now = nowIso();
   const versionId = newId(input.kind === "lesson" ? "lver" : "wver");
-  sqlite
-    .prepare(
-      `INSERT INTO ${input.kind === "lesson" ? "agent_space_lesson_versions" : "agent_space_workflow_versions"} (
-         version_id, ${input.kind === "lesson" ? "lesson_id" : "workflow_id"}, content_json, supersedes_version_id, created_at
-       ) VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(versionId, input.objectId, JSON.stringify(input.content), row.current_version_id ?? null, now);
-  sqlite
-    .prepare(`UPDATE ${table} SET status='draft', current_version_id=?, updated_at=? WHERE ${input.kind === "lesson" ? "lesson_id" : "workflow_id"}=?`)
-    .run(versionId, now, input.objectId);
-  recordAgentSpaceAudit({
-    domain,
-    scope: input.scope,
-    actor: input.actor,
-    action: `${input.kind}.revised`,
-    objectType: table,
-    objectId: input.objectId,
-    fromStatus: String(row.status),
-    toStatus: "draft",
-    detail: { versionId, supersedesVersionId: row.current_version_id ?? null },
+  const tx = sqlite.transaction(() => {
+    if (input.kind === "lesson") {
+      sqlite
+        .prepare("INSERT INTO agent_space_lesson_versions (version_id, lesson_id, content_json, supersedes_version_id, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(versionId, input.objectId, JSON.stringify(input.content), (status === "active" ? row.current_version_id : row.current_version_id) as string | null, now);
+      sqlite
+        .prepare("UPDATE agent_space_lessons SET draft_version_id=?, updated_at=? WHERE lesson_id=?")
+        .run(versionId, now, input.objectId);
+    } else {
+      sqlite
+        .prepare("INSERT INTO agent_space_workflow_versions (version_id, workflow_id, content_json, supersedes_version_id, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(versionId, input.objectId, JSON.stringify(input.content), row.current_version_id as string | null, now);
+      sqlite
+        .prepare("UPDATE agent_space_workflows SET draft_version_id=?, updated_at=? WHERE workflow_id=?")
+        .run(versionId, now, input.objectId);
+    }
+    recordAgentSpaceAudit({
+      domain,
+      scope: input.scope,
+      actor: input.actor,
+      action: `${input.kind}.revised`,
+      objectType: table,
+      objectId: input.objectId,
+      fromStatus: status,
+      toStatus: status,
+      detail: { versionId, pendingDraft: status === "active" },
+    });
+    return versionId;
   });
-  return { versionId };
+  return { versionId: tx() };
 }
 
 const TERMINAL_OR_INACTIVE: LessonStatus[] = ["superseded", "expired", "rejected", "disabled"];
@@ -266,38 +360,42 @@ export function transitionStateCandidate(input: {
   if (from === "rejected" || from === "superseded") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `${from} is terminal`);
   }
-  sqlite
-    .prepare(`UPDATE ${table} SET status=?, updated_at=? WHERE ${input.kind === "lesson" ? "lesson_id" : "workflow_id"}=?`)
-    .run(input.toStatus, nowIso(), input.objectId);
-  recordAgentSpaceAudit({
-    domain,
-    scope: input.scope,
-    actor: input.actor,
-    action: `${input.kind}.transitioned`,
-    objectType: table,
-    objectId: input.objectId,
-    fromStatus: from,
-    toStatus: input.toStatus,
-    detail: { reason: input.reason ?? null },
+  const tx = sqlite.transaction(() => {
+    sqlite
+      .prepare(`UPDATE ${table} SET status=?, updated_at=? WHERE ${input.kind === "lesson" ? "lesson_id" : "workflow_id"}=?`)
+      .run(input.toStatus, nowIso(), input.objectId);
+    recordAgentSpaceAudit({
+      domain,
+      scope: input.scope,
+      actor: input.actor,
+      action: `${input.kind}.transitioned`,
+      objectType: table,
+      objectId: input.objectId,
+      fromStatus: from,
+      toStatus: input.toStatus,
+      detail: { reason: input.reason ?? null },
+    });
   });
+  tx();
 }
 
 /**
- * 有效检索（State Packet 的 W1 契约形态）：只返回 active 且未过期的对象，
- * 绑定 current_version_id。draft/rejected/expired/disabled/superseded 全部排除。
+ * 有效检索：只返回 active 且未过期对象，绑定 current（已批准）版本。
+ * draft/修订草稿/rejected/expired/disabled/superseded 全部排除。
  */
 export function listEffectiveState(input: {
   domain?: AgentSpaceScopeDomain;
   scope: UserScope | null;
   kind: "lesson" | "workflow";
-}): Array<{ objectId: string; title: string; versionId: string; content: Record<string, unknown> }> {
+}): Array<{ objectId: string; title: string; versionId: string; content: Record<string, unknown>; ownerKind: string | null; ownerId: string | null }> {
   const domain = input.domain ?? "user";
   assertDomainRowShape(domain, input.scope);
   const table: StateObjectTable = input.kind === "lesson" ? "agent_space_lessons" : "agent_space_workflows";
   const versionTable = input.kind === "lesson" ? "agent_space_lesson_versions" : "agent_space_workflow_versions";
   const rows = sqlite
     .prepare(
-      `SELECT h.${input.kind === "lesson" ? "lesson_id" : "workflow_id"} AS objectId, h.title, h.current_version_id AS versionId, v.content_json AS content
+      `SELECT h.${input.kind === "lesson" ? "lesson_id" : "workflow_id"} AS objectId, h.title, h.current_version_id AS versionId,
+              h.owner_kind AS ownerKind, h.owner_id AS ownerId, v.content_json AS content
        FROM ${table} h JOIN ${versionTable} v ON v.version_id = h.current_version_id
        WHERE h.domain=? AND COALESCE(h.user_id,'')=? AND COALESCE(h.project_id,'')=? AND COALESCE(h.instance_id,'')=?
          AND h.status='active' AND (h.expires_at IS NULL OR h.expires_at > ?)`,
@@ -306,15 +404,27 @@ export function listEffectiveState(input: {
     objectId: string;
     title: string;
     versionId: string;
+    ownerKind: string | null;
+    ownerId: string | null;
     content: string;
   }>;
-  return rows.map((r) => ({ objectId: r.objectId, title: r.title, versionId: r.versionId, content: JSON.parse(r.content) }));
+  return rows.map((r) => ({
+    objectId: r.objectId, title: r.title, versionId: r.versionId,
+    ownerKind: r.ownerKind, ownerId: r.ownerId, content: JSON.parse(r.content),
+  }));
 }
 
 // ---------- AgentCommitment ----------
 
 export type CommitmentStatus = "proposed" | "active" | "paused" | "cancelled" | "completed";
 export type FulfillmentStatus = "pending" | "running" | "satisfied" | "failed_needs_attention" | "skipped";
+
+function getCommitmentRow(scope: UserScope, commitmentId: string): Record<string, unknown> {
+  const row = sqlite.prepare("SELECT * FROM agent_space_commitments WHERE commitment_id=?").get(commitmentId);
+  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `commitment ${commitmentId}`);
+  assertRowScope(row as { user_id: string | null; project_id: string | null; instance_id: string | null }, scope);
+  return row as Record<string, unknown>;
+}
 
 export function createCommitment(input: {
   scope: UserScope;
@@ -329,82 +439,88 @@ export function createCommitment(input: {
   actor: string;
 }): { commitmentId: string } {
   assertScopeValid(input.scope);
+  if (input.executorTaskId) {
+    const task = sqlite
+      .prepare("SELECT task_id, user_id, project_id, instance_id FROM automation_tasks WHERE task_id=?")
+      .get(input.executorTaskId) as { task_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!task) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `executor task ${input.executorTaskId} not found`);
+    assertRowScope(task, input.scope);
+  }
   if (input.idempotencyKey) {
-    const existing = sqlite
-      .prepare(
-        "SELECT commitment_id FROM agent_space_commitments WHERE user_id=? AND project_id=? AND instance_id=? AND idempotency_key=?",
-      )
-      .get(input.scope.userId, input.scope.projectId, input.scope.instanceId, input.idempotencyKey) as { commitment_id: string } | undefined;
-    if (existing) return { commitmentId: existing.commitment_id };
+    const existing = findByIdempotencyKey("agent_space_commitments", input.scope, input.idempotencyKey);
+    assertIdempotencyConsistent(
+      existing,
+      (row) => JSON.stringify([row.title, row.content_json, row.commitment_kind, row.completion_criteria]),
+      JSON.stringify([input.title, JSON.stringify(input.content), input.commitmentKind, input.completionCriteria]),
+      "createCommitment",
+    );
+    if (existing) return { commitmentId: String(existing.commitment_id) };
   }
   const now = nowIso();
-  const commitmentId = newId("cmt");
-  sqlite
-    .prepare(
-      `INSERT INTO agent_space_commitments (
-         commitment_id, user_id, project_id, instance_id, title, content_json, commitment_kind,
-         trigger_json, completion_criteria, executor_type, executor_task_id, authorization_ref,
-         status, version_number, idempotency_key, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'proposed', 1, ?, ?, ?)`,
-    )
-    .run(commitmentId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.title,
-         JSON.stringify(input.content), input.commitmentKind, input.trigger ? JSON.stringify(input.trigger) : null,
-         input.completionCriteria, input.executorType ?? null, input.executorTaskId ?? null,
-         input.idempotencyKey ?? null, now, now);
-  recordAgentSpaceAudit({
-    scope: input.scope,
-    actor: input.actor,
-    action: "commitment.created",
-    objectType: "agent_space_commitment",
-    objectId: commitmentId,
-    toStatus: "proposed",
+  const tx = sqlite.transaction(() => {
+    const commitmentId = newId("cmt");
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_commitments (
+           commitment_id, user_id, project_id, instance_id, title, content_json, commitment_kind,
+           trigger_json, completion_criteria, executor_type, executor_task_id, authorization_ref,
+           status, version_number, idempotency_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'proposed', 1, ?, ?, ?)`,
+      )
+      .run(commitmentId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.title,
+           JSON.stringify(input.content), input.commitmentKind, input.trigger ? JSON.stringify(input.trigger) : null,
+           input.completionCriteria, input.executorType ?? null, input.executorTaskId ?? null,
+           input.idempotencyKey ?? null, now, now);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "commitment.created",
+      objectType: "agent_space_commitment",
+      objectId: commitmentId,
+      toStatus: "proposed",
+    });
+    return commitmentId;
   });
-  return { commitmentId };
+  return { commitmentId: tx() };
 }
 
-/**
- * proposed → active 需要授权依据（用户消息/操作引用）且执行器已可用；
- * 执行器缺失时保留 proposed 并写明原因，不声称已安排。
- */
 export function activateCommitment(input: {
   scope: UserScope;
   commitmentId: string;
   authorizationRef: string;
   executorTaskId: string;
+  ownerToken?: string;
   actor: string;
 }): void {
   assertScopeValid(input.scope);
-  const row = sqlite.prepare("SELECT * FROM agent_space_commitments WHERE commitment_id=?").get(input.commitmentId) as
-    | { user_id: string; project_id: string; instance_id: string; status: CommitmentStatus; executor_task_id: string | null }
-    | undefined;
-  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `commitment ${input.commitmentId}`);
-  assertRowScope(row, input.scope);
+  const row = getCommitmentRow(input.scope, input.commitmentId);
+  verifyApprovalRef(input.scope, input.authorizationRef, input.ownerToken);
   if (row.status !== "proposed" && row.status !== "paused") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot activate commitment in status ${row.status}`);
   }
-  if (!input.authorizationRef?.trim()) {
-    throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", "authorizationRef is required; agent self-claim is not authorization");
-  }
-  const executorExists = sqlite
-    .prepare("SELECT task_id FROM automation_tasks WHERE task_id=? AND user_id=? AND project_id=? AND instance_id=?")
-    .get(input.executorTaskId, input.scope.userId, input.scope.projectId, input.scope.instanceId);
-  if (!executorExists) {
+  const executor = sqlite
+    .prepare("SELECT task_id, user_id, project_id, instance_id FROM automation_tasks WHERE task_id=?")
+    .get(input.executorTaskId) as { task_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!executor) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "executor task not found in scope; commitment stays proposed");
   }
-  const now = nowIso();
-  sqlite
-    .prepare("UPDATE agent_space_commitments SET status='active', authorization_ref=?, executor_task_id=?, updated_at=? WHERE commitment_id=?")
-    .run(input.authorizationRef, input.executorTaskId, now, input.commitmentId);
-  recordAgentSpaceAudit({
-    scope: input.scope,
-    actor: input.actor,
-    action: "commitment.activated",
-    objectType: "agent_space_commitment",
-    objectId: input.commitmentId,
-    fromStatus: row.status,
-    toStatus: "active",
-    detail: { authorizationRef: input.authorizationRef, executorTaskId: input.executorTaskId },
+  assertRowScope(executor, input.scope);
+  const tx = sqlite.transaction(() => {
+    sqlite
+      .prepare("UPDATE agent_space_commitments SET status='active', authorization_ref=?, executor_task_id=?, updated_at=? WHERE commitment_id=?")
+      .run(input.authorizationRef, input.executorTaskId, nowIso(), input.commitmentId);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "commitment.activated",
+      objectType: "agent_space_commitment",
+      objectId: input.commitmentId,
+      fromStatus: String(row.status),
+      toStatus: "active",
+      detail: { authorizationRef: input.authorizationRef, executorTaskId: input.executorTaskId },
+    });
   });
+  tx();
 }
 
 export function transitionCommitment(input: {
@@ -415,11 +531,7 @@ export function transitionCommitment(input: {
   actor: string;
 }): void {
   assertScopeValid(input.scope);
-  const row = sqlite.prepare("SELECT * FROM agent_space_commitments WHERE commitment_id=?").get(input.commitmentId) as
-    | { user_id: string; project_id: string; instance_id: string; status: CommitmentStatus; commitment_kind: string }
-    | undefined;
-  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `commitment ${input.commitmentId}`);
-  assertRowScope(row, input.scope);
+  const row = getCommitmentRow(input.scope, input.commitmentId);
   const allowed: Record<string, string[]> = {
     proposed: ["cancelled"],
     active: ["paused", "cancelled", "completed"],
@@ -427,28 +539,30 @@ export function transitionCommitment(input: {
     completed: [],
     cancelled: [],
   };
-  if (!allowed[row.status]?.includes(input.toStatus)) {
+  if (!allowed[String(row.status)]?.includes(input.toStatus)) {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `${row.status} -> ${input.toStatus} is not allowed`);
   }
   if (input.toStatus === "completed" && row.commitment_kind !== "one_shot") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "recurring commitments stay active across periods; use paused/cancelled");
   }
-  sqlite
-    .prepare("UPDATE agent_space_commitments SET status=?, updated_at=? WHERE commitment_id=?")
-    .run(input.toStatus, nowIso(), input.commitmentId);
-  recordAgentSpaceAudit({
-    scope: input.scope,
-    actor: input.actor,
-    action: "commitment.transitioned",
-    objectType: "agent_space_commitment",
-    objectId: input.commitmentId,
-    fromStatus: row.status,
-    toStatus: input.toStatus,
-    detail: { reason: input.reason ?? null },
+  const tx = sqlite.transaction(() => {
+    sqlite
+      .prepare("UPDATE agent_space_commitments SET status=?, updated_at=? WHERE commitment_id=?")
+      .run(input.toStatus, nowIso(), input.commitmentId);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "commitment.transitioned",
+      objectType: "agent_space_commitment",
+      objectId: input.commitmentId,
+      fromStatus: String(row.status),
+      toStatus: input.toStatus,
+      detail: { reason: input.reason ?? null },
+    });
   });
+  tx();
 }
 
-/** 登记一期履约：绑定约定版本与 run/产物/投递引用。 */
 export function recordFulfillment(input: {
   scope: UserScope;
   commitmentId: string;
@@ -460,40 +574,46 @@ export function recordFulfillment(input: {
   actor: string;
 }): { fulfillmentId: string } {
   assertScopeValid(input.scope);
-  const row = sqlite.prepare("SELECT * FROM agent_space_commitments WHERE commitment_id=?").get(input.commitmentId) as
-    | { user_id: string; project_id: string; instance_id: string; status: CommitmentStatus; version_number: number }
-    | undefined;
-  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `commitment ${input.commitmentId}`);
-  assertRowScope(row, input.scope);
+  const row = getCommitmentRow(input.scope, input.commitmentId);
   if (row.status !== "active") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot record fulfillment on ${row.status} commitment`);
   }
-  const fulfillmentId = newId("cful");
+  if (input.runId) {
+    const run = sqlite
+      .prepare("SELECT run_id, user_id, project_id, instance_id FROM automation_task_runs WHERE run_id=?")
+      .get(input.runId) as { run_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!run) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation run ${input.runId} not found`);
+    assertRowScope(run, input.scope);
+  }
   const now = nowIso();
-  sqlite
-    .prepare(
-      `INSERT INTO agent_space_commitment_fulfillments (
-         fulfillment_id, commitment_id, user_id, project_id, instance_id, due_at, status,
-         run_id, result_ref_json, delivery_ref_json, commitment_version_number, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(commitment_id, due_at) DO UPDATE SET
-         status=excluded.status, run_id=excluded.run_id,
-         result_ref_json=excluded.result_ref_json, delivery_ref_json=excluded.delivery_ref_json,
-         updated_at=excluded.updated_at`,
-    )
-    .run(fulfillmentId, input.commitmentId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
-         input.dueAt ?? null, input.status, input.runId ?? null,
-         input.resultRef ? JSON.stringify(input.resultRef) : null,
-         input.deliveryRef ? JSON.stringify(input.deliveryRef) : null,
-         row.version_number, now, now);
-  recordAgentSpaceAudit({
-    scope: input.scope,
-    actor: input.actor,
-    action: "commitment.fulfillment_recorded",
-    objectType: "agent_space_commitment_fulfillment",
-    objectId: `${input.commitmentId}:${input.dueAt ?? "ad-hoc"}`,
-    toStatus: input.status,
-    detail: { runId: input.runId ?? null, commitmentVersion: row.version_number },
+  const tx = sqlite.transaction(() => {
+    const fulfillmentId = newId("cful");
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_commitment_fulfillments (
+           fulfillment_id, commitment_id, user_id, project_id, instance_id, due_at, status,
+           run_id, result_ref_json, delivery_ref_json, commitment_version_number, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(commitment_id, due_at) DO UPDATE SET
+           status=excluded.status, run_id=excluded.run_id,
+           result_ref_json=excluded.result_ref_json, delivery_ref_json=excluded.delivery_ref_json,
+           updated_at=excluded.updated_at`,
+      )
+      .run(fulfillmentId, input.commitmentId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+           input.dueAt ?? null, input.status, input.runId ?? null,
+           input.resultRef ? JSON.stringify(input.resultRef) : null,
+           input.deliveryRef ? JSON.stringify(input.deliveryRef) : null,
+           Number(row.version_number), now, now);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "commitment.fulfillment_recorded",
+      objectType: "agent_space_commitment_fulfillment",
+      objectId: `${input.commitmentId}:${input.dueAt ?? "ad-hoc"}`,
+      toStatus: input.status,
+      detail: { runId: input.runId ?? null, commitmentVersion: Number(row.version_number) },
+    });
+    return fulfillmentId;
   });
-  return { fulfillmentId };
+  return { fulfillmentId: tx() };
 }

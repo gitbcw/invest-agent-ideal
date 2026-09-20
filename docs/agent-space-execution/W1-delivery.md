@@ -1,91 +1,89 @@
 # W1 交付：新对象契约与数据库基础
 
-状态：本地实现与隔离 DB 验证完成；未导入任何真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
-依据：[W1-domain-contracts.md](./W1-domain-contracts.md)、[v3 总纲](../agent-space-workspace-exit-design-v3.md) §5-W1、[W0 验收第三次结论](./W0-acceptance-review.md)。
+状态：本地实现与隔离 DB 验证完成（含 R1-R5 返工）；未导入任何真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
+依据：[W1-domain-contracts.md](./W1-domain-contracts.md)、[v3 总纲](../agent-space-workspace-exit-design-v3.md) §5-W1、[W0 验收第三次结论](./W0-acceptance-review.md)、[W1 验收返工单](./W1-acceptance-review.md)（R1-R5 已修复并落为可失败测试）。
+
+## 0. R1-R5 返工摘要（相对首版 e85db6f）
+
+| 验收问题 | 修复 | 反例测试 |
+| --- | --- | --- |
+| R1 B 覆盖 A 任务依赖 / latest 跳过 ref 校验 / 快照弱校验 | `upsertTaskDependency` 验证 task/agent/ref 真实归属（所有 policy）；唯一键冲突更新前核对已有行 scope；快照校验 run→task→scope→agent 全链 + 逐条装配引用 + 载荷白名单 + 同 run 异载荷幂等冲突；agent_state fail-closed（W1 无注册面不接受占位） | "task dependencies verify real ownership" + "run snapshots validate chain" 两组共 16 条断言 |
+| R2 B 安装 A 私有发布 | `assertReleaseInstallableBy`：public=跨用户可装（须 published）；private=仅属主；shared=授权模型未定义前 fail-closed；撤回后不可装；系统域写操作（upsert/版本/发布/批准）须 owner 令牌（settings/env 服务侧配置，非调用方自报） | "skills — refs, publish visibility" 组 |
+| R3 假资产/假 checksum 可登记 | `addMethodVersion`/`addSkillVersion` 在服务层核对 user_asset_versions 行存在、同 scope、checksum 与库值一致（系统模板核对模板根文件字节）；`resolveMethodVersion` 校验版本属于指定 Method；W0 约束结构化为 `adoption_constraints` 列并强制（hold 默认采用须 owner 决策；historical-not-default 永不成为 current 且拒绝运行 pin/绑定） | "method content refs" + "structured adoption constraints" + resolve 错配反例 |
+| R4 修订后旧确认激活新版本 | `approveStateCandidate` 增 `expectedVersionId`（乐观并发：绑定用户确认的预览版本，过期确认报 `IDEMPOTENCY_CONFLICT`）；active 对象修订走 `draft_version_id` 独立指针，原有效版本不退出；lesson/workflow 必须挂真实会话/任务/Agent（owner_kind/owner_id 校验）且内容字段白名单 | "state candidates" 组：v1 确认在 v2 后重放拒绝、修订不退有效版、归属/白名单反例 |
+| R5 DROP 当回滚 + 非原子写 | 本文档 §6 重写：DROP 仅测试夹具重置；真实恢复=验证备份/定向前向修复。全部写操作（含审计）同事务，测试用审计失败触发器证明零半成品；幂等键同 key 不同内容一律 `IDEMPOTENCY_CONFLICT` | "audit failure rolls back" + 幂等冲突 + "upgrade with existing data" |
+| approvalRef 任意字符串 | `verifyApprovalRef`：仅接受 `conversation:<messageId>`（同 scope 真实存在）或 `owner-decision:<ref>`（附 owner 令牌）；适用于方法/技能批准、安装与升级、状态批准、承诺激活 | 各组内 "invalid-ref"/跨 scope 消息反例 |
 
 ## 1. 代码位置
 
 | 内容 | 位置 |
 | --- | --- |
-| 建表迁移（幂等，checkpoint `agent_space_v1`） | `src/db/index.ts` `ensureAgentSpaceTables()`（在 `initDb()` 内调用，全部 `CREATE TABLE IF NOT EXISTS` + 部分唯一索引） |
+| 建表迁移（幂等，checkpoint `agent_space_v1`；R3/R4 增量列经 ensureColumn 演进） | `src/db/index.ts` `ensureAgentSpaceTables()` |
 | Drizzle 类型镜像 | `src/db/schema.ts`（`agent_space_*` 19 张） |
-| 域服务 | `src/services/agent-space/`：`core.ts`（scope/错误/审计/幂等原语）、`methods.ts`、`skills.ts`、`agents.ts`、`tasks.ts`（依赖+快照）、`state.ts`（T-524 四对象）、`index.ts`（出口） |
-| 隔离测试 | `tests/agent-space-domain.test.ts`（10 组，临时目录 DB，不碰生产/本地 data） |
+| 域服务 | `src/services/agent-space/`：`core.ts`（scope/错误/审计/幂等冲突/owner 授权/可核对批准/字段白名单）、`methods.ts`、`skills.ts`、`agents.ts`、`tasks.ts`、`state.ts`、`index.ts` |
+| 隔离测试 | `tests/agent-space-domain.test.ts`（15 组；fixture 以真实事实源行种子：会话消息、资产版本、任务/修订/运行） |
 
 ## 2. Schema 映射（表 → 契约对象）
 
 | 契约对象 | 表 | 关键约束 |
 | --- | --- | --- |
-| Method 体系 | `agent_space_methods` | scope 三列 NOT NULL + UNIQUE(name)；status draft/active/retired；`current_version_id` 只指向 approved 版本 |
-| Method 正式版本 | `agent_space_method_versions` | 引用 `user_asset_versions`（assetId/versionId/checksum），**不复制正文**；draft→approved 后不可变（UPDATE 守卫 `AND status='draft'`）；`adoption_note` 承载 W0 阻塞语义（hold/historical-not-default 等） |
-| Skill（系统/用户分域） | `agent_space_skills` | `domain` system 行 scope 三列为 NULL（物理分域）；UNIQUE(domain, scope, slug) |
-| Skill 私有版本 | `agent_space_skill_versions` | 引用 user_asset 版本或 system_template 路径+checksum；draft→approved 不可变 |
-| SkillRelease 发布 | `agent_space_skill_releases` | 冻结 (version_id, content_checksum)；发布后私有修改不联动；visibility public/shared/private |
-| Agent | `agent_space_agents` | scope + UNIQUE(name)；幂等键 |
-| AgentSkillInstallation | `agent_space_agent_skill_installations` | append-only 台账：每 (agent, skill) 最新 installed 行为当前；升级必须带 approval_ref |
-| AgentMethodBinding | `agent_space_agent_method_bindings` | policy pinned/current；pinned 必须是 approved/superseded 正式版本 |
-| AgentAssetGrant | `agent_space_agent_asset_grants` | 引用既有 `user_assets`（跨 scope 资产拒绝）；首版 permission=read |
-| TaskDependency | `agent_space_task_dependencies` | kind skill/method/asset_input/asset_output/agent_state；pinned 引用经同 scope 正式版本校验；UNIQUE(task,kind,ref) |
-| TaskRunSnapshot | `agent_space_task_run_snapshots` | **不可变 append-only**：UNIQUE(run_id)；assembly_json 只含引用（对象 id/version/checksum），无正文；assembly_hash=sha256 |
-| T-524 AgentFact | `agent_space_facts` | 只引用既有 trace/message/run/delivery/audit 记录；自然键幂等（表达式唯一索引） |
-| T-524 AgentLesson(+versions) | `agent_space_lessons` / `agent_space_lesson_versions` | status draft/active/superseded/expired/rejected/disabled；evidence_state 与批准分离；批准绑定具体版本 |
-| T-524 AgentWorkflow(+versions) | `agent_space_workflows` / `agent_space_workflow_versions` | 与 lesson 同构（工作说明，非编排引擎） |
-| T-524 AgentCommitment | `agent_space_commitments` | proposed→active↔paused→cancelled/completed；active 需 authorization_ref + 同 scope 执行器存在；recurring 不因履约完成而 completed |
-| T-524 履约 | `agent_space_commitment_fulfillments` | pending/running/satisfied/failed_needs_attention/skipped；绑定约定版本号 + run/产物/投递引用；UNIQUE(commitment, due_at) |
-| 统一审计 | `agent_space_audit_logs` | 所有生命周期变更（含 from/to 状态、批准依据、W0 约束）落审计行 |
-
-事实源复用（不复制）：user_assets/user_asset_versions（内容底座）、automation_tasks/runs（执行器与运行事实）、agent_traces/audit（证据引用）、review-memory（继续独立）。
+| Method 体系 | `agent_space_methods` | scope 三列 NOT NULL + UNIQUE(name)；status draft/active/retired |
+| Method 正式版本 | `agent_space_method_versions` | 引用 user_asset 版本且服务层核对存在/scope/checksum；draft→approved 不可变；`adoption_constraints`（JSON 数组）承载 W0 结构化约束 |
+| Skill（分域） | `agent_space_skills` | domain system 行 scope 列 NULL；系统域写须 owner 令牌 |
+| Skill 私有版本 | `agent_space_skill_versions` | 引用校验同上（系统模板核对模板根字节与 checksum） |
+| SkillRelease | `agent_space_skill_releases` | 冻结 (version_id, checksum)；visibility public/shared/private；retired 不可装 |
+| Agent / 安装 / 绑定 / 授权 | `agent_space_agents` / `_agent_skill_installations` / `_agent_method_bindings` / `_agent_asset_grants` | 安装 append-only 且升级须可核对批准；pinned 拒绝 historical-not-default；授权引用同 scope 真实资产 |
+| TaskDependency | `agent_space_task_dependencies` | task/agent/ref 全部真实归属校验；agent_state fail-closed |
+| TaskRunSnapshot | `agent_space_task_run_snapshots` | append-only；UNIQUE(run_id)；装配白名单字段+全链校验；同 run 异载荷冲突 |
+| T-524 Fact / Lesson(+v) / Workflow(+v) / Commitment / 履约 | `agent_space_facts` / `_lessons` `_lesson_versions` / `_workflows` `_workflow_versions` / `_commitments` / `_commitment_fulfillments` | fact 自然键幂等；lesson/workflow 挂 owner(conversation/task/agent)+内容白名单；批准绑 expectedVersionId；修订走 draft_version_id；承诺激活须可核对授权+同 scope 执行器 |
+| 统一审计 | `agent_space_audit_logs` | 与业务写同事务；记录 from/to、批准依据形态、W0 约束 |
 
 ## 3. 状态转换（服务层校验）
 
 ```
-Method:      draft ──approve(ref)──▶ active ──retire──▶ retired
+Method:      draft ──approve(ref, 约束检查)──▶ active ──retire──▶ retired
              版本: draft ──approve──▶ approved ──被新版本采用──▶ superseded / retired
-Skill 私有:  draft ──approve──▶ approved（→superseded）；release: approved ──publish──▶ frozen(public/shared/private)
+             约束: hold-ambiguity 默认采用须 owner-decision；historical-not-default 不成为 current 且拒绝运行 pin/绑定；split-in-progress 同 hold
+Skill 私有:  draft ──approve──▶ approved（→superseded）；release: approved ──publish──▶ frozen(public/shared/private) ──retire──▶ 不可装
+             安装: release 按 visibility 判定（private 属主/shared fail-closed/public+published）；升级须可核对 approvalRef
 Agent:       draft ──▶ active ⇄ disabled
-Installation: installed ──upgrade(须 approval_ref)──▶ 新行 installed（旧行 superseded）
-Lesson/Workflow: draft ──approve(ref, 绑定版本)──▶ active ──revise──▶ draft(新版本)
-                 active/draft ──▶ superseded | expired | rejected | disabled（终态不可再转）
-Commitment:  proposed ──activate(authorization_ref + 执行器就绪)──▶ active ⇄ paused ──▶ cancelled
-             one_shot active ──▶ completed；recurring 跨期保持 active
-Fulfillment: pending → running → satisfied | failed_needs_attention | skipped
+Lesson/Workflow: draft ──approve(expectedVersionId, ref)──▶ active ──revise──▶ 保持 active + draft_version_id
+                 ──▶ superseded | expired | rejected | disabled（终态）
+Commitment:  proposed ──activate(可核对授权 + 执行器同 scope)──▶ active ⇄ paused ──▶ cancelled；one_shot→completed；recurring 跨期 active
+Fulfillment: pending → running → satisfied | failed_needs_attention | skipped（run 引用校验同 scope）
 ```
 
-拒绝规则（服务层强制）：跨 scope 读写/批准/安装/绑定/授权/快照读取全部 `AGENT_SPACE_SCOPE_MISMATCH`；draft 不可安装/发布/解析为运行版本；无 approval_ref 不得批准/安装升级；approved 版本与 run 快照无更新路径（幂等重放返回既有行）；系统域对象不得携带用户 scope。
+批准依据契约：`conversation:<messageId>`（同 scope conversation_messages 存在）或 `owner-decision:<ref>`（settings 键 `agent_space.owner_admin_token` 或环境变量 `AGENT_SPACE_OWNER_ADMIN_TOKEN` 匹配）。模型/调用方自报字符串一律拒绝。
 
 ## 4. API 列表（`src/services/agent-space/`）
 
-- core: `assertScopeValid` / `assertRowScope` / `recordAgentSpaceAudit` / `findByIdempotencyKey`
-- methods: `createMethod` `addMethodVersion` `approveMethodVersion` `retireMethod` `resolveMethodVersion`（默认只解析当前采用版本；pin 可固定正式历史版本）`getMethod(Version)`
-- skills: `upsertSkill` `addSkillVersion` `approveSkillVersion` `publishSkillRelease` `listPublicSkillReleases`（只回 public+published）`getSkill(Version)`
-- agents: `createAgent` `setAgentStatus` `installSkill` `listInstalledSkills` `bindMethod` `grantAsset` `listAssetGrants`
-- tasks: `upsertTaskDependency` `listTaskDependencies` `recordTaskRunSnapshot`（幂等）`getTaskRunSnapshot`
-- state: `recordAgentFact` `createStateCandidate` `approveStateCandidate` `reviseStateCandidate` `transitionStateCandidate` `listEffectiveState`（active 且未过期；draft/终态排除）`createCommitment` `activateCommitment` `transitionCommitment` `recordFulfillment`
+- core：`assertScopeValid`/`assertRowScope`/`recordAgentSpaceAudit`/`findByIdempotencyKey`/`assertIdempotencyConsistent`/`verifyApprovalRef`/`requireOwnerAuthorization`/`assertOnlyFields`
+- methods：`createMethod` `addMethodVersion`（引用真实性+约束校验）`approveMethodVersion`（约束+owner 通道）`retireMethod` `resolveMethodVersion`（归属+运行约束）`getMethod(Version)` `parseAdoptionConstraints`
+- skills：`upsertSkill` `addSkillVersion`（async；引用校验）`approveSkillVersion` `publishSkillRelease` `retireSkillRelease` `assertReleaseInstallableBy` `getSkillReleaseForInstaller` `listPublicSkillReleases` `getSkill(Version)`
+- agents：`createAgent` `setAgentStatus` `installSkill` `listInstalledSkills` `bindMethod` `grantAsset` `listAssetGrants`
+- tasks：`upsertTaskDependency` `listTaskDependencies` `recordTaskRunSnapshot`（幂等+冲突）`getTaskRunSnapshot`
+- state：`recordAgentFact` `createStateCandidate`（owner 绑定+内容白名单）`approveStateCandidate`（expectedVersionId）`reviseStateCandidate`（不退有效版）`transitionStateCandidate` `listEffectiveState` `createCommitment` `activateCommitment` `transitionCommitment` `recordFulfillment`
 
 ## 5. 验证证据
 
 ```
-NODE_ENV=test DB_PATH=<tmp> node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts
-# → tests 10 / pass 10 / fail 0
-npm test   # 全仓
-# → tests 700 / pass 700 / fail 0（含新增 10 组，~50s，自终止）
-npm run build   # → 0 错误
-npx tsc --noEmit # → 0 错误
+node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 15/15
+npm test    # 705/705（~47s 自终止）
+npm run build && npx tsc --noEmit   # 0 错误
 ```
 
-隔离测试覆盖矩阵：建表幂等重放（可重复升级）；模拟回滚（DROP 域）+ 前向修复（重放 initDb）；跨 scope 读写/批准/安装/绑定/授权/快照拒绝；draft 不可安装/发布/解析；批准绑定版本且不改证据状态；发布后私有修改不联动 release；shared 不进 public 市场；安装固定版本、升级需显式批准；方法 pin 只接受正式版本（含 superseded 可重现）；快照幂等、只含引用无正文、表达 Agent/Skill/Method/资产/状态五类依赖；fact 自然键幂等；周期承诺跨期保持 active、暂停期拒绝履约、重激活；承诺激活需授权依据+执行器就绪；每步变更落带 scope 的审计行、W0 约束进审计。
+覆盖：建表幂等重放；带数据升级重放（旧域+新域行保留）；夹具重置（非恢复语义）；R1-R5 全部反例（见 §0 表）；审计失败注入回滚；幂等冲突；scope 拒绝矩阵；快照引用-only 断言。
 
-## 6. 恢复说明（rollback / forward fix）
+## 6. 恢复说明（R5 修正后）
 
-- 全部为增量新表，不改任何既有表/列/数据；旧代码路径不读 `agent_space_*`。
-- 回滚：停服后 `DROP TABLE agent_space_*`（19 张；如需保审计证据先导出 `agent_space_audit_logs`）。因域内无既有数据依赖，回滚无连带影响。
-- 前向修复：迁移幂等（`CREATE TABLE IF NOT EXISTS` + `schema_migrations` checkpoint INSERT OR REPLACE），重跑 `initDb()` 即恢复域结构；已验证（测试 2）。
-- 生产部署注意：遵循 db-migration 流程——先备份 DB，发布走 release 通道；本域无 backfill。
+- **测试夹具重置**（仅隔离/测试库）：`DROP TABLE agent_space_*` 后重跑 `initDb()` 重建空结构——测试 3 证明的是这一点，不证明数据恢复。
+- **真实数据恢复**：域内一旦产生真实数据（W6 之后），回退代码版本不会删表（增量表向后兼容，旧代码不读即无影响）；数据级问题用**验证过的备份**恢复（项目 DR 通道，T-415 SOP），或**定向前向修复**（新增服务层修复函数 + checkpoint，不改写审计历史）。
+- **升级**：`ensureAgentSpaceTables()` 幂等；R3/R4 增量列经 `ensureColumn` 对已初始化的 W1 隔离库演进（测试 2 证明带数据重放安全）。
+- 生产部署：遵循 db-migration 流程（先备份 DB、release 通道发布、本域无 backfill）。
 
-## 7. 待决项（未自行扩展）
+## 7. 待决项
 
-- 对象文本→运行注入的接线（W4/W5）：`resolveMethodVersion`/`listEffectiveState` 是契约形态，尚未接入运行时装配。
-- `agent_state` 依赖的 ref 校验在 W1 是占位（T-524 状态对象注册后由 W5 补全）。
-- 快照不可变目前由服务层+UNIQUE(run_id) 保证；是否加 SQLite 触发器硬拒 UPDATE 留给 W5（运行写入方落地时）决定。
-- Portal 信息架构、市场审核策略、发布协作对象（v3 §8 未冻结项）。
-- W0 的 205 项 owner-review 候选进入 W2 时的逐项裁决流程（含 adoption_note 的呈现位置）。
+- 运行时装配接线（W4/W5）；`agent_state` 依赖/装配条目在 W5 注册面落地后由 fail-closed 改为真实校验。
+- shared 可见性的授权模型（市场审核策略未冻结，v3 §8）；owner 令牌的生产注入方式（settings 键由运维写入）。
+- 快照不可变当前=服务层无更新路径+UNIQUE(run_id)+幂等冲突；W5 落地写入方时决定是否加 SQLite 触发器硬拒 UPDATE。
+- Portal 信息架构、W0 的 205 项 owner-review 候选进入 W2 的逐项裁决流程。

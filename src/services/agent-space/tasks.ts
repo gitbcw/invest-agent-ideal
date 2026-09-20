@@ -1,14 +1,15 @@
 /**
- * TaskDependency 与不可变 TaskRunSnapshot（W1/W5 底座）。
+ * TaskDependency 与不可变 TaskRunSnapshot（W1/W5 底座；返工 R1/R5）。
  *
- * 语义（v3 §3）：运行开始后技能、方法、输入资产与状态版本固定；执行中补查
- * 不得静默替换已加载版本。快照只保存装配引用（对象 id + version + checksum
- * + 来源），不保存内容正文——正文读取必须回到各 scoped 服务，对象文本不
- * 能绕过授权。
+ * 语义：运行开始后依赖版本固定。依赖登记必须验证真实归属——task/agent/
+ * 引用对象全部同 scope 校验；agent_state 在 W1 无注册面，fail-closed 拒绝
+ * 占位。快照校验 run→task→scope→agent 链与每个装配引用，同 run 不同载荷
+ * 重放按幂等冲突拒绝。装配 JSON 走运行时白名单字段校验。全部同事务。
  */
 import { sqlite } from "../../db/index.js";
 import {
   AgentSpaceError,
+  assertOnlyFields,
   assertRowScope,
   assertScopeValid,
   newId,
@@ -17,6 +18,7 @@ import {
   sha256Of,
   type UserScope,
 } from "./core.js";
+import { parseAdoptionConstraints } from "./methods.js";
 
 export type DependencyKind = "skill" | "method" | "asset_input" | "asset_output" | "agent_state";
 
@@ -50,36 +52,95 @@ type DependencyRow = {
 
 const VALID_KINDS: DependencyKind[] = ["skill", "method", "asset_input", "asset_output", "agent_state"];
 
-/** 校验 pinned 引用是同 scope 的正式版本（skill/method 才有版本链约束）。 */
-function assertPinnedVersion(scope: UserScope, kind: DependencyKind, refId: string, pinnedVersionId: string): void {
+/** 任务归属校验：task 必须是同 scope 的真实 automation task。 */
+function verifyTaskScope(scope: UserScope, taskId: string): void {
+  const row = sqlite
+    .prepare("SELECT task_id, user_id, project_id, instance_id FROM automation_tasks WHERE task_id=?")
+    .get(taskId) as { task_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation task ${taskId} not found`);
+  assertRowScope(row, scope);
+}
+
+function verifyAgentScope(scope: UserScope, agentId: string): void {
+  const row = sqlite
+    .prepare("SELECT agent_id, user_id, project_id, instance_id FROM agent_space_agents WHERE agent_id=?")
+    .get(agentId) as { agent_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `agent ${agentId} not found`);
+  assertRowScope(row, scope);
+}
+
+/**
+ * 引用对象校验：所有 version_policy 均验证（验收 R1：latest 不得跳过）。
+ * skill/method 校验对象存在 + 同 scope；pinned 时再校验版本归属/状态。
+ * agent_state 在 W1 没有注册面——fail-closed，不接受占位。
+ */
+function verifyDependencyRef(scope: UserScope, kind: DependencyKind, refId: string, pinnedVersionId?: string): void {
+  if (kind === "agent_state") {
+    throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", "agent_state dependencies are not registered until W5; fail-closed");
+  }
   if (kind === "method") {
-    const row = sqlite
-      .prepare("SELECT method_id, status, user_id, project_id, instance_id FROM agent_space_method_versions WHERE version_id=?")
-      .get(pinnedVersionId) as { method_id: string; status: string; user_id: string; project_id: string; instance_id: string } | undefined;
-    if (!row || row.method_id !== refId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "pinned method version mismatch");
-    assertRowScope(row, scope);
-    if (row.status !== "approved" && row.status !== "superseded") {
-      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `pinned method version is ${row.status}`);
-    }
-  } else if (kind === "skill") {
-    const row = sqlite
-      .prepare("SELECT skill_id, status, domain, user_id, project_id, instance_id FROM agent_space_skill_versions WHERE version_id=?")
-      .get(pinnedVersionId) as { skill_id: string; status: string; domain: string; user_id: string | null; project_id: string | null; instance_id: string | null } | undefined;
-    if (!row || row.skill_id !== refId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "pinned skill version mismatch");
-    if (row.domain === "user") {
-      assertRowScope(row, scope);
-    }
-    if (row.status !== "approved" && row.status !== "superseded") {
-      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `pinned skill version is ${row.status}`);
-    }
-  } else if (kind === "asset_input" || kind === "asset_output") {
-    const row = sqlite
+    const method = sqlite
+      .prepare("SELECT method_id, user_id, project_id, instance_id FROM agent_space_methods WHERE method_id=?")
+      .get(refId) as { method_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!method) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `method ${refId} not found`);
+    assertRowScope(method, scope);
+    if (pinnedVersionId) assertPinnedMethodVersion(scope, refId, pinnedVersionId);
+    return;
+  }
+  if (kind === "skill") {
+    const skill = sqlite
+      .prepare("SELECT skill_id, domain, user_id, project_id, instance_id FROM agent_space_skills WHERE skill_id=?")
+      .get(refId) as { skill_id: string; domain: string; user_id: string | null; project_id: string | null; instance_id: string | null } | undefined;
+    if (!skill) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `skill ${refId} not found`);
+    if (skill.domain === "user") assertRowScope(skill, scope);
+    if (pinnedVersionId) assertPinnedSkillVersion(scope, refId, pinnedVersionId);
+    return;
+  }
+  // asset_input / asset_output：资产必须存在且同 scope；pinned 时版本归属一致。
+  const asset = sqlite
+    .prepare("SELECT asset_id, user_id, project_id, instance_id FROM user_assets WHERE asset_id=?")
+    .get(refId) as { asset_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!asset) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `user asset ${refId} not found`);
+  assertRowScope(asset, scope);
+  if (pinnedVersionId) {
+    const version = sqlite
       .prepare("SELECT asset_id, user_id, project_id, instance_id FROM user_asset_versions WHERE version_id=?")
       .get(pinnedVersionId) as { asset_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
-    if (!row || row.asset_id !== refId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "pinned asset version mismatch");
-    assertRowScope(row, scope);
+    if (!version) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `pinned asset version ${pinnedVersionId} not found`);
+    if (version.asset_id !== refId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "pinned asset version does not belong to asset");
+    assertRowScope(version, scope);
   }
-  // agent_state：T-524 状态对象 id 由 W5 注册后校验；W1 接受引用占位。
+}
+
+function assertPinnedMethodVersion(scope: UserScope, methodId: string, pinnedVersionId: string): void {
+  const row = sqlite
+    .prepare("SELECT method_id, status, adoption_constraints, user_id, project_id, instance_id FROM agent_space_method_versions WHERE version_id=?")
+    .get(pinnedVersionId) as
+    | { method_id: string; status: string; adoption_constraints: string | null; user_id: string; project_id: string; instance_id: string }
+    | undefined;
+  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `method version ${pinnedVersionId} not found`);
+  if (row.method_id !== methodId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "pinned method version mismatch");
+  assertRowScope(row, scope);
+  if (row.status !== "approved" && row.status !== "superseded") {
+    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `pinned method version is ${row.status}`);
+  }
+  if (parseAdoptionConstraints(row.adoption_constraints).includes("historical-not-default")) {
+    throw new AgentSpaceError("AGENT_SPACE_ADOPTION_CONSTRAINT", "historical-not-default versions cannot be pinned for runtime");
+  }
+}
+
+function assertPinnedSkillVersion(scope: UserScope, skillId: string, pinnedVersionId: string): void {
+  const row = sqlite
+    .prepare("SELECT skill_id, status, domain, user_id, project_id, instance_id FROM agent_space_skill_versions WHERE version_id=?")
+    .get(pinnedVersionId) as
+    | { skill_id: string; status: string; domain: string; user_id: string | null; project_id: string | null; instance_id: string | null }
+    | undefined;
+  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `skill version ${pinnedVersionId} not found`);
+  if (row.skill_id !== skillId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "pinned skill version mismatch");
+  if (row.domain === "user") assertRowScope(row, scope);
+  if (row.status !== "approved" && row.status !== "superseded") {
+    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `pinned skill version is ${row.status}`);
+  }
 }
 
 export function upsertTaskDependency(input: UpsertDependencyInput): DependencyRow {
@@ -87,40 +148,52 @@ export function upsertTaskDependency(input: UpsertDependencyInput): DependencyRo
   if (!VALID_KINDS.includes(input.kind)) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `kind ${input.kind}`);
   }
-  if (input.versionPolicy === "pinned") {
-    if (!input.pinnedVersionId) {
-      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "pinned policy requires pinnedVersionId");
-    }
-    assertPinnedVersion(input.scope, input.kind, input.refId, input.pinnedVersionId);
+  verifyTaskScope(input.scope, input.taskId);
+  if (input.agentId) verifyAgentScope(input.scope, input.agentId);
+  if (input.versionPolicy === "pinned" && !input.pinnedVersionId) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "pinned policy requires pinnedVersionId");
   }
-  const now = nowIso();
-  const dependencyId = newId("tdep");
-  sqlite
-    .prepare(
-      `INSERT INTO agent_space_task_dependencies (
-         dependency_id, task_id, user_id, project_id, instance_id, agent_id,
-         kind, ref_id, version_policy, pinned_version_id, metadata_json, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(task_id, kind, ref_id) DO UPDATE SET
-         agent_id=excluded.agent_id, version_policy=excluded.version_policy,
-         pinned_version_id=excluded.pinned_version_id, metadata_json=excluded.metadata_json,
-         updated_at=excluded.updated_at`,
-    )
-    .run(dependencyId, input.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
-         input.agentId ?? null, input.kind, input.refId, input.versionPolicy, input.pinnedVersionId ?? null,
-         input.metadata ? JSON.stringify(input.metadata) : null, now, now);
-  recordAgentSpaceAudit({
-    scope: input.scope,
-    actor: input.actor,
-    action: "task.dependency.upserted",
-    objectType: "agent_space_task_dependency",
-    objectId: `${input.taskId}:${input.kind}:${input.refId}`,
-    toStatus: input.versionPolicy,
-    detail: { taskId: input.taskId, kind: input.kind, refId: input.refId, pinnedVersionId: input.pinnedVersionId ?? null },
-  });
-  return sqlite
+  verifyDependencyRef(input.scope, input.kind, input.refId, input.pinnedVersionId);
+
+  const existing = sqlite
     .prepare("SELECT * FROM agent_space_task_dependencies WHERE task_id=? AND kind=? AND ref_id=?")
-    .get(input.taskId, input.kind, input.refId) as DependencyRow;
+    .get(input.taskId, input.kind, input.refId) as DependencyRow | undefined;
+  if (existing) {
+    // 验收 R1：唯一键冲突更新前必须核对已有行 scope，跨域改写拒绝。
+    assertRowScope(existing, input.scope);
+  }
+
+  const now = nowIso();
+  const tx = sqlite.transaction(() => {
+    const dependencyId = newId("tdep");
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_task_dependencies (
+           dependency_id, task_id, user_id, project_id, instance_id, agent_id,
+           kind, ref_id, version_policy, pinned_version_id, metadata_json, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(task_id, kind, ref_id) DO UPDATE SET
+           agent_id=excluded.agent_id, version_policy=excluded.version_policy,
+           pinned_version_id=excluded.pinned_version_id, metadata_json=excluded.metadata_json,
+           updated_at=excluded.updated_at`,
+      )
+      .run(dependencyId, input.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+           input.agentId ?? null, input.kind, input.refId, input.versionPolicy, input.pinnedVersionId ?? null,
+           input.metadata ? JSON.stringify(input.metadata) : null, now, now);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "task.dependency.upserted",
+      objectType: "agent_space_task_dependency",
+      objectId: `${input.taskId}:${input.kind}:${input.refId}`,
+      toStatus: input.versionPolicy,
+      detail: { taskId: input.taskId, kind: input.kind, refId: input.refId, pinnedVersionId: input.pinnedVersionId ?? null },
+    });
+    return sqlite
+      .prepare("SELECT * FROM agent_space_task_dependencies WHERE task_id=? AND kind=? AND ref_id=?")
+      .get(input.taskId, input.kind, input.refId) as DependencyRow;
+  });
+  return tx();
 }
 
 export function listTaskDependencies(scope: UserScope, taskId: string): DependencyRow[] {
@@ -134,12 +207,15 @@ export function listTaskDependencies(scope: UserScope, taskId: string): Dependen
 }
 
 export interface AssemblyEntry {
-  objectType: "agent" | "skill" | "method" | "asset" | "agent_state";
+  objectType: "skill" | "method" | "asset" | "agent_state";
   objectId: string;
   versionId: string | null;
   versionPolicy: "pinned" | "current" | "latest" | "none";
   contentChecksum?: string;
 }
+
+const ASSEMBLY_ENTRY_FIELDS = ["objectType", "objectId", "versionId", "versionPolicy", "contentChecksum"] as const;
+const ASSEMBLY_ROOT_FIELDS = ["agent", "skills", "methods", "assets", "agentState"] as const;
 
 export interface RecordRunSnapshotInput {
   scope: UserScope;
@@ -156,16 +232,53 @@ export interface RecordRunSnapshotInput {
   actor: string;
 }
 
+/** 逐条校验装配引用（白名单字段 + 对象/版本真实存在且同 scope）。 */
+function verifyAssemblyEntry(scope: UserScope, entry: AssemblyEntry): void {
+  assertOnlyFields(entry as unknown as Record<string, unknown>, ASSEMBLY_ENTRY_FIELDS, "assembly entry");
+  if (entry.objectType === "agent_state") {
+    throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", "agent_state assembly entries are not registered until W5; fail-closed");
+  }
+  if (entry.objectType === "skill") {
+    verifyDependencyRef(scope, "skill", entry.objectId, entry.versionId ?? undefined);
+  } else if (entry.objectType === "method") {
+    verifyDependencyRef(scope, "method", entry.objectId, entry.versionId ?? undefined);
+  } else if (entry.objectType === "asset") {
+    verifyDependencyRef(scope, "asset_input", entry.objectId, entry.versionId ?? undefined);
+  } else {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `assembly objectType ${entry.objectType}`);
+  }
+}
+
 /**
- * 运行快照：append-only。同 run 重复记录幂等返回既有快照；任何改写尝试
- * （update/delete）都被服务拒绝——历史运行依据不可改写。
+ * 运行快照：append-only、同 run 幂等。校验 run→task→scope→agent 与全部
+ * 装配引用；同 run 不同装配载荷的重放按幂等冲突拒绝。
  */
 export function recordTaskRunSnapshot(input: RecordRunSnapshotInput): { snapshotId: string; assemblyHash: string } {
   assertScopeValid(input.scope);
-  const existing = sqlite
-    .prepare("SELECT snapshot_id FROM agent_space_task_run_snapshots WHERE run_id=?")
-    .get(input.runId) as { snapshot_id: string } | undefined;
-  if (existing) return { snapshotId: existing.snapshot_id, assemblyHash: readAssemblyHash(input.scope, input.runId) };
+  assertOnlyFields(input.assembly as unknown as Record<string, unknown>, ASSEMBLY_ROOT_FIELDS, "assembly");
+  if (input.assembly.agent) {
+    assertOnlyFields(input.assembly.agent as unknown as Record<string, unknown>, ["agentId"], "assembly.agent");
+    verifyAgentScope(input.scope, input.assembly.agent.agentId);
+  }
+  if (input.agentId) verifyAgentScope(input.scope, input.agentId);
+  const run = sqlite
+    .prepare("SELECT run_id, task_id, user_id, project_id, instance_id FROM automation_task_runs WHERE run_id=?")
+    .get(input.runId) as
+    | { run_id: string; task_id: string; user_id: string; project_id: string; instance_id: string }
+    | undefined;
+  if (!run) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation run ${input.runId} not found`);
+  assertRowScope(run, input.scope);
+  if (run.task_id !== input.taskId) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "run does not belong to the given task");
+  }
+  verifyTaskScope(input.scope, input.taskId);
+  for (const entry of [...input.assembly.skills, ...input.assembly.methods, ...input.assembly.assets]) {
+    verifyAssemblyEntry(input.scope, entry);
+  }
+  if (input.assembly.agentState.length > 0) {
+    throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", "agent_state assembly entries are not registered until W5; fail-closed");
+  }
+
   const assemblyJson = JSON.stringify(
     {
       agent: input.assembly.agent ?? null,
@@ -178,32 +291,45 @@ export function recordTaskRunSnapshot(input: RecordRunSnapshotInput): { snapshot
     0,
   );
   const assemblyHash = sha256Of(assemblyJson);
-  const snapshotId = newId("rsnap");
-  sqlite
-    .prepare(
-      `INSERT INTO agent_space_task_run_snapshots (
-         snapshot_id, run_id, task_id, user_id, project_id, instance_id, agent_id, assembly_json, assembly_hash, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(snapshotId, input.runId, input.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
-         input.agentId ?? null, assemblyJson, assemblyHash, nowIso());
-  recordAgentSpaceAudit({
-    scope: input.scope,
-    actor: input.actor,
-    action: "task.run_snapshot.recorded",
-    objectType: "agent_space_task_run_snapshot",
-    objectId: snapshotId,
-    detail: { runId: input.runId, taskId: input.taskId, assemblyHash },
+
+  const existing = sqlite
+    .prepare("SELECT assembly_hash FROM agent_space_task_run_snapshots WHERE run_id=?")
+    .get(input.runId) as { assembly_hash: string } | undefined;
+  if (existing) {
+    if (existing.assembly_hash !== assemblyHash) {
+      throw new AgentSpaceError("AGENT_SPACE_IDEMPOTENCY_CONFLICT", `run ${input.runId} already has a different assembly snapshot`);
+    }
+    return { snapshotId: readSnapshotId(input.scope, input.runId), assemblyHash };
+  }
+  const tx = sqlite.transaction(() => {
+    const snapshotId = newId("rsnap");
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_task_run_snapshots (
+           snapshot_id, run_id, task_id, user_id, project_id, instance_id, agent_id, assembly_json, assembly_hash, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(snapshotId, input.runId, input.taskId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+           input.agentId ?? null, assemblyJson, assemblyHash, nowIso());
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "task.run_snapshot.recorded",
+      objectType: "agent_space_task_run_snapshot",
+      objectId: snapshotId,
+      detail: { runId: input.runId, taskId: input.taskId, assemblyHash },
+    });
+    return snapshotId;
   });
-  return { snapshotId, assemblyHash };
+  return { snapshotId: tx(), assemblyHash };
 }
 
-function readAssemblyHash(scope: UserScope, runId: string): string {
+function readSnapshotId(scope: UserScope, runId: string): string {
   const row = sqlite
-    .prepare("SELECT assembly_hash FROM agent_space_task_run_snapshots WHERE run_id=? AND user_id=? AND project_id=? AND instance_id=?")
-    .get(runId, scope.userId, scope.projectId, scope.instanceId) as { assembly_hash: string } | undefined;
+    .prepare("SELECT snapshot_id FROM agent_space_task_run_snapshots WHERE run_id=? AND user_id=? AND project_id=? AND instance_id=?")
+    .get(runId, scope.userId, scope.projectId, scope.instanceId) as { snapshot_id: string } | undefined;
   if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `run snapshot ${runId}`);
-  return row.assembly_hash;
+  return row.snapshot_id;
 }
 
 export function getTaskRunSnapshot(scope: UserScope, runId: string): {
