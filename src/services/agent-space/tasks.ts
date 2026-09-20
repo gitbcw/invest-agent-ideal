@@ -413,12 +413,24 @@ export type RunOutcomeKind =
   | "artifact_generated"
   | "delivery_succeeded"
   | "delivery_failed"
-  | "user_read";
+  | "user_read_claimed";
 
 const RUN_OUTCOME_KINDS: readonly RunOutcomeKind[] = [
   "execution_succeeded", "execution_failed", "artifact_generated",
-  "delivery_succeeded", "delivery_failed", "user_read",
+  "delivery_succeeded", "delivery_failed", "user_read_claimed",
 ];
+
+/**
+ * 返工 R3：outcome 是分层**事实**记录，不是自报声明——每类绑定可核对来源：
+ * - execution_*：来源=run 本身（存在+同 scope 已核）；
+ * - artifact_generated：detail.assetId 必须是同 scope 真实用户资产（可选
+ *   versionId 须属于该资产）；
+ * - delivery_succeeded：detail.pushJobId 必须是同 scope 真实 push_jobs 行
+ *   且 status='sent'；
+ * - delivery_failed：同上且 status ∈ {dead, expired}；
+ * - user_read：当前无受信阅读事件源，只能以显式非事实名 user_read_claimed
+ *   记录（声称，不冒充已读事实）。
+ */
 
 export interface RunOutcomeRecord {
   outcomeId: string;
@@ -453,7 +465,11 @@ export function recordRunOutcome(input: {
   if (!RUN_OUTCOME_KINDS.includes(input.kind)) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `unknown run outcome kind ${input.kind}`);
   }
+  if ((input.kind as string) === "user_read") {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "user_read has no trusted fact source; record user_read_claimed instead");
+  }
   verifyRunScope(input.scope, input.runId);
+  verifyOutcomeFactSource(input.scope, input.kind, input.detail);
   const detailJson = input.detail ? JSON.stringify(input.detail) : null;
   if (input.idempotencyKey) {
     const existing = sqlite
@@ -496,6 +512,42 @@ export function recordRunOutcome(input: {
   });
   tx();
   return { outcomeId, runId: input.runId, kind: input.kind, detail: input.detail ?? null, createdAt: nowIso() };
+}
+
+function verifyOutcomeFactSource(scope: UserScope, kind: RunOutcomeKind, detail: Record<string, unknown> | undefined): void {
+  if (kind === "artifact_generated") {
+    const assetId = typeof detail?.assetId === "string" ? detail.assetId : "";
+    if (!assetId) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "artifact_generated requires detail.assetId referencing a real asset");
+    const asset = sqlite
+      .prepare("SELECT user_id, project_id, instance_id FROM user_assets WHERE asset_id=?")
+      .get(assetId) as { user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!asset) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `user asset ${assetId} (artifact fact source)`);
+    assertRowScope(asset, scope);
+    if (typeof detail?.versionId === "string") {
+      const version = sqlite
+        .prepare("SELECT asset_id FROM user_asset_versions WHERE version_id=?")
+        .get(detail.versionId) as { asset_id: string } | undefined;
+      if (!version || version.asset_id !== assetId) {
+        throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "artifact versionId does not belong to the referenced asset");
+      }
+    }
+    return;
+  }
+  if (kind === "delivery_succeeded" || kind === "delivery_failed") {
+    const pushJobId = typeof detail?.pushJobId === "string" ? detail.pushJobId : "";
+    if (!pushJobId) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${kind} requires detail.pushJobId referencing a real push job`);
+    const job = sqlite
+      .prepare("SELECT user_id, project_id, instance_id, status FROM push_jobs WHERE id=?")
+      .get(pushJobId) as { user_id: string; project_id: string; instance_id: string; status: string } | undefined;
+    if (!job) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `push job ${pushJobId} (delivery fact source)`);
+    assertRowScope(job, scope);
+    if (kind === "delivery_succeeded" && job.status !== "sent") {
+      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `delivery_succeeded requires the push job to be sent (got ${job.status})`);
+    }
+    if (kind === "delivery_failed" && job.status !== "dead" && job.status !== "expired") {
+      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `delivery_failed requires the push job to be dead/expired (got ${job.status})`);
+    }
+  }
 }
 
 /** 运行结果时间线（按发生顺序）。 */

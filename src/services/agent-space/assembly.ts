@@ -30,7 +30,7 @@ import {
 import { resolveMethodVersion } from "./methods.js";
 import { getInstalledSkillManifest } from "./agents.js";
 import { listTaskDependencies } from "./tasks.js";
-import { buildScopedStatePacket, type StatePacketExclusion } from "./state.js";
+import { buildScopedStatePacket, readStateVersionContent, type StatePacketExclusion } from "./state.js";
 import { getVersionRow as getSkillVersionRow } from "./skills.js";
 
 export type AssemblyEntryKind = "conversation" | "generic_automation" | "scheduled";
@@ -271,6 +271,42 @@ export function recordRunBasisInjection(
       .run(JSON.stringify(stored), storedKey);
   }
   return rowToRecord(readBasisRow(storedKey)!, basisKey);
+}
+
+/**
+ * 状态包续页（返工 R2）：**绑定冻结 basis** 的 continuation——总预算在首次
+ * 检索时冻结（调用方无法换更大预算拿回被排除项），去重/冲突/预算排除集
+ * 合共享同一冻结集合；hasMore 在仍有下一页时为 true；伪 cursor（越界页）
+ * 返回空页。条目正文按冻结 versionId 重读，与 run-basis 证据一致。
+ */
+export function getRunBasisStateContinuation(input: {
+  scope: UserScope;
+  basisKey: string;
+  page: number;
+  pageSize: number;
+}): {
+  entries: Array<{ objectType: "lesson" | "workflow"; objectId: string; versionId: string; title: string; content: Record<string, unknown>; contentChars: number }>;
+  hasMore: boolean;
+  totalIncluded: number;
+  budgetChars: number;
+  note: string;
+} {
+  assertScopeValid(input.scope);
+  const basis = getRunBasis(input.scope, input.basisKey);
+  const frozen = basis.resolution.statePacket;
+  const page = Math.max(0, Math.floor(input.page));
+  const pageSize = Math.max(1, Math.floor(input.pageSize));
+  const slice = frozen.entries.slice(page * pageSize, page * pageSize + pageSize);
+  return {
+    entries: slice.map((e) => {
+      const content = readStateVersionContent(input.scope, e.objectType, e.versionId);
+      return { ...e, content, contentChars: JSON.stringify(content).length };
+    }),
+    hasMore: page * pageSize + slice.length < frozen.entries.length,
+    totalIncluded: frozen.entries.length,
+    budgetChars: frozen.retrieval.budgetChars,
+    note: frozen.note,
+  };
 }
 
 /** 按（scope, basisKey）查找已冻结 basis；不存在返回 null（稳定身份解析用）。 */

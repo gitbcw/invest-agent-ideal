@@ -480,6 +480,51 @@ export function listEffectiveState(input: {
 
 // ---------- W5：作用域 State Packet（真实检索，替换 W4 空桩） ----------
 
+interface ScopeStateInventoryItem {
+  objectType: "lesson" | "workflow";
+  objectId: string;
+  versionId: string | null;
+  title: string;
+  status: string;
+  expiresAt: string | null;
+  evidenceState: string | null;
+  ownerKind: string | null;
+  ownerId: string | null;
+  content: Record<string, unknown>;
+}
+
+/** scope 内全量状态清点（R1）：含非有效对象与到期信息，跨 scope 不可见。 */
+function listScopeStateInventory(scope: UserScope): ScopeStateInventoryItem[] {
+  const kinds: Array<"lesson" | "workflow"> = ["lesson", "workflow"];
+  const items: ScopeStateInventoryItem[] = [];
+  for (const kind of kinds) {
+    const table: StateObjectTable = kind === "lesson" ? "agent_space_lessons" : "agent_space_workflows";
+    const versionTable = kind === "lesson" ? "agent_space_lesson_versions" : "agent_space_workflow_versions";
+    const idColumn = kind === "lesson" ? "lesson_id" : "workflow_id";
+    const rows = sqlite
+      .prepare(
+        `SELECT h.${idColumn} AS objectId, h.title, h.status, h.expires_at AS expiresAt,
+                ${kind === "lesson" ? "h.evidence_state" : "NULL"} AS evidenceState,
+                h.owner_kind AS ownerKind, h.owner_id AS ownerId, v.content_json AS content, v.version_id AS versionId
+         FROM ${table} h LEFT JOIN ${versionTable} v ON v.version_id = h.current_version_id
+         WHERE h.user_id=? AND h.project_id=? AND h.instance_id=?`,
+      )
+      .all(scope.userId, scope.projectId, scope.instanceId) as Array<{
+      objectId: string; title: string; status: string; expiresAt: string | null; evidenceState: string | null;
+      ownerKind: string | null; ownerId: string | null; content: string | null; versionId: string | null;
+    }>;
+    for (const r of rows) {
+      items.push({
+        objectType: kind, objectId: r.objectId, versionId: r.versionId, title: r.title,
+        status: r.status, expiresAt: r.expiresAt, evidenceState: r.evidenceState,
+        ownerKind: r.ownerKind, ownerId: r.ownerId,
+        content: r.content ? JSON.parse(r.content) : {},
+      });
+    }
+  }
+  return items;
+}
+
 export interface StatePacketEntry {
   objectType: "lesson" | "workflow";
   objectId: string;
@@ -492,7 +537,9 @@ export interface StatePacketEntry {
 export interface StatePacketExclusion {
   objectType: "lesson" | "workflow";
   objectId: string;
-  reason: "out-of-scope" | "conflict-evidence" | "duplicate-content" | "budget-exhausted";
+  reason: "out-of-scope" | "conflict-evidence" | "duplicate-content" | "budget-exhausted" | "inactive-status" | "expired";
+  /** inactive-status/expired 时携带对象当前状态，供 run-basis 解释。 */
+  status?: string;
 }
 
 export interface ScopedStatePacket {
@@ -525,32 +572,44 @@ export function buildScopedStatePacket(input: {
   agentId?: string | null;
   budgetChars: number;
   offset?: number;
+  /** 分页大小：与 hasMore 构成续页契约（预算内集合切片）。 */
+  pageSize?: number;
 }): ScopedStatePacket {
   assertScopeValid(input.scope);
   const budgetChars = Math.max(0, Math.floor(input.budgetChars));
   const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const pageSize = input.pageSize !== undefined ? Math.max(1, Math.floor(input.pageSize)) : undefined;
   const scopeOwners: Array<{ ownerKind: string; ownerId: string }> = [{ ownerKind: input.ownerKind, ownerId: input.ownerId }];
   if (input.agentId && !(input.ownerKind === "agent" && input.ownerId === input.agentId)) {
     scopeOwners.push({ ownerKind: "agent", ownerId: input.agentId });
   }
-  const candidates = [
-    ...listEffectiveState({ scope: input.scope, kind: "lesson" }).map((e) => ({ objectType: "lesson" as const, ...e })),
-    ...listEffectiveState({ scope: input.scope, kind: "workflow" }).map((e) => ({ objectType: "workflow" as const, ...e })),
-  ];
+  // 返工 R1：清点 scope 内全部状态（含非有效），过期/停用等静默过滤改为
+  // 可审计排除；跨 scope 对象从查询层就不可枚举。
+  const inventory = listScopeStateInventory(input.scope);
   const exclusions: StatePacketExclusion[] = [];
-  const inScope: typeof candidates = [];
-  for (const candidate of candidates) {
-    const matches = scopeOwners.some((o) => candidate.ownerKind === o.ownerKind && candidate.ownerId === o.ownerId);
+  const candidates: Array<{ objectType: "lesson" | "workflow"; objectId: string; versionId: string; title: string; content: Record<string, unknown>; evidenceState: string | null }> = [];
+  const now = nowIso();
+  for (const item of inventory) {
+    if (item.status === "expired" || (item.expiresAt !== null && item.expiresAt <= now)) {
+      exclusions.push({ objectType: item.objectType, objectId: item.objectId, reason: "expired", status: item.status });
+      continue;
+    }
+    if (item.status !== "active") {
+      exclusions.push({ objectType: item.objectType, objectId: item.objectId, reason: "inactive-status", status: item.status });
+      continue;
+    }
+    const matches = scopeOwners.some((o) => item.ownerKind === o.ownerKind && item.ownerId === o.ownerId);
     if (!matches) {
-      exclusions.push({ objectType: candidate.objectType, objectId: candidate.objectId, reason: "out-of-scope" });
+      exclusions.push({ objectType: item.objectType, objectId: item.objectId, reason: "out-of-scope" });
       continue;
     }
-    if (candidate.evidenceState === "counterexample") {
-      exclusions.push({ objectType: candidate.objectType, objectId: candidate.objectId, reason: "conflict-evidence" });
+    if (item.evidenceState === "counterexample") {
+      exclusions.push({ objectType: item.objectType, objectId: item.objectId, reason: "conflict-evidence", status: item.evidenceState });
       continue;
     }
-    inScope.push(candidate);
+    candidates.push({ objectType: item.objectType, objectId: item.objectId, versionId: item.versionId ?? "", title: item.title, content: item.content, evidenceState: item.evidenceState });
   }
+  const inScope = candidates;
   // 去重：同内容（规范化 JSON 摘要）只保留首个，重复记录原因。
   const seenContent = new Set<string>();
   const deduped: typeof inScope = [];
@@ -575,7 +634,9 @@ export function buildScopedStatePacket(input: {
     used += chars;
     budgeted.push(candidate);
   }
-  const page = budgeted.slice(offset);
+  // 返工 R2：pageSize 与 hasMore 构成真实续页契约——预算内集合按页切片，
+  // hasMore 在仍有下一页时为 true。
+  const page = pageSize === undefined ? budgeted.slice(offset) : budgeted.slice(offset, offset + pageSize);
   return {
     entries: page.map((candidate) => ({
       objectType: candidate.objectType,

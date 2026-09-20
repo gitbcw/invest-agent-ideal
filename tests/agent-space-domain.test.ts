@@ -2357,14 +2357,19 @@ test("W5: scoped state packet, run-basis evidence, layered run outcomes, commitm
   assert.equal(basis.resolution.skills.length, 0);
   assert.equal(basis.resolution.methods.length, 0);
 
-  // —— 运行结果分层记录：执行/产物/投递（失败→成功）/阅读 ——
+  // —— 运行结果分层记录：执行/产物/投递（失败→成功）/阅读（R3 事实源绑定）——
+  // 投递事实源：同 scope 真实 push_jobs（一 sent 一 dead）
+  db.sqlite.prepare(`INSERT INTO push_jobs (id,user_id,project_id,instance_id,channel,backend,source,status,message,next_retry_at,created_at,updated_at)
+                     VALUES ('pj_sent',?,?,?,'weixin-mobile','hermes','test','sent','m',?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now);
+  db.sqlite.prepare(`INSERT INTO push_jobs (id,user_id,project_id,instance_id,channel,backend,source,status,message,next_retry_at,created_at,updated_at)
+                     VALUES ('pj_dead',?,?,?,'weixin-mobile','hermes','test','dead','m',?,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now, now);
   const os1 = space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "execution_succeeded", actor: "system", idempotencyKey: "w5-exec-1" });
   space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated", detail: { assetId: "asset_w2" }, actor: "system" });
-  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_failed", detail: { reason: "wechat push error" }, actor: "system" });
-  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", actor: "system" });
-  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "user_read", actor: "system" });
+  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_failed", detail: { pushJobId: "pj_dead" }, actor: "system" });
+  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", detail: { pushJobId: "pj_sent" }, actor: "system" });
+  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "user_read_claimed", actor: "system" });
   const timeline = space.listRunOutcomes(scopeA, "run_w1_1").map((o) => o.kind);
-  assert.deepEqual(timeline.slice(-5), ["execution_succeeded", "artifact_generated", "delivery_failed", "delivery_succeeded", "user_read"], "each lifecycle stage is recorded separately in order");
+  assert.deepEqual(timeline.slice(-5), ["execution_succeeded", "artifact_generated", "delivery_failed", "delivery_succeeded", "user_read_claimed"], "each lifecycle stage is recorded separately in order");
   const replayedOutcome = space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "execution_succeeded", actor: "system", idempotencyKey: "w5-exec-1" });
   assert.equal(replayedOutcome.outcomeId, os1.outcomeId, "idempotent outcome replay returns the existing record");
   expectAgentSpaceError(
@@ -2372,13 +2377,22 @@ test("W5: scoped state packet, run-basis evidence, layered run outcomes, commitm
     "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
   );
   expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "bogus" as never, actor: "system" }), "AGENT_SPACE_ARGUMENT_INVALID");
-  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_missing", kind: "user_read", actor: "system" }), "AGENT_SPACE_NOT_FOUND");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_missing", kind: "user_read_claimed", actor: "system" }), "AGENT_SPACE_NOT_FOUND");
+  // R3 反例：伪资产 / 跨 scope 资产 / 伪 push job / 状态不符 / 冒充已读
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated", detail: { assetId: "asset_fake" }, actor: "system" }), "AGENT_SPACE_NOT_FOUND");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated", detail: { assetId: "asset_b1" }, actor: "system" }), "AGENT_SPACE_SCOPE_MISMATCH");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "artifact_generated", detail: { assetId: "asset_w2", versionId: "ver_b1" }, actor: "system" }), "AGENT_SPACE_VERSION_INVALID");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", detail: { pushJobId: "pj_fake" }, actor: "system" }), "AGENT_SPACE_NOT_FOUND");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", detail: { pushJobId: "pj_dead" }, actor: "system" }), "AGENT_SPACE_VERSION_INVALID");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_failed", detail: { pushJobId: "pj_sent" }, actor: "system" }), "AGENT_SPACE_VERSION_INVALID");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_succeeded", detail: {}, actor: "system" }), "AGENT_SPACE_ARGUMENT_INVALID");
+  expectAgentSpaceError(() => space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "user_read" as never, actor: "system" }), "AGENT_SPACE_ARGUMENT_INVALID");
 
   // —— 承诺闭环：两期履约、投递失败记录、暂停恢复；关课不取消既有任务 ——
   const commitment = space.createCommitment({ scope: scopeA, title: "W5周度履约", content: {}, commitmentKind: "recurring", completionCriteria: "每周复盘推送成功", executorTaskId: "task_exec_1", idempotencyKey: "w5-cmt", actor: "user:a" });
   space.activateCommitment({ scope: scopeA, commitmentId: commitment.commitmentId, authorizationRef: await authz(scopeA, "um_w1_c", { operation: "commitment.activate", objectType: "agent_space_commitment", objectId: commitment.commitmentId, versionId: null, extraBinding: { executorTaskId: "task_exec_1" } }), executorTaskId: "task_exec_1", actor: "user:a" });
   space.recordFulfillment({ scope: scopeA, commitmentId: commitment.commitmentId, dueAt: "2026-09-14T19:00:00+08:00", status: "satisfied", runId: "run_w1_1", actor: "system" });
-  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_failed", detail: { period: "2026-09-14" }, actor: "system", idempotencyKey: "w5-cmt-d1" });
+  space.recordRunOutcome({ scope: scopeA, runId: "run_w1_1", kind: "delivery_failed", detail: { period: "2026-09-14", pushJobId: "pj_dead" }, actor: "system", idempotencyKey: "w5-cmt-d1" });
   space.recordFulfillment({ scope: scopeA, commitmentId: commitment.commitmentId, dueAt: "2026-09-21T19:00:00+08:00", status: "satisfied", runId: "run_w1_2", actor: "system" });
   let commitmentRow = db.sqlite.prepare("SELECT status FROM agent_space_commitments WHERE commitment_id=?").get(commitment.commitmentId) as { status: string };
   assert.equal(commitmentRow.status, "active", "recurring commitments stay active across periods");
@@ -2394,4 +2408,94 @@ test("W5: scoped state packet, run-basis evidence, layered run outcomes, commitm
   assert.equal(commitmentRow.status, "active", "closing a lesson never cancels authorized commitments");
 
   space.setAgentStatus(scopeA, w5Agent.agent_id, "disabled", "user:a");
+});
+
+test("W5 rework R1/R2: auditable expired/inactive exclusions and a basis-bound continuation contract", async () => {
+  const { db, space } = await fixture;
+
+  const mkLesson = async (title: string, guidance: string, messageId: string) => {
+    const created = space.createStateCandidate({ scope: scopeA, kind: "lesson", title, content: { trigger: "t", guidance }, ownerKind: "conversation", ownerId: "conv_w1", actor: "agent" });
+    space.approveStateCandidate({ scope: scopeA, kind: "lesson", objectId: created.objectId, expectedVersionId: created.versionId, approvedBy: "user:a", approvalRef: await authz(scopeA, messageId, { operation: "state.approve", objectType: "agent_space_lesson", objectId: created.objectId, versionId: created.versionId, extraBinding: { kind: "lesson" } }), actor: "user:a" });
+    return created;
+  };
+  const agent = space.createAgent({ scope: scopeA, name: "W5R12助手", actor: "user:a" });
+  space.setAgentStatus(scopeA, agent.agent_id, "active", "user:a");
+  const A = await mkLesson("R1A", "ra", "um_w1_1");
+  const B = await mkLesson("R1B", "rb", "um_w1_2");
+  const C = await mkLesson("R1C", "rc", "um_w1_m");
+  const expired = await mkLesson("R1过期", "re", "um_w1_s1");
+  db.sqlite.prepare("UPDATE agent_space_lessons SET expires_at='2000-01-01T00:00:00.000Z' WHERE lesson_id=?").run(expired.objectId);
+  const disabled = await mkLesson("R1停用", "rd", "um_w1_s2");
+  space.transitionStateCandidate({ scope: scopeA, kind: "lesson", objectId: disabled.objectId, toStatus: "disabled", reason: "r1", actor: "user:a" });
+  const rejected = await mkLesson("R1拒绝", "rr", "um_w1_s3");
+  space.transitionStateCandidate({ scope: scopeA, kind: "lesson", objectId: rejected.objectId, toStatus: "rejected", reason: "r1", actor: "user:a" });
+  const draft = space.createStateCandidate({ scope: scopeA, kind: "lesson", title: "R1草稿", content: { trigger: "t", guidance: "rw" }, ownerKind: "conversation", ownerId: "conv_w1", actor: "agent" });
+  // 跨 scope 状态：不可被本 scope 检索枚举（连排除记录都不出现）
+  db.sqlite.prepare(`INSERT INTO conversation_sessions (conversation_id,user_id,project_id,instance_id,assistant_id,channel,title,last_message_preview,message_count,status,created_at,updated_at) VALUES ('conv_b',?,?,?,'a','w','','',1,'active',?,?)`).run(scopeB.userId, scopeB.projectId, scopeB.instanceId, now, now);
+  db.sqlite.prepare(`INSERT INTO conversation_messages (message_id,conversation_id,user_id,project_id,instance_id,assistant_id,channel,role,content,status,created_at) VALUES ('um_w1_b_r1','conv_b',?,?,?,'a','w','user','ok','sent',?)`).run(scopeB.userId, scopeB.projectId, scopeB.instanceId, now);
+  const crossLesson = space.createStateCandidate({ scope: scopeB, kind: "lesson", title: "跨域", content: { trigger: "t", guidance: "rx" }, ownerKind: "conversation", ownerId: "conv_b", actor: "agent" });
+  const { authorizationId: bAuthz } = space.registerUserAuthorization({ scope: scopeB, subjectUser: scopeB.userId, operation: "state.approve", objectType: "agent_space_lesson", objectId: crossLesson.objectId, versionId: crossLesson.versionId, extraBinding: { kind: "lesson" }, sourceMessageId: "um_w1_b_r1", actor: "rt" });
+  space.approveStateCandidate({ scope: scopeB, kind: "lesson", objectId: crossLesson.objectId, expectedVersionId: crossLesson.versionId, approvedBy: "user:b", approvalRef: `authorization:${bAuthz}`, actor: "user:b" });
+
+  // —— R1：expired/rejected/disabled/draft 全部有解释（带状态），不注入 ——
+  const packet = space.buildScopedStatePacket({ scope: scopeA, ownerKind: "conversation", ownerId: "conv_w1", agentId: agent.agent_id, budgetChars: 100000 });
+  const included = packet.entries.map((e) => e.objectId);
+  assert.ok(included.includes(A.objectId) && included.includes(B.objectId) && included.includes(C.objectId));
+  const excl = (id: string) => packet.exclusions.find((e) => e.objectId === id);
+  assert.equal(excl(expired.objectId)?.reason, "expired", "expired state carries an auditable exclusion");
+  assert.equal(excl(disabled.objectId)?.reason, "inactive-status");
+  assert.equal(excl(disabled.objectId)?.status, "disabled");
+  assert.equal(excl(rejected.objectId)?.reason, "inactive-status");
+  assert.equal(excl(rejected.objectId)?.status, "rejected");
+  assert.equal(excl(draft.objectId)?.reason, "inactive-status");
+  assert.equal(excl(draft.objectId)?.status, "draft");
+  assert.ok(!JSON.stringify(packet.exclusions).includes(crossLesson.objectId), "cross-scope state is never enumerable, not even as an exclusion");
+
+  // 排除原因进入冻结 run-basis
+  const basis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:message:w5r12", conversationId: "conv_w1", actor: "u" });
+  assert.ok(basis.resolution.statePacket.exclusions.some((e) => e.objectId === expired.objectId && e.reason === "expired"), "exclusion evidence is frozen into the run-basis");
+
+  // —— R2：直接检索的 pageSize + hasMore ——
+  const first = space.buildScopedStatePacket({ scope: scopeA, ownerKind: "conversation", ownerId: "conv_w1", agentId: agent.agent_id, budgetChars: 100000, pageSize: 1 });
+  assert.equal(first.entries.length, 1);
+  assert.equal(first.retrieval.hasMore, true, "hasMore is real when a next page exists");
+  const second = space.buildScopedStatePacket({ scope: scopeA, ownerKind: "conversation", ownerId: "conv_w1", agentId: agent.agent_id, budgetChars: 100000, offset: 1, pageSize: 1 });
+  assert.equal(second.entries.length, 1);
+  assert.notEqual(second.entries[0]!.objectId, first.entries[0]!.objectId, "continuation returns the next entry");
+  assert.equal(second.retrieval.hasMore, true);
+
+  // —— R2：basis 绑定 continuation——无预算参数可攻击，冻结集合分页 ——
+  const cont0 = space.getRunBasisStateContinuation({ scope: scopeA, basisKey: "conversation:conv_w1:message:w5r12", page: 0, pageSize: 1 });
+  assert.equal(cont0.entries.length, 1);
+  assert.equal(cont0.hasMore, true);
+  assert.equal(cont0.budgetChars, basis.resolution.statePacket.retrieval.budgetChars, "continuation inherits the frozen budget");
+  assert.ok(cont0.totalIncluded >= 3, "at least the three fresh lessons are in the frozen set");
+  // 逐页走完冻结集合：每页一条、互不重复、尾页之后空页 hasMore=false
+  const seen = new Set<string>();
+  let page = 0;
+  let last = cont0;
+  for (;;) {
+    last = space.getRunBasisStateContinuation({ scope: scopeA, basisKey: "conversation:conv_w1:message:w5r12", page, pageSize: 1 });
+    for (const e of last.entries) seen.add(e.objectId);
+    if (!last.hasMore) break;
+    page += 1;
+  }
+  assert.equal(seen.size, last.totalIncluded, "paging the frozen set yields each entry exactly once");
+  const past = space.getRunBasisStateContinuation({ scope: scopeA, basisKey: "conversation:conv_w1:message:w5r12", page: page + 1, pageSize: 1 });
+  assert.equal(past.entries.length, 0);
+  assert.equal(past.hasMore, false, "a cursor past the end returns an empty page with hasMore=false");
+  assert.equal(cont0.entries[0]!.content.guidance, first.entries.find((e) => e.objectId === cont0.entries[0]!.objectId)?.content.guidance, "continuation content matches the frozen basis set");
+  // 预算攻击：tiny-budget basis 的被排除项在任何续页都拿不回（continuation 无预算参数）
+  const tinyBasis = space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id, entryKind: "conversation", basisKey: "conversation:conv_w1:message:w5r12-tiny", conversationId: "conv_w1", stateBudgetChars: 1, actor: "u" });
+  const budgetExcluded = tinyBasis.resolution.statePacket.exclusions.find((e) => e.reason === "budget-exhausted");
+  assert.ok(budgetExcluded, "tiny budget excludes and records items");
+  for (let page = 0; page < 5; page += 1) {
+    const cont = space.getRunBasisStateContinuation({ scope: scopeA, basisKey: "conversation:conv_w1:message:w5r12-tiny", page, pageSize: 1 });
+    assert.ok(!cont.entries.some((e) => e.objectId === budgetExcluded!.objectId), "budget-excluded items stay unreachable via continuation");
+    if (!cont.hasMore) break;
+  }
+  // 跨 scope 读他人 basis 的 continuation 拒绝
+  expectAgentSpaceError(() => space.getRunBasisStateContinuation({ scope: scopeB, basisKey: "conversation:conv_w1:message:w5r12", page: 0, pageSize: 1 }), "AGENT_SPACE_NOT_FOUND", "cross-scope continuation cannot even observe the basis (scope-namespaced key)");
+
+  space.setAgentStatus(scopeA, agent.agent_id, "disabled", "user:a");
 });
