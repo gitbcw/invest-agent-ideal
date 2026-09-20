@@ -22,6 +22,7 @@ import {
   type RunBasisInjection,
 } from "../services/agent-space/index.js";
 import { getVersionRow as getSkillVersionRow, readSkillVersionContentBytes } from "../services/agent-space/skills.js";
+import { readStateVersionContent } from "../services/agent-space/state.js";
 import { buildPlatformBaseInstructions } from "./agent-instructions.js";
 import type { UserContext } from "../lib/user-context.js";
 
@@ -225,7 +226,17 @@ export async function buildAgentSpaceTurnOptions(input: {
   if (basis.resolution.methods.length === 0 && basis.resolution.skills.length === 0 && basis.resolution.assets.length === 0) {
     lines.push("本轮装配为显式空集（见 skipped 原因）；不得虚构可用能力。");
   }
-  lines.push(`状态包：${basis.resolution.statePacket.agentState.note}`);
+  // W5：状态包真实注入——按冻结 versionId 读内容，共享内容预算，逐段记录。
+  for (const entry of basis.resolution.statePacket.entries) {
+    const content = await readStateVersionContent(input.scope, entry.objectType, entry.versionId);
+    pushContent(
+      `state.${entry.objectType}:${entry.objectId}`,
+      `## 状态(${entry.objectType}) ${entry.title} @ ${entry.versionId}`,
+      JSON.stringify(content),
+    );
+  }
+  lines.push(`状态包说明：${basis.resolution.statePacket.note}（检索 ${basis.resolution.statePacket.retrieval.scanned} 条，纳入 ${basis.resolution.statePacket.retrieval.included} 条，预算 ${basis.resolution.statePacket.retrieval.usedChars}/${basis.resolution.statePacket.retrieval.budgetChars}）`);
+  for (const ex of basis.resolution.statePacket.exclusions) lines.push(`- state-excluded: ${ex.objectType}:${ex.objectId} — ${ex.reason}`);
   for (const item of basis.resolution.skipped) lines.push(`- skipped: ${item.kind}:${item.ref} — ${item.reason}`);
   for (const item of basis.resolution.pruned) lines.push(`- pruned: ${item.kind}:${item.ref} — ${item.reason}`);
   lines.push("未装配的内容（含任何旧 Workspace/默认技能）不可用；不要引用不存在的工具或文件。");

@@ -1521,6 +1521,19 @@ export const agentSpaceCommitmentFulfillments = sqliteTable("agent_space_commitm
   updatedAt: text("updated_at").notNull(),
 });
 
+/** W5 run outcomes: layered per-run records (execution/artifact/delivery/user-read), append-only. */
+export const agentSpaceRunOutcomes = sqliteTable("agent_space_run_outcomes", {
+  outcomeId: text("outcome_id").primaryKey(),
+  runId: text("run_id").notNull(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  kind: text("kind").notNull(),
+  detailJson: text("detail_json"),
+  idempotencyKey: text("idempotency_key"),
+  createdAt: text("created_at").notNull(),
+});
+
 /** W4 run-basis: explainable, version-pinned assembly record per entry (conversation/automation/scheduled). */
 export const agentSpaceRunBasis = sqliteTable("agent_space_run_basis", {
   basisId: text("basis_id").primaryKey(),

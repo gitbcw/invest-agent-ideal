@@ -2204,6 +2204,19 @@ function ensureAgentSpaceTables() {
       injection_json TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS agent_space_run_outcomes (
+      outcome_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      detail_json TEXT,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_run_outcome_idem
+      ON agent_space_run_outcomes(user_id, project_id, instance_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
   `);
   // W1 返工（验收 R3/R4/R6）增量列与新表：新建表语句已含；
   // ensureColumn 仅为已初始化过的 W1 隔离库幂等补齐。
@@ -2225,8 +2238,7 @@ function ensureAgentSpaceTables() {
   // 返工 W4-R2：run-basis 冻结回放需要请求身份；W4-R1 接线回写实际注入。
   ensureColumn("agent_space_run_basis", "request_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("agent_space_run_basis", "injection_json", "TEXT");
-  markMigration(migrationKey);
-}
+  markMigration(migrationKey);}
 
 /**
  * One-time cleanup (investment profile retirement, 2026-08-14): the retired

@@ -30,6 +30,7 @@ import {
 import { resolveMethodVersion } from "./methods.js";
 import { getInstalledSkillManifest } from "./agents.js";
 import { listTaskDependencies } from "./tasks.js";
+import { buildScopedStatePacket, type StatePacketExclusion } from "./state.js";
 import { getVersionRow as getSkillVersionRow } from "./skills.js";
 
 export type AssemblyEntryKind = "conversation" | "generic_automation" | "scheduled";
@@ -74,9 +75,10 @@ export interface ResolvedRunBasisContent {
   methods: ResolvedMethodEntry[];
   assets: ResolvedAssetEntry[];
   statePacket: {
-    lessons: never[];
-    workflows: never[];
-    agentState: { status: "stub"; note: string };
+    entries: Array<{ objectType: "lesson" | "workflow"; objectId: string; versionId: string; title: string; contentChars: number }>;
+    exclusions: StatePacketExclusion[];
+    retrieval: { scanned: number; included: number; budgetChars: number; usedChars: number; scopeOwners: Array<{ ownerKind: string; ownerId: string }> };
+    note: string;
   };
   pruned: PruneSkipRecord[];
   skipped: PruneSkipRecord[];
@@ -119,7 +121,8 @@ interface BasisRequestIdentity {
   runId: string | null;
 }
 
-const STATE_STUB_NOTE = "not-integrated-until-W5: W4 loads no long-term state (lessons/workflows stay empty by design)";
+const DEFAULT_STATE_BUDGET_CHARS = 20_000;
+const STATE_PACKET_NOTE = "state is read-only: it cannot create tasks, write assets, or send notifications";
 
 /** 存储键按 scope 命名空间：不同 scope 的同名 basisKey 永不冲突。 */
 function scopedBasisKey(scope: UserScope, basisKey: string): string {
@@ -140,6 +143,7 @@ export function assembleAndRecordRunBasis(input: {
   conversationId?: string | null;
   taskId?: string | null;
   runId?: string | null;
+  stateBudgetChars?: number;
   actor: string;
 }): RunBasisRecord {
   assertScopeValid(input.scope);
@@ -170,7 +174,7 @@ export function assembleAndRecordRunBasis(input: {
   }
   // 入口身份链核验 + 解析（任何失败都在写入之前抛出）。
   verifyEntryIdentity(input.scope, identity);
-  const resolution = resolveRunBasisContent(input.scope, identity);
+  const resolution = resolveRunBasisContent(input.scope, identity, input.stateBudgetChars);
   const payload = JSON.stringify(resolution);
   const basisId = newId("rbasis");
   const now = nowIso();
@@ -390,7 +394,7 @@ function verifyEntryIdentity(scope: UserScope, identity: BasisRequestIdentity): 
 
 // ---------- 装配解析（返工 R3/R4） ----------
 
-function resolveRunBasisContent(scope: UserScope, identity: BasisRequestIdentity): ResolvedRunBasisContent {
+function resolveRunBasisContent(scope: UserScope, identity: BasisRequestIdentity, stateBudgetChars?: number): ResolvedRunBasisContent {
   const agentRow = sqlite
     .prepare("SELECT agent_id, name FROM agent_space_agents WHERE agent_id=?")
     .get(identity.agentId) as { agent_id: string; name: string };
@@ -424,7 +428,7 @@ function resolveRunBasisContent(scope: UserScope, identity: BasisRequestIdentity
       entryKind: identity.entryKind,
       agent: { agentId: agentRow.agent_id, name: agentRow.name },
       skills, methods, assets,
-      statePacket: emptyStatePacket(),
+      statePacket: resolveStatePacket(scope, identity, stateBudgetChars ?? DEFAULT_STATE_BUDGET_CHARS),
       pruned, skipped,
       context: { conversationId: identity.conversationId, taskId: null, runId: null },
     };
@@ -442,7 +446,7 @@ function resolveRunBasisContent(scope: UserScope, identity: BasisRequestIdentity
       entryKind: identity.entryKind,
       agent: { agentId: agentRow.agent_id, name: agentRow.name },
       skills: [], methods: [], assets: [],
-      statePacket: emptyStatePacket(),
+      statePacket: resolveStatePacket(scope, identity, stateBudgetChars ?? DEFAULT_STATE_BUDGET_CHARS),
       pruned, skipped,
       context: { conversationId: null, taskId: identity.taskId, runId: identity.runId },
     };
@@ -508,7 +512,7 @@ function resolveRunBasisContent(scope: UserScope, identity: BasisRequestIdentity
     entryKind: identity.entryKind,
     agent: { agentId: agentRow.agent_id, name: agentRow.name },
     skills, methods, assets,
-    statePacket: emptyStatePacket(),
+    statePacket: resolveStatePacket(scope, identity, stateBudgetChars ?? DEFAULT_STATE_BUDGET_CHARS),
     pruned, skipped,
     context: { conversationId: null, taskId: identity.taskId, runId: identity.runId },
   };
@@ -564,7 +568,27 @@ function resolveAssetVersion(scope: UserScope, assetId: string, pinnedVersionId:
   return { assetId, versionId, contentChecksum: version.checksum };
 }
 
-function emptyStatePacket(): ResolvedRunBasisContent["statePacket"] {
-  return { lessons: [], workflows: [], agentState: { status: "stub", note: STATE_STUB_NOTE } };
+/**
+ * 作用域 State Packet（W5 集成）：按入口归属（conversation/task）+ 执行
+ * Agent 归属检索，硬预算/去重/冲突排除/解释记录由 buildScopedStatePacket
+ * 承担；basis 只落条目引用与解释（正文按冻结 versionId 可查证重读）。
+ */
+function resolveStatePacket(scope: UserScope, identity: BasisRequestIdentity, budgetChars: number): ResolvedRunBasisContent["statePacket"] {
+  const ownerKind = identity.entryKind === "conversation" ? "conversation" : "task";
+  const ownerId = identity.entryKind === "conversation" ? identity.conversationId! : identity.taskId!;
+  const packet = buildScopedStatePacket({
+    scope,
+    ownerKind,
+    ownerId,
+    agentId: identity.agentId,
+    budgetChars,
+    offset: 0,
+  });
+  return {
+    entries: packet.entries.map((e) => ({ objectType: e.objectType, objectId: e.objectId, versionId: e.versionId, title: e.title, contentChars: e.contentChars })),
+    exclusions: packet.exclusions,
+    retrieval: { ...packet.retrieval },
+    note: STATE_PACKET_NOTE,
+  };
 }
 

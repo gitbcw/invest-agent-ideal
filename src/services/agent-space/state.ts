@@ -449,7 +449,7 @@ export function listEffectiveState(input: {
   domain?: AgentSpaceScopeDomain;
   scope: UserScope | null;
   kind: "lesson" | "workflow";
-}): Array<{ objectId: string; title: string; versionId: string; content: Record<string, unknown>; ownerKind: string | null; ownerId: string | null }> {
+}): Array<{ objectId: string; title: string; versionId: string; content: Record<string, unknown>; ownerKind: string | null; ownerId: string | null; evidenceState?: string | null }> {
   const domain = input.domain ?? "user";
   assertDomainRowShape(domain, input.scope);
   const table: StateObjectTable = input.kind === "lesson" ? "agent_space_lessons" : "agent_space_workflows";
@@ -457,7 +457,8 @@ export function listEffectiveState(input: {
   const rows = sqlite
     .prepare(
       `SELECT h.${input.kind === "lesson" ? "lesson_id" : "workflow_id"} AS objectId, h.title, h.current_version_id AS versionId,
-              h.owner_kind AS ownerKind, h.owner_id AS ownerId, v.content_json AS content
+              h.owner_kind AS ownerKind, h.owner_id AS ownerId,
+              ${input.kind === "lesson" ? "h.evidence_state" : "NULL"} AS evidenceState, v.content_json AS content
        FROM ${table} h JOIN ${versionTable} v ON v.version_id = h.current_version_id
        WHERE h.domain=? AND COALESCE(h.user_id,'')=? AND COALESCE(h.project_id,'')=? AND COALESCE(h.instance_id,'')=?
          AND h.status='active' AND (h.expires_at IS NULL OR h.expires_at > ?)`,
@@ -468,12 +469,133 @@ export function listEffectiveState(input: {
     versionId: string;
     ownerKind: string | null;
     ownerId: string | null;
+    evidenceState: string | null;
     content: string;
   }>;
   return rows.map((r) => ({
     objectId: r.objectId, title: r.title, versionId: r.versionId,
-    ownerKind: r.ownerKind, ownerId: r.ownerId, content: JSON.parse(r.content),
+    ownerKind: r.ownerKind, ownerId: r.ownerId, evidenceState: r.evidenceState, content: JSON.parse(r.content),
   }));
+}
+
+// ---------- W5：作用域 State Packet（真实检索，替换 W4 空桩） ----------
+
+export interface StatePacketEntry {
+  objectType: "lesson" | "workflow";
+  objectId: string;
+  versionId: string;
+  title: string;
+  content: Record<string, unknown>;
+  contentChars: number;
+}
+
+export interface StatePacketExclusion {
+  objectType: "lesson" | "workflow";
+  objectId: string;
+  reason: "out-of-scope" | "conflict-evidence" | "duplicate-content" | "budget-exhausted";
+}
+
+export interface ScopedStatePacket {
+  entries: StatePacketEntry[];
+  exclusions: StatePacketExclusion[];
+  retrieval: {
+    scanned: number;
+    included: number;
+    budgetChars: number;
+    usedChars: number;
+    offset: number;
+    hasMore: boolean;
+    scopeOwners: Array<{ ownerKind: string; ownerId: string }>;
+  };
+}
+
+/**
+ * 作用域 State Packet（W5）：只检索属于本次执行上下文的状态——任务入口取
+ * task 归属 + 执行 Agent 归属，会话入口取 conversation + Agent 归属；草稿/
+ * 拒绝/停用/过期本就不在有效集；counterexample 证据冲突排除；同内容去重；
+ * 起始检索与补查共用**硬预算**（总字符预算跨分页恒定，超预算条目永远不可
+ * 达并有记录）。全部排除/去重/截断都有解释记录；状态只读——本包不创建
+ * 任务、不写资产、不发通知。
+ */
+export function buildScopedStatePacket(input: {
+  scope: UserScope;
+  ownerKind: "conversation" | "task" | "agent";
+  ownerId: string;
+  /** 额外纳入的 Agent 归属状态（执行 Agent）；与主归属并列。 */
+  agentId?: string | null;
+  budgetChars: number;
+  offset?: number;
+}): ScopedStatePacket {
+  assertScopeValid(input.scope);
+  const budgetChars = Math.max(0, Math.floor(input.budgetChars));
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const scopeOwners: Array<{ ownerKind: string; ownerId: string }> = [{ ownerKind: input.ownerKind, ownerId: input.ownerId }];
+  if (input.agentId && !(input.ownerKind === "agent" && input.ownerId === input.agentId)) {
+    scopeOwners.push({ ownerKind: "agent", ownerId: input.agentId });
+  }
+  const candidates = [
+    ...listEffectiveState({ scope: input.scope, kind: "lesson" }).map((e) => ({ objectType: "lesson" as const, ...e })),
+    ...listEffectiveState({ scope: input.scope, kind: "workflow" }).map((e) => ({ objectType: "workflow" as const, ...e })),
+  ];
+  const exclusions: StatePacketExclusion[] = [];
+  const inScope: typeof candidates = [];
+  for (const candidate of candidates) {
+    const matches = scopeOwners.some((o) => candidate.ownerKind === o.ownerKind && candidate.ownerId === o.ownerId);
+    if (!matches) {
+      exclusions.push({ objectType: candidate.objectType, objectId: candidate.objectId, reason: "out-of-scope" });
+      continue;
+    }
+    if (candidate.evidenceState === "counterexample") {
+      exclusions.push({ objectType: candidate.objectType, objectId: candidate.objectId, reason: "conflict-evidence" });
+      continue;
+    }
+    inScope.push(candidate);
+  }
+  // 去重：同内容（规范化 JSON 摘要）只保留首个，重复记录原因。
+  const seenContent = new Set<string>();
+  const deduped: typeof inScope = [];
+  for (const candidate of inScope) {
+    const fingerprint = `${candidate.objectType}:${JSON.stringify(candidate.content)}`;
+    if (seenContent.has(fingerprint)) {
+      exclusions.push({ objectType: candidate.objectType, objectId: candidate.objectId, reason: "duplicate-content" });
+      continue;
+    }
+    seenContent.add(fingerprint);
+    deduped.push(candidate);
+  }
+  // 硬预算：按稳定顺序累计；超预算条目记录并永远不可达（分页不越过预算）。
+  const budgeted: typeof deduped = [];
+  let used = 0;
+  for (const candidate of deduped) {
+    const chars = JSON.stringify(candidate.content).length;
+    if (used + chars > budgetChars) {
+      exclusions.push({ objectType: candidate.objectType, objectId: candidate.objectId, reason: "budget-exhausted" });
+      continue;
+    }
+    used += chars;
+    budgeted.push(candidate);
+  }
+  const page = budgeted.slice(offset);
+  return {
+    entries: page.map((candidate) => ({
+      objectType: candidate.objectType,
+      objectId: candidate.objectId,
+      versionId: candidate.versionId,
+      title: candidate.title,
+      content: candidate.content,
+      contentChars: JSON.stringify(candidate.content).length,
+    })),
+    exclusions,
+    retrieval: {
+      scanned: candidates.length,
+      included: page.length,
+      budgetChars,
+      usedChars: used,
+      offset,
+      hasMore: offset + page.length < budgeted.length,
+      scopeOwners,
+    },
+  };
 }
 
 // ---------- AgentCommitment ----------
@@ -690,4 +812,29 @@ export function recordFulfillment(input: {
     return fulfillmentId;
   });
   return { fulfillmentId: tx() };
+}
+
+/**
+ * 按冻结 versionId 读取状态对象内容（W5 注入侧）：内容来自不可变版本行，
+ * 与 run-basis 记录的 versionId 一致，保证查证可重现。
+ */
+export function readStateVersionContent(
+  scope: UserScope,
+  objectType: "lesson" | "workflow",
+  versionId: string,
+): Record<string, unknown> {
+  assertScopeValid(scope);
+  const table = objectType === "lesson" ? "agent_space_lesson_versions" : "agent_space_workflow_versions";
+  const idColumn = objectType === "lesson" ? "lesson_id" : "workflow_id";
+  const parentTable = objectType === "lesson" ? "agent_space_lessons" : "agent_space_workflows";
+  const row = sqlite
+    .prepare(
+      `SELECT v.content_json AS content, p.user_id AS user_id, p.project_id AS project_id, p.instance_id AS instance_id
+       FROM ${table} v JOIN ${parentTable} p ON p.${idColumn} = v.${idColumn}
+       WHERE v.version_id=?`,
+    )
+    .get(versionId) as { content: string; user_id: string | null; project_id: string | null; instance_id: string | null } | undefined;
+  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `${objectType} version ${versionId}`);
+  assertRowScope(row, scope);
+  return JSON.parse(row.content) as Record<string, unknown>;
 }

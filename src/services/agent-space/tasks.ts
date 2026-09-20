@@ -404,3 +404,115 @@ export function getTaskRunSnapshot(scope: UserScope, runId: string): {
     createdAt: row.created_at,
   };
 }
+
+// ---------- W5：运行结果分层记录（执行/产物/投递/阅读） ----------
+
+export type RunOutcomeKind =
+  | "execution_succeeded"
+  | "execution_failed"
+  | "artifact_generated"
+  | "delivery_succeeded"
+  | "delivery_failed"
+  | "user_read";
+
+const RUN_OUTCOME_KINDS: readonly RunOutcomeKind[] = [
+  "execution_succeeded", "execution_failed", "artifact_generated",
+  "delivery_succeeded", "delivery_failed", "user_read",
+];
+
+export interface RunOutcomeRecord {
+  outcomeId: string;
+  runId: string;
+  kind: RunOutcomeKind;
+  detail: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+function verifyRunScope(scope: UserScope, runId: string): void {
+  const row = sqlite
+    .prepare("SELECT user_id, project_id, instance_id FROM automation_task_runs WHERE run_id=?")
+    .get(runId) as { user_id: string; project_id: string; instance_id: string } | undefined;
+  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation run ${runId}`);
+  assertRowScope(row, scope);
+}
+
+/**
+ * 运行结果分层记录（W5）：执行成功、产物生成、投递成功/失败、用户阅读
+ * 分别落条，append-only、带审计；幂等键（可选）同键同内容回放返回既有条，
+ * 异内容冲突。run 必须真实存在且同 scope。
+ */
+export function recordRunOutcome(input: {
+  scope: UserScope;
+  runId: string;
+  kind: RunOutcomeKind;
+  detail?: Record<string, unknown>;
+  idempotencyKey?: string;
+  actor: string;
+}): RunOutcomeRecord {
+  assertScopeValid(input.scope);
+  if (!RUN_OUTCOME_KINDS.includes(input.kind)) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `unknown run outcome kind ${input.kind}`);
+  }
+  verifyRunScope(input.scope, input.runId);
+  const detailJson = input.detail ? JSON.stringify(input.detail) : null;
+  if (input.idempotencyKey) {
+    const existing = sqlite
+      .prepare(
+        `SELECT outcome_id, run_id, kind, detail_json, created_at FROM agent_space_run_outcomes
+         WHERE user_id=? AND project_id=? AND instance_id=? AND idempotency_key=?`,
+      )
+      .get(input.scope.userId, input.scope.projectId, input.scope.instanceId, input.idempotencyKey) as
+      | { outcome_id: string; run_id: string; kind: string; detail_json: string | null; created_at: string }
+      | undefined;
+    if (existing) {
+      if (existing.run_id !== input.runId || existing.kind !== input.kind || (existing.detail_json ?? null) !== detailJson) {
+        throw new AgentSpaceError(
+          "AGENT_SPACE_IDEMPOTENCY_CONFLICT",
+          `run outcome idempotency key ${input.idempotencyKey} replay with different content`,
+        );
+      }
+      return { outcomeId: existing.outcome_id, runId: existing.run_id, kind: existing.kind as RunOutcomeKind, detail: existing.detail_json ? JSON.parse(existing.detail_json) : null, createdAt: existing.created_at };
+    }
+  }
+  const outcomeId = newId("rout");
+  const tx = sqlite.transaction(() => {
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_run_outcomes (
+           outcome_id, run_id, user_id, project_id, instance_id, kind, detail_json, idempotency_key, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(outcomeId, input.runId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+           input.kind, detailJson, input.idempotencyKey ?? null, nowIso());
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "run.outcome_recorded",
+      objectType: "agent_space_run_outcome",
+      objectId: outcomeId,
+      toStatus: input.kind,
+      detail: { runId: input.runId, kind: input.kind },
+    });
+  });
+  tx();
+  return { outcomeId, runId: input.runId, kind: input.kind, detail: input.detail ?? null, createdAt: nowIso() };
+}
+
+/** 运行结果时间线（按发生顺序）。 */
+export function listRunOutcomes(scope: UserScope, runId: string): RunOutcomeRecord[] {
+  assertScopeValid(scope);
+  verifyRunScope(scope, runId);
+  return (
+    sqlite
+      .prepare(
+        `SELECT outcome_id, run_id, kind, detail_json, created_at FROM agent_space_run_outcomes
+         WHERE run_id=? AND user_id=? AND project_id=? AND instance_id=? ORDER BY rowid`,
+      )
+      .all(runId, scope.userId, scope.projectId, scope.instanceId) as Array<{
+      outcome_id: string; run_id: string; kind: string; detail_json: string | null; created_at: string;
+    }>
+  ).map((r) => ({
+    outcomeId: r.outcome_id, runId: r.run_id, kind: r.kind as RunOutcomeKind,
+    detail: r.detail_json ? JSON.parse(r.detail_json) : null, createdAt: r.created_at,
+  }));
+}
