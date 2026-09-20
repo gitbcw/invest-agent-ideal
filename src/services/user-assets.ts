@@ -23,7 +23,7 @@ import { normalizeImageBytes } from "./image-normalization.js";
 import { UserAssetError } from "./user-asset-error.js";
 export { UserAssetError } from "./user-asset-error.js";
 
-export type AssetFormat = "markdown" | "html" | "csv" | "xlsx" | "pdf" | "png" | "jpeg" | "webp" | "svg" | "yaml" | "jsonl";
+export type AssetFormat = "markdown" | "html" | "csv" | "xlsx" | "pdf" | "png" | "jpeg" | "webp" | "svg" | "yaml" | "jsonl" | "docx";
 export type UserAssetStatus = "active" | "archived";
 export type UserAssetSource = "upload" | "conversation" | "automation" | "restore" | "system";
 export type AssetScope = { userId: string; projectId: string; instanceId: string };
@@ -132,6 +132,7 @@ const MAX_BYTES: Record<AssetFormat, number> = {
   // Workspace config assets (strategy/portfolio/watch yaml, jsonl state)
   // migrated from the legacy runtime carry these text formats.
   yaml: USER_ASSET_MAX_BYTES, jsonl: USER_ASSET_MAX_BYTES,
+  docx: USER_ASSET_MAX_BYTES,
 };
 const MIME_BY_FORMAT: Record<AssetFormat, string[]> = {
   markdown: ["text/markdown", "text/plain"], html: ["text/html"],
@@ -141,6 +142,8 @@ const MIME_BY_FORMAT: Record<AssetFormat, string[]> = {
   webp: ["image/webp"], svg: ["image/svg+xml"],
   yaml: ["text/yaml", "text/x-yaml", "application/yaml", "text/plain"],
   jsonl: ["application/x-ndjson", "application/jsonl", "text/plain"],
+  // docx mime 与附件通道/解析器（attachment-store、mineru-parse、portal 附件策略）同源。
+  docx: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
 };
 const CANONICAL_MIME: Record<AssetFormat, string> = {
   markdown: "text/markdown", html: "text/html", csv: "text/csv",
@@ -148,12 +151,14 @@ const CANONICAL_MIME: Record<AssetFormat, string> = {
   pdf: "application/pdf", png: "image/png", jpeg: "image/jpeg",
   webp: "image/webp", svg: "image/svg+xml",
   yaml: "text/yaml", jsonl: "application/x-ndjson",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 const EXTENSION_FORMAT: Record<string, AssetFormat> = {
   ".md": "markdown", ".markdown": "markdown", ".html": "html", ".htm": "html",
   ".csv": "csv", ".xlsx": "xlsx", ".pdf": "pdf", ".png": "png",
   ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp", ".svg": "svg",
   ".yaml": "yaml", ".yml": "yaml", ".jsonl": "jsonl", ".ndjson": "jsonl",
+  ".docx": "docx",
 };
 const SOURCES = new Set<UserAssetSource>(["upload", "conversation", "automation", "restore", "system"]);
 
@@ -813,6 +818,8 @@ async function validateContent(format: AssetFormat, bytes: Buffer): Promise<void
   if (format === "png" && !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new UserAssetError("ASSET_MIME_MISMATCH", "PNG signature is invalid");
   if (format === "jpeg" && !(bytes[0] === 255 && bytes[1] === 216 && bytes[bytes.length - 2] === 255 && bytes[bytes.length - 1] === 217)) throw new UserAssetError("ASSET_MIME_MISMATCH", "JPEG signature is invalid");
   if (format === "webp" && !(bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP")) throw new UserAssetError("ASSET_MIME_MISMATCH", "WebP signature is invalid");
+  // docx 是 zip 容器（OOXML）：只验签名不验内部结构——不引入解包依赖，与 pdf/png 的签名级校验同档。
+  if (format === "docx" && !(bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07))) throw new UserAssetError("ASSET_MIME_MISMATCH", "DOCX (zip) signature is invalid");
 }
 
 function requireAsset(input: AssetScope & { assetId: string }): AssetRow {

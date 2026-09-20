@@ -68,6 +68,33 @@ test("migrated yaml/jsonl asset versions list and read without ASSET_COMMIT_FAIL
   assert.equal(Buffer.from(read.bytes).toString(), "style: steady\n");
 });
 
+test("W7 前置：docx 进资产白名单（zip 签名校验，伪字节拒绝）", async () => {
+  const assets = await import("../src/services/user-assets.js");
+  // 正例：OOXML 是 zip 容器，签名级校验（与 pdf/png 同档，不解包）。
+  const docxBytes = Buffer.concat([
+    Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+    Buffer.from("20 14 06 00 00 00 00 00 ".replace(/ /g, ""), "hex"),
+    Buffer.from("[Content_Types].xml …"),
+  ]);
+  const created = await assets.createUserAsset({
+    ...scope,
+    fileName: "att_c6a99f7e.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    bytes: docxBytes,
+  });
+  assert.equal(created.currentVersion?.format, "docx");
+  // 反例：扩展名伪装 docx 但无 zip 签名 → 拒绝。
+  await assert.rejects(
+    assets.createUserAsset({ ...scope, fileName: "fake.docx", bytes: Buffer.from("not a zip container") }),
+    /DOCX \(zip\) signature is invalid/,
+  );
+  // 反例：扩展名不在白名单（如 .doc 老格式）仍拒绝。
+  await assert.rejects(
+    assets.createUserAsset({ ...scope, fileName: "legacy.doc", bytes: docxBytes }),
+    /ASSET_UNSUPPORTED_FORMAT/,
+  );
+});
+
 test("new yaml uploads take the normal validated path", async () => {
   const db = await import("../src/db/index.js");
   const assets = await import("../src/services/user-assets.js");
