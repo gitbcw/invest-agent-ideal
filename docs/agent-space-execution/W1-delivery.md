@@ -1,7 +1,7 @@
 # W1 交付：新对象契约与数据库基础
 
-状态：本地实现与隔离 DB 验证完成（含 R1-R5 返工）；未导入任何真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
-依据：[W1-domain-contracts.md](./W1-domain-contracts.md)、[v3 总纲](../agent-space-workspace-exit-design-v3.md) §5-W1、[W0 验收第三次结论](./W0-acceptance-review.md)、[W1 验收返工单](./W1-acceptance-review.md)（R1-R5 已修复并落为可失败测试）。
+状态：本地实现与隔离 DB 验证完成（含 R1-R5 与 R6-R8 两轮返工）；未导入任何真实用户内容、未接线运行时、未改 Portal/调度/生产配置。
+依据：[W1-domain-contracts.md](./W1-domain-contracts.md)、[v3 总纲](../agent-space-workspace-exit-design-v3.md) §5-W1、[W0 验收第三次结论](./W0-acceptance-review.md)、[W1 验收返工单](./W1-acceptance-review.md)（R1-R5 与 R6-R8 均已修复并落为可失败测试）。
 
 ## 0. R1-R5 返工摘要（相对首版 e85db6f）
 
@@ -12,7 +12,10 @@
 | R3 假资产/假 checksum 可登记 | `addMethodVersion`/`addSkillVersion` 在服务层核对 user_asset_versions 行存在、同 scope、checksum 与库值一致（系统模板核对模板根文件字节）；`resolveMethodVersion` 校验版本属于指定 Method；W0 约束结构化为 `adoption_constraints` 列并强制（hold 默认采用须 owner 决策；historical-not-default 永不成为 current 且拒绝运行 pin/绑定） | "method content refs" + "structured adoption constraints" + resolve 错配反例 |
 | R4 修订后旧确认激活新版本 | `approveStateCandidate` 增 `expectedVersionId`（乐观并发：绑定用户确认的预览版本，过期确认报 `IDEMPOTENCY_CONFLICT`）；active 对象修订走 `draft_version_id` 独立指针，原有效版本不退出；lesson/workflow 必须挂真实会话/任务/Agent（owner_kind/owner_id 校验）且内容字段白名单 | "state candidates" 组：v1 确认在 v2 后重放拒绝、修订不退有效版、归属/白名单反例 |
 | R5 DROP 当回滚 + 非原子写 | 本文档 §6 重写：DROP 仅测试夹具重置；真实恢复=验证备份/定向前向修复。全部写操作（含审计）同事务，测试用审计失败触发器证明零半成品；幂等键同 key 不同内容一律 `IDEMPOTENCY_CONFLICT` | "audit failure rolls back" + 幂等冲突 + "upgrade with existing data" |
-| approvalRef 任意字符串 | `verifyApprovalRef`：仅接受 `conversation:<messageId>`（同 scope 真实存在）或 `owner-decision:<ref>`（附 owner 令牌）；适用于方法/技能批准、安装与升级、状态批准、承诺激活 | 各组内 "invalid-ref"/跨 scope 消息反例 |
+| approvalRef 任意字符串 | ~~`verifyApprovalRef` 仅验消息存在~~ → R6 升级为绑定式授权凭证（见下） | — |
+| R6 消息存在≠用户批准 | 新增 `agent_space_authorizations` 授权登记表：`registerUserAuthorization` 核验来源消息（同 scope、role=user、status=sent）并绑定主体/scope/操作/对象/版本/附加字段（extraBinding 计入自然键）；`verifyAuthorization` 只认 `authorization:<id>`（绑定全匹配，同绑定重放幂等、跨对象/动作/版本拒绝）或 `owner-decision:<ref>`+令牌；assistant/failed/superseded 消息不能登记；裸 `conversation:` 不再是凭证 | "R6: message existence is not authorization" 组 + 直接复现 |
+| R7 初始草稿修订指针矛盾 | `reviseStateCandidate` 区分两态：首次草稿（从未批准）修订直接替换 `current_version_id`（旧确认随之失效）；active 修订走 `draft_version_id` 且同时只允许一个待批准；新增 `discardStateRevision`（撤销/拒绝待批准修订，不动对象状态与有效版本）；approve 的可批准指针口径与实际指针一致（draft=current、active=draft） | "R7: initial-draft revision" 组：批准 v2 成功、旧确认冲突、连续修订拒绝、discard 后 active 保留 |
+| R8 快照接受未解析草稿/伪依据 | 装配条目必须携带具体已解析正式 versionId（null 拒绝；latest/current 是解析策略非延迟）；类别必须与所在数组一致；checksum 由服务端从版本行读取盖章（调用方提供值必须与实际一致）；method 复用 `resolveMethodVersion`（含"未采纳 current 的 hold/split 约束版本不得 pin"绕过拦截）；校验 assembly.agent 与顶层 agentId 一致、run.revision 归属 | "R8: snapshots reject..." 组：draft/null/伪 checksum/类别错位/双 Agent 不一致/hold 绕过全拒绝、正常装配盖章成功 |
 
 ## 1. 代码位置
 
@@ -36,6 +39,7 @@
 | TaskDependency | `agent_space_task_dependencies` | task/agent/ref 全部真实归属校验；agent_state fail-closed |
 | TaskRunSnapshot | `agent_space_task_run_snapshots` | append-only；UNIQUE(run_id)；装配白名单字段+全链校验；同 run 异载荷冲突 |
 | T-524 Fact / Lesson(+v) / Workflow(+v) / Commitment / 履约 | `agent_space_facts` / `_lessons` `_lesson_versions` / `_workflows` `_workflow_versions` / `_commitments` / `_commitment_fulfillments` | fact 自然键幂等；lesson/workflow 挂 owner(conversation/task/agent)+内容白名单；批准绑 expectedVersionId；修订走 draft_version_id；承诺激活须可核对授权+同 scope 执行器 |
+| 可信授权登记（R6） | `agent_space_authorizations` | 批准凭证绑定主体/scope/操作/对象/版本/extraBinding（计入唯一自然键）；来源消息 role=user 且 status=sent；消耗可幂等重放 |
 | 统一审计 | `agent_space_audit_logs` | 与业务写同事务；记录 from/to、批准依据形态、W0 约束 |
 
 ## 3. 状态转换（服务层校验）
@@ -53,22 +57,22 @@ Commitment:  proposed ──activate(可核对授权 + 执行器同 scope)──
 Fulfillment: pending → running → satisfied | failed_needs_attention | skipped（run 引用校验同 scope）
 ```
 
-批准依据契约：`conversation:<messageId>`（同 scope conversation_messages 存在）或 `owner-decision:<ref>`（settings 键 `agent_space.owner_admin_token` 或环境变量 `AGENT_SPACE_OWNER_ADMIN_TOKEN` 匹配）。模型/调用方自报字符串一律拒绝。
+批准凭证契约（R6 后）：`authorization:<id>`——由可信入口 `registerUserAuthorization` 登记（来源消息必须同 scope、role=user、status=sent；绑定主体/scope/操作/objectId/versionId/extraBinding，extraBinding 计入幂等自然键），核验时绑定全匹配、同绑定重放幂等、跨对象/动作/版本重放拒绝；或 `owner-decision:<ref>` + owner 令牌（目标绑定入审计）。裸消息 id、assistant/failed/superseded 消息、任意字符串一律不是凭证。
 
 ## 4. API 列表（`src/services/agent-space/`）
 
-- core：`assertScopeValid`/`assertRowScope`/`recordAgentSpaceAudit`/`findByIdempotencyKey`/`assertIdempotencyConsistent`/`verifyApprovalRef`/`requireOwnerAuthorization`/`assertOnlyFields`
+- core：`assertScopeValid`/`assertRowScope`/`recordAgentSpaceAudit`/`findByIdempotencyKey`/`assertIdempotencyConsistent`/`registerUserAuthorization`/`verifyAuthorization`/`requireOwnerAuthorization`/`assertOnlyFields`
 - methods：`createMethod` `addMethodVersion`（引用真实性+约束校验）`approveMethodVersion`（约束+owner 通道）`retireMethod` `resolveMethodVersion`（归属+运行约束）`getMethod(Version)` `parseAdoptionConstraints`
 - skills：`upsertSkill` `addSkillVersion`（async；引用校验）`approveSkillVersion` `publishSkillRelease` `retireSkillRelease` `assertReleaseInstallableBy` `getSkillReleaseForInstaller` `listPublicSkillReleases` `getSkill(Version)`
 - agents：`createAgent` `setAgentStatus` `installSkill` `listInstalledSkills` `bindMethod` `grantAsset` `listAssetGrants`
 - tasks：`upsertTaskDependency` `listTaskDependencies` `recordTaskRunSnapshot`（幂等+冲突）`getTaskRunSnapshot`
-- state：`recordAgentFact` `createStateCandidate`（owner 绑定+内容白名单）`approveStateCandidate`（expectedVersionId）`reviseStateCandidate`（不退有效版）`transitionStateCandidate` `listEffectiveState` `createCommitment` `activateCommitment` `transitionCommitment` `recordFulfillment`
+- state：`recordAgentFact` `createStateCandidate`（owner 绑定+内容白名单）`approveStateCandidate`（expectedVersionId）`reviseStateCandidate`（草稿态替换指针/active 态挂待批准）`discardStateRevision`（撤销待批准修订）`transitionStateCandidate` `listEffectiveState` `createCommitment` `activateCommitment` `transitionCommitment` `recordFulfillment`
 
 ## 5. 验证证据
 
 ```
-node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 15/15
-npm test    # 705/705（~47s 自终止）
+node --import tsx --test --test-concurrency=1 --test-force-exit tests/agent-space-domain.test.ts   # 18/18
+npm test    # 708/708（~47s 自终止）
 npm run build && npx tsc --noEmit   # 0 错误
 ```
 
@@ -87,3 +91,5 @@ npm run build && npx tsc --noEmit   # 0 错误
 - shared 可见性的授权模型（市场审核策略未冻结，v3 §8）；owner 令牌的生产注入方式（settings 键由运维写入）。
 - 快照不可变当前=服务层无更新路径+UNIQUE(run_id)+幂等冲突；W5 落地写入方时决定是否加 SQLite 触发器硬拒 UPDATE。
 - Portal 信息架构、W0 的 205 项 owner-review 候选进入 W2 的逐项裁决流程。
+- `registerUserAuthorization` 的可信调用入口在 W4/W5 接入运行时确认层（当前仅服务层直调；模型不可达）。
+- 公共发布安装与 task dependency 的发布授权读取统一（验收遗留注记，W3/W4 处理）。

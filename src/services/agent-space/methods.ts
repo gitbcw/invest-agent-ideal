@@ -15,7 +15,7 @@ import {
   newId,
   nowIso,
   recordAgentSpaceAudit,
-  verifyApprovalRef,
+  verifyAuthorization,
   type UserScope,
 } from "./core.js";
 
@@ -256,7 +256,12 @@ export function approveMethodVersion(input: ApproveMethodVersionInput): { method
   if (version.status !== "draft") {
     throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", `version already ${version.status}`);
   }
-  const approval = verifyApprovalRef(input.scope, input.approvalRef, input.ownerToken);
+  const approval = verifyAuthorization(
+    input.scope,
+    { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { methodId: input.methodId } },
+    input.approvalRef,
+    input.ownerToken,
+  );
   const constraints = parseAdoptionConstraints(version.adoption_constraints);
   const blocksDefault = constraints.filter((c) => BLOCKS_DEFAULT_ADOPTION.includes(c));
   let adopt = input.adopt !== false;
@@ -372,6 +377,16 @@ export function resolveMethodVersion(
   const blocked = parseAdoptionConstraints(version.adoption_constraints).filter((c) => BLOCKS_RUN_BINDING.includes(c));
   if (blocked.length > 0) {
     throw new AgentSpaceError("AGENT_SPACE_ADOPTION_CONSTRAINT", `version carries ${blocked.join(",")}; it is history-only for runtime`);
+  }
+  // pin 未被 owner 采纳为 current 的约束版本 = 绕过默认采用路径（验收 R8）
+  if (pinnedVersionId && pinnedVersionId !== method.current_version_id) {
+    const bypass = parseAdoptionConstraints(version.adoption_constraints).filter((c) => BLOCKS_DEFAULT_ADOPTION.includes(c));
+    if (bypass.length > 0) {
+      throw new AgentSpaceError(
+        "AGENT_SPACE_ADOPTION_CONSTRAINT",
+        `pinned version carries ${bypass.join(",")} and is not the owner-adopted current version; pinning would bypass the default adoption path`,
+      );
+    }
   }
   return { method, version };
 }

@@ -1380,6 +1380,28 @@ export const agentSpaceTaskRunSnapshots = sqliteTable("agent_space_task_run_snap
   createdAt: text("created_at").notNull(),
 });
 
+/**
+ * R6 可信授权登记：批准凭证绑定主体/scope/操作/对象/版本；消息只是来源
+ * 证据（role=user 且 status=sent），不是凭证本身。
+ */
+export const agentSpaceAuthorizations = sqliteTable("agent_space_authorizations", {
+  authorizationId: text("authorization_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  subjectUser: text("subject_user").notNull(),
+  operation: text("operation").notNull(),
+  objectType: text("object_type").notNull(),
+  objectId: text("object_id").notNull(),
+  versionId: text("version_id"),
+  extraBindingJson: text("extra_binding_json"),
+  sourceKind: text("source_kind").notNull().default("conversation"),
+  sourceRef: text("source_ref").notNull(),
+  status: text("status").notNull().default("active"),
+  consumedAt: text("consumed_at"),
+  createdAt: text("created_at").notNull(),
+});
+
 /** T-524 AgentFact: service-observed events referencing existing records. */
 export const agentSpaceFacts = sqliteTable("agent_space_facts", {
   factId: text("fact_id").primaryKey(),

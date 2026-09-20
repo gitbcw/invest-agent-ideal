@@ -22,7 +22,7 @@ import {
   newId,
   nowIso,
   recordAgentSpaceAudit,
-  verifyApprovalRef,
+  verifyAuthorization,
   type AgentSpaceScopeDomain,
   type UserScope,
 } from "./core.js";
@@ -226,7 +226,18 @@ export function approveStateCandidate(input: {
   const domain = input.domain ?? "user";
   assertDomainRowShape(domain, input.scope);
   if (domain === "user") {
-    verifyApprovalRef(input.scope as UserScope, input.approvalRef, input.ownerToken);
+    verifyAuthorization(
+      input.scope as UserScope,
+      {
+        operation: "state.approve",
+        objectType: input.kind === "lesson" ? "agent_space_lesson" : "agent_space_workflow",
+        objectId: input.objectId,
+        versionId: input.expectedVersionId,
+        extraBinding: { kind: input.kind },
+      },
+      input.approvalRef,
+      input.ownerToken,
+    );
   } else {
     throw new AgentSpaceError("AGENT_SPACE_OWNER_AUTH_REQUIRED", "system-domain state approval is not exposed in W1");
   }
@@ -277,8 +288,11 @@ export function approveStateCandidate(input: {
 }
 
 /**
- * 修订：产生新草稿版本（draft_version_id）。active 对象保持 active、
- * current 不动——提出修订不能令原有效版本退出生效（验收 R4）。
+ * 修订（验收 R7）：
+ * - 首次草稿（从未批准）：新版本直接替换 current_version_id——旧草稿的
+ *   确认随之失效（expectedVersionId 不再匹配）；
+ * - active：新版本进 draft_version_id 待批准指针，原有效版本保持生效；
+ *   同一时刻只允许一个待批准修订。
  */
 export function reviseStateCandidate(input: {
   domain?: AgentSpaceScopeDomain;
@@ -299,24 +313,25 @@ export function reviseStateCandidate(input: {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot revise ${input.kind} in status ${status}`);
   }
   if (status === "active" && row.draft_version_id) {
-    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "a pending revision already exists; approve or reject it first");
+    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "a pending revision already exists; approve or discard it first");
   }
   const now = nowIso();
   const versionId = newId(input.kind === "lesson" ? "lver" : "wver");
+  const idColumn = input.kind === "lesson" ? "lesson_id" : "workflow_id";
   const tx = sqlite.transaction(() => {
     if (input.kind === "lesson") {
       sqlite
         .prepare("INSERT INTO agent_space_lesson_versions (version_id, lesson_id, content_json, supersedes_version_id, created_at) VALUES (?, ?, ?, ?, ?)")
-        .run(versionId, input.objectId, JSON.stringify(input.content), (status === "active" ? row.current_version_id : row.current_version_id) as string | null, now);
+        .run(versionId, input.objectId, JSON.stringify(input.content), row.current_version_id as string | null, now);
       sqlite
-        .prepare("UPDATE agent_space_lessons SET draft_version_id=?, updated_at=? WHERE lesson_id=?")
+        .prepare(`UPDATE agent_space_lessons SET ${status === "draft" ? "current_version_id" : "draft_version_id"}=?, updated_at=? WHERE lesson_id=?`)
         .run(versionId, now, input.objectId);
     } else {
       sqlite
         .prepare("INSERT INTO agent_space_workflow_versions (version_id, workflow_id, content_json, supersedes_version_id, created_at) VALUES (?, ?, ?, ?, ?)")
         .run(versionId, input.objectId, JSON.stringify(input.content), row.current_version_id as string | null, now);
       sqlite
-        .prepare("UPDATE agent_space_workflows SET draft_version_id=?, updated_at=? WHERE workflow_id=?")
+        .prepare(`UPDATE agent_space_workflows SET ${status === "draft" ? "current_version_id" : "draft_version_id"}=?, updated_at=? WHERE workflow_id=?`)
         .run(versionId, now, input.objectId);
     }
     recordAgentSpaceAudit({
@@ -328,11 +343,49 @@ export function reviseStateCandidate(input: {
       objectId: input.objectId,
       fromStatus: status,
       toStatus: status,
-      detail: { versionId, pendingDraft: status === "active" },
+      detail: { versionId, mode: status === "draft" ? "replace-initial-draft" : "pending-on-active" },
     });
     return versionId;
   });
   return { versionId: tx() };
+}
+
+/**
+ * 撤销/拒绝待批准修订（验收 R7）：只清 draft_version_id 待批准指针，
+ * 原 active 有效版本不受影响；对象状态不改变（拒绝修订≠停用对象）。
+ */
+export function discardStateRevision(input: {
+  domain?: AgentSpaceScopeDomain;
+  scope: UserScope | null;
+  kind: "lesson" | "workflow";
+  objectId: string;
+  reason?: string;
+  actor: string;
+}): void {
+  const domain = input.domain ?? "user";
+  assertDomainRowShape(domain, input.scope);
+  const table: StateObjectTable = input.kind === "lesson" ? "agent_space_lessons" : "agent_space_workflows";
+  const row = getStateRow(table, input.objectId);
+  assertStateScope(row, domain, input.scope);
+  const idColumn = input.kind === "lesson" ? "lesson_id" : "workflow_id";
+  if (row.status !== "active" || !row.draft_version_id) {
+    throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "no pending revision to discard");
+  }
+  const tx = sqlite.transaction(() => {
+    sqlite
+      .prepare(`UPDATE ${table} SET draft_version_id=NULL, updated_at=? WHERE ${idColumn}=?`)
+      .run(nowIso(), input.objectId);
+    recordAgentSpaceAudit({
+      domain,
+      scope: input.scope,
+      actor: input.actor,
+      action: `${input.kind}.revision_discarded`,
+      objectType: table,
+      objectId: input.objectId,
+      detail: { discardedVersionId: row.draft_version_id as string, reason: input.reason ?? null },
+    });
+  });
+  tx();
 }
 
 const TERMINAL_OR_INACTIVE: LessonStatus[] = ["superseded", "expired", "rejected", "disabled"];
@@ -494,7 +547,12 @@ export function activateCommitment(input: {
 }): void {
   assertScopeValid(input.scope);
   const row = getCommitmentRow(input.scope, input.commitmentId);
-  verifyApprovalRef(input.scope, input.authorizationRef, input.ownerToken);
+  verifyAuthorization(
+    input.scope,
+    { operation: "commitment.activate", objectType: "agent_space_commitment", objectId: input.commitmentId, versionId: null, extraBinding: { executorTaskId: input.executorTaskId } },
+    input.authorizationRef,
+    input.ownerToken,
+  );
   if (row.status !== "proposed" && row.status !== "paused") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot activate commitment in status ${row.status}`);
   }

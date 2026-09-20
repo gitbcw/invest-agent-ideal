@@ -22,7 +22,7 @@ import {
   nowIso,
   recordAgentSpaceAudit,
   requireOwnerAuthorization,
-  verifyApprovalRef,
+  verifyAuthorization,
   type AgentSpaceScopeDomain,
   type UserScope,
 } from "./core.js";
@@ -299,7 +299,12 @@ export function approveSkillVersion(input: {
   if (input.domain === "system") {
     requireOwnerAuthorization(input.ownerToken, "system skill approval");
   } else {
-    verifyApprovalRef(input.scope as UserScope, input.approvalRef, input.ownerToken);
+    verifyAuthorization(
+      input.scope as UserScope,
+      { operation: "skill.version.approve", objectType: "agent_space_skill_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { skillId: input.skillId } },
+      input.approvalRef,
+      input.ownerToken,
+    );
   }
   const tx = sqlite.transaction(() => {
     const now = nowIso();

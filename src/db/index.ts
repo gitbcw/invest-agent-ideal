@@ -1878,7 +1878,8 @@ function ensureGenericAutomationTaskMigration() {
  * user_asset 版本为底座只存引用；Task 快照只存装配引用；T-524 状态对象
  * 优先引用 trace/message/run/delivery。用户域对象强制 user/project/instance
  * scope；系统域（domain='system'）scope 列为 NULL 与用户域物理分域。
- * 回滚：DROP agent_space_* 表集合（见 W1-delivery.md 恢复说明）。
+ * 注意：DROP 本域表只用于隔离测试夹具重置；真实数据恢复走验证备份或
+ * 定向前向修复（W1-delivery.md §6），不得当作通用回滚。
  */
 function ensureAgentSpaceTables() {
   const migrationKey = "agent_space_v1";
@@ -2154,6 +2155,25 @@ function ensureAgentSpaceTables() {
       ON agent_space_commitments(user_id, project_id, instance_id, idempotency_key)
       WHERE idempotency_key IS NOT NULL;
 
+    CREATE TABLE IF NOT EXISTS agent_space_authorizations (
+      authorization_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
+      subject_user TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      object_type TEXT NOT NULL, object_id TEXT NOT NULL,
+      version_id TEXT,
+      extra_binding_json TEXT,
+      source_kind TEXT NOT NULL DEFAULT 'conversation',
+      source_ref TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      consumed_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_space_authz_natural
+      ON agent_space_authorizations(
+        user_id, project_id, instance_id, operation, object_type, object_id,
+        COALESCE(version_id,''), source_ref, COALESCE(extra_binding_json,''));
+
     CREATE TABLE IF NOT EXISTS agent_space_commitment_fulfillments (
       fulfillment_id TEXT PRIMARY KEY,
       commitment_id TEXT NOT NULL,
@@ -2166,7 +2186,7 @@ function ensureAgentSpaceTables() {
       UNIQUE(commitment_id, due_at)
     );
   `);
-  // W1 返工（验收 R3/R4）增量列：新建表语句已含这些列；
+  // W1 返工（验收 R3/R4/R6）增量列与新表：新建表语句已含；
   // ensureColumn 仅为已初始化过的 W1 隔离库幂等补齐。
   ensureColumn("agent_space_method_versions", "adoption_constraints", "TEXT");
   ensureColumn("agent_space_lessons", "draft_version_id", "TEXT");

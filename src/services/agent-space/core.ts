@@ -153,28 +153,137 @@ export function assertIdempotencyConsistent(
 }
 
 /**
- * 可核对批准依据（验收 R4）：approvalRef 不能是任意字符串。W1 支持两种形态：
- * - `conversation:<messageId>`：必须在同 scope 的 conversation_messages 中存在；
- * - `owner-decision:<ref>`：必须附带 owner 授权（见 requireOwnerAuthorization）。
- * 其余形态一律拒绝（fail-closed）。
+ * 可信授权登记（验收 R6）：消息存在 ≠ 用户批准。批准凭证必须绑定主体、
+ * scope、操作、对象、版本；会话消息只是来源证据——登记时核验该消息是
+ * role=user 且 status=sent 的同 scope 真实消息（assistant/system/failed/
+ * superseded 一律拒绝）。明确指令场景由可信入口（运行时确认层）在同一
+ * 操作内调用本函数登记，不新增二次确认。
  */
-export function verifyApprovalRef(
+export interface RegisterAuthorizationInput {
+  scope: UserScope;
+  /** 实际作出批准的用户。 */
+  subjectUser: string;
+  operation: string;
+  objectType: string;
+  objectId: string;
+  versionId?: string | null;
+  extraBinding?: Record<string, string>;
+  /** 来源消息 id（须同 scope、role=user、status=sent）。 */
+  sourceMessageId: string;
+  actor: string;
+}
+
+export function registerUserAuthorization(input: RegisterAuthorizationInput): { authorizationId: string; duplicated: boolean } {
+  assertScopeValid(input.scope);
+  const message = sqlite
+    .prepare("SELECT message_id, role, status, user_id, project_id, instance_id FROM conversation_messages WHERE message_id=?")
+    .get(input.sourceMessageId) as
+    | { message_id: string; role: string; status: string; user_id: string; project_id: string; instance_id: string }
+    | undefined;
+  if (!message) throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", `source message ${input.sourceMessageId} not found`);
+  assertRowScope(message, input.scope);
+  if (message.role !== "user" || message.status !== "sent") {
+    throw new AgentSpaceError(
+      "AGENT_SPACE_APPROVAL_REQUIRED",
+      `source message must be a delivered user message (got role=${message.role}, status=${message.status})`,
+    );
+  }
+  const naturalKey = sqlite
+    .prepare(
+      `SELECT authorization_id FROM agent_space_authorizations
+       WHERE user_id=? AND project_id=? AND instance_id=? AND operation=? AND object_type=? AND object_id=?
+         AND COALESCE(version_id,'')=? AND source_ref=? AND COALESCE(extra_binding_json,'')=?`,
+    )
+    .get(input.scope.userId, input.scope.projectId, input.scope.instanceId, input.operation, input.objectType,
+         input.objectId, input.versionId ?? "", `conversation:${input.sourceMessageId}`,
+         input.extraBinding ? JSON.stringify(input.extraBinding) : "") as { authorization_id: string } | undefined;
+  if (naturalKey) return { authorizationId: naturalKey.authorization_id, duplicated: true };
+  const authorizationId = newId("authz");
+  sqlite
+    .prepare(
+      `INSERT INTO agent_space_authorizations (
+         authorization_id, user_id, project_id, instance_id, subject_user,
+         operation, object_type, object_id, version_id, extra_binding_json,
+         source_kind, source_ref, status, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'conversation', ?, 'active', ?)`,
+    )
+    .run(authorizationId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.subjectUser,
+         input.operation, input.objectType, input.objectId, input.versionId ?? null,
+         input.extraBinding ? JSON.stringify(input.extraBinding) : null,
+         `conversation:${input.sourceMessageId}`, nowIso());
+  recordAgentSpaceAudit({
+    scope: input.scope,
+    actor: input.actor,
+    action: "authorization.registered",
+    objectType: "agent_space_authorization",
+    objectId: authorizationId,
+    toStatus: "active",
+    detail: { operation: input.operation, boundObjectType: input.objectType, boundObjectId: input.objectId, versionId: input.versionId ?? null, sourceMessageId: input.sourceMessageId, subjectUser: input.subjectUser },
+  });
+  return { authorizationId, duplicated: false };
+}
+
+export interface AuthorizationBinding {
+  operation: string;
+  objectType: string;
+  objectId: string;
+  versionId?: string | null;
+  extraBinding?: Record<string, string>;
+}
+
+/**
+ * 批准凭证核验（验收 R6）：只接受
+ * - `authorization:<id>`：绑定必须与本次操作的对象/版本/附加字段完全一致；
+ *   同一授权对同一目标的合法重放幂等放行，跨对象/动作/版本重放拒绝；
+ * - `owner-decision:<ref>`：须 owner 令牌；目标绑定记入审计。
+ * 旧的 `conversation:<messageId>` 形态不再作为凭证（消息只是登记授权时的
+ * 来源证据）。
+ */
+export function verifyAuthorization(
   scope: UserScope,
+  binding: AuthorizationBinding,
   approvalRef: string,
   ownerToken?: string,
-): { kind: "conversation" | "owner-decision"; ref: string } {
+): { kind: "authorization" | "owner-decision"; ref: string; authorizationId?: string } {
   const trimmed = approvalRef?.trim();
   if (!trimmed) throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", "approvalRef is required");
-  const conversationMatch = /^conversation:([A-Za-z0-9_-]+)$/.exec(trimmed);
-  if (conversationMatch) {
-    const messageId = conversationMatch[1]!;
+  const authzMatch = /^authorization:([A-Za-z0-9_-]+)$/.exec(trimmed);
+  if (authzMatch) {
     const row = sqlite
-      .prepare("SELECT message_id FROM conversation_messages WHERE message_id=? AND user_id=? AND project_id=? AND instance_id=?")
-      .get(messageId, scope.userId, scope.projectId, scope.instanceId);
-    if (!row) {
-      throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", `approval message ${messageId} not found in scope`);
+      .prepare("SELECT * FROM agent_space_authorizations WHERE authorization_id=?")
+      .get(authzMatch[1]!) as
+      | {
+          authorization_id: string; user_id: string; project_id: string; instance_id: string; subject_user: string;
+          operation: string; object_type: string; object_id: string; version_id: string | null;
+          extra_binding_json: string | null; status: string; consumed_at: string | null;
+        }
+      | undefined;
+    if (!row) throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", `authorization ${authzMatch[1]} not found`);
+    assertRowScope(row, scope);
+    const mismatches: string[] = [];
+    if (row.operation !== binding.operation) mismatches.push(`operation ${row.operation}!=${binding.operation}`);
+    if (row.object_type !== binding.objectType) mismatches.push("objectType");
+    if (row.object_id !== binding.objectId) mismatches.push("objectId");
+    if ((row.version_id ?? null) !== (binding.versionId ?? null)) mismatches.push("versionId");
+    const extra = row.extra_binding_json ? (JSON.parse(row.extra_binding_json) as Record<string, string>) : {};
+    for (const [key, value] of Object.entries(binding.extraBinding ?? {})) {
+      if (extra[key] !== value) mismatches.push(`extraBinding.${key}`);
     }
-    return { kind: "conversation", ref: messageId };
+    if (mismatches.length > 0) {
+      throw new AgentSpaceError(
+        "AGENT_SPACE_APPROVAL_REQUIRED",
+        `authorization ${row.authorization_id} is bound to a different target (${mismatches.join(", ")}); replay across object/action/version is rejected`,
+      );
+    }
+    if (row.status !== "active") {
+      throw new AgentSpaceError("AGENT_SPACE_APPROVAL_REQUIRED", `authorization is ${row.status}`);
+    }
+    if (!row.consumed_at) {
+      sqlite.prepare("UPDATE agent_space_authorizations SET consumed_at=?, status='consumed' WHERE authorization_id=? AND consumed_at IS NULL")
+        .run(nowIso(), row.authorization_id);
+    }
+    // 已 consumed 的同绑定重放幂等放行（同一合法操作的重试）。
+    return { kind: "authorization", ref: row.authorization_id, authorizationId: row.authorization_id };
   }
   const ownerMatch = /^owner-decision:(.+)$/.exec(trimmed);
   if (ownerMatch) {
@@ -183,7 +292,7 @@ export function verifyApprovalRef(
   }
   throw new AgentSpaceError(
     "AGENT_SPACE_APPROVAL_REQUIRED",
-    "approvalRef must be conversation:<messageId> (in-scope) or owner-decision:<ref> (with owner token)",
+    "approvalRef must be authorization:<id> (bound to this exact operation/object/version) or owner-decision:<ref> (with owner token)",
   );
 }
 

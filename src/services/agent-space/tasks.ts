@@ -18,7 +18,7 @@ import {
   sha256Of,
   type UserScope,
 } from "./core.js";
-import { parseAdoptionConstraints } from "./methods.js";
+import { parseAdoptionConstraints, resolveMethodVersion } from "./methods.js";
 
 export type DependencyKind = "skill" | "method" | "asset_input" | "asset_output" | "agent_state";
 
@@ -113,20 +113,8 @@ function verifyDependencyRef(scope: UserScope, kind: DependencyKind, refId: stri
 }
 
 function assertPinnedMethodVersion(scope: UserScope, methodId: string, pinnedVersionId: string): void {
-  const row = sqlite
-    .prepare("SELECT method_id, status, adoption_constraints, user_id, project_id, instance_id FROM agent_space_method_versions WHERE version_id=?")
-    .get(pinnedVersionId) as
-    | { method_id: string; status: string; adoption_constraints: string | null; user_id: string; project_id: string; instance_id: string }
-    | undefined;
-  if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `method version ${pinnedVersionId} not found`);
-  if (row.method_id !== methodId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "pinned method version mismatch");
-  assertRowScope(row, scope);
-  if (row.status !== "approved" && row.status !== "superseded") {
-    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `pinned method version is ${row.status}`);
-  }
-  if (parseAdoptionConstraints(row.adoption_constraints).includes("historical-not-default")) {
-    throw new AgentSpaceError("AGENT_SPACE_ADOPTION_CONSTRAINT", "historical-not-default versions cannot be pinned for runtime");
-  }
+  // 与 resolveMethodVersion 同一运行可用性口径（含约束/归属/状态），避免双路径漂移。
+  resolveMethodVersion(scope, methodId, pinnedVersionId);
 }
 
 function assertPinnedSkillVersion(scope: UserScope, skillId: string, pinnedVersionId: string): void {
@@ -209,6 +197,7 @@ export function listTaskDependencies(scope: UserScope, taskId: string): Dependen
 export interface AssemblyEntry {
   objectType: "skill" | "method" | "asset" | "agent_state";
   objectId: string;
+  /** 已解析的具体正式版本（latest/current 是解析策略，快照必须落具体版本）。 */
   versionId: string | null;
   versionPolicy: "pinned" | "current" | "latest" | "none";
   contentChecksum?: string;
@@ -216,6 +205,7 @@ export interface AssemblyEntry {
 
 const ASSEMBLY_ENTRY_FIELDS = ["objectType", "objectId", "versionId", "versionPolicy", "contentChecksum"] as const;
 const ASSEMBLY_ROOT_FIELDS = ["agent", "skills", "methods", "assets", "agentState"] as const;
+const ASSEMBLY_POLICIES = ["pinned", "current", "latest", "none"] as const;
 
 export interface RecordRunSnapshotInput {
   scope: UserScope;
@@ -232,26 +222,71 @@ export interface RecordRunSnapshotInput {
   actor: string;
 }
 
-/** 逐条校验装配引用（白名单字段 + 对象/版本真实存在且同 scope）。 */
-function verifyAssemblyEntry(scope: UserScope, entry: AssemblyEntry): void {
-  assertOnlyFields(entry as unknown as Record<string, unknown>, ASSEMBLY_ENTRY_FIELDS, "assembly entry");
-  if (entry.objectType === "agent_state") {
-    throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", "agent_state assembly entries are not registered until W5; fail-closed");
-  }
-  if (entry.objectType === "skill") {
-    verifyDependencyRef(scope, "skill", entry.objectId, entry.versionId ?? undefined);
-  } else if (entry.objectType === "method") {
-    verifyDependencyRef(scope, "method", entry.objectId, entry.versionId ?? undefined);
-  } else if (entry.objectType === "asset") {
-    verifyDependencyRef(scope, "asset_input", entry.objectId, entry.versionId ?? undefined);
-  } else {
-    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `assembly objectType ${entry.objectType}`);
-  }
+interface StampedEntry {
+  objectType: string;
+  objectId: string;
+  versionId: string;
+  versionPolicy: string;
+  contentChecksum: string;
 }
 
 /**
- * 运行快照：append-only、同 run 幂等。校验 run→task→scope→agent 与全部
- * 装配引用；同 run 不同装配载荷的重放按幂等冲突拒绝。
+ * 装配条目校验 + 服务端盖章（验收 R8）：
+ * - versionId 必填且必须是已解析的具体正式版本（draft/null 拒绝）；
+ * - 条目类别必须与所在数组一致（skills 只放 skill，等）；
+ * - checksum 由服务端从版本行读取盖章；调用方提供的值必须与实际一致；
+ * - method 复用 resolveMethodVersion（归属+正式状态+运行约束），hold 等
+ *   约束不能借快照 pin 绕过默认采用路径。
+ */
+function verifyAndStampAssemblyEntry(scope: UserScope, expectedObjectType: "skill" | "method" | "asset", entry: AssemblyEntry): StampedEntry {
+  assertOnlyFields(entry as unknown as Record<string, unknown>, ASSEMBLY_ENTRY_FIELDS, "assembly entry");
+  if (entry.objectType !== expectedObjectType) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `category mismatch: ${expectedObjectType} list carries objectType ${entry.objectType}`);
+  }
+  if (!ASSEMBLY_POLICIES.includes(entry.versionPolicy)) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `versionPolicy ${entry.versionPolicy}`);
+  }
+  if (!entry.versionId) {
+    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "snapshot entries require the resolved concrete versionId; latest/current are resolution policies, not deferrals");
+  }
+  let actualChecksum: string;
+  if (expectedObjectType === "method") {
+    const { version } = resolveMethodVersion(scope, entry.objectId, entry.versionId);
+    actualChecksum = version.content_checksum;
+  } else if (expectedObjectType === "skill") {
+    const row = sqlite
+      .prepare("SELECT skill_id, status, domain, user_id, project_id, instance_id, content_checksum FROM agent_space_skill_versions WHERE version_id=?")
+      .get(entry.versionId) as
+      | { skill_id: string; status: string; domain: string; user_id: string | null; project_id: string | null; instance_id: string | null; content_checksum: string }
+      | undefined;
+    if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `skill version ${entry.versionId}`);
+    if (row.skill_id !== entry.objectId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "skill version does not belong to the entry object");
+    if (row.domain === "user") assertRowScope(row, scope);
+    if (row.status !== "approved" && row.status !== "superseded") {
+      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `skill version is ${row.status}; only formal versions can enter snapshots`);
+    }
+    actualChecksum = row.content_checksum;
+  } else {
+    const row = sqlite
+      .prepare("SELECT asset_id, checksum, user_id, project_id, instance_id FROM user_asset_versions WHERE version_id=?")
+      .get(entry.versionId) as
+      | { asset_id: string; checksum: string; user_id: string; project_id: string; instance_id: string }
+      | undefined;
+    if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `asset version ${entry.versionId}`);
+    if (row.asset_id !== entry.objectId) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "asset version does not belong to the entry object");
+    assertRowScope(row, scope);
+    actualChecksum = row.checksum;
+  }
+  if (entry.contentChecksum !== undefined && entry.contentChecksum !== actualChecksum) {
+    throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `entry checksum does not match the actual version (actual ${actualChecksum})`);
+  }
+  return { objectType: entry.objectType, objectId: entry.objectId, versionId: entry.versionId, versionPolicy: entry.versionPolicy, contentChecksum: actualChecksum };
+}
+
+/**
+ * 运行快照（验收 R1/R8）：append-only、同 run 幂等。校验 run→task→scope→
+ * agent 链（含 run.revision 归属）与全部装配引用；checksum 服务端盖章；
+ * 同 run 不同装配载荷的重放按幂等冲突拒绝。
  */
 export function recordTaskRunSnapshot(input: RecordRunSnapshotInput): { snapshotId: string; assemblyHash: string } {
   assertScopeValid(input.scope);
@@ -261,10 +296,13 @@ export function recordTaskRunSnapshot(input: RecordRunSnapshotInput): { snapshot
     verifyAgentScope(input.scope, input.assembly.agent.agentId);
   }
   if (input.agentId) verifyAgentScope(input.scope, input.agentId);
+  if (input.agentId && input.assembly.agent && input.agentId !== input.assembly.agent.agentId) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "agentId and assembly.agent disagree");
+  }
   const run = sqlite
-    .prepare("SELECT run_id, task_id, user_id, project_id, instance_id FROM automation_task_runs WHERE run_id=?")
+    .prepare("SELECT run_id, task_id, revision_id, user_id, project_id, instance_id FROM automation_task_runs WHERE run_id=?")
     .get(input.runId) as
-    | { run_id: string; task_id: string; user_id: string; project_id: string; instance_id: string }
+    | { run_id: string; task_id: string; revision_id: string; user_id: string; project_id: string; instance_id: string }
     | undefined;
   if (!run) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `automation run ${input.runId} not found`);
   assertRowScope(run, input.scope);
@@ -272,20 +310,29 @@ export function recordTaskRunSnapshot(input: RecordRunSnapshotInput): { snapshot
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "run does not belong to the given task");
   }
   verifyTaskScope(input.scope, input.taskId);
-  for (const entry of [...input.assembly.skills, ...input.assembly.methods, ...input.assembly.assets]) {
-    verifyAssemblyEntry(input.scope, entry);
+  if (run.revision_id) {
+    const revision = sqlite
+      .prepare("SELECT task_id, user_id, project_id, instance_id FROM automation_task_revisions WHERE revision_id=?")
+      .get(run.revision_id) as { task_id: string; user_id: string; project_id: string; instance_id: string } | undefined;
+    if (!revision || revision.task_id !== input.taskId) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "run revision does not belong to the given task");
+    }
+    assertRowScope(revision, input.scope);
   }
   if (input.assembly.agentState.length > 0) {
     throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", "agent_state assembly entries are not registered until W5; fail-closed");
   }
+  const skills = input.assembly.skills.map((e) => verifyAndStampAssemblyEntry(input.scope, "skill", e));
+  const methods = input.assembly.methods.map((e) => verifyAndStampAssemblyEntry(input.scope, "method", e));
+  const assets = input.assembly.assets.map((e) => verifyAndStampAssemblyEntry(input.scope, "asset", e));
 
   const assemblyJson = JSON.stringify(
     {
       agent: input.assembly.agent ?? null,
-      skills: input.assembly.skills,
-      methods: input.assembly.methods,
-      assets: input.assembly.assets,
-      agentState: input.assembly.agentState,
+      skills,
+      methods,
+      assets,
+      agentState: [],
     },
     null,
     0,

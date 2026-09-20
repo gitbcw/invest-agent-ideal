@@ -14,7 +14,7 @@ import {
   newId,
   nowIso,
   recordAgentSpaceAudit,
-  verifyApprovalRef,
+  verifyAuthorization,
   type UserScope,
 } from "./core.js";
 import {
@@ -22,7 +22,7 @@ import {
   getReleaseRow as getSkillReleaseRow,
   getVersionRow as getSkillVersionRow,
 } from "./skills.js";
-import { parseAdoptionConstraints } from "./methods.js";
+import { resolveMethodVersion } from "./methods.js";
 
 export interface CreateAgentInput {
   scope: UserScope;
@@ -141,7 +141,7 @@ export function installSkill(input: {
   if (agent.status === "disabled") {
     throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "disabled agent cannot install skills");
   }
-  verifyApprovalRef(input.scope, input.approvalRef, input.ownerToken);
+  // 先解析安装目标，再核验授权绑定（绑定需要 agentId/skillId/versionId）。
   const version = getSkillVersionRow(input.versionId);
   if (version.skill_id !== input.skillId) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to skill");
@@ -165,6 +165,12 @@ export function installSkill(input: {
     // R2：可见性/发布状态/属主判定在服务层强制（public 跨用户、private 属主、shared fail-closed）。
     assertReleaseInstallableBy(release, input.scope);
   }
+  verifyAuthorization(
+    input.scope,
+    { operation: "skill.install", objectType: "agent_space_agent_skill_installation", objectId: input.agentId, versionId: input.versionId, extraBinding: { skillId: input.skillId, source: input.source } },
+    input.approvalRef,
+    input.ownerToken,
+  );
   const tx = sqlite.transaction(() => {
     const previous = sqlite
       .prepare(
@@ -248,22 +254,7 @@ export function bindMethod(input: {
     if (!input.pinnedVersionId) {
       throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "pinned policy requires pinnedVersionId");
     }
-    const version = sqlite
-      .prepare("SELECT status, method_id FROM agent_space_method_versions WHERE version_id=?")
-      .get(input.pinnedVersionId) as { status: string; method_id: string } | undefined;
-    if (!version || version.method_id !== input.methodId) {
-      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "pinned version does not belong to method");
-    }
-    if (version.status !== "approved" && version.status !== "superseded") {
-      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "only formal versions can be pinned");
-    }
-    const pinRow = sqlite
-      .prepare("SELECT adoption_constraints FROM agent_space_method_versions WHERE version_id=?")
-      .get(input.pinnedVersionId!) as { adoption_constraints: string | null };
-    const blocked = parseAdoptionConstraints(pinRow.adoption_constraints);
-    if (blocked.includes("historical-not-default")) {
-      throw new AgentSpaceError("AGENT_SPACE_ADOPTION_CONSTRAINT", "historical-not-default versions cannot be bound for runtime");
-    }
+    resolveMethodVersion(input.scope, input.methodId, input.pinnedVersionId);
   }
   const now = nowIso();
   const bindingId = newId("mbind");
