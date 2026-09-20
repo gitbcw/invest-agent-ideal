@@ -92,6 +92,7 @@ WeChat bindings.
 
 | Document | Use It For |
 | --- | --- |
+| [strategy-simulation-design.md](./strategy-simulation-design.md) | 产品设计草案（2026-09-19）：对话澄清与开启、初始净值 1 的日频策略模拟、Portal 日/周记录、进化建议及多模拟分阶段验收；尚未实现 |
 | [02-investment-methodology.md](./02-investment-methodology.md) | User investment methodology reference |
 | [04-core-workflows.md](./04-core-workflows.md) | Core loops across monitoring, alerts, reviews, screening, and feedback |
 | [best-effort-answering-design.md](./best-effort-answering-design.md) | Accepted default-data and evidence-bounded answering principle: graceful degradation, explicit methodology, strict-request boundary, capability-gap handling, and rollout acceptance |
@@ -124,6 +125,7 @@ WeChat bindings.
 | [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
 | [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
 | [workspace-compatibility.md](./workspace-compatibility.md) | Read-only preflight, managed-asset ownership, backup, migration and rollback contract for existing user Workspaces |
+| [agent-self-correction-workspace-design.md](./agent-self-correction-workspace-design.md) | 设计草案（T-524，2026-09-19 会议立项）：Agent 自有工作空间（逻辑层）与自纠错能力——纠错知识条目/场景注入/修正提议三支柱、范围红线与分阶段；未采纳未实施 |
 | [workspace-backup-operations.md](./workspace-backup-operations.md) | 每日工作区备份范围、allowlist、排除项、加密与恢复门禁 |
 | [disaster-recovery-restore-sop.md](./disaster-recovery-restore-sop.md) | 灾备恢复 SOP：纯用户数据快照的真实恢复路径、验收清单与门禁（T-415 2026-09-07 演练验证） |
 | [version-snapshot-and-assisted-rollback-plan.md](./version-snapshot-and-assisted-rollback-plan.md) | Release snapshot, known-good retention, standard deploy/code rollback, and audited AI-assisted Workspace recovery |
