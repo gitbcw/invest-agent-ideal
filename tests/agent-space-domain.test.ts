@@ -8,7 +8,8 @@
  * R5 事务原子性（审计失败注入）与幂等冲突、旧库升级保数据。
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -18,6 +19,8 @@ process.env.NODE_ENV = "test";
 process.env.DB_PATH = path.join(root, "agent-space.db");
 process.env.WORKSPACE_ROOT = path.join(root, "workspaces");
 process.env.RUNTIME_DATA_ROOT = path.join(root, "runtime");
+// W2：固定版本字节读取走 mastra 项目注册表（唯一存储根来源）。
+process.env.MASTRA_PROJECTS_ROOT = path.join(root, "projects");
 mkdirSync(path.join(root, "workspaces"), { recursive: true });
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 
@@ -25,6 +28,15 @@ const scopeA = { userId: "w1-user-a", projectId: "invest-agent", instanceId: "in
 const scopeB = { userId: "w1-user-b", projectId: "invest-agent", instanceId: "invest-agent-b" };
 const OWNER_TOKEN = "w1-test-owner-token";
 const now = new Date().toISOString();
+
+// W2 真实字节资产：fixture 落文件、测试断言读值，checksum 由真实字节计算。
+const W2_BODY_V1 = Buffer.from("# 量价方法 W2 v1\n正文第一版\n", "utf8");
+const W2_BODY_V2 = Buffer.from("# 量价方法 W2 v2\n正文第二版（小改动）\n", "utf8");
+const sha256Of = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+const W2_CHK_1 = sha256Of(W2_BODY_V1);
+const W2_CHK_2 = sha256Of(W2_BODY_V2);
+const CONTENT_W2_1 = { assetId: "asset_w2", assetVersionId: "ver_w2_1", contentChecksum: W2_CHK_1 } as const;
+const CONTENT_W2_2 = { assetId: "asset_w2", assetVersionId: "ver_w2_2", contentChecksum: W2_CHK_2 } as const;
 
 const fixture = (async () => {
   const db = await import("../src/db/index.js");
@@ -85,10 +97,23 @@ const fixture = (async () => {
   seed.prepare(`INSERT INTO automation_task_revisions (revision_id,task_id,user_id,project_id,instance_id,revision,name,description,schedule_json,inputs_json,output_json,delivery_json,created_at)
                 VALUES ('rev_w1_1','task_exec_1',?,?,?,1,'W1执行修订','w1','{}','[]','{"mode":"agent"}','{}',?)`)
       .run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now);
-  for (const rid of ["run_w1_1", "run_w1_2"]) {
+  for (const rid of ["run_w1_1", "run_w1_2", "run_w1_3"]) {
     seed.prepare(`INSERT INTO automation_task_runs (run_id,task_id,revision_id,user_id,project_id,instance_id,origin,idempotency_key,attempt,status,claimed_at,started_at,created_at,updated_at)
                   VALUES (?,'task_exec_1','rev_w1_1',?,?,?,'manual',?,1,'succeeded',?,?,?,?)`)
         .run(rid, scopeA.userId, scopeA.projectId, scopeA.instanceId, `idem-${rid}`, now, now, now, now);
+  }
+  // W2：scopeA 注册 mastra 测试项目并落真实字节资产（存储路径与 user-assets 契约一致）。
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const projectRoot = await registerTestProject(scopeA);
+  seed.prepare(`INSERT INTO user_assets (asset_id,user_id,project_id,instance_id,name,status,current_version_id,created_at,updated_at)
+                VALUES ('asset_w2',?,?,?,'W2方法资产','active',NULL,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  for (const [vid, body] of [["ver_w2_1", W2_BODY_V1], ["ver_w2_2", W2_BODY_V2]] as const) {
+    const dir = path.join(projectRoot, "assets", "asset_w2", "versions", vid);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "strategy.md"), body);
+    seed.prepare(`INSERT INTO user_asset_versions (version_id,asset_id,user_id,project_id,instance_id,version_number,file_name,format,mime_type,size_bytes,checksum,storage_path,source,created_at)
+                  VALUES (?,'asset_w2',?,?,?,1,'strategy.md','markdown','text/markdown',?,?,?,'system',?)`)
+        .run(vid, scopeA.userId, scopeA.projectId, scopeA.instanceId, body.length, sha256Of(body), `assets/asset_w2/versions/${vid}/strategy.md`, now);
   }
   return { db, space };
 })();
@@ -1201,4 +1226,104 @@ test("R9: owner-decision channel keeps stable operation records; replays never r
     () => space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id, source: "release", releaseId: rel2.releaseId, versionId: sv.version_id, installedBy: "owner", approvalRef: installRef, ownerToken: OWNER_TOKEN, actor: "owner" }),
     "AGENT_SPACE_APPROVAL_REQUIRED",
   );
+});
+
+test("W2: method paths — pinned byte reads, readopt rollback, small-change formal versions, drafts outside formal history", async () => {
+  const { db, space } = await fixture;
+  const method = space.createMethod({ scope: scopeA, name: "量价W2", actor: "user:a" });
+
+  // 草稿不进入正式历史
+  const v1 = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  assert.equal(space.getMethodVersionHistory(scopeA, method.method_id).length, 0, "draft versions stay out of formal history");
+
+  space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v1.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_1", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v1.version_id, versionId: v1.version_id, extraBinding: { methodId: method.method_id, adopt: "true" } }), actor: "user:a" });
+  const v1Read = await space.readMethodVersionContent(scopeA, v1.version_id);
+  assert.ok(v1Read.bytes.equals(W2_BODY_V1), "pinned read returns the exact canonical bytes");
+
+  // 小改动也形成正式版本：v2 采为 current，v1 转 superseded 仍可固定读取
+  const v2 = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_2, actor: "user:a" });
+  space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v2.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_2", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v2.version_id, versionId: v2.version_id, extraBinding: { methodId: method.method_id, adopt: "true" } }), actor: "user:a" });
+  assert.equal(space.resolveMethodVersion(scopeA, method.method_id).version.version_id, v2.version_id);
+  const v1After = await space.readMethodVersionContent(scopeA, v1.version_id);
+  assert.ok(v1After.bytes.equals(W2_BODY_V1) && v1After.version.status === "superseded", "superseded versions stay reproducible byte-for-byte");
+
+  // 同内容再成新正式版本：去重不吞版本，diff 报 identical 但两行独立可读
+  const v3 = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_2, actor: "user:a" });
+  space.approveMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v3.version_id, approvedBy: "user:a", approvalRef: await authz(scopeA, "um_w1_m", { operation: "method.version.approve", objectType: "agent_space_method_version", objectId: v3.version_id, versionId: v3.version_id, extraBinding: { methodId: method.method_id, adopt: "true" } }), actor: "user:a" });
+  const diff = space.diffMethodVersions(scopeA, v2.version_id, v3.version_id);
+  assert.equal(diff.identical, true, "same-content versions diff as identical");
+  assert.notEqual(v2.version_id, v3.version_id);
+  const history = space.getMethodVersionHistory(scopeA, method.method_id);
+  assert.deepEqual(history.map((h) => h.versionId), [v3.version_id, v2.version_id, v1.version_id], "history lists the formal lineage");
+
+  // 显式回退：re-adopt v1（授权与 R9 契约一致），旧 current 转 superseded
+  const readoptRef = await authz(scopeA, "um_w1_snap", { operation: "method.readopt", objectType: "agent_space_method_version", objectId: v1.version_id, versionId: v1.version_id, extraBinding: { methodId: method.method_id } });
+  const readopted = space.readoptMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v1.version_id, approvalRef: readoptRef, actor: "user:a" });
+  assert.equal(readopted.method.current_version_id, v1.version_id);
+  assert.equal(readopted.version.status, "approved");
+  assert.equal(space.resolveMethodVersion(scopeA, method.method_id).version.version_id, v1.version_id);
+  const v3AfterReadopt = space.getMethodVersion(scopeA, v3.version_id);
+  assert.equal(v3AfterReadopt.status, "superseded", "readopt demotes the previous current without deleting it");
+  // 回退请求重放（R9）：返回原结果、零新增审计
+  const readoptAudits = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='method.version.readopted' AND object_id=?").get(v1.version_id) as { n: number }).n;
+  const readoptReplay = space.readoptMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v1.version_id, approvalRef: readoptRef, actor: "user:a" });
+  assert.equal(readoptReplay.method.current_version_id, v1.version_id);
+  assert.equal((db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_audit_logs WHERE action='method.version.readopted' AND object_id=?").get(v1.version_id) as { n: number }).n, readoptAudits, "readopt replay adds no audit");
+  // 已是 current 的版本再 readopt（换新凭证）→ 明确失败
+  const readoptAgainRef = await authz(scopeA, "um_w1_lesson", { operation: "method.readopt", objectType: "agent_space_method_version", objectId: v1.version_id, versionId: v1.version_id, extraBinding: { methodId: method.method_id } });
+  expectAgentSpaceError(
+    () => space.readoptMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v1.version_id, approvalRef: readoptAgainRef, actor: "user:a" }),
+    "AGENT_SPACE_VERSION_INVALID",
+  );
+  // draft 版本不可 readopt
+  const v4draft = space.addMethodVersion({ scope: scopeA, methodId: method.method_id, contentRef: CONTENT_W2_1, actor: "user:a" });
+  expectAgentSpaceError(
+    () => space.readoptMethodVersion({ scope: scopeA, methodId: method.method_id, versionId: v4draft.version_id, approvalRef: "owner-decision:w2/readopt-draft", ownerToken: OWNER_TOKEN, actor: "owner" }),
+    "AGENT_SPACE_VERSION_INVALID",
+  );
+
+  // hash 变化明确失败：篡改 v1 背书文件字节 → checksum 校验拒绝，恢复后可读
+  const registry = await import("../src/mastra/workspace-registry.js");
+  const entry = await registry.mastraWorkspaceRegistry.resolve(scopeA);
+  const assetFile = path.join(entry!.projectRoot, "assets", "asset_w2", "versions", "ver_w2_1", "strategy.md");
+  const { writeFileSync: wf, readFileSync: rf } = await import("node:fs");
+  const original = rf(assetFile);
+  wf(assetFile, Buffer.concat([original, Buffer.from("tampered")]));
+  await assert.rejects(
+    () => space.readMethodVersionContent(scopeA, v1.version_id),
+    (error: unknown) => (error as { code?: string }).code === "ASSET_CHECKSUM_MISMATCH",
+  );
+  wf(assetFile, original);
+  assert.ok((await space.readMethodVersionContent(scopeA, v1.version_id)).bytes.equals(W2_BODY_V1), "restored bytes read again");
+
+  // 缺版本/缺文件明确失败
+  expectAgentSpaceError(() => space.getMethodVersion(scopeA, "mver_missing"), "AGENT_SPACE_NOT_FOUND");
+  await assert.rejects(
+    () => space.readMethodVersionContent(scopeA, "mver_missing"),
+    (error: unknown) => (error as { code?: string }).code === "AGENT_SPACE_NOT_FOUND",
+  );
+
+  // 默认发现只呈现方法与 current 版本，不含历史版本
+  const listing = space.listUserMethods(scopeA);
+  const mine = listing.find((m) => m.methodId === method.method_id)!;
+  assert.equal(mine.currentVersionId, v1.version_id);
+  assert.ok(!JSON.stringify(listing).includes(v2.version_id), "default discovery never surfaces historical version ids");
+
+  // 运行可回指：快照固定 v2，读取快照后按 versionId 重现字节
+  const agent = space.createAgent({ scope: scopeA, name: "W2运行助手", actor: "user:a" });
+  const snap = space.recordTaskRunSnapshot({
+    scope: scopeA, runId: "run_w1_3", taskId: "task_exec_1", agentId: agent.agent_id,
+    assembly: {
+      agent: { agentId: agent.agent_id },
+      skills: [],
+      methods: [{ objectType: "method", objectId: method.method_id, versionId: v2.version_id, versionPolicy: "pinned" }],
+      assets: [], agentState: [],
+    },
+    actor: "system",
+  });
+  const readSnap = space.getTaskRunSnapshot(scopeA, "run_w1_3");
+  const pinned = readSnap.assembly.methods.find((m) => m.objectId === method.method_id)!;
+  assert.equal(pinned.versionId, v2.version_id);
+  assert.ok((await space.readMethodVersionContent(scopeA, pinned.versionId!)).bytes.equals(W2_BODY_V2), "run-referenced version reproduces exact bytes");
+  void snap;
 });

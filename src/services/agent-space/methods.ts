@@ -6,6 +6,7 @@
  * 绑定/解析不得绕过；历史读取与运行采用分开。全部写入与审计同事务。
  */
 import { sqlite } from "../../db/index.js";
+import { readUserAssetVersion } from "../user-assets.js";
 import {
   AgentSpaceError,
   assertIdempotencyConsistent,
@@ -417,6 +418,216 @@ export function getMethod(scope: UserScope, methodId: string): MethodRow {
 export function getMethodVersion(scope: UserScope, versionId: string): MethodVersionRow {
   assertScopeValid(scope);
   return getVersionRow(scope, versionId);
+}
+
+// ---------- W2：方法路径与读模型 ----------
+
+/**
+ * 固定版本字节读取（W2）：canonical bytes 始终在 user_assets 版本链上，
+ * 本入口只是带 scope 的版本寻址读取——复用 user-assets 的路径安全与
+ * checksum 校验（hash 变化/缺文件为明确失败），不做任何 Workspace
+ * list/grep 式发现；内容不复制、不缓存。
+ */
+export async function readMethodVersionContent(
+  scope: UserScope,
+  versionId: string,
+): Promise<{ version: MethodVersionRow; bytes: Buffer }> {
+  assertScopeValid(scope);
+  const version = getVersionRow(scope, versionId);
+  if (version.content_ref_type !== "user_asset_version" || !version.asset_id || !version.asset_version_id) {
+    throw new AgentSpaceError("AGENT_SPACE_UNSUPPORTED", "method version has no user-asset content ref");
+  }
+  const read = await readUserAssetVersion({ ...scope, assetId: version.asset_id, versionId: version.asset_version_id });
+  return { version, bytes: read.bytes };
+}
+
+/**
+ * 显式回退/重采用（W2）：把既有正式版本重新设为 current——版本不可变，
+ * 回退只是采用指针的变化；旧 current 转 superseded（仍可固定读取重现）。
+ * 授权与 R9 契约同五条路径：核验+消耗+指针变更+审计+结果记录同事务。
+ */
+export function readoptMethodVersion(input: {
+  scope: UserScope;
+  methodId: string;
+  versionId: string;
+  approvalRef: string;
+  ownerToken?: string;
+  actor: string;
+}): { method: MethodRow; version: MethodVersionRow } {
+  assertScopeValid(input.scope);
+  const method = getMethodRow(input.scope, input.methodId);
+  const version = getVersionRow(input.scope, input.versionId);
+  if (version.method_id !== input.methodId) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to method");
+  }
+  const constraints = parseAdoptionConstraints(version.adoption_constraints);
+  const blocksDefault = constraints.filter((c) => BLOCKS_DEFAULT_ADOPTION.includes(c));
+  const tx = sqlite.transaction(() => {
+    const approval = verifyAuthorization(
+      input.scope,
+      { operation: "method.readopt", objectType: "agent_space_method_version", objectId: input.versionId, versionId: input.versionId, extraBinding: { methodId: input.methodId } },
+      input.approvalRef,
+      input.ownerToken,
+    );
+    if (approval.replayed) {
+      const stored = approval.replayResult as { methodId: string; versionId: string };
+      return { method: getMethodRow(input.scope, stored.methodId), version: getVersionRow(input.scope, stored.versionId) };
+    }
+    const freshMethod = getMethodRow(input.scope, input.methodId);
+    const current = getVersionRow(input.scope, input.versionId);
+    if (freshMethod.status !== "active") {
+      throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `cannot readopt on ${freshMethod.status} method`);
+    }
+    if (current.status !== "approved" && current.status !== "superseded") {
+      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `version ${input.versionId} is ${current.status}; only formal versions can be readopted`);
+    }
+    if (freshMethod.current_version_id === input.versionId) {
+      throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", "version is already the adopted current version");
+    }
+    if (blocksDefault.length > 0 && approval.kind !== "owner-decision") {
+      throw new AgentSpaceError(
+        "AGENT_SPACE_ADOPTION_CONSTRAINT",
+        `version carries ${blocksDefault.join(",")}; readoption requires an owner decision, not a conversation approval`,
+      );
+    }
+    const now = nowIso();
+    if (freshMethod.current_version_id) {
+      sqlite
+        .prepare("UPDATE agent_space_method_versions SET status='superseded' WHERE version_id=? AND status='approved'")
+        .run(freshMethod.current_version_id);
+    }
+    sqlite
+      .prepare("UPDATE agent_space_method_versions SET status='approved' WHERE version_id=?")
+      .run(input.versionId);
+    sqlite
+      .prepare("UPDATE agent_space_methods SET current_version_id=?, updated_at=? WHERE method_id=?")
+      .run(input.versionId, now, input.methodId);
+    recordAgentSpaceAudit({
+      scope: input.scope,
+      actor: input.actor,
+      action: "method.version.readopted",
+      objectType: "agent_space_method_version",
+      objectId: input.versionId,
+      fromStatus: "superseded",
+      toStatus: "approved",
+      detail: {
+        methodId: input.methodId,
+        previousCurrentVersionId: freshMethod.current_version_id,
+        approvalRef: input.approvalRef,
+        approvalKind: approval.kind,
+        adoptionConstraints: constraints,
+      },
+    });
+    recordAuthorizationOutcome(approval.authorizationId, { methodId: input.methodId, versionId: input.versionId });
+    return { method: getMethodRow(input.scope, input.methodId), version: getVersionRow(input.scope, input.versionId) };
+  });
+  return tx();
+}
+
+export interface MethodSummary {
+  methodId: string;
+  name: string;
+  status: MethodStatus;
+  currentVersionId: string | null;
+  currentVersionConstraints: AdoptionConstraint[];
+  updatedAt: string;
+}
+
+/**
+ * 默认发现读模型（W2）：只呈现方法与其 current 版本；历史版本不在默认
+ * 发现面（须显式 versionId 或 getMethodVersionHistory）。
+ */
+export function listUserMethods(scope: UserScope): MethodSummary[] {
+  assertScopeValid(scope);
+  const rows = sqlite
+    .prepare(
+      `SELECT m.method_id, m.name, m.status, m.current_version_id, m.updated_at, v.adoption_constraints
+       FROM agent_space_methods m
+       LEFT JOIN agent_space_method_versions v ON v.version_id = m.current_version_id
+       WHERE m.user_id=? AND m.project_id=? AND m.instance_id=?
+       ORDER BY m.updated_at DESC`,
+    )
+    .all(scope.userId, scope.projectId, scope.instanceId) as Array<{
+      method_id: string; name: string; status: MethodStatus; current_version_id: string | null;
+      updated_at: string; adoption_constraints: string | null;
+    }>;
+  return rows.map((r) => ({
+    methodId: r.method_id,
+    name: r.name,
+    status: r.status,
+    currentVersionId: r.current_version_id,
+    currentVersionConstraints: r.current_version_id ? parseAdoptionConstraints(r.adoption_constraints) : [],
+    updatedAt: r.updated_at,
+  }));
+}
+
+export interface MethodVersionHistoryEntry {
+  versionId: string;
+  versionNumber: number;
+  status: MethodVersionStatus;
+  contentChecksum: string;
+  assetVersionId: string | null;
+  adoptionConstraints: AdoptionConstraint[];
+  supersedesVersionId: string | null;
+  approvedAt: string | null;
+  createdAt: string;
+}
+
+/**
+ * 显式版本历史（W2）：只含正式版本（approved/superseded）的采用链——
+ * 草稿不进入正式历史；被 run/task/commitment 引用的版本始终在此可寻址。
+ */
+export function getMethodVersionHistory(scope: UserScope, methodId: string): MethodVersionHistoryEntry[] {
+  assertScopeValid(scope);
+  getMethodRow(scope, methodId);
+  const rows = sqlite
+    .prepare(
+      `SELECT version_id, version_number, status, content_checksum, asset_version_id,
+              adoption_constraints, supersedes_version_id, approved_at, created_at
+       FROM agent_space_method_versions
+       WHERE method_id=? AND user_id=? AND project_id=? AND instance_id=? AND status IN ('approved','superseded')
+       ORDER BY version_number DESC`,
+    )
+    .all(methodId, scope.userId, scope.projectId, scope.instanceId) as Array<{
+      version_id: string; version_number: number; status: MethodVersionStatus; content_checksum: string;
+      asset_version_id: string | null; adoption_constraints: string | null; supersedes_version_id: string | null;
+      approved_at: string | null; created_at: string;
+    }>;
+  return rows.map((r) => ({
+    versionId: r.version_id,
+    versionNumber: r.version_number,
+    status: r.status,
+    contentChecksum: r.content_checksum,
+    assetVersionId: r.asset_version_id,
+    adoptionConstraints: parseAdoptionConstraints(r.adoption_constraints),
+    supersedesVersionId: r.supersedes_version_id,
+    approvedAt: r.approved_at,
+    createdAt: r.created_at,
+  }));
+}
+
+/**
+ * 版本间元数据 diff（W2）：只比对 canonical 引用与 checksum，不复制/内嵌
+ * 正文；逐版本字节读取不受任何去重/差异压缩影响（本域不做字节去重）。
+ */
+export function diffMethodVersions(
+  scope: UserScope,
+  fromVersionId: string,
+  toVersionId: string,
+): { fromChecksum: string; toChecksum: string; identical: boolean; fromAssetVersionId: string | null; toAssetVersionId: string | null } {
+  assertScopeValid(scope);
+  const from = getVersionRow(scope, fromVersionId);
+  const to = getVersionRow(scope, toVersionId);
+  if (from.method_id !== to.method_id) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "cannot diff versions of different methods");
+  }
+  return {
+    fromChecksum: from.content_checksum,
+    toChecksum: to.content_checksum,
+    identical: from.content_checksum === to.content_checksum,
+    fromAssetVersionId: from.asset_version_id,
+    toAssetVersionId: to.asset_version_id,
+  };
 }
 
 export { BLOCKS_RUN_BINDING, BLOCKS_DEFAULT_ADOPTION, ADOPTION_CONSTRAINTS };
