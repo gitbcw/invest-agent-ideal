@@ -82,6 +82,8 @@ smoke ①② 的断言（basis 落库）要求装配模式已启用，故物理�
 
 （14:30 生产自然调度证据追加）
 
+- **14:30:45 mg market-watch 自然调度（装配态首次自然运行）**：14:31:14 succeeded（29s）；basis=显式空集（task-declares-no-dependencies）、injection.workspace=null、outcomes `[execution_succeeded, delivery_succeeded]`——调度器→装配→真实模型→真实投递全链在自然调度路径下成立。观察期替代的最后一块任务面证据落定。
+
 ## 批次结论（B1 执行侧）
 
 步骤 0-9 全部执行完毕：发布+schema 双段核对全过、新快照+staging 零漂移、46 项导入+核对全过、D1 采用+依赖注册、resolver 切换、smoke 三件全过（含真实微信投递）。一次窗口日内事故（导入字节根错位）已定位、修复、留痕，未触发 resolver 回退。观察期开启，T-532 解锁等待独立验收。
