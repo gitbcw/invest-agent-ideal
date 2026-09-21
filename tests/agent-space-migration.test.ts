@@ -459,14 +459,112 @@ test("W7 注册脚本：adopt 后可 pin 到 active 任务，未 adopt/非 activ
   const okPlanPath = path.join(root, "w7-dep-plan-ok.json");
   writeFileSync(okPlanPath, JSON.stringify([{ userId: "mg", methodItemId: ffItemId, taskIds: ["w7_task_ff"] }]));
   t.after(() => { rmSync(okPlanPath, { force: true }); });
-  const first = runScript(["--plan", okPlanPath, "--confirm"]);
+  const { createHash } = await import("node:crypto");
+  const gateSha = createHash("sha256").update(readFileSync(path.join(w0Root, "import-gate.json"))).digest("hex");
+  const guarded = (planFile: string) => ["--plan", planFile, "--confirm", "--target", "isolated", "--w0-root", w0Root, "--manifest-sha256", gateSha, "--batch", "B1"];
+  // R3 护栏反例：缺 target / production+test env / hash 不匹配 / 批次用户不符。
+  assert.equal(runScript(["--plan", okPlanPath, "--confirm"]).status, 2, "confirm 缺 target 身份必须拒绝");
+  assert.match(runScript(["--plan", okPlanPath, "--confirm", "--target", "production", "--w0-root", w0Root, "--manifest-sha256", gateSha, "--batch", "B1"]).stderr, /refusing production write under NODE_ENV=test/);
+  assert.match(runScript(["--plan", okPlanPath, "--confirm", "--target", "isolated", "--w0-root", w0Root, "--manifest-sha256", "0".repeat(64), "--batch", "B1"]).stderr, /manifest fingerprint mismatch/);
+  assert.match(runScript(["--plan", okPlanPath, "--confirm", "--target", "isolated", "--w0-root", w0Root, "--manifest-sha256", gateSha, "--batch", "B2"]).stderr, /do not belong to batch B2/);
+  const first = runScript(guarded(okPlanPath));
   assert.equal(first.status, 0, first.stderr);
   const deps = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_task_dependencies WHERE task_id='w7_task_ff' AND kind='method'").get() as { n: number }).n;
   assert.equal(deps, 1);
-  const second = runScript(["--plan", okPlanPath, "--confirm"]);
+  const second = runScript(guarded(okPlanPath));
   assert.equal(second.status, 0);
   const depsAfter = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_task_dependencies WHERE task_id='w7_task_ff' AND kind='method'").get() as { n: number }).n;
   assert.equal(depsAfter, 1, "重跑幂等零新增");
+});
+
+test("W7 逐用户补偿回滚：deactivate 只停用目标 scope，他人零影响", async () => {
+  await fixture;
+  const runRoot = path.join(root, "w7-rollback-run");
+  mkdirSync(path.join(runRoot, "workspaces"), { recursive: true });
+  const scriptEnv = {
+    ...process.env,
+    DB_PATH: path.join(runRoot, "w6.db"),
+    WORKSPACE_ROOT: path.join(runRoot, "workspaces"),
+    RUNTIME_DATA_ROOT: path.join(runRoot, "runtime"),
+    MASTRA_PROJECTS_ROOT: path.join(runRoot, "projects"),
+    SYSTEM_SKILLS_TEMPLATE_ROOT: path.join(runRoot, "templates"),
+    NODE_ENV: "test",
+    WORKSPACE_BACKEND: "mastra",
+  };
+  // 阶段一：演练脚本建立完整状态（导入 + approve/adopt + agent + 依赖）。
+  const rehearsal = path.join(import.meta.dirname, "..", "scripts", "agent-space", "w6-rehearsal.mjs");
+  const phase1 = spawnSync(process.execPath, ["--import", "tsx", rehearsal, "--w0-root", w0Root, "--backup-root", backupRoot, "--out-root", runRoot, "--phase", "import", "--selftest"], { env: scriptEnv, encoding: "utf8" });
+  assert.equal(phase1.status, 0, `rehearsal failed:\n${phase1.stdout}\n${phase1.stderr}`);
+
+  const rollbackScript = path.join(import.meta.dirname, "..", "scripts", "agent-space", "w7-rollback-scope.mjs");
+  const runRollback = (extra: string[]) => spawnSync(process.execPath, ["--import", "tsx", rollbackScript, ...extra], { env: scriptEnv, encoding: "utf8" });
+  // 反例：deactivate 缺 --confirm / 缺 --target 拒绝；switch-only 零操作。
+  assert.equal(runRollback(["--scope", "mg", "--level", "deactivate"]).status, 2);
+  assert.equal(runRollback(["--scope", "mg", "--level", "deactivate", "--confirm"]).status, 2);
+  const switchOnly = runRollback(["--scope", "mg"]);
+  assert.equal(switchOnly.status, 0);
+  const switchReport = JSON.parse(switchOnly.stdout.slice(switchOnly.stdout.indexOf("{")));
+  assert.equal(switchReport.actions.length, 1);
+  assert.match(switchReport.actions[0].note, /未做任何数据操作/);
+
+  // 正例：deactivate 只停用 mg 的 w6 对象与依赖；dyk 不受影响。
+  const de = runRollback(["--scope", "mg", "--level", "deactivate", "--target", "isolated", "--confirm"]);
+  assert.equal(de.status, 0, de.stderr);
+  const deReport = JSON.parse(de.stdout.slice(de.stdout.indexOf("{")));
+  const kinds = deReport.actions.map((a: { action: string }) => a.action).sort();
+  assert.deepEqual(kinds, ["agent.disabled", "asset.archived", "asset.archived", "method.retired", "task-dependency.deleted"], JSON.stringify(kinds));
+
+  const { default: Database } = await import("better-sqlite3");
+  const iso = new Database(scriptEnv.DB_PATH, { readonly: true });
+  const mgAgent = iso.prepare("SELECT status FROM agent_space_agents WHERE user_id='mg'").get() as { status: string };
+  assert.equal(mgAgent.status, "disabled");
+  const mgDeps = iso.prepare("SELECT COUNT(*) AS n FROM agent_space_task_dependencies WHERE user_id='mg'").get() as { n: number };
+  assert.equal(mgDeps.n, 0);
+  const mgMethod = iso.prepare("SELECT status FROM agent_space_methods WHERE user_id='mg'").get() as { status: string };
+  assert.equal(mgMethod.status, "retired");
+  const mgAssets = iso.prepare("SELECT COUNT(*) AS n FROM user_assets WHERE user_id='mg' AND status='active'").get() as { n: number };
+  assert.equal(mgAssets.n, 0, "mg 的 w6 资产应全部归档");
+  // dyk 零影响：方法仍 draft（非 retired）、资产仍 active。
+  const dykMethod = iso.prepare("SELECT status FROM agent_space_methods WHERE user_id='dyk'").get() as { status: string };
+  assert.equal(dykMethod.status, "draft");
+  const dykAssets = iso.prepare("SELECT COUNT(*) AS n FROM user_assets WHERE user_id='dyk' AND status='active'").get() as { n: number };
+  assert.ok(dykAssets.n > 0, "dyk 资产不受 mg 回滚影响");
+  iso.close();
+});
+
+test("W7 smoke 采证脚本：basis/outcome/delivery 链/隔离抽查一次成证", async () => {
+  await fixture;
+  const runRoot = path.join(root, "w7-smoke-run");
+  mkdirSync(path.join(runRoot, "workspaces"), { recursive: true });
+  const scriptEnv = {
+    ...process.env,
+    DB_PATH: path.join(runRoot, "w6.db"),
+    WORKSPACE_ROOT: path.join(runRoot, "workspaces"),
+    RUNTIME_DATA_ROOT: path.join(runRoot, "runtime"),
+    MASTRA_PROJECTS_ROOT: path.join(runRoot, "projects"),
+    SYSTEM_SKILLS_TEMPLATE_ROOT: path.join(runRoot, "templates"),
+    NODE_ENV: "test",
+    WORKSPACE_BACKEND: "mastra",
+  };
+  const rehearsal = path.join(import.meta.dirname, "..", "scripts", "agent-space", "w6-rehearsal.mjs");
+  const phase1 = spawnSync(process.execPath, ["--import", "tsx", rehearsal, "--w0-root", w0Root, "--backup-root", backupRoot, "--out-root", runRoot, "--phase", "import", "--selftest"], { env: scriptEnv, encoding: "utf8" });
+  assert.equal(phase1.status, 0, `rehearsal failed:\n${phase1.stderr}`);
+
+  const smokeScript = path.join(import.meta.dirname, "..", "scripts", "agent-space", "w7-smoke.mjs");
+  const smoke = spawnSync(process.execPath, ["--import", "tsx", smokeScript, "--scope", "mg"], { env: scriptEnv, encoding: "utf8" });
+  assert.equal(smoke.status, 0, smoke.stderr);
+  const report = JSON.parse(smoke.stdout.slice(smoke.stdout.indexOf("{")));
+  // basis：演练里 conversation/task 两条 basis 均可查。
+  assert.ok(report.basisEvidence.length >= 2, JSON.stringify(report.basisEvidence.map((b: { basisKey: string }) => b.basisKey)));
+  assert.ok(report.basisEvidence.some((b: { methods: unknown[] }) => b.methods.length === 1), "四因子装配 basis 可见");
+  // outcome 链：采证如实呈现——演练脚本的 run 为 seed 行（不走 finish 咽喉点），
+  // outcomes 为空是事实而非缺采证；真实自动 outcome 链由 generic e2e 文件证明
+  // （execution_succeeded/failed + delivery_succeeded 自动落库）。
+  assert.ok(Array.isArray(report.runOutcomeChain) && report.runOutcomeChain.length >= 1, "最近 run 进入采证链");
+  // 隔离抽查：导入资产同 scope 可读、跨 scope 拒绝。
+  assert.equal(report.isolationCheck.imported, true);
+  assert.equal(report.isolationCheck.sameScopeReadable, true);
+  assert.equal(report.isolationCheck.crossScopeRejected, true);
 });
 
 test("W6 演练脚本两阶段：fixture 导入全绿，回滚恢复到导入前快照", { timeout: 120_000 }, async () => {

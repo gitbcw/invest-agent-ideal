@@ -2335,7 +2335,32 @@ export async function finishAutomationTaskRun(input: FinishAutomationTaskRunInpu
   // 不反噬终态收口。
   const { notifyAutomationRunTerminalQuietly } = await import("./automation-notify.js");
   await notifyAutomationRunTerminalQuietly({ scope: assertAutomationScope(input), taskId: run.taskId, runId: run.runId });
+  await recordExecutionOutcomeQuietly(input, run);
   return run;
+}
+
+/**
+ * W7/R1：execution outcome 与真实 run 终态同咽喉点落 Agent Space 分层事实
+ * （run status 先落库，outcome 的事实校验必过；重试新 run 天然按 runId 分行）。
+ * 采证增强不反噬终态收口：写失败仅告警。
+ */
+async function recordExecutionOutcomeQuietly(input: FinishAutomationTaskRunInput, run: AutomationTaskRunRecord): Promise<void> {
+  if (run.status !== "succeeded" && run.status !== "failed") return;
+  try {
+    const scope = assertAutomationScope(input);
+    const { recordRunOutcome } = await import("./agent-space/tasks.js");
+    recordRunOutcome({
+      scope: { userId: scope.userId, projectId: scope.projectId, instanceId: scope.instanceId },
+      runId: run.runId,
+      kind: run.status === "succeeded" ? "execution_succeeded" : "execution_failed",
+      detail: { source: "finishAutomationTaskRun", errorMessage: run.errorMessage ?? null },
+      idempotencyKey: `automation:execution:${run.runId}`,
+      actor: "automation-runner",
+    });
+  } catch (error) {
+    // 事实校验拒绝或写失败只说明采证缺失，不影响业务终态；日志可见。
+    logger.warn(`execution outcome record failed run=${run.runId}: ${(error as Error).message}`);
+  }
 }
 
 function latestRunsByTask(scope: AutomationScope): Map<string, NonNullable<AutomationTaskSummary["latestRun"]>> {

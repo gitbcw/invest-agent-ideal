@@ -347,7 +347,7 @@ async function markAwaitingUser(id: string, attempts: number, errorMessage: stri
 }
 
 async function syncAutomationDelivery(
-  job: { originRunId?: string | null; userId: string; projectId: string; instanceId: string },
+  job: { id: string; originRunId?: string | null; userId: string; projectId: string; instanceId: string },
   status: "pending" | "sent" | "failed",
 ): Promise<void> {
   if (!job.originRunId) return;
@@ -359,5 +359,22 @@ async function syncAutomationDelivery(
     });
   } catch (error) {
     logger.warn(`automation delivery status sync failed run=${job.originRunId}: ${(error as Error).message}`);
+  }
+  // W7/R1：投递终态同点落 Agent Space 分层事实（delivery outcome 绑定
+  // push_jobs.origin_run_id 与真实 job 终态，服务层校验）。中间态 pending
+  // （重试中）不记；采证失败仅告警，不影响投递流程。
+  if (status !== "sent" && status !== "failed") return;
+  try {
+    const { recordRunOutcome } = await import("./agent-space/tasks.js");
+    recordRunOutcome({
+      scope: { userId: job.userId, projectId: job.projectId, instanceId: job.instanceId },
+      runId: job.originRunId,
+      kind: status === "sent" ? "delivery_succeeded" : "delivery_failed",
+      detail: { pushJobId: job.id },
+      idempotencyKey: `automation:delivery:${job.originRunId}:${job.id}`,
+      actor: "push-queue",
+    });
+  } catch (error) {
+    logger.warn(`delivery outcome record failed run=${job.originRunId} job=${job.id}: ${(error as Error).message}`);
   }
 }

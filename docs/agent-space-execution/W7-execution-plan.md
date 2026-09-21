@@ -30,14 +30,16 @@
 2. **导入前快照**：生产 DB `sqlite-online-backup`（WAL 安全点）落批次目录，记录 sha256。
 3. **写入新对象**：`w6-rehearsal.mjs` 的导入器按 scope 过滤只导本批用户 93 项中该用户份额（幂等键 `w6:<itemId>`，重跑零新增）；全部 draft 归档态，不改任何既有行。
 4. **Agent 与技能初始化**：`createAgent`（active）+ `applyDefaultSkillManifest`（one-time init，幂等）。
-5. **授权采用（§3 决策点执行）**：仅 owner 批准项走 approve/adopt；其余保持归档。
-6. **任务依赖注册**：`w7-register-task-deps.mjs`（本计划交付）把 §3 批准的方法 pin 到有方法消费者的 active 任务；无方法消费者的任务不注册（空装配=显式空集，方法论指令明示"未装配不可引用"）。
-7. **smoke（每批三件）**：① 会话一条真实消息→basis 落库含采用方法、回复正常；② 手动触发 daily-review→run basis+outcome+交付链正常；③ 跨 scope 读拒绝抽查。
+5. **授权采用（§3 决策点执行）**：仅 [W7-decisions.md](./W7-decisions.md) 中已冻结的 decided 项走 approve/adopt；其余保持归档。**该批用户涉及决策未全部冻结前，不得执行步骤 8。**
+6. **任务依赖注册**：`w7-register-task-deps.mjs`（本计划交付）把已冻结批准的方法 pin 到有方法消费者的 active 任务；无方法消费者的任务不注册（空装配=显式空集，方法论指令明示"未装配不可引用"）。confirm 必须携带 `--target isolated|production --w0-root --manifest-sha256 --batch`（目标库身份护栏；production 拒绝 NODE_ENV=test；plan 用户必须属于批次用户集）。
+7. **smoke（每批三件，机器采证）**：① 会话一条真实消息→basis 落库含采用方法、回复正常；② 手动触发 daily-review→run basis+outcome+交付链正常；③ 跨 scope 读拒绝抽查。采证用 `scripts/agent-space/w7-smoke.mjs --scope <userId>`（只读，输出 basis/outcome/delivery 事实链与隔离抽查 JSON；R1 接缝后 execution/delivery outcome 由终态咽喉点与投递接缝自动产生，无需人工写入）。
 8. **切换 resolver**：生产 env `AGENT_SPACE_ASSEMBLY_MODE=scope:<本批用户>` → 白天重启 `mastra-portal`（装配在进程内读 env）。旧 Workspace 在切换后仍可读（history-only 过渡），仅不再默认装配。
 9. **观察与证据**：采集本批真实 run-basis/audit/任务交付（W5 outcome 事实源核对）；检查旧 default-load 计数归零路径、无双写、无未迁移引用报警。
-10. **失败回滚**：开关回 `off`+重启（即时生效、对象保留不动）；必要时恢复步骤 2 快照（W6 已验证对象级清零流程）。
+10. **失败回滚（R2：scope 隔离补偿，禁止整库恢复作默认）**：首选 `AGENT_SPACE_ASSEMBLY_MODE` 移除该 scope/置 off + 白天重启（零数据操作，立即生效）；如需数据级停用本批对象，用 `scripts/agent-space/w7-rollback-scope.mjs --scope <userId> --level deactivate --target production --confirm`（前向补偿：仅停用本 scope 的 w6:* 对象/Agent/依赖，不覆盖窗口期间任何写入）。**整库快照恢复不作批次回滚手段**——仅 owner 明确批准的维护窗口内、阻断相关写入、核对快照后变更清单后另行执行；W6 隔离整库 rollback 证据不适用于生产。
 
-## 3. 授权决策点（owner 逐项，窗口日前必须定）
+## 3. 授权决策点（owner 逐项，窗口日前必须冻结）
+
+冻结状态与依据见 [W7-decisions.md](./W7-decisions.md)（唯一权威记录；下表为决策概览）。
 
 | # | 决策 | 建议 | 影响面 |
 | --- | --- | --- | --- |
@@ -57,8 +59,12 @@
 
 | 资产 | 位置 | 用途 |
 | --- | --- | --- |
-| 任务依赖注册脚本 | `scripts/agent-space/w7-register-task-deps.mjs` | 窗口日步骤 6；按 §3 批准项把方法 pin 到任务（幂等） |
-| generic runner 上游端到端测试 | `tests/agent-space-migration.test.ts` 新组 | 补 W4 遗留：装配 on 下从 `runGenericAutomationTaskNow`（真实上游生命周期）驱动到 handleMessage 模型边界 |
+| 任务依赖注册脚本 | `scripts/agent-space/w7-register-task-deps.mjs` | 窗口日步骤 6；目标库身份护栏（target/manifest 指纹/批次）；affected 前后清单；幂等 |
+| scope 补偿回滚脚本 | `scripts/agent-space/w7-rollback-scope.mjs` | 窗口日步骤 10；switch-only（默认零操作）与 deactivate（前向停用本批对象）两级 |
+| smoke 采证脚本 | `scripts/agent-space/w7-smoke.mjs` | 窗口日步骤 7；basis/outcome/delivery 事实链与隔离抽查一次成证（只读） |
+| W5 outcome 运行链接缝 | `automation-tasks.ts finishAutomationTaskRun` + `push-queue.ts syncAutomationDelivery` | execution outcome 随 run 真实终态自动落库（所有入口单咽喉点）；delivery outcome 随投递终态+origin_run_id 自动落库 |
+| generic runner 上游端到端测试 | `tests/agent-space-generic-e2e.test.ts` | 装配 on 下从 `runGenericAutomationTaskNow`（真实上游生命周期）驱动到模型边界；断言 execution_succeeded/failed 与 delivery_succeeded 自动产生 |
+| 决策冻结记录 | `W7-decisions.md` | D1–D7 状态与依据；pending 决策阻塞对应批次 resolver |
 
 ## 6. 窗口日不做的事
 

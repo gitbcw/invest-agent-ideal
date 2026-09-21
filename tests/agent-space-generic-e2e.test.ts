@@ -81,6 +81,19 @@ test("W7 前置：装配模式下 generic automation 上游端到端——固定
     output: { mode: "none" }, delivery: { mode: "none" as const },
   });
   await automation.activateAutomationTask({ ...scope, taskId: taskB.taskId, expectedRevision: 1 });
+  // 任务 C：带投递（R1 delivery 链）；任务 D：网关失败（R1 execution_failed 反例）。
+  const taskC = await automation.createAutomationTask({
+    ...scope, taskId: "w7-e2e-task-c", name: "上游端到端C", instruction: "投递链验证。",
+    schedule: { frequency: "trading_days" as const, time: "14:40", timezone: "Asia/Shanghai", windows: ["14:40"] },
+    output: { mode: "none" }, delivery: { mode: "wechat_summary" as const },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: taskC.taskId, expectedRevision: 1 });
+  const taskD = await automation.createAutomationTask({
+    ...scope, taskId: "w7-e2e-task-d", name: "上游端到端D", instruction: "失败路径验证。",
+    schedule: { frequency: "trading_days" as const, time: "14:45", timezone: "Asia/Shanghai", windows: ["14:45"] },
+    output: { mode: "none" }, delivery: { mode: "none" as const },
+  });
+  await automation.activateAutomationTask({ ...scope, taskId: taskD.taskId, expectedRevision: 1 });
 
   // 本地假模型网关：捕获上游链最终发给模型的请求，返回结构化 JSON。
   const captured: Array<{ body: Record<string, unknown> }> = [];
@@ -88,8 +101,15 @@ test("W7 前置：装配模式下 generic automation 上游端到端——固定
     let requestBody = "";
     request.on("data", (chunk: Buffer) => { requestBody += chunk.toString(); });
     request.on("end", () => {
-      captured.push({ body: JSON.parse(requestBody) as Record<string, unknown> });
-      const payload = JSON.stringify({ summary: "上游端到端验证摘要", shouldNotify: false });
+      const body = JSON.parse(requestBody) as Record<string, unknown>;
+      captured.push({ body });
+      // 任务 D 的请求触发网关失败（execution_failed 反例）。
+      if (JSON.stringify(body).includes("w7-e2e-task-d")) {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "gateway outage for task-d" } }));
+        return;
+      }
+      const payload = JSON.stringify({ summary: "上游端到端验证摘要", shouldNotify: true });
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.write(`data: {"id":"w7","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":${JSON.stringify(payload)}},"finish_reason":null}]}\n\n`);
       response.write('data: {"id":"w7","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
@@ -147,4 +167,29 @@ test("W7 前置：装配模式下 generic automation 上游端到端——固定
     basisB.skipped.some((s: { reason?: string }) => String(s.reason ?? "").includes("task-declares-no-dependencies")),
     "空装配必须携带显式 skipped 原因",
   );
+
+  // R1：execution outcome 由终态咽喉点自动落库（不依赖人工写入）。
+  const outcomeKindsOf = (runId: string) =>
+    (db.sqlite.prepare("SELECT kind FROM agent_space_run_outcomes WHERE run_id=? ORDER BY rowid").all(runId) as Array<{ kind: string }>).map((r) => r.kind);
+  assert.deepEqual(outcomeKindsOf(resultA.run.runId), ["execution_succeeded"], "成功 run 自动记 execution_succeeded");
+
+  // 任务 D：网关失败 → run failed → execution_failed 自动落库。
+  const resultD = await runner.runGenericAutomationTaskNow({ scope, taskId: taskD.taskId, origin: "manual", idempotencyKey: "w7-e2e-d-1" });
+  assert.equal(resultD.run.status, "failed");
+  assert.deepEqual(outcomeKindsOf(resultD.run.runId), ["execution_failed"], "失败 run 自动记 execution_failed");
+
+  // 任务 C：投递链——runner 完成（execution_succeeded）→ push job 带 origin_run_id →
+  // 消费成功后 delivery_succeeded 自动落库，事实与 job 终态/归属一致。
+  const resultC = await runner.runGenericAutomationTaskNow({ scope, taskId: taskC.taskId, origin: "manual", idempotencyKey: "w7-e2e-c-1" });
+  assert.equal(resultC.run.status, "succeeded");
+  assert.deepEqual(outcomeKindsOf(resultC.run.runId), ["execution_succeeded"]);
+  const jobRow = db.sqlite
+    .prepare("SELECT id, origin_run_id FROM push_jobs WHERE origin_run_id=?")
+    .get(resultC.run.runId) as { id: string; origin_run_id: string } | undefined;
+  assert.ok(jobRow, "投递任务必须入队带 origin_run_id 的 push job");
+  const { processDuePushJobs } = await import("../src/services/push-queue.js");
+  await processDuePushJobs(async () => ({ ok: true, reason: "sent" }), { limit: 10 });
+  const jobStatus = db.sqlite.prepare("SELECT status FROM push_jobs WHERE id=?").get(jobRow.id) as { status: string };
+  assert.equal(jobStatus.status, "sent");
+  assert.deepEqual(outcomeKindsOf(resultC.run.runId), ["execution_succeeded", "delivery_succeeded"], "投递成功自动记 delivery_succeeded");
 });

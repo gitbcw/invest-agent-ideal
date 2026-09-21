@@ -8,15 +8,25 @@
  *
  * 用法：
  *   node --import tsx scripts/agent-space/w7-register-task-deps.mjs \
- *     --plan <plan.json> [--confirm]
+ *     --plan <plan.json> [--confirm --target isolated|production \
+ *       --w0-root <dir> --manifest-sha256 <sha> --batch B1|B2|B3]
  *
  * plan.json：[{ "userId": "mg", "methodItemId": "mg:liveProjectRoot:methods/控盘度综合评分.md",
  *               "taskIds": ["at_d64649ad-…"] }, …]
  * methodItemId 必须是 W6 已导入且经授权 adopt 的方法（脚本核对
  * idempotency_key=w6:<itemId>:method 与 current_version_id；未 adopt 拒绝）。
- * 环境必须指向目标 DB（生产=生产 DB；演练=隔离 DB）；默认 dry-run。
+ * 环境必须指向目标 DB；默认 dry-run（任意隔离 DB 可跑）。
+ *
+ * W7-R3 护栏：--confirm 必须携带完整目标身份——
+ *   --target production 时：NODE_ENV 非 test、--batch 批次合法、--w0-root 与
+ *     --manifest-sha256 与目标库导入所用 import-gate.json 指纹一致；
+ *   --target isolated 时：同样要求 manifest 指纹（隔离演练库）；
+ *   plan 中 userId 必须属于该批次用户集（B1=mg / B2=dyk / B3=111）。
+ * 注册前后输出 affected 清单（新增/既有依赖行），重跑幂等。
  */
 import { readFileSync } from "node:fs";
+
+import { createHash } from "node:crypto";
 
 const args = process.argv.slice(2);
 const argOf = (name) => {
@@ -25,13 +35,50 @@ const argOf = (name) => {
 };
 const planPath = argOf("plan");
 const confirm = args.includes("--confirm");
+const target = argOf("target");
+const w0Root = argOf("w0-root");
+const manifestSha = argOf("manifest-sha256");
+const batch = argOf("batch");
+const BATCH_USERS = { B1: ["mg"], B2: ["dyk"], B3: ["111"] };
 if (!planPath) {
-  console.error("usage: w7-register-task-deps.mjs --plan <plan.json> [--confirm]");
+  console.error("usage: w7-register-task-deps.mjs --plan <plan.json> [--confirm --target isolated|production --w0-root <dir> --manifest-sha256 <sha> --batch B1|B2|B3]");
   process.exit(2);
 }
 if (!process.env.DB_PATH) {
   console.error("refusing to run: DB_PATH not set (point at the target database explicitly)");
   process.exit(2);
+}
+const plan = JSON.parse(readFileSync(planPath, "utf8"));
+if (!Array.isArray(plan)) {
+  console.error("plan must be an array of {userId, methodItemId, taskIds}");
+  process.exit(2);
+}
+if (confirm) {
+  const missing = [];
+  if (target !== "isolated" && target !== "production") missing.push("--target isolated|production");
+  if (!w0Root) missing.push("--w0-root");
+  if (!manifestSha) missing.push("--manifest-sha256");
+  if (!BATCH_USERS[batch ?? ""]) missing.push("--batch B1|B2|B3");
+  if (missing.length > 0) {
+    console.error(`confirm requires target identity: missing ${missing.join(", ")}`);
+    process.exit(2);
+  }
+  const actualSha = createHash("sha256").update(readFileSync(`${w0Root}/import-gate.json`)).digest("hex");
+  if (actualSha !== manifestSha) {
+    console.error(`manifest fingerprint mismatch: --manifest-sha256=${manifestSha} but ${w0Root}/import-gate.json is ${actualSha}`);
+    console.error(" refusing: 目标库导入所用门禁清单与本次声明不一致（清单可能已重生成，先重跑 W6 演练核对）");
+    process.exit(2);
+  }
+  if (target === "production" && process.env.NODE_ENV === "test") {
+    console.error("refusing production write under NODE_ENV=test");
+    process.exit(2);
+  }
+  const batchUsers = BATCH_USERS[batch];
+  const foreign = [...new Set(plan.map((e) => e.userId))].filter((u) => !batchUsers.includes(u));
+  if (foreign.length > 0) {
+    console.error(`plan users ${foreign.join(",")} do not belong to batch ${batch} (${batchUsers.join(",")})`);
+    process.exit(2);
+  }
 }
 process.env.NODE_ENV ??= "test";
 process.env.WORKSPACE_BACKEND ??= "mastra";
@@ -51,14 +98,16 @@ const db = await importAppModule("db/index.js");
 db.initDb();
 const space = await importAppModule("services/agent-space/index.js");
 
-const plan = JSON.parse(readFileSync(planPath, "utf8"));
-if (!Array.isArray(plan)) {
-  console.error("plan must be an array of {userId, methodItemId, taskIds}");
-  process.exit(2);
-}
-
 const results = [];
 let failed = false;
+const beforeRows = {};
+for (const entry of plan) {
+  for (const taskId of entry.taskIds ?? []) {
+    beforeRows[taskId] = db.sqlite
+      .prepare("SELECT dependency_id, kind, ref_id, pinned_version_id FROM agent_space_task_dependencies WHERE task_id=?")
+      .all(taskId);
+  }
+}
 for (const entry of plan) {
   const { userId, methodItemId, taskIds } = entry;
   const methodKey = `w6:${methodItemId}:method`;
@@ -126,5 +175,13 @@ for (const entry of plan) {
   }
 }
 
-console.log(JSON.stringify({ confirm, results, ok: !failed }, null, 1));
+const afterRows = {};
+for (const entry of plan) {
+  for (const taskId of entry.taskIds ?? []) {
+    afterRows[taskId] = db.sqlite
+      .prepare("SELECT dependency_id, kind, ref_id, pinned_version_id FROM agent_space_task_dependencies WHERE task_id=?")
+      .all(taskId);
+  }
+}
+console.log(JSON.stringify({ confirm, target: target ?? null, batch: batch ?? null, results, affected: { before: beforeRows, after: afterRows }, ok: !failed }, null, 1));
 process.exit(failed ? 1 : 0);
