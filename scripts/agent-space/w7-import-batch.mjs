@@ -73,8 +73,18 @@ if (confirm) {
     process.exit(2);
   }
 }
-process.env.NODE_ENV ??= "test";
+// NODE_ENV 缺省规则（B1 事故修正）：production 目标必须以 production 运行——
+// 加载生产 .env（MASTRA_PROJECTS_ROOT 等根路径解析依赖它）；test 模式会落到
+// 代码默认根（data/mastra-projects），导致导入字节写错位置（B1 已发生并修复）。
+process.env.NODE_ENV ??= target === "production" ? "production" : "test";
 process.env.WORKSPACE_BACKEND ??= "mastra";
+if (target === "production") {
+  const projectsRoot = process.env.MASTRA_PROJECTS_ROOT;
+  if (!projectsRoot || !/data\/projects$/.test(projectsRoot.replace(/\/$/, ""))) {
+    console.error(`refusing production write: MASTRA_PROJECTS_ROOT=${projectsRoot ?? "(unset)"} 与生产注册根不符（.env 未加载？）`);
+    process.exit(2);
+  }
+}
 
 async function importAppModule(relative) {
   for (const base of ["../../src", "../../dist"]) {

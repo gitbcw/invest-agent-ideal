@@ -16,4 +16,60 @@
 
 ## 步骤 0：发布与 schema 建立
 
-（执行中追加）
+- 12:31 发布 commit `31c6bad45df7c340f7a273060a029500658e3da6`（W7 批次工程资产），deploy-volcano.sh 构建感知流程：rsync → 远程 npm install+build → portal build → pm2 restart。发布脚本尾部 23655 连接拒绝为启动瞬态（重启后 401 正常响应）。
+- 12:36 schema 快检：`{"count":22}`；结构比对（w7-verify-schema，代码参照库）：`pass: true`，22 表列/索引/唯一约束全一致。输出留 `.state/agent-space-w7-b1/server-evidence/`。
+- 12:37 健康检查：portal 307、23655 401（鉴权正常）、pm2 双进程 online/unstable 0；connector socket 瞬态报错 4 秒内全部重连恢复（dyk/mg/primary/111/mgreplay registered）；微信 bot 启动并 resume。切换前自然调度回归证据：等 12:55 mg / 13:00 dyk market-watch（旧路径）成功后进入步骤 8。
+- D11 状态：owner 2026-09-21 已授权当日执行步骤 0 与 B1（gpt 监督验收）。
+
+## 步骤 1：冻结清单
+
+- 12:41-12:46 新全量灾备快照 `2026-09-21T123559+0800`（1516 文件，COMPLETE 在案）。
+- 12:47 staging 重核对（本地 check-only 模式）：mg 46/46 staged、**0 漂移**。
+- manifest 指纹：`3994a6c8047f18c37a01a31286bfe3d38bc08014f4167a245d38a69c68c64a7f`（w0-r2 import-gate.json，与服务器副本一致）。
+
+## 步骤 2：导入前快照
+
+- 12:44 生产 DB 在线快照 `.backup/w7-b1/pre-import.db`（sqlite-online-backup，quickCheck ok，99 表），sha256 `b16bab90005d669948323c3d21f029c478eab075b95a842aa19e3feab5cd171f`。
+
+## 步骤 3-5：导入 / Agent / D1 采用（生产）
+
+- §0.5 清单六项逐项核对通过（目标库身份/scope 三元组 mg|invest-agent|invest-agent-mg/指纹/B1 归属/schema 留痕/D11 解除）；导入前生产 agent_space 0 行、mg 既有 38 资产。
+- 首跑被 staging 护栏拦截（rsync 目录双层嵌套致 46 项 unreadable，零写入）——修正源路径后重跑，属操作失误被机器规则正确拦截，留痕。
+- 12:48 正式执行：46/46 staged（hash 双核对）、46 导入（0 replay）、verify 46/46（scope/hash/同 scope 可读/跨 scope 拒绝/D1 项 adopted 合法脱离归档）；Agent `agent_fda53d5f-79e1-435e-bbd5-0d98e7799ff3`（active，w7:mg:agent）；D1 采用 method_e65575c6 / mver_8db03858（checksum `ea02397b…` 与源一致，approvalRef `owner-decision:W7-B1-mg:…`）。报告：`.backup/w7-b1/report/batch-import-report.json`（已回收本地）。
+
+## 步骤 6：任务依赖注册
+
+- 12:49 dry-run ok → confirm 注册：at_d64649ad ← method_e65575c6 pinned mver_8db03858，dependency_id `tdep_dcb34d8b-121b-4bbf-a07c-0bd4b788896c`（metadata: registeredBy=w7-cutover, batch=B1, manifestSha256 记录在案）。affected 前后清单输出留痕。
+
+## 步骤 7/8 顺序说明（执行决策，留痕）
+
+smoke ①② 的断言（basis 落库）要求装配模式已启用，故物理顺序为：先取 13:00 dyk 旧路径自然调度回归证据 → 步骤 8 切换 → 步骤 7 smoke 三件。与手册步骤编号（7 先于 8）不同，语义不变：切换前旧路径健康已由自然调度证明，切换后 smoke 证据才成立。
+
+## 步骤 8：切换 resolver（13:01）
+
+- 备份 `.env` → `.backup/w7-b1/env.pre-switch.bak`（0600）；追加 `AGENT_SPACE_ASSEMBLY_MODE=scope:mg`；重启 invest-agent-mastra + mastra-portal（白天 13:01）。重启后 23655=401、23657=307，connector 瞬态 4 秒内恢复（同发布规律）。
+- 切换前回归证据：dyk market-watch 13:00:08（发布后代码、旧路径）正常 claim 并运行（后续 succeeded）——发布无回归。
+
+## 步骤 7：smoke 三件（切换后）
+
+- **① 真实会话消息（web 渠道、真实模型）**：首轮失败——见下方事故记录；修复后 conv-2 成功：模型 7.7s 回复且精确复述四因子权重（30/25/25/20，仅可能来自注入的方法正文）；basis 落库 `conversation:w7b1-b1-smoke-conv-2…` 含 method_e65575c6@mver_8db03858（checksum `ea02397b…`），injection.workspace=null。失败轮 conv-1 的 basis 保留为失败证据（解析成功、正文读取被阻断——W4 设计行为）。
+- **② 手动触发 daily-review（真实模型+产物+真实微信投递）**：run `atrun_92bf295f` succeeded（59s），basis=显式空集（`task-declares-no-dependencies` 原因在案），outcomes `[execution_succeeded, delivery_succeeded]`，push job `6c86e773…` sent 且 origin_run_id 事实一致；mg 微信真实收到复盘推送。
+- **③ 跨 scope + 全量采证**：`w7-smoke.mjs --scope mg` 输出（`.state/agent-space-w7-b1/server-evidence/w7-smoke-mg.json`）：imported/sameScopeReadable/crossScopeRejected 全 true；切换后 3 条注入 workspace-null 3/3；切换前历史 run 无 basis/outcome（旧路径行为不变证据）。
+
+## 事故记录与处置（窗口日内，13:02-13:06）
+
+- **现象**：smoke ① 首轮 897ms 快败，`AGENT_SPACE_VERSION_INVALID: required method content … failed verification (ASSET_NOT_FOUND:version_41764fa0…)`。
+- **根因**：`w7-import-batch.mjs` 在 SSH 环境下 NODE_ENV 未设时缺省为 `test` → 不加载生产 `.env` → MASTRA_PROJECTS_ROOT 落到代码默认根 `data/mastra-projects/`；导入的 DB 行正确（storage_path 相对路径），但 46 项字节写到了错误根。runtime 按 .env 正确根读取 → 字节缺失被 R6 防线正确阻断（无静默降级、无错误内容注入）。
+- **处置**（零 DB 改动）：46 个资产目录从 `data/mastra-projects/0561c9…/assets/` 迁回 `data/projects/0561c9…/assets/`（四因子字节 sha256 迁移后核验一致）；误建 digest 目录确认 12:48 创建后整体清除（`data/mastra-projects` 其余 30+ 既有 digest 未触碰）；生产语义下 46/46 readUserAssetVersion 全过。驱动脚本已修复：production 目标强制 NODE_ENV=production 并校验 MASTRA_PROJECTS_ROOT 以 `/data/projects` 结尾，不符拒跑。**B2/B3 批次日必须部署含此修复的 commit 后才能执行导入。**
+- **影响面评估**：故障窗口 13:02-13:06 内 mg 会话轮被快速阻断（fail-fast，无错误回答）；无数据损坏；pre-import 快照与灾备快照均在案。resolver 开关按 owner 指令未经执行 Agent 手（修复走数据面前进而非回退开关）。
+
+## 步骤 9：观察与证据（13:21 采证）
+
+- 旧 default-load：切换后注入 workspace-null 3/3、模型 workspace 工具 0、file-lifecycle 审计无任何 workspace 工具事件。
+- 双写：旧树唯一新文件 `reports/daily/2026-09-21.md` 为 **reviews.save 服务层产物链**写入（服务自有路径、Portal 产物渲染依赖，设计内继续；记录为 T-534 兼容窗口的旧根依赖项）。模型驱动的旧 workspace 写入 = 0。
+- 未迁移引用：T-530 已证零（切换日无新增报警）。
+- 待观察（≥1 交易日）：mg 下次自然调度（market-watch 14:30 起、交易日 daily-review 17:30）在装配态下的 basis/outcome/交付；观察期结论由独立验收记录确认后方可解锁 T-532。
+
+## 批次结论（B1 执行侧）
+
+步骤 0-9 全部执行完毕：发布+schema 双段核对全过、新快照+staging 零漂移、46 项导入+核对全过、D1 采用+依赖注册、resolver 切换、smoke 三件全过（含真实微信投递）。一次窗口日内事故（导入字节根错位）已定位、修复、留痕，未触发 resolver 回退。观察期开启，T-532 解锁等待独立验收。
