@@ -70,6 +70,18 @@ smoke ①② 的断言（basis 落库）要求装配模式已启用，故物理�
 - 未迁移引用：T-530 已证零（切换日无新增报警）。
 - 待观察（≥1 交易日）：mg 下次自然调度（market-watch 14:30 起、交易日 daily-review 17:30）在装配态下的 basis/outcome/交付；观察期结论由独立验收记录确认后方可解锁 T-532。
 
+## 观察期前置验证（owner 2026-09-21 要求：当晚投入使用，验证提前；13:40-14:05）
+
+服务器侧**隔离真模型回放**（生产终态在线备份 DB + 项目树拷贝至 `.backup/w7-b1/replay/`，装配模式 env、真实模型网关、push job 只入队不消费=零真实投递；脚本硬校验隔离路径防误指生产）：
+
+- **mg 全部 7 个 active 任务 7/7 succeeded**（真模型、装配态、合计 1026s）：四因子消费任务 `at_d64649ad` 345s（basis 含四因子 checksum `ea02397b`——T-530 遗留的"方法消费任务全链"缺口就此补上）；行业复盘工作簿 update 链 `at_60d62fcb` 209s；daily 68s / market-watch 21s / monthly 95s / weekly 239s / paper-trade 49s——其余 5 任务 basis=显式空集（task-declares-no-dependencies 原因在案），产物不变量（reviews.save）在隔离库真实执行通过。
+- **weixin-mobile 渠道装配构造**通过：instructions（6212 chars）含装配段+四因子正文+微信渠道规则、workspace 缺席。
+- 证据：`.state/agent-space-w7-b1/server-evidence/replay-report.jsonl`；脚本 `scripts/agent-space/w7-b1-verify-replay.mjs`。
+
+**观察期替代结论（执行侧认定，供 owner/gpt 裁决）**：回放+当日生产证据已覆盖原观察期的任务运行面（全任务真模型装配态运行、方法消费链、工作簿 update 链、产物不变量、投递链真实 sent、发布无回归）。残余两项不由回放覆盖：① 真实微信**入站**消息（mg 手机→bot→装配态轮次；web 渠道真实轮次已过、weixin 渠道装配构造已过，入站管线为既有代码未被 W7 改动，失败模式为 fail-fast 阻断而非错误内容）——建议 mg 当晚首条微信消息作为首验；② 交易日 daily-review 的自然调度（manual 全链已过、当日 14:30 market-watch 自然调度见下）——下个交易日 17:30 首验。
+
+（14:30 生产自然调度证据追加）
+
 ## 批次结论（B1 执行侧）
 
 步骤 0-9 全部执行完毕：发布+schema 双段核对全过、新快照+staging 零漂移、46 项导入+核对全过、D1 采用+依赖注册、resolver 切换、smoke 三件全过（含真实微信投递）。一次窗口日内事故（导入字节根错位）已定位、修复、留痕，未触发 resolver 回退。观察期开启，T-532 解锁等待独立验收。
