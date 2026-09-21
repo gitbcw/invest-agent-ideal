@@ -165,6 +165,7 @@ for (const entry of plan) {
       const dep = space.upsertTaskDependency({
         scope, taskId, kind: "method", refId: methodRow.method_id,
         versionPolicy: "pinned", pinnedVersionId: methodRow.current_version_id,
+        metadata: { registeredBy: "w7-cutover", batch: batch ?? null, manifestSha256: manifestSha ?? null },
         actor: "w7-cutover",
       });
       results.push({ userId, methodItemId, taskId, status: "registered", methodId: methodRow.method_id, pinnedVersionId: methodRow.current_version_id, dependencyId: dep.dependency_id });

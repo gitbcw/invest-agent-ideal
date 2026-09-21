@@ -496,6 +496,23 @@ test("W7 逐用户补偿回滚：deactivate 只停用目标 scope，他人零影
   const phase1 = spawnSync(process.execPath, ["--import", "tsx", rehearsal, "--w0-root", w0Root, "--backup-root", backupRoot, "--out-root", runRoot, "--phase", "import", "--selftest"], { env: scriptEnv, encoding: "utf8" });
   assert.equal(phase1.status, 0, `rehearsal failed:\n${phase1.stdout}\n${phase1.stderr}`);
 
+  // R2 返工夹具：在隔离库预置三个"非批次对象"——手工 Agent（无批次幂等键）、
+  // 非 w6 方法 + 指向它的 method 依赖、一条 asset_input 依赖。deactivate 后
+  // 必须原封不动（误伤面收敛的机器断言）。
+  {
+    const { default: Database } = await import("better-sqlite3");
+    const iso = new Database(scriptEnv.DB_PATH);
+    const nowIso = new Date().toISOString();
+    iso.prepare(`INSERT INTO agent_space_agents (agent_id,user_id,project_id,instance_id,name,status,created_at,updated_at)
+                 VALUES ('agent_manual_mg','mg','invest-agent','invest-agent-mg','手工既有Agent','active',?,?)`).run(nowIso, nowIso);
+    iso.prepare(`INSERT INTO agent_space_methods (method_id,user_id,project_id,instance_id,name,status,current_version_id,created_at,updated_at)
+                 VALUES ('method_manual_mg','mg','invest-agent','invest-agent-mg','手工既有方法','active',NULL,?,?)`).run(nowIso, nowIso);
+    iso.prepare(`INSERT INTO agent_space_task_dependencies (dependency_id,task_id,user_id,project_id,instance_id,agent_id,kind,ref_id,version_policy,pinned_version_id,metadata_json,created_at,updated_at)
+                 VALUES ('dep_manual_method','w6_task_ff','mg','invest-agent','invest-agent-mg',NULL,'method','method_manual_mg','current',NULL,NULL,?,?),
+                        ('dep_manual_asset','w6_task_ff','mg','invest-agent','invest-agent-mg',NULL,'asset_input','asset_whatever_existing','pinned','version_whatever',NULL,?,?)`).run(nowIso, nowIso, nowIso, nowIso);
+    iso.close();
+  }
+
   const rollbackScript = path.join(import.meta.dirname, "..", "scripts", "agent-space", "w7-rollback-scope.mjs");
   const runRollback = (extra: string[]) => spawnSync(process.execPath, ["--import", "tsx", rollbackScript, ...extra], { env: scriptEnv, encoding: "utf8" });
   // 反例：deactivate 缺 --confirm / 缺 --target 拒绝；switch-only 零操作。
@@ -507,20 +524,27 @@ test("W7 逐用户补偿回滚：deactivate 只停用目标 scope，他人零影
   assert.equal(switchReport.actions.length, 1);
   assert.match(switchReport.actions[0].note, /未做任何数据操作/);
 
-  // 正例：deactivate 只停用 mg 的 w6 对象与依赖；dyk 不受影响。
+  // 正例：deactivate 只停用 mg 的批次对象（w6 agent/方法/资产 + 指向 w6 方法的依赖）；
+  // 手工 Agent、非 w6 方法依赖、asset 依赖、dyk 全部不动。
   const de = runRollback(["--scope", "mg", "--level", "deactivate", "--target", "isolated", "--confirm"]);
   assert.equal(de.status, 0, de.stderr);
   const deReport = JSON.parse(de.stdout.slice(de.stdout.indexOf("{")));
   const kinds = deReport.actions.map((a: { action: string }) => a.action).sort();
   assert.deepEqual(kinds, ["agent.disabled", "asset.archived", "asset.archived", "method.retired", "task-dependency.deleted"], JSON.stringify(kinds));
+  assert.equal(deReport.inventory.untouched.nonBatchAgents, 1, "手工 Agent 计入 untouched");
+  assert.equal(deReport.inventory.untouched.nonBatchDependencies, 2, "非 w6 依赖计入 untouched");
 
   const { default: Database } = await import("better-sqlite3");
   const iso = new Database(scriptEnv.DB_PATH, { readonly: true });
-  const mgAgent = iso.prepare("SELECT status FROM agent_space_agents WHERE user_id='mg'").get() as { status: string };
+  const mgAgent = iso.prepare("SELECT status FROM agent_space_agents WHERE user_id='mg' AND agent_id != 'agent_manual_mg'").get() as { status: string };
   assert.equal(mgAgent.status, "disabled");
-  const mgDeps = iso.prepare("SELECT COUNT(*) AS n FROM agent_space_task_dependencies WHERE user_id='mg'").get() as { n: number };
-  assert.equal(mgDeps.n, 0);
-  const mgMethod = iso.prepare("SELECT status FROM agent_space_methods WHERE user_id='mg'").get() as { status: string };
+  const manualAgent = iso.prepare("SELECT status FROM agent_space_agents WHERE agent_id='agent_manual_mg'").get() as { status: string };
+  assert.equal(manualAgent.status, "active", "手工 Agent 不得被停用");
+  const manualDeps = iso.prepare("SELECT COUNT(*) AS n FROM agent_space_task_dependencies WHERE dependency_id IN ('dep_manual_method','dep_manual_asset')").get() as { n: number };
+  assert.equal(manualDeps.n, 2, "非批次依赖不得被删除");
+  const manualMethod = iso.prepare("SELECT status FROM agent_space_methods WHERE method_id='method_manual_mg'").get() as { status: string };
+  assert.equal(manualMethod.status, "active", "非 w6 方法不得被停用");
+  const mgMethod = iso.prepare("SELECT status FROM agent_space_methods WHERE user_id='mg' AND idempotency_key LIKE 'w6:%'").get() as { status: string };
   assert.equal(mgMethod.status, "retired");
   const mgAssets = iso.prepare("SELECT COUNT(*) AS n FROM user_assets WHERE user_id='mg' AND status='active'").get() as { n: number };
   assert.equal(mgAssets.n, 0, "mg 的 w6 资产应全部归档");

@@ -29,7 +29,7 @@
 1. **冻结清单**：批次日凌晨新灾备快照 + `w0-rehearsal` staging 段重核对（hash 漂移=该项拦截，机器规则执行）；记录本批 manifest hash。
 2. **导入前快照**：生产 DB `sqlite-online-backup`（WAL 安全点）落批次目录，记录 sha256。
 3. **写入新对象**：`w6-rehearsal.mjs` 的导入器按 scope 过滤只导本批用户 93 项中该用户份额（幂等键 `w6:<itemId>`，重跑零新增）；全部 draft 归档态，不改任何既有行。
-4. **Agent 与技能初始化**：`createAgent`（active）+ `applyDefaultSkillManifest`（one-time init，幂等）。
+4. **Agent 与技能初始化**：`createAgent`（active，幂等键约定 `w7:<userId>:agent`——scope 回滚按 `w6:*|w7:*` 键识别批次 Agent）+ `applyDefaultSkillManifest`（one-time init，幂等）。
 5. **授权采用（§3 决策点执行）**：仅 [W7-decisions.md](./W7-decisions.md) 中已冻结的 decided 项走 approve/adopt；其余保持归档。**该批用户涉及决策未全部冻结前，不得执行步骤 8。**
 6. **任务依赖注册**：`w7-register-task-deps.mjs`（本计划交付）把已冻结批准的方法 pin 到有方法消费者的 active 任务；无方法消费者的任务不注册（空装配=显式空集，方法论指令明示"未装配不可引用"）。confirm 必须携带 `--target isolated|production --w0-root --manifest-sha256 --batch`（目标库身份护栏；production 拒绝 NODE_ENV=test；plan 用户必须属于批次用户集）。
 7. **smoke（每批三件，机器采证）**：① 会话一条真实消息→basis 落库含采用方法、回复正常；② 手动触发 daily-review→run basis+outcome+交付链正常；③ 跨 scope 读拒绝抽查。采证用 `scripts/agent-space/w7-smoke.mjs --scope <userId>`（只读，输出 basis/outcome/delivery 事实链与隔离抽查 JSON；R1 接缝后 execution/delivery outcome 由终态咽喉点与投递接缝自动产生，无需人工写入）。
@@ -37,19 +37,19 @@
 9. **观察与证据**：采集本批真实 run-basis/audit/任务交付（W5 outcome 事实源核对）；检查旧 default-load 计数归零路径、无双写、无未迁移引用报警。
 10. **失败回滚（R2：scope 隔离补偿，禁止整库恢复作默认）**：首选 `AGENT_SPACE_ASSEMBLY_MODE` 移除该 scope/置 off + 白天重启（零数据操作，立即生效）；如需数据级停用本批对象，用 `scripts/agent-space/w7-rollback-scope.mjs --scope <userId> --level deactivate --target production --confirm`（前向补偿：仅停用本 scope 的 w6:* 对象/Agent/依赖，不覆盖窗口期间任何写入）。**整库快照恢复不作批次回滚手段**——仅 owner 明确批准的维护窗口内、阻断相关写入、核对快照后变更清单后另行执行；W6 隔离整库 rollback 证据不适用于生产。
 
-## 3. 授权决策点（owner 逐项，窗口日前必须冻结）
+## 3. 授权决策点（已全部冻结，2026-09-21）
 
-冻结状态与依据见 [W7-decisions.md](./W7-decisions.md)（唯一权威记录；下表为决策概览）。
+冻结状态与依据见 [W7-decisions.md](./W7-decisions.md)（唯一权威记录；下表为冻结结论概览）。
 
-| # | 决策 | 建议 | 影响面 |
+| # | 决策 | 冻结结论 | 影响面 |
 | --- | --- | --- | --- |
-| D1 | mg 四因子 `methods/控盘度综合评分.md` approve+adopt | 建议**采用**：无约束、156 次真实读取、任务消费者 at_d64649ad | B1 切换后 mg 方法上下文（不采用则空） |
-| D2 | mg strategy-rules（hold-ambiguity） | 建议**保持 owner-review**（W0 已裁决 hold） | mg 策略上下文维持现状受限 |
+| D1 | mg 四因子 `methods/控盘度综合评分.md` approve+adopt | **采用**（无约束、156 次真实读取、任务消费者 at_d64649ad） | B1 切换后 mg 方法上下文保留 |
+| D2 | mg strategy-rules（hold-ambiguity） | **保持 owner-review**（W0 已裁决 hold） | mg 策略上下文维持现状受限 |
 | D3 | mg 旧 KP V1.0（historical-not-default） | **保持**（历史定位，服务层永久阻塞） | 无 |
 | D4 | dyk 撤回策略 strategy-rules | **保持归档**（撤回语义） | dyk 空方法上下文=用户现状 |
-| D5 | dyk 核心模型 fundamental（restore-candidate） | 窗口日前 owner 裁决：恢复采用 or 继续留队列 | dyk 切换后是否恢复六维模型 |
-| D6 | 111 strategy-rules（split-in-progress） | 三选一：a) 先裁决策略/模板拆分再切 B3；b) 接受 B3 切换后 111 无方法上下文（日复盘主要由任务模板驱动）；c) B3 延后 | B3 时点 |
-| D7 | 205 项 owner-review 其余项 | W7 **不处理**（继续留可发现队列）；是否逐项裁决为 W7 后独立工作 | 无 |
+| D5 | dyk 核心模型 fundamental（restore-candidate） | **继续留 owner-review 队列**；dyk 空方法上下文为其现状预期 | B2 切换后不恢复六维模型（恢复留作后续独立裁决） |
+| D6 | 111 strategy-rules（split-in-progress） | **选 b：接受 B3 切换后无方法上下文**（日复盘主要由任务模板驱动）；策略继续留 owner-review，拆分裁决留作 W7 后独立工作 | B3 按计划执行 |
+| D7 | 205 项 owner-review 其余项 | **W7 不处理**（继续留可发现队列）；是否逐项裁决为 W7 后独立工作 | 无 |
 
 ## 4. 旧入口退出（兼容窗口，非本计划一次完成）
 

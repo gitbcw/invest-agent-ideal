@@ -73,8 +73,22 @@ const space = await importAppModule("services/agent-space/index.js");
 const userAssets = await importAppModule("services/user-assets.js");
 
 const scopeRowOf = db.sqlite.prepare("SELECT user_id AS u, project_id AS p, instance_id AS i FROM agent_space_agents WHERE agent_id=?");
-const agents = db.sqlite.prepare("SELECT agent_id, status FROM agent_space_agents WHERE user_id=?").all(scopeUser);
-const deps = db.sqlite.prepare("SELECT dependency_id, task_id, kind, ref_id FROM agent_space_task_dependencies WHERE user_id=?").all(scopeUser);
+// R2 返工：deactivate 的删除/停用面严格限定 W7 批次对象——
+//   Agent：仅幂等键 w6:*/w7:*（批次约定键）的批次 Agent；手工/既有 Agent 不动。
+//   依赖：仅 kind=method 且 ref 指向本 scope w6 导入方法的依赖（W7 注册的就是这些）；
+//         其他 kind（asset_input 等）与非 w6 方法的依赖一律不动。
+const batchAgents = db.sqlite.prepare("SELECT agent_id, status FROM agent_space_agents WHERE user_id=? AND (idempotency_key LIKE 'w6:%' OR idempotency_key LIKE 'w7:%')").all(scopeUser);
+// NULL 幂等键（手工/既有 Agent）必须算非批次：NULL LIKE 为三值逻辑 NULL。
+const otherAgents = db.sqlite.prepare(
+  "SELECT COUNT(*) AS n FROM agent_space_agents WHERE user_id=? AND (idempotency_key IS NULL OR (idempotency_key NOT LIKE 'w6:%' AND idempotency_key NOT LIKE 'w7:%'))",
+).get(scopeUser);
+const w6MethodIds = db.sqlite.prepare("SELECT method_id FROM agent_space_methods WHERE user_id=? AND idempotency_key LIKE 'w6:%'").all(scopeUser).map((r) => r.method_id);
+const w6MethodIdSet = new Set(w6MethodIds);
+const deps = db.sqlite
+  .prepare("SELECT dependency_id, task_id, kind, ref_id FROM agent_space_task_dependencies WHERE user_id=? AND kind='method'")
+  .all(scopeUser)
+  .filter((d) => w6MethodIdSet.has(d.ref_id));
+const depsUntouched = db.sqlite.prepare("SELECT COUNT(*) AS n FROM agent_space_task_dependencies WHERE user_id=?").get(scopeUser).n - deps.length;
 const w6Methods = db.sqlite.prepare("SELECT method_id, name, status FROM agent_space_methods WHERE user_id=? AND idempotency_key LIKE 'w6:%'").all(scopeUser);
 const w6Assets = db.sqlite.prepare("SELECT asset_id FROM user_asset_versions WHERE user_id=? AND idempotency_key LIKE 'w6:%' GROUP BY asset_id").all(scopeUser);
 
@@ -86,8 +100,9 @@ const report = {
   dbPath: process.env.DB_PATH,
   dbSha256: createHash("sha256").update(readFileSync(process.env.DB_PATH)).digest("hex"),
   inventory: {
-    agents,
-    taskDependencies: deps,
+    batchAgents,
+    untouched: { nonBatchAgents: otherAgents.n, nonBatchDependencies: depsUntouched },
+    w6MethodDependencies: deps,
     w6Methods,
     w6Assets: w6Assets.map((a) => a.asset_id),
   },
@@ -108,7 +123,7 @@ for (const dep of deps) {
   db.sqlite.prepare("DELETE FROM agent_space_task_dependencies WHERE dependency_id=? AND user_id=?").run(dep.dependency_id, scopeUser);
   report.actions.push({ action: "task-dependency.deleted", dependencyId: dep.dependency_id, taskId: dep.task_id, ref: `${dep.kind}:${dep.ref_id}` });
 }
-for (const agent of agents) {
+for (const agent of batchAgents) {
   if (agent.status === "disabled") continue;
   const s = scopeRowOf.get(agent.agent_id);
   space.setAgentStatus({ userId: s.u, projectId: s.p, instanceId: s.i }, agent.agent_id, "disabled", "w7-rollback");

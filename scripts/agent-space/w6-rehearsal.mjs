@@ -349,7 +349,7 @@ async function adoptFourFactor(mgScope, mgMethod) {
   } catch (error) {
     check("adoptFourFactor approve", false, (error).message);
   }
-  const agent = createAgent({ scope: mgScope, name: "W6 演练 Agent", actor: "w6-rehearsal" });
+  const agent = createAgent({ scope: mgScope, name: "W6 演练 Agent", idempotencyKey: `w6:rehearsal:agent:${mgScope.userId}`, actor: "w6-rehearsal" });
   space.setAgentStatus(mgScope, agent.agent_id, "active", "w6-rehearsal");
   let bound = null;
   if (approved) {
