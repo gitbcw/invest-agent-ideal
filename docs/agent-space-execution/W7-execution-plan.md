@@ -14,6 +14,16 @@
 | docx 白名单 | ✅ owner 裁决最小扩法，`1794252` | `tests/user-asset-legacy-formats.test.ts` |
 | 演练脚本可复用 | ✅ w0-root/backup-root 参数化，r2 快照零改动复跑 | 同上 |
 
+## 0.5 窗口日执行前人工核对清单（复验 caveat 落实；任一项不符不得继续）
+
+对每个会执行 `--confirm` 的命令（依赖注册 / deactivate 回滚），执行人必须先人工核对并留痕：
+
+1. **目标库身份**：终端里 `echo $DB_PATH` 与本批目标库路径逐字符一致（生产路径以当时部署事实为准）；不依赖脚本提示，眼见为实。
+2. **scope 三元组**：`--scope`/plan 内 userId 与该库 `ai_instances` 行的 user/project/instance 三元组一致（批次用户集 B1=mg / B2=dyk / B3=111）。
+3. **manifest 指纹**：`--manifest-sha256` 等于本批导入实际消费的 `import-gate.json` sha256（批次日凌晨核对阶段记录的值）；指纹不符=清单已重生成，必须先重跑 W6 演练核对再考虑注册。
+4. **批次归属**：`--batch` 与当前批次一致，plan 用户全部属于该批次用户集。
+5. 核对结果（谁、何时、各项值）记入批次执行记录（`W7-batch-log.md`，窗口日创建）。
+
 ## 1. 批次划分（执行稿要求"失败按批次回滚，不影响其他用户"）
 
 | 批次 | 用户 | 顺序理由 | active 任务数 |
