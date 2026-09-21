@@ -1,5 +1,35 @@
 # W7 批次执行日志（窗口日实时留痕）
 
+> **B2/B3 追加（owner 2026-09-21 授权：dyk、111 作为内部开发用户完成分批切换与最小真实 smoke；失败只关对应 scope；今晚不物理删除旧 Workspace）。** B1 记录见下文原节。
+
+## B2/B3 前置：发布含护栏的代码
+
+- 14:45 部署 HEAD `6cf29ec`（包含 `2cab6af` 导入护栏；发布后 schema 结构比对 pass、双服务健康、resolver 保持 scope:mg）。
+- 驱动护栏补强：守卫先装载 .env 再校验 MASTRA_PROJECTS_ROOT（首次 B2 执行被拦——守卫在 .env 装载前运行看到 unset，顺序缺陷修复后放行；拦截与修复均零写入留痕）。
+
+## B2（dyk，14:50-15:10）
+
+- 预检：scope 三元组 dyk|invest-agent|invest-agent-dyk、5 个 active 任务、导入前 agent_space 0 行、注册根 `data/projects/2df517…/.agent-project` 在案；staging 预核对 23/23 零漂移；导入前在线快照 `.backup/w7-b2/pre-import.db`（sha256 前 20 `9d65455385205f74e32e`）。
+- 导入（无采用项——D4 策略归档不采用、D5 核心模型留队列）：23/23 staged+导入+verify 全过；Agent `agent_b6d8ced9`（active）；**字节落位正确根**（61=38+23，错误根 0——B1 事故修复生效）。无依赖注册（无方法消费者）。
+- resolver：`scope:mg,dyk`（.env sed 替换+备份在 `.backup/w7-b1/env.pre-switch.bak` 基线）；重启后 401/307 健康。
+- smoke：① 会话轮成功，模型如实声明"显式空集"（D4/D5 预期），basis 0 方法 0 技能 workspace-null；② 手动 daily-review succeeded、execution_succeeded 落库、basis 显式空集——**推送挂起 awaiting_user（`ret=-2 prepare failed`）**：微信通道层既有故障（同日 mg/111 推送均 sent；9-4 有同签名先例属设计内挂起，自动重试中）——与装配切换无关，交付链（job 带 origin_run_id 入队）已验证；③ 跨 scope 拒绝全过；**15:00 dyk market-watch 自然调度装配态 succeeded + basis 落库**（切换后首个自然 run）。
+
+## B3（111，15:05-15:20）
+
+- 预检：scope 三元组、3 个 active 任务（D10 事实口径）、导入前 0 行、注册根在案；导入前在线快照 `.backup/w7-b3/pre-import.db`。
+- 导入（无采用项——D6 无方法上下文）：24/24 staged+导入+verify 全过；Agent `agent_e4354e82`（active）；字节落位正确根（64=40+24，错误根 0）。
+- resolver：`scope:mg,dyk,111`；重启后 401/307 健康。
+- smoke：① 会话轮成功，模型如实声明"显式空集（检索 0 纳入 0）"（D6 预期）；② 手动 daily-review **全链成功且真实微信投递 sent**（outcomes `[execution_succeeded, delivery_succeeded]`）；③ 跨 scope 拒绝全过。
+
+## 旧 Workspace 状态（今晚不删除承诺的核验）
+
+- 全程未执行任何删除/移动旧树文件的操作；仅有的旧根写入为 reviews.save 服务层产物（B1 已记录）。三用户旧 liveProjectRoot 与 legacy 容器树保持原样（history-only 可读、回滚路径：resolver 按 scope 移除即回退旧装配，数据级为 w7-rollback-scope 前向停用）。
+- 当前生产 resolver：`AGENT_SPACE_ASSEMBLY_MODE=scope:mg,dyk,111`（三用户全部装配态）。
+
+---
+
+以下为 B1（mg）窗口日原始记录。
+
 依据 [W7-execution-plan.md](./W7-execution-plan.md)（含步骤 0/D8-D11）与 owner 2026-09-21 授权：当日执行步骤 0 与 mg B1；执行 Agent 操作、主 Agent（gpt）监督验收、异常立即停止、resolver 关闭由主 Agent 执行、是否继续由 owner 最终决定。
 
 本文件按执行顺序追加；每条含时间（UTC+8）、操作人（ZCode 执行 Agent）、命令与关键输出指针。机器证据落 `.state/agent-space-w7-b1/`（本地，gitignored 0700/0600）与服务器 `.backup/w7-b1/`。

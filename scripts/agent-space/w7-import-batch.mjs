@@ -79,6 +79,8 @@ if (confirm) {
 process.env.NODE_ENV ??= target === "production" ? "production" : "test";
 process.env.WORKSPACE_BACKEND ??= "mastra";
 if (target === "production") {
+  // 先装载 .env（load-env 在 NODE_ENV≠test 时注入；守卫必须在写库前看到真实根配置）
+  await importAppModule("lib/load-env.js").catch(() => {});
   const projectsRoot = process.env.MASTRA_PROJECTS_ROOT;
   if (!projectsRoot || !/data\/projects$/.test(projectsRoot.replace(/\/$/, ""))) {
     console.error(`refusing production write: MASTRA_PROJECTS_ROOT=${projectsRoot ?? "(unset)"} 与生产注册根不符（.env 未加载？）`);
