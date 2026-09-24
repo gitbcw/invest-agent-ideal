@@ -146,7 +146,16 @@ export function SkillsPanel() {
                   </span>
                 </div>
                 <p className="font-mono text-[11px] text-[#7a827c]">{skill.slug}</p>
-                {skill.description ? <p className="line-clamp-2 cursor-help text-xs text-[#59655c]" title={skill.description}>{skill.description}</p> : null}
+                {skill.description ? (
+                  <span className="group relative block">
+                    <p className="line-clamp-2 text-xs text-[#59655c]">{skill.description}</p>
+                    {skill.description.length > 60 ? (
+                      <span role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 w-full max-w-md whitespace-pre-wrap rounded-md bg-[#202421] px-2.5 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100">
+                        {skill.description}
+                      </span>
+                    ) : null}
+                  </span>
+                ) : null}
                 <div className="flex flex-wrap items-center gap-x-3 text-[11px] text-[#7a827c]">
                   <span>v{skill.versionNumber}</span>
                   <span>{skill.source === "release" ? `来源：发布 ${skill.releaseVersion || skill.releaseId || "—"}` : "来源：私有"}</span>
@@ -215,7 +224,16 @@ export function SkillsPanel() {
                       <span className="shrink-0 rounded bg-[#eceae4] px-1.5 py-0.5 text-[11px] text-[#59655c]">{item.source === "private" ? "私有" : "预置"}</span>
                     </div>
                     <p className="font-mono text-[11px] text-[#7a827c]">{item.slug}</p>
-                    {item.description ? <p className="line-clamp-2 text-xs text-[#59655c]">{item.description}</p> : null}
+                    {item.description ? (
+                      <span className="group relative block">
+                        <p className="line-clamp-2 text-xs text-[#59655c]">{item.description}</p>
+                        {item.description.length > 60 ? (
+                          <span role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 w-full max-w-md whitespace-pre-wrap rounded-md bg-[#202421] px-2.5 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100">
+                            {item.description}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
                     <div className="flex items-center justify-between gap-2 text-[11px] text-[#7a827c]">
                       <span>{item.releaseVersion ? `v${item.releaseVersion}` : "可安装版本"}</span>
                       <button
