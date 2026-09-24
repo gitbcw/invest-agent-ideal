@@ -288,34 +288,21 @@ export function SkillsPanel() {
   );
 }
 
-/** 悬停详情卡：出现在鼠标首次进入卡片的位置（而非固定边），靠近视口边缘时自动内翻。 */
+/** 悬停详情卡：固定出现在视口黄金分割点（61.8%, 61.8%，第四象限），不跟随鼠标。 */
 function HoverDetailCard({ hasDetail, detail, children }: { hasDetail: boolean; detail: ReactNode; children: ReactNode }) {
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [open, setOpen] = useState(false);
   return (
     <div
       className="group relative flex flex-col gap-2 rounded-lg border border-[#dfe3df] bg-white p-4"
-      onMouseEnter={(event) => {
-        if (!hasDetail) return;
-        const rect = event.currentTarget.getBoundingClientRect();
-        const cardWidth = 320;
-        const cardHeight = 240; // 估算高度；内容超高由 max-h 滚动兜底
-        const offset = 10;
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
-        let left = x + offset;
-        let top = y + offset;
-        if (rect.left + left + cardWidth > window.innerWidth - 8) left = x - cardWidth - offset;
-        if (rect.top + top + cardHeight > window.innerHeight - 8) top = y - cardHeight - offset;
-        setPos({ left: Math.max(left, 8 - rect.left), top: Math.max(top, 8 - rect.top) });
-      }}
-      onMouseLeave={() => setPos(null)}
+      onMouseEnter={() => hasDetail && setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
     >
       {children}
-      {hasDetail && pos ? (
+      {hasDetail && open ? (
         <div
           role="tooltip"
-          style={{ left: pos.left, top: pos.top }}
-          className="pointer-events-none absolute z-30 max-h-[70vh] w-80 overflow-y-auto rounded-xl border border-[#dfe3df] bg-white p-4 text-left opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100"
+          style={{ left: "min(61.8vw, calc(100vw - 336px))", top: "min(61.8vh, calc(100vh - 280px))" }}
+          className="pointer-events-none fixed z-30 max-h-[60vh] w-80 overflow-y-auto rounded-xl border border-[#dfe3df] bg-white p-4 text-left opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100"
         >
           {detail}
         </div>
