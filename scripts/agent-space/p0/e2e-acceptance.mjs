@@ -4,11 +4,12 @@
  *
  * 前置：start-isolated.mjs 运行中；seed-workspace-objects / seed-failure-fixtures
  * 已执行。覆盖契约验收五组：
- *   1. 侧栏五入口数据面可达（待处理/自动化/我的文件/工作空间双 Tab/设置）；
+ *   1. 侧栏五入口数据面可达（待处理/自动化/我的文件/工作空间 Skills/设置）；
  *   2. 完整失败处理链：任务失败 → 待处理卡片 → 问题会话 → 候选提出 → 批准生效 → 对象状态可查；
- *   3. 版本/生效分离：编辑方法成新草稿不改已绑定任务与当前采用；
- *   4. 跨 scope：新 API 未授权 scope 一律 0 行或拒绝；
- *   5. 假投递：全程 OFFLINE，微信通道零新增。
+ *   3. 跨 scope：新 API 未授权 scope 一律 0 行或拒绝；
+ *   4. 假投递：全程 OFFLINE，微信通道零新增。
+ * 注：原「版本/生效分离」组随「我的方法」聚合页移除而下线（owner 2026-09-24
+ * 裁决：方法=「我的文件」普通文件夹），方法版本语义仍由服务层契约保障。
  * 用法: node scripts/agent-space/p0/e2e-acceptance.mjs
  */
 import fs from "node:fs";
@@ -47,8 +48,6 @@ async function main() {
   record("自动化任务入口", automations.payload?.ok === true);
   const assets = await api("/api/assets");
   record("我的文件入口", assets.payload?.ok === true);
-  const methods = await api("/api/methods");
-  record("工作空间·我的方法", methods.payload?.ok === true && methods.payload.data.items.length >= 1, `${methods.payload?.data?.items?.length ?? 0} 个方法`);
   const skillsPrivate = await api("/api/skills?view=private");
   const skillsInstalled = await api("/api/skills?view=installed");
   record("工作空间·我的 Skills（两区块）", skillsPrivate.payload?.ok === true && skillsInstalled.payload?.ok === true, `私有 ${skillsPrivate.payload?.data?.items?.length} / 已安装 ${skillsInstalled.payload?.data?.items?.length}`);
@@ -100,29 +99,17 @@ async function main() {
     record("批准后离开待确认", (after.payload?.data?.items ?? []).every((c) => c.objectId !== pending[0].objectId));
   }
 
-  console.log("== 3. 版本与生效分离 ==");
-  const method = methods.payload.data.items[0];
-  const before = await api(`/api/methods/${encodeURIComponent(method.methodId)}`);
-  const beforeVersion = before.payload.data.method.currentVersionId;
-  const put = await api(`/api/methods/${encodeURIComponent(method.methodId)}`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: before.payload.data.content?.text ? `${before.payload.data.content.text}\n\n## e2e 验证草稿（不采用）\n` : "# e2e" }),
-  });
-  record("编辑形成新草稿版本", put.payload?.ok === true);
-  const afterEdit = await api(`/api/methods/${encodeURIComponent(method.methodId)}`);
-  record("当前采用版本未变（保存≠生效）", afterEdit.payload.data.method.currentVersionId === beforeVersion);
-  record("任务绑定版本未变（固定绑定）", afterEdit.payload.data.taskUsage.every((u) => u.pinnedVersionId !== put.payload?.data?.version?.versionId));
-
-  console.log("== 4. 跨 scope 不可见 ==");
+  console.log("== 3. 跨 scope 不可见 ==");
   const runtime = "http://127.0.0.1:23660";
   const other = await fetch(`${runtime}/api/portal/conversations?userId=primary&instanceId=invest-agent-primary`, { headers: { Authorization: "Bearer p0-isolated-api-token" } }).then((r) => r.json());
   const otherItems = other?.items ?? [];
   record("未授权 scope 会话 0 行", otherItems.length === 0);
-  const scopeInjected = await api("/api/methods", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "x", text: "# t", userId: "mg" }) });
+  // 「我的方法」聚合页 2026-09-24 已移除（owner 裁决，降级为「我的文件」文件夹）；
+  // scope 注入探针改用同样 .strict() 的 skills 写端点。
+  const scopeInjected = await api("/api/skills", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: "x", name: "x", text: "# t", userId: "mg" }) });
   record("浏览器 scope 注入被拒", scopeInjected.payload?.ok === false);
 
-  console.log("== 5. 假投递（OFFLINE）==");
+  console.log("== 4. 假投递（OFFLINE）==");
   const Database = (await import("better-sqlite3")).default;
   const db = new Database(path.join(P0_ROOT, "runtime.db"), { readonly: true });
   const attemptsNow = db.prepare("SELECT COUNT(*) c FROM weixin_delivery_attempts WHERE user_id='111'").get().c;

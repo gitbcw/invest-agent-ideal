@@ -1,11 +1,6 @@
 import type {
   CatalogSkillCardView,
   InstalledSkillCardView,
-  MethodCardView,
-  MethodAssetCardView,
-  MethodDetailView,
-  MethodDiffView,
-  MethodWorkingCopyView,
   PrivateSkillCardView,
   ProjectSkillPreviewView,
   SkillDetailView,
@@ -30,65 +25,6 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
     throw new WorkspaceRequestError(error?.code || "REQUEST_FAILED", error?.message || `请求失败（${response.status}）`);
   }
   return payload.data;
-}
-
-export function listMethods() {
-  return request<{ items: MethodCardView[]; agents: Array<{ agentId: string; name: string; status: string }> }>("/api/methods");
-}
-
-export function listMethodAssets() {
-  return request<{ items: MethodAssetCardView[] }>("/api/method-assets");
-}
-
-export function getMethodWorkingCopy(assetId: string) {
-  return request<MethodWorkingCopyView>(`/api/method-assets/${encodeURIComponent(assetId)}/working-copy`);
-}
-
-export function saveMethodWorkingCopy(assetId: string, input: { draftText: string; baseVersionId?: string }) {
-  return request<{ assetId: string; baseVersionId: string | null; updatedAt: string }>(
-    `/api/method-assets/${encodeURIComponent(assetId)}/working-copy`,
-    { method: "PUT", body: JSON.stringify(input) },
-  );
-}
-
-export function clearMethodWorkingCopy(assetId: string) {
-  return request<{ assetId: string; cleared: boolean }>(
-    `/api/method-assets/${encodeURIComponent(assetId)}/working-copy`,
-    { method: "DELETE" },
-  );
-}
-
-export function getMethodAssetVersion(assetId: string, versionId: string) {
-  return request<{ versionId: string; fileName: string; mimeType: string; base64: string }>(`/api/assets/${encodeURIComponent(assetId)}/versions/${encodeURIComponent(versionId)}`);
-}
-
-export function saveMethodAssetVersion(input: { assetId: string; fileName: string; mimeType?: string; base64: string; expectedVersionId: string; idempotencyKey: string }) {
-  return request<unknown>("/api/assets", { method: "POST", body: JSON.stringify(input) });
-}
-
-export function getMethod(methodId: string) {
-  return request<MethodDetailView>(`/api/methods/${encodeURIComponent(methodId)}`);
-}
-
-export function createMethod(input: { name: string; description?: string; text: string; adoptionNote?: string }) {
-  return request<{ method: MethodCardView }>("/api/methods", { method: "POST", body: JSON.stringify(input) });
-}
-
-export function addMethodVersion(methodId: string, input: { text: string; adoptionNote?: string }) {
-  return request<{ method: MethodCardView; version: { versionId: string; versionNumber: number; status: string } }>(
-    `/api/methods/${encodeURIComponent(methodId)}`,
-    { method: "PUT", body: JSON.stringify(input) },
-  );
-}
-
-export function adoptMethod(methodId: string, input: { versionId: string; mode: "adopt" | "readopt" }) {
-  return request<unknown>(`/api/methods/${encodeURIComponent(methodId)}/adopt`, { method: "POST", body: JSON.stringify(input) });
-}
-
-export function diffMethod(methodId: string, fromVersionId: string, toVersionId: string) {
-  return request<MethodDiffView>(
-    `/api/methods/${encodeURIComponent(methodId)}/diff?from=${encodeURIComponent(fromVersionId)}&to=${encodeURIComponent(toVersionId)}`,
-  );
 }
 
 export function listPrivateSkills() {

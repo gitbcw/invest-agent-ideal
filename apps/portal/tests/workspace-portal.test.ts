@@ -13,7 +13,6 @@ import {
 } from "../src/lib/workspace-schemas";
 import { PORTAL_TYPES } from "../src/lib/protocol/envelope";
 import { statusForCode } from "../src/lib/protocol/error-status";
-import { selectDiffVersion } from "../src/components/workspace/MethodsPanel";
 
 test("workspace protocol exposes every method/skill connector command", () => {
   assert.deepEqual(
@@ -113,11 +112,4 @@ test("agent-space connector error codes map to stable HTTP statuses", () => {
   assert.equal(statusForCode("AGENT_SPACE_ARGUMENT_INVALID"), 400);
   assert.equal(statusForCode("AGENT_SPACE_INVALID_TRANSITION"), 409);
   assert.equal(statusForCode("AGENT_SPACE_ADOPTION_CONSTRAINT"), 409);
-});
-
-test("method diff selection waits for two distinct versions before requesting", () => {
-  assert.deepEqual(selectDiffVersion(null, "v1"), { from: "v1", to: "" });
-  assert.deepEqual(selectDiffVersion({ from: "v1", to: "" }, "v2"), { from: "v1", to: "v2" });
-  assert.deepEqual(selectDiffVersion({ from: "v1", to: "" }, "v1"), { from: "v1", to: "" });
-  assert.deepEqual(selectDiffVersion({ from: "v1", to: "v2" }, "v3"), { from: "v3", to: "" });
 });
