@@ -288,7 +288,7 @@ export function SkillsPanel() {
   );
 }
 
-/** 悬停详情卡：固定出现在视口黄金分割点（61.8%, 61.8%，第四象限），不跟随鼠标。 */
+/** 悬停详情卡：固定出现在所悬停卡片的黄金分割点（61.8%, 61.8%，卡片第四象限），不跟随鼠标。 */
 function HoverDetailCard({ hasDetail, detail, children }: { hasDetail: boolean; detail: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
@@ -301,8 +301,8 @@ function HoverDetailCard({ hasDetail, detail, children }: { hasDetail: boolean; 
       {hasDetail && open ? (
         <div
           role="tooltip"
-          style={{ left: "min(61.8vw, calc(100vw - 336px))", top: "min(61.8vh, calc(100vh - 280px))" }}
-          className="pointer-events-none fixed z-30 max-h-[60vh] w-80 overflow-y-auto rounded-xl border border-[#dfe3df] bg-white p-4 text-left opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100"
+          style={{ left: "61.8%", top: "61.8%" }}
+          className="pointer-events-none absolute z-30 max-h-[60vh] w-80 overflow-y-auto rounded-xl border border-[#dfe3df] bg-white p-4 text-left opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100"
         >
           {detail}
         </div>
