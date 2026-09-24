@@ -19,7 +19,8 @@ import { fileURLToPath } from "node:url";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const only = process.argv[2];
-if (!only || !["dyk", "mg", "111"].includes(only)) throw new Error("必须指定 scope: dyk | mg | 111");
+const SCOPES = ["dyk", "mg", "111", "mdyk", "mmg", "m111"];
+if (!only || !SCOPES.includes(only)) throw new Error(`必须指定 scope: ${SCOPES.join(" | ")}`);
 
 const FOLDER_NAME = "我的策略文件";
 const METHOD_NAMES = {
@@ -34,6 +35,7 @@ const FOUR_SET = ["fundamental.md", "technical.md", "macro.md", "risk.md"];
 const p0Dyk = path.join(repo, ".state", "agent-space-p0-dyk");
 const p0Mg = path.join(repo, ".state", "agent-space-p0");
 const local111 = path.join(repo, "data", "mastra-portal-local", "runtime");
+const mirror = path.join(repo, ".state", "production-mirror");
 
 const PLANS = [
   {
@@ -66,6 +68,50 @@ const PLANS = [
     scope: { userId: "mg", projectId: "invest-agent", instanceId: "invest-agent-mg" },
     projectRoot: path.join(p0Mg, "projects", "0561c9d25755c148ce216525"),
     tagExisting: [{ fileName: "控盘度综合评分.md", tags: ["策略"], move: true }],
+    imports: [
+      { fileName: "strategy-rules.md", sourceRelative: path.join("methods", "strategy-rules.md"), tags: ["策略"] },
+      { fileName: "控盘度指标V1.0.md", sourceRelative: path.join("methods", "控盘度指标V1.0.md"), tags: ["技术面", "历史定位"] },
+      ...FOUR_SET.map((fileName) => ({
+        fileName, sourceRelative: path.join("assets", "migrated", "knowledge", "methods", fileName), tags: ["系统模板"],
+      })),
+    ],
+  },
+  // 生产镜像（.state/production-mirror）：同一裁决的镜像彩排，只写快照不写生产。
+  {
+    key: "m111",
+    db: path.join(mirror, "runtime.db"),
+    runtimeRoot: path.join(mirror, "runtime"),
+    projectsRoot: path.join(mirror, "projects"),
+    scope: { userId: "111", projectId: "invest-agent", instanceId: "invest-agent-111" },
+    projectRoot: path.join(mirror, "projects", "2e94a6a7c5b82c33cfb8beac"),
+    // 镜像 111 已有 5 个「（历史候选）」资产在旧「我的方法」文件夹：改名干净名称 + 打标。
+    tagExisting: [
+      ...Object.entries(METHOD_NAMES).map(([fileName, name]) => ({
+        fileName, renameTo: name, tags: fileName === "strategy-rules.md" ? ["策略"] : ["系统模板"],
+      })),
+    ],
+    imports: [],
+  },
+  {
+    key: "mdyk",
+    db: path.join(mirror, "runtime.db"),
+    runtimeRoot: path.join(mirror, "runtime"),
+    projectsRoot: path.join(mirror, "projects"),
+    scope: { userId: "dyk", projectId: "invest-agent", instanceId: "invest-agent-dyk" },
+    projectRoot: path.join(mirror, "projects", "2df51712666a03657bce7a6e"),
+    tagExisting: [{ fileName: "strategy-rules.md", tags: ["策略"], move: true, renameTo: "策略规则" }],
+    imports: FOUR_SET.map((fileName) => ({
+      fileName, sourceRelative: path.join("assets", "migrated", "knowledge", "methods", fileName), tags: ["系统模板"],
+    })),
+  },
+  {
+    key: "mmg",
+    db: path.join(mirror, "runtime.db"),
+    runtimeRoot: path.join(mirror, "runtime"),
+    projectsRoot: path.join(mirror, "projects"),
+    scope: { userId: "mg", projectId: "invest-agent", instanceId: "invest-agent-mg" },
+    projectRoot: path.join(mirror, "projects", "0561c9d25755c148ce216525"),
+    tagExisting: [{ fileName: "控盘度综合评分.md", tags: ["策略"], move: true, renameTo: "控盘度综合评分" }],
     imports: [
       { fileName: "strategy-rules.md", sourceRelative: path.join("methods", "strategy-rules.md"), tags: ["策略"] },
       { fileName: "控盘度指标V1.0.md", sourceRelative: path.join("methods", "控盘度指标V1.0.md"), tags: ["技术面", "历史定位"] },
@@ -122,6 +168,10 @@ const userAssets = await import("../../../src/services/user-assets.ts");
       await userAssets.moveUserAsset({ ...scope, assetId: row.assetId, folderId: folder.folderId });
       console.log(`${action.fileName}: moved -> ${FOLDER_NAME}`);
     }
+    if (action.renameTo && row.name !== action.renameTo) {
+      await userAssets.renameUserAsset({ ...scope, assetId: row.assetId, name: action.renameTo });
+      console.log(`${action.fileName}: renamed -> "${action.renameTo}"`);
+    }
     await userAssets.setUserAssetTags({ ...scope, assetId: row.assetId, tags: action.tags });
     console.log(`${action.fileName}: tags=${JSON.stringify(action.tags)}`);
   }
@@ -130,7 +180,11 @@ const userAssets = await import("../../../src/services/user-assets.ts");
     const existing = findVisibleByFileName(item.fileName);
     if (existing) {
       await userAssets.setUserAssetTags({ ...scope, assetId: existing.assetId, tags: item.tags });
-      if (existing.folderId !== folder.folderId) {
+      const cleanName = METHOD_NAMES[item.fileName] ?? item.fileName.replace(/\.md$/, "");
+      if (existing.name !== cleanName) {
+        await userAssets.renameUserAsset({ ...scope, assetId: existing.assetId, name: cleanName });
+        console.log(`${item.fileName}: 已可见，改名 "${cleanName}" + tags=${JSON.stringify(item.tags)}`);
+      } else if (existing.folderId !== folder.folderId) {
         await userAssets.moveUserAsset({ ...scope, assetId: existing.assetId, folderId: folder.folderId });
         console.log(`${item.fileName}: 已可见，挪入 ${FOLDER_NAME} + tags=${JSON.stringify(item.tags)}`);
       } else {
