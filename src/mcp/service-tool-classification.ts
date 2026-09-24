@@ -81,6 +81,9 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   // 会话）内，owner 由请求上下文强制派生。
   "state.candidate.propose": "other-write",
   "state.candidate.revise": "other-write",
+  // 模型侧创建私有 Skill（草案→用户 Portal 批准后才可安装）：只发生在
+  // 交互会话（要求 conversation 上下文），自动化轮无此工具。
+  "skill.create": "other-write",
 };
 
 /** 查表分类；未知工具默认归 other-write（保守）。 */

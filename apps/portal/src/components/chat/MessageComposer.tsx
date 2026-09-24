@@ -73,6 +73,21 @@ export function MessageComposer({
   const restoringDraftRef = useRef(false);
   const clearedDraftKeysRef = useRef(new Set<string>());
 
+  // 从其他页面跳转来的新建会话可带 ?prompt= 预填（如「新建 Skill」），
+  // 只播种一次并从 URL 抹掉，避免刷新重复注入。
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("new") !== "1") return;
+      const prompt = url.searchParams.get("prompt");
+      if (!prompt) return;
+      url.searchParams.delete("prompt");
+      window.history.replaceState(null, "", url.toString());
+      setValue((current) => current || prompt.slice(0, 20000));
+    } catch { /* 预填失败不影响输入 */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const inputDisabled = disabled || processing || stopping;
   const cancelPending = stopping || cancelRequested;
   const canSend = !inputDisabled && !sending && !error && (value.trim().length > 0 || attachments.length > 0);

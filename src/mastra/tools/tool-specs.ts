@@ -575,6 +575,17 @@ export const ALL_SERVICE_TOOL_SPECS: readonly ToolSpec[] = [
     inputSchema: {  },
   },
   {
+    id: "skill.create",
+    description: "Create a PRIVATE skill as a DRAFT from content the user has already confirmed in this conversation (e.g. the user asked you to turn an agreed workflow into a reusable skill). The skill does NOT take effect: it lands in the Portal 技能管理 page as 待确认, and only after the user explicitly approves it there can it be installed/enabled. Never use this to publish, never create system skills, and never create a skill the user has not already seen and agreed to in the conversation. Creating a skill is for reusable, cross-session procedures — not for one-off answers. Slug must be lowercase letters/digits/'-'/'_'/'.' (2-121 chars).",
+    inputSchema: {
+      slug: z.string().min(2).max(121).describe("unique lowercase identifier, e.g. lithium-weekly-tracking"),
+      name: z.string().min(1).max(200).describe("display name shown in the Portal"),
+      description: z.string().max(500).optional().describe("when this skill should be used"),
+      text: z.string().min(1).max(20000).describe("full SKILL.md content (markdown) the user confirmed"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
     id: "state.candidate.propose",
     description: "Propose a reusable lesson or workflow candidate from the CURRENT conversation or task run, after finding a reusable handling for a concrete problem (e.g. an automation failure you just explained). This only creates a draft candidate — it never changes future default behavior, methods, skills, tasks or preferences; the user must explicitly approve it later in the Portal. Do not propose on every turn: only when the user asks for improvement, or a failure handling is genuinely reusable. The candidate is bound to the current conversation/task automatically; you cannot choose another owner.",
     inputSchema: {

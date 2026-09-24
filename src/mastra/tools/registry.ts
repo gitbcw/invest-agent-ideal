@@ -65,6 +65,8 @@ const MASTRA_EXPOSED_TOOL_IDS: ReadonlySet<string> = new Set([
   // T-540 纠错候选：交互会话内可提出/修订草案（approve 永不暴露）。
   "state.candidate.propose",
   "state.candidate.revise",
+  // 交互会话内按用户确认的内容创建私有 Skill 草案（批准权在 Portal）。
+  "skill.create",
 ]);
 
 /** Mastra 工具面（ALL_SERVICE_TOOL_SPECS 的精选子集，保持原展示顺序）。 */

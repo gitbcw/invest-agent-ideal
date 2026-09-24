@@ -47,10 +47,6 @@ export function getSkill(skillId: string) {
   return request<SkillDetailView>(`/api/skills/${encodeURIComponent(skillId)}`);
 }
 
-export function createSkill(input: { slug: string; name: string; description?: string; text: string }) {
-  return request<{ skillId: string; version: { versionId: string; status: string } }>("/api/skills", { method: "POST", body: JSON.stringify(input) });
-}
-
 export function editSkill(skillId: string, input: { text: string }) {
   return request<{ skillId: string; version: { version_id: string; version_number: number; status: string } }>(
     `/api/skills/${encodeURIComponent(skillId)}`,

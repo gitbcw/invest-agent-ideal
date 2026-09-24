@@ -28,6 +28,7 @@ const REGISTERED_TOOLS = [
   "onboarding.confirm_portfolio",
   "onboarding.draft.get", "onboarding.draft.upsert_step", "onboarding.draft.request_confirmation",
   "state.candidate.propose", "state.candidate.revise",
+  "skill.create",
 ];
 
 // ─── 分类表完整性 ──────────────────────────────────────────────

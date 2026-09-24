@@ -43,6 +43,7 @@ import { getMastraPortfolioRevision, isSameRevisionInstant, readMastraPortfolioP
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import * as state from "../services/agent-space/state.js";
+import { portalCreateSkill } from "../services/agent-space/portal-actions.js";
 import { readMethodWorkingCopy } from "../services/agent-space/method-working-copies.js";
 import { comparableConfirmationBody, consumeSandboxConfirmation, createSandboxConfirmation, recordConfirmationRejection, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import { validateConfirmationContract } from "../lib/confirmation-contract.js";
@@ -549,6 +550,53 @@ async function dispatchServiceTool(
         instanceId: context.instanceId,
         candidate: { objectId, versionId: revised.versionId, kind, title, status: "draft" },
         note: "候选已更新为新的草稿版本；仍需用户在 Portal 明确批准。",
+      };
+    }
+    case "skill.create": {
+      // 只允许交互会话（要求 conversation 上下文）：与 state.candidate 同一
+      // 纪律，不存在脱离会话的自主创建。创建结果是私有 Skill 草案，批准/
+      // 安装权在 Portal 技能管理页。
+      if (!context.conversationId) {
+        return {
+          ok: false,
+          error: "SKILL_CREATE_REQUIRES_CONVERSATION",
+          message: "创建 Skill 只能发生在用户对话中（内容须为用户已确认的）；定时/任务上下文无此工具。",
+        };
+      }
+      const scope = {
+        userId: context.userId,
+        projectId: context.projectId || DEFAULT_PROJECT_ID,
+        instanceId: context.instanceId,
+      };
+      const slug = typeof input?.slug === "string" ? input.slug.trim() : "";
+      const name = typeof input?.name === "string" ? input.name.trim() : "";
+      const description = typeof input?.description === "string" && input.description.trim() ? input.description.trim() : undefined;
+      const text = typeof input?.text === "string" ? input.text : "";
+      if (!slug || !name || !text.trim()) {
+        return { ok: false, error: "invalid_tool_input", tool: name, message: "slug, name and non-empty text are required" };
+      }
+      const created = await portalCreateSkill({
+        scope,
+        slug,
+        name,
+        description,
+        text,
+        actor: `agent:${context.userId}`,
+        idempotencyKey: `agent:skill-create:${context.userId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      });
+      await audit(context, {
+        operation: name,
+        resourceType: "agent_space_skill",
+        resourceId: created.skill.skill_id,
+        requestBody: { slug, name },
+        resultSummary: `created private skill draft "${name}" (待确认; Portal approval required before install)`,
+      });
+      return {
+        ok: true,
+        userId: context.userId,
+        instanceId: context.instanceId,
+        skill: { skillId: created.skill.skill_id, slug: created.skill.slug, name: created.skill.name, status: "draft_pending_approval" },
+        note: "Skill 已保存为私有草案（待确认）；请告诉用户去「技能管理」页审阅批准后才可安装启用。",
       };
     }
     default:

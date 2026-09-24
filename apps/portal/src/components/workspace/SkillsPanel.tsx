@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, ArrowUpCircle, Check, Eye, Loader2, Package, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, X } from "lucide-react";
 import type { CatalogSkillCardView, InstalledSkillCardView, SkillDetailView } from "@/lib/workspace-api";
-import { WorkspaceRequestError, createSkill, editSkill, enableSkill, getSkill, installSkill, listInstalledSkills, listSkillCatalog, setSkillStatus, uninstallSkill } from "./api";
+import { WorkspaceRequestError, editSkill, enableSkill, getSkill, installSkill, listInstalledSkills, listSkillCatalog, setSkillStatus, uninstallSkill } from "./api";
 
 function formatDate(value: string | null): string {
   if (!value) return "—";
@@ -100,13 +100,9 @@ export function SkillsPanel() {
           <button type="button" className="btn-secondary px-2.5 py-1.5 text-xs" onClick={openCatalog}>
             <Search size={15} />找回 Skill
           </button>
-          <CreateSkillDialog
-            onCreated={async (skillId) => {
-              setSelectedId(skillId);
-              await refresh();
-            }}
-            onError={setError}
-          />
+          <button type="button" className="btn-primary px-2.5 py-1.5 text-xs" onClick={() => window.location.assign(`/chat?new=1&prompt=${encodeURIComponent(SKILL_CREATION_PROMPT)}`)}>
+            <Plus size={15} />新建 Skill
+          </button>
         </div>
       </div>
       {error ? (
@@ -255,56 +251,8 @@ export function SkillsPanel() {
   );
 }
 
-function CreateSkillDialog({ onCreated, onError }: { onCreated: (skillId: string) => void | Promise<void>; onError: (message: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [slug, setSlug] = useState("");
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  return (
-    <>
-      <button type="button" className="btn-primary px-2.5 py-1.5 text-xs" onClick={() => setOpen(true)}><Plus size={15} />新建 Skill</button>
-      {open ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-4" role="dialog" aria-label="新建 Skill">
-          <div className="flex max-h-[85vh] w-full max-w-2xl flex-col gap-3 rounded-lg bg-white p-5 shadow-xl">
-            <h2 className="text-base font-semibold">新建私有 Skill</h2>
-            <input className="input font-mono" placeholder="标识 slug（小写字母/数字/-/_/.，如 lithium-daily-review）" value={slug} onChange={(e) => setSlug(e.target.value)} />
-            <input className="input" placeholder="Skill 名称" value={name} onChange={(e) => setName(e.target.value)} />
-            <input className="input" placeholder="用途说明（可选）" value={description} onChange={(e) => setDescription(e.target.value)} />
-            <textarea className="input min-h-[260px] font-mono text-xs" placeholder="Skill 正文（Markdown）。首个版本为草稿；需在详情页启用并安装后才会影响助手。" value={text} onChange={(e) => setText(e.target.value)} />
-            <div className="flex justify-end gap-2">
-              <button type="button" className="btn-secondary px-3 py-1.5 text-xs" onClick={() => setOpen(false)} disabled={busy}>取消</button>
-              <button
-                type="button"
-                className="btn-primary px-3 py-1.5 text-xs"
-                disabled={busy || !slug.trim() || !name.trim() || !text.trim()}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    const result = await createSkill({ slug: slug.trim(), name: name.trim(), description: description.trim() || undefined, text });
-                    setOpen(false);
-                    setSlug("");
-                    setName("");
-                    setDescription("");
-                    setText("");
-                    await onCreated(result.skillId);
-                  } catch (e) {
-                    onError(e instanceof WorkspaceRequestError ? e.message : "创建失败");
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                {busy ? <Loader2 size={15} className="animate-spin" /> : null}保存草稿
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </>
-  );
-}
+/** 新建 Skill 走 AI 对话（契约：用户通过对话请求变更，不手输 SKILL.md）。 */
+const SKILL_CREATION_PROMPT = "我想新建一个 Skill。请先向我确认三件事：名称、用途（什么场景该触发它）、以及主要步骤要点；然后起草 SKILL.md 给我看。我确认内容后，请用 skill.create 把它保存为私有 Skill 草案——创建后只是待确认状态，不会自动启用或发布，我会去「技能管理」页批准。";
 
 function SkillDetail({ skillId, onBack, onNotice }: { skillId: string; onBack: () => void; onNotice: (message: string) => void }) {
   const [detail, setDetail] = useState<SkillDetailView | null>(null);
