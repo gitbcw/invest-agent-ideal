@@ -90,6 +90,15 @@ for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='table'"
   if (before !== after) pruned.push({ table, before, after });
 }
 db.prepare("UPDATE automation_tasks SET next_run_at=NULL WHERE user_id=?").run(scope.userId);
+// Shared conversations (e.g. WeChat groups) can carry messages from multiple
+// users; when the session row is pruned as another owner's, this scope's
+// messages in it must go too, or the isolated fixture fails FK checks.
+const sharedSessionMessagesRemoved = db.prepare(
+  "SELECT COUNT(*) AS count FROM conversation_messages WHERE user_id=? AND conversation_id NOT IN (SELECT conversation_id FROM conversation_sessions)",
+).get(scope.userId).count;
+db.prepare(
+  "DELETE FROM conversation_messages WHERE user_id=? AND conversation_id NOT IN (SELECT conversation_id FROM conversation_sessions)",
+).run(scope.userId);
 const foreignKeyErrors = db.pragma("foreign_key_check");
 db.pragma("wal_checkpoint(TRUNCATE)");
 db.exec("VACUUM");
@@ -97,8 +106,9 @@ if (foreignKeyErrors.length > 0) throw new Error(`裁剪后 foreign_key_check �
 
 const countCheck = [];
 for (const [table, sourceCount] of sourceCounts) {
+  const expected = table === "conversation_messages" ? sourceCount - sharedSessionMessagesRemoved : sourceCount;
   const local = db.prepare(`SELECT COUNT(*) AS count FROM ${JSON.stringify(table)} WHERE user_id=?`).get(scope.userId).count;
-  countCheck.push({ table, source: sourceCount, local, ok: sourceCount === local });
+  countCheck.push({ table, source: sourceCount, expected, local, ok: expected === local });
 }
 const assetVersions = db.prepare("SELECT asset_id, version_id, file_name, size_bytes, checksum FROM user_asset_versions WHERE user_id=?").all(scope.userId);
 const byteFailures = [];
