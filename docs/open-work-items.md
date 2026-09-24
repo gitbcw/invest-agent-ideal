@@ -142,6 +142,8 @@ REPLAY_PLAN=./classic-plan.json REPLAY_RESULTS=./classic-results.jsonl REPLAY_CO
 - **C4 · 模型兜底加强**：自动路由轮内兜底从一跳扩展为走完整条自动链（`MASTRA_AUTO_FALLBACK_MAX`，默认 3 跳），网关 upstream 错误（如 `Upstream error: 400`）纳入可重试签名（大小写不敏感）。8-18 上午 111 的 market-watch 失败即「deepseek 首字超时→兜底到 sol→sol 网关 400→无下一跳」链路。
 - **观测缺口**：`external_mcp_tool_calls` 随 ACP 退役停写；已在 W4 共享连接收口点（`withExternalToolCallObserver`）恢复记录（chat 与 scheduled 两条路径）。`conversation_task_runs` 为 ACP 时代死台账（无写入方，仅启动恢复引用），在 table-ownership 标注 legacy。
 
-## W7+ · owner 待补充
+## W7+ · T-524 后续工作
 
-（owner 口述新工作项追加于此，Agent 负责整理成条目并回填细节。）
+- **线上观察与兼容窗口收口**：mg、dyk、111 已进入新 Agent Space 灰度；继续采集自然调度、微信投递和旧入口计数。满足 [T-534](./agent-space-execution/T524-current-state-and-next-work.md) 的独立验收后，由 owner 决定是否关闭旧运行入口；不默认物理删除历史。
+- **本地 Agent 空间只读可视化**：并行在隔离数据库/回放数据上制作首版控制面，先展示 Agent、方法/版本、Skill 安装、任务依赖、运行依据与结果，owner 校对后再评估发布。
+- **W7 后产品决策**：205 个 owner-review、dyk 核心模型、111 策略拆分、默认 Skill 发布与后续 Portal 产品范围另行决策，不反向改变已冻结的生产切换口径。

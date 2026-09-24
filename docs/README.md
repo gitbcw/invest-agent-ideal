@@ -125,7 +125,17 @@ WeChat bindings.
 | [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
 | [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
 | [workspace-compatibility.md](./workspace-compatibility.md) | Read-only preflight, managed-asset ownership, backup, migration and rollback contract for existing user Workspaces |
-| [agent-self-correction-workspace-design.md](./agent-self-correction-workspace-design.md) | 设计草案（T-524，2026-09-19 会议立项）：Agent 自有工作空间（逻辑层）与自纠错能力——纠错知识条目/场景注入/修正提议三支柱、范围红线与分阶段；未采纳未实施 |
+| [agent-space-workspace-exit-design-v3.md](./agent-space-workspace-exit-design-v3.md) | 当前执行权威：拆分用户资产、方法、技能、任务、对话与 Agent 状态；Agent 空间控制面、隔离迁移、真实切换及旧 Workspace 退出 |
+| [agent-space-execution/](./agent-space-execution/) | v3 的 W0-W7 可派发执行稿：权威源基线、领域契约、方法资产、技能目录、运行时、任务状态、隔离演练与 owner 切换 |
+| [agent-space-execution/T524-current-state-and-next-work.md](./agent-space-execution/T524-current-state-and-next-work.md) | T-524 三用户生产灰度后的当前状态、线上观察线与本地 Agent 空间可视化路线 |
+| [agent-space-user-product-design.md](./agent-space-user-product-design.md) | 用户资产管理与失败告知 GUI 正式设计：工作空间双 Tab、文件/自动化升级、待处理、问题对话、纠错候选与本地 111 验证门槛（T-537~T-541 的上游依据） |
+| [agent-space-execution/T537-p0-baseline.md](./agent-space-execution/T537-p0-baseline.md) | T-537 P0 基线：111 隔离副本来源与校验、隔离环境（runtime 23660/Portal 3110/假投递）启动与自检方式 |
+| [agent-space-execution/T537-gap-analysis.md](./agent-space-execution/T537-gap-analysis.md) | 现有 API/页面/表 vs 正式设计的逐项差距清单（T-538~T-541 契约输入） |
+| [agent-space-execution/T538-execution-report.md](./agent-space-execution/T538-execution-report.md) | T-538 工作空间方法/Skills GUI 执行报告（connector 协议、portal-actions、/workspace 页面、111 构造） |
+| [agent-space-execution/T539-execution-report.md](./agent-space-execution/T539-execution-report.md) | T-539 失败告知/通知偏好执行报告（attention 事实、T-479 恢复默认静默、待处理页、详情四块） |
+| [agent-space-execution/T540-execution-report.md](./agent-space-execution/T540-execution-report.md) | T-540 问题对话与纠错候选执行报告（候选工具面、结构性断言、批准生效链） |
+| [agent-space-execution/T541-acceptance-report.md](./agent-space-execution/T541-acceptance-report.md) | T-541 端到端验收报告（e2e 20/20、owner 复核清单、生产发布建议）；旧面板退出方案见同目录 T541-legacy-panel-exit-plan.md |
+| [agent-self-correction-workspace-design.md](./agent-self-correction-workspace-design.md) | T-524 v2 历史设计：Agent 工作状态、经验/工作说明、承诺与履约的已确认语义；总体执行顺序以 v3 为准 |
 | [workspace-backup-operations.md](./workspace-backup-operations.md) | 每日工作区备份范围、allowlist、排除项、加密与恢复门禁 |
 | [disaster-recovery-restore-sop.md](./disaster-recovery-restore-sop.md) | 灾备恢复 SOP：纯用户数据快照的真实恢复路径、验收清单与门禁（T-415 2026-09-07 演练验证） |
 | [version-snapshot-and-assisted-rollback-plan.md](./version-snapshot-and-assisted-rollback-plan.md) | Release snapshot, known-good retention, standard deploy/code rollback, and audited AI-assisted Workspace recovery |

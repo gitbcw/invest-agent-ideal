@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Space | 本地控制面原型</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar"><div><p class="eyebrow">LOCAL PROTOTYPE · READ ONLY</p><h1>Agent Space</h1></div><div class="scope"><span class="dot"></span><span id="scope"></span><small>脱敏回放数据</small></div></header>
+  <main>
+    <section class="agent-summary" aria-labelledby="agent-heading"><div><p class="eyebrow">CURRENT AGENT</p><h2 id="agent-heading"></h2><p id="agent-description"></p></div><div class="agent-meta"><span id="agent-status" class="pill"></span><code id="agent-id"></code></div></section>
+    <nav class="tabs" aria-label="控制面视图"><button class="active" data-view="overview">概览</button><button data-view="methods">方法与版本</button><button data-view="tasks">任务依赖</button><button data-view="runs">最近运行</button></nav>
+    <section id="overview" class="view active"><div id="stats" class="stats"></div><div class="grid two"><article><h3>Skill 安装状态</h3><div id="skills"></div></article><article><h3>控制边界</h3><ul class="boundary"><li>本地 fixture 仅供读取</li><li>不连接生产 DB 或 Workspace</li><li>运行依据按版本固定展示</li><li>不提供采用、批准、调度或删除操作</li></ul></article></div></section>
+    <section id="methods" class="view"><div id="method-list" class="list"></div></section>
+    <section id="tasks" class="view"><div id="task-list" class="list"></div></section>
+    <section id="runs" class="view"><div class="run-layout"><div id="run-list" class="run-list"></div><aside id="basis-detail" class="basis-detail" aria-live="polite"></aside></div></section>
+  </main>
+  <footer>来源：T-530 隔离 A/B 回放的脱敏派生夹具。<span id="generated-at"></span></footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

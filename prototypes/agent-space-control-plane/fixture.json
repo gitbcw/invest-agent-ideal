@@ -1,0 +1,118 @@
+{
+  "metadata": {
+    "title": "Agent Space control plane prototype",
+    "dataMode": "sanitized-replay",
+    "sourceRun": "T-530 isolated A/B replay",
+    "scope": "scope-demo",
+    "generatedAt": "2026-09-21T09:00:00.000Z",
+    "productionConnected": false
+  },
+  "agent": {
+    "id": "agent_demo_investment",
+    "name": "投资决策助手",
+    "status": "active",
+    "description": "负责复盘与观察任务的已授权装配。",
+    "scope": "scope-demo"
+  },
+  "methods": [
+    {
+      "id": "method_four_factor",
+      "name": "四因子复盘",
+      "version": "v1.1",
+      "status": "adopted",
+      "versionId": "method-version-demo-11",
+      "checksum": "ea02397b...",
+      "usedBy": ["task_daily_review"],
+      "note": "当前采用版本；任务运行固定引用该版本。"
+    },
+    {
+      "id": "method_candidate",
+      "name": "策略候选",
+      "version": "v0.3",
+      "status": "owner-review",
+      "versionId": "method-version-demo-03",
+      "checksum": "a51c9c20...",
+      "usedBy": [],
+      "note": "可发现，但未进入默认装配或任务运行。"
+    },
+    {
+      "id": "method_excluded",
+      "name": "历史 KP 方法",
+      "version": "v1.0",
+      "status": "excluded",
+      "versionId": "method-version-demo-10",
+      "checksum": "c192d4de...",
+      "usedBy": [],
+      "note": "保留历史引用；不参与当前装配。"
+    }
+  ],
+  "skills": [
+    {
+      "id": "skill_research",
+      "name": "研究分析",
+      "version": "未安装",
+      "status": "empty",
+      "note": "回放侧无已安装默认 Skill；这是可见的空集，不代表权限缺失。"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "task_daily_review",
+      "name": "每日复盘",
+      "status": "active",
+      "agentId": "agent_demo_investment",
+      "dependencies": [
+        { "kind": "method", "name": "四因子复盘", "version": "v1.1", "policy": "pinned" },
+        { "kind": "asset", "name": "复盘输出资产", "version": "v7", "policy": "output" }
+      ]
+    },
+    {
+      "id": "task_market_watch",
+      "name": "市场观察",
+      "status": "active",
+      "agentId": "agent_demo_investment",
+      "dependencies": [],
+      "emptyReason": "任务未声明依赖：显式空装配，不从旧 Workspace 补载。"
+    }
+  ],
+  "runs": [
+    {
+      "id": "run_demo_20260921_0900",
+      "taskId": "task_daily_review",
+      "taskName": "每日复盘",
+      "startedAt": "2026-09-21T09:00:00.000Z",
+      "status": "delivery_succeeded",
+      "basis": {
+        "entryKind": "generic_automation",
+        "basisKey": "demo-daily-review-20260921",
+        "agent": { "name": "投资决策助手", "id": "agent_demo_investment" },
+        "methods": [{ "name": "四因子复盘", "version": "v1.1", "checksum": "ea02397b...", "origin": "task-dependency-pinned" }],
+        "assets": [{ "name": "复盘输出资产", "version": "v7", "role": "output", "checksum": "7c1ad9af..." }],
+        "skills": [],
+        "state": { "included": 0, "scanned": 0, "note": "not-integrated-until-W5" },
+        "injection": { "workspace": null, "tools": ["reviews.save", "assets.version.read"], "sections": ["method", "asset"] },
+        "execution": "execution_succeeded",
+        "delivery": "sent"
+      }
+    },
+    {
+      "id": "run_demo_20260920_1550",
+      "taskId": "task_market_watch",
+      "taskName": "市场观察",
+      "startedAt": "2026-09-20T15:50:00.000Z",
+      "status": "execution_failed",
+      "basis": {
+        "entryKind": "scheduled",
+        "basisKey": "demo-market-watch-20260920",
+        "agent": { "name": "投资决策助手", "id": "agent_demo_investment" },
+        "methods": [],
+        "assets": [],
+        "skills": [],
+        "state": { "included": 0, "scanned": 0, "note": "not-integrated-until-W5" },
+        "injection": { "workspace": null, "tools": ["watchlist.read"], "sections": [] },
+        "execution": "execution_failed",
+        "delivery": "not_enqueued"
+      }
+    }
+  ]
+}
