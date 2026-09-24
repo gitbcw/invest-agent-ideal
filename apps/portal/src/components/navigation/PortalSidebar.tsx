@@ -138,6 +138,7 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
     onOpenAssets={() => window.location.assign("/assets")}
     onOpenWorkspace={() => window.location.assign("/workspace")}
     onOpenAttention={() => window.location.assign("/attention")}
+    onOpenSettings={() => window.location.assign("/settings")}
     attentionCount={attentionCount}
     onOpenManual={() => window.location.assign("/manual")}
     onOpenUsage={() => window.location.assign("/usage")}
