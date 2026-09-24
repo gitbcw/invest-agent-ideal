@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowUpCircle, Check, Eye, Loader2, Package, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, X } from "lucide-react";
 import type { CatalogSkillCardView, InstalledSkillCardView, SkillDetailView } from "@/lib/workspace-api";
 import { WorkspaceRequestError, editSkill, enableSkill, getSkill, installSkill, listInstalledSkills, listSkillCatalog, setSkillStatus, uninstallSkill } from "./api";
@@ -131,8 +131,28 @@ export function SkillsPanel() {
           </div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
-            {installed.map((skill, index) => (
-              <div key={skill.installationId} className="group relative flex flex-col gap-2 rounded-lg border border-[#dfe3df] bg-white p-4">
+            {installed.map((skill) => (
+              <HoverDetailCard
+                key={skill.installationId}
+                hasDetail={Boolean(skill.description)}
+                detail={
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-[#202123]">{skill.name}</span>
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${skill.status === "disabled" ? "bg-[#eceae4] text-[#7a827c]" : "bg-emerald-100 text-emerald-800"}`}>
+                        {skill.status === "disabled" ? "已停用" : "已启用"}
+                      </span>
+                    </div>
+                    <p className="mt-1 font-mono text-[11px] text-[#8a938c]">{skill.slug}</p>
+                    <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#3c443e]">{skill.description}</p>
+                    <div className="mt-3 flex flex-wrap items-center gap-x-3 border-t border-[#eef0ee] pt-2 text-[11px] text-[#7a827c]">
+                      <span>v{skill.versionNumber}</span>
+                      <span>{skill.source === "release" ? `来源：发布 ${skill.releaseVersion || skill.releaseId || "—"}` : "来源：私有"}</span>
+                      <span>安装于 {formatDate(skill.installedAt)}</span>
+                    </div>
+                  </>
+                }
+              >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <Package size={15} className="shrink-0 text-[#52705f]" />
@@ -152,26 +172,6 @@ export function SkillsPanel() {
                   <span>{skill.source === "release" ? `来源：发布 ${skill.releaseVersion || skill.releaseId || "—"}` : "来源：私有"}</span>
                   <span>安装于 {formatDate(skill.installedAt)}</span>
                 </div>
-                {skill.description ? (
-                  <div
-                    role="tooltip"
-                    className={`pointer-events-none absolute top-1/2 z-30 hidden w-80 -translate-y-1/2 rounded-xl border border-[#dfe3df] bg-white p-4 text-left opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100 sm:block ${index % 2 === 0 ? "left-[calc(100%+10px)]" : "right-[calc(100%+10px)]"}`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-[#202123]">{skill.name}</span>
-                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${skill.status === "disabled" ? "bg-[#eceae4] text-[#7a827c]" : "bg-emerald-100 text-emerald-800"}`}>
-                        {skill.status === "disabled" ? "已停用" : "已启用"}
-                      </span>
-                    </div>
-                    <p className="mt-1 font-mono text-[11px] text-[#8a938c]">{skill.slug}</p>
-                    <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#3c443e]">{skill.description}</p>
-                    <div className="mt-3 flex flex-wrap items-center gap-x-3 border-t border-[#eef0ee] pt-2 text-[11px] text-[#7a827c]">
-                      <span>v{skill.versionNumber}</span>
-                      <span>{skill.source === "release" ? `来源：发布 ${skill.releaseVersion || skill.releaseId || "—"}` : "来源：私有"}</span>
-                      <span>安装于 {formatDate(skill.installedAt)}</span>
-                    </div>
-                  </div>
-                ) : null}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {skill.isPrivateSkill ? (
                     <button type="button" className="btn-secondary px-2 py-1 text-[11px]" onClick={() => setSelectedId(skill.skillId)}>
@@ -209,7 +209,7 @@ export function SkillsPanel() {
                     <Trash2 size={13} />卸载
                   </button>
                 </div>
-              </div>
+              </HoverDetailCard>
             ))}
           </div>
         )}
@@ -228,19 +228,12 @@ export function SkillsPanel() {
               <div className="rounded-lg border border-dashed border-[#dfe3df] px-6 py-8 text-center text-sm text-[#7a827c]">没有可找回的 Skill。</div>
             ) : (
               <div className="grid min-h-0 gap-3 overflow-y-auto sm:grid-cols-2">
-                {availableCatalog.map((item, index) => (
-                  <div key={`${item.skillId}:${item.versionId}`} className="group relative flex flex-col gap-2 rounded-lg border border-[#dfe3df] bg-white p-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="min-w-0 text-sm font-semibold break-words">{item.name}</span>
-                      <span className="shrink-0 rounded bg-[#eceae4] px-1.5 py-0.5 text-[11px] text-[#59655c]">{item.source === "private" ? "私有" : "预置"}</span>
-                    </div>
-                    <p className="font-mono text-[11px] text-[#7a827c]">{item.slug}</p>
-                    {item.description ? <p className="line-clamp-2 text-xs text-[#59655c]">{item.description}</p> : null}
-                    {item.description ? (
-                      <div
-                        role="tooltip"
-                        className={`pointer-events-none absolute top-1/2 z-30 hidden w-80 -translate-y-1/2 rounded-xl border border-[#dfe3df] bg-white p-4 text-left opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100 sm:block ${index % 2 === 0 ? "left-[calc(100%+10px)]" : "right-[calc(100%+10px)]"}`}
-                      >
+                {availableCatalog.map((item) => (
+                  <HoverDetailCard
+                    key={`${item.skillId}:${item.versionId}`}
+                    hasDetail={Boolean(item.description)}
+                    detail={
+                      <>
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm font-semibold text-[#202123]">{item.name}</span>
                           <span className="shrink-0 rounded bg-[#eceae4] px-1.5 py-0.5 text-[11px] text-[#59655c]">{item.source === "private" ? "私有" : "预置"}</span>
@@ -251,8 +244,15 @@ export function SkillsPanel() {
                           {item.releaseVersion ? <span>发布 {item.releaseVersion}</span> : null}
                           <span>{item.source === "private" ? "来源：私有" : "来源：系统发布"}</span>
                         </div>
-                      </div>
-                    ) : null}
+                      </>
+                    }
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="min-w-0 text-sm font-semibold break-words">{item.name}</span>
+                      <span className="shrink-0 rounded bg-[#eceae4] px-1.5 py-0.5 text-[11px] text-[#59655c]">{item.source === "private" ? "私有" : "预置"}</span>
+                    </div>
+                    <p className="font-mono text-[11px] text-[#7a827c]">{item.slug}</p>
+                    {item.description ? <p className="line-clamp-2 text-xs text-[#59655c]">{item.description}</p> : null}
                     <div className="flex items-center justify-between gap-2 text-[11px] text-[#7a827c]">
                       <span>{item.releaseVersion ? `v${item.releaseVersion}` : "可安装版本"}</span>
                       <button
@@ -277,11 +277,47 @@ export function SkillsPanel() {
                         {busySkillId === item.skillId ? <Loader2 size={13} className="animate-spin" /> : <Package size={13} />}安装
                       </button>
                     </div>
-                  </div>
+                  </HoverDetailCard>
                 ))}
               </div>
             )}
           </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 悬停详情卡：出现在鼠标首次进入卡片的位置（而非固定边），靠近视口边缘时自动内翻。 */
+function HoverDetailCard({ hasDetail, detail, children }: { hasDetail: boolean; detail: ReactNode; children: ReactNode }) {
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  return (
+    <div
+      className="group relative flex flex-col gap-2 rounded-lg border border-[#dfe3df] bg-white p-4"
+      onMouseEnter={(event) => {
+        if (!hasDetail) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        const cardWidth = 320;
+        const cardHeight = 240; // 估算高度；内容超高由 max-h 滚动兜底
+        const offset = 10;
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        let left = x + offset;
+        let top = y + offset;
+        if (rect.left + left + cardWidth > window.innerWidth - 8) left = x - cardWidth - offset;
+        if (rect.top + top + cardHeight > window.innerHeight - 8) top = y - cardHeight - offset;
+        setPos({ left: Math.max(left, 8 - rect.left), top: Math.max(top, 8 - rect.top) });
+      }}
+      onMouseLeave={() => setPos(null)}
+    >
+      {children}
+      {hasDetail && pos ? (
+        <div
+          role="tooltip"
+          style={{ left: pos.left, top: pos.top }}
+          className="pointer-events-none absolute z-30 max-h-[70vh] w-80 overflow-y-auto rounded-xl border border-[#dfe3df] bg-white p-4 text-left opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100"
+        >
+          {detail}
         </div>
       ) : null}
     </div>
