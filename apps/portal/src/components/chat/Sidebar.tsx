@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { AlarmClock, BellRing, Check, ChevronDown, ChevronRight, Files, Folder, FolderPlus, Layers, MessageCircle, PanelLeftClose, PanelLeftOpen, Pencil, Search, SquarePen, Tag, Trash2, X } from "lucide-react";
+import { AlarmClock, BellRing, Check, ChevronDown, ChevronRight, Files, Folder, FolderPlus, MessageCircle, Package, PanelLeftClose, PanelLeftOpen, Pencil, Search, SquarePen, Tag, Trash2, X } from "lucide-react";
 
 import type { ConversationListItem } from "./types";
 import { UserMenu } from "./UserMenu";
@@ -223,11 +223,11 @@ export function Sidebar({
                 <button
                   type="button"
                   className={`flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-black/5 hover:text-[#202123] ${activeDestination === "workspace" ? "bg-white text-[#365b40] shadow-sm" : "text-[#5f6368]"}`}
-                  aria-label="工作空间"
-                  title="工作空间"
+                  aria-label="技能管理"
+                  title="技能管理"
                   onClick={onOpenWorkspace}
                 >
-                  <Layers size={17} strokeWidth={1.8} aria-hidden="true" />
+                  <Package size={17} strokeWidth={1.8} aria-hidden="true" />
                 </button>
               </>
             ) : null}
@@ -320,9 +320,9 @@ export function Sidebar({
               <Files size={16} strokeWidth={1.8} aria-hidden="true" />
               我的文件
             </button>
-            <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "workspace" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="工作空间" title="工作空间（我的方法 / 我的 Skills）" onClick={onOpenWorkspace ?? (() => window.location.assign("/workspace"))}>
-              <Layers size={16} strokeWidth={1.8} aria-hidden="true" />
-              工作空间
+            <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "workspace" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="技能管理" title="技能管理（原工作空间；方法文件在「我的文件」管理）" onClick={onOpenWorkspace ?? (() => window.location.assign("/workspace"))}>
+              <Package size={16} strokeWidth={1.8} aria-hidden="true" />
+              技能管理
             </button>
           </>
         ) : null}

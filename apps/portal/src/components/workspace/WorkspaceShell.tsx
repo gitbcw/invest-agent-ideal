@@ -13,7 +13,7 @@ export function WorkspaceShell() {
           <div className="flex min-w-0 items-center gap-3">
             <Layers size={20} className="shrink-0 text-[#52705f]" />
             <div className="min-w-0">
-              <h1 className="truncate text-base font-semibold">工作空间</h1>
+              <h1 className="truncate text-base font-semibold">技能管理</h1>
               <p className="truncate text-[11px] text-[#7a827c]">管理你的 Skills 安装与目录；方法文件在「我的文件」中直接管理</p>
             </div>
           </div>
