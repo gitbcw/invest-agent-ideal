@@ -669,8 +669,49 @@ export const conversationTasks = sqliteTable("conversation_tasks", {
   updatedAt: text("updated_at").notNull(),
 });
 
-export const pushJobs = sqliteTable("push_jobs", {
-  id: text("id").primaryKey(),
+/**
+ * T-539 服务拥有的失败告知事实。写入只发生在自动化终态钩子；首版不向用户
+ * 暴露状态机（Portal 只读列表 + resolved 归档展示）。运行时 DDL 见
+ * src/db/index.ts 的 attention_items_v1 迁移块。
+ */
+export const attentionItems = sqliteTable("attention_items", {
+  itemId: text("item_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  kind: text("kind").notNull(),
+  dedupKey: text("dedup_key").notNull(),
+  taskId: text("task_id"),
+  runId: text("run_id"),
+  title: text("title").notNull(),
+  impactSummary: text("impact_summary").notNull(),
+  systemStatus: text("system_status").notNull(),
+  errorCategory: text("error_category"),
+  status: text("status").notNull().default("open"),
+  failureCount: integer("failure_count").notNull().default(1),
+  wechatNotified: integer("wechat_notified").notNull().default(0),
+  firstFailedAt: text("first_failed_at").notNull(),
+  lastFailedAt: text("last_failed_at").notNull(),
+  resolvedAt: text("resolved_at"),
+  resolvedRunId: text("resolved_run_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/** 通知偏好（§8）：只影响提醒投递，不改变事项事实、任务状态、运行或授权。 */
+export const notificationPreferences = sqliteTable("notification_preferences", {
+  userId: text("user_id").primaryKey(),
+  projectId: text("project_id").primaryKey(),
+  instanceId: text("instance_id").primaryKey(),
+  wechatFailureEnabled: integer("wechat_failure_enabled").notNull().default(1),
+  wechatRecoveryEnabled: integer("wechat_recovery_enabled").notNull().default(0),
+  quietHoursStart: text("quiet_hours_start"),
+  quietHoursEnd: text("quiet_hours_end"),
+  categoriesJson: text("categories_json"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const pushJobs = sqliteTable("push_jobs", {  id: text("id").primaryKey(),
   userId: text("user_id").notNull().default("primary"),
   projectId: text("project_id").notNull().default("invest-agent"),
   instanceId: text("instance_id").notNull().default("invest-agent-primary"),
@@ -947,6 +988,7 @@ export const userAssets = sqliteTable("user_assets", {
   folderId: text("folder_id"),
   name: text("name").notNull(),
   status: text("status").notNull().default("active"),
+  tags: text("tags"),
   currentVersionId: text("current_version_id"),
   archivedAt: text("archived_at"),
   createdAt: text("created_at").notNull(),
@@ -975,6 +1017,21 @@ export const userAssetVersions = sqliteTable("user_asset_versions", {
   idempotencyKey: text("idempotency_key"),
   idempotencyFingerprint: text("idempotency_fingerprint"),
   createdAt: text("created_at").notNull(),
+});
+
+/**
+ * 方法资产工作副本（未发布修改）。一行一资产：只是编辑态，不进版本链，
+ * 也不改变 user_assets.current_version_id；版本提交后由调用方清除。
+ */
+export const methodAssetWorkingCopies = sqliteTable("method_asset_working_copies", {
+  assetId: text("asset_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  projectId: text("project_id").notNull(),
+  instanceId: text("instance_id").notNull(),
+  category: text("category").notNull().default("other"),
+  draftText: text("draft_text"),
+  baseVersionId: text("base_version_id"),
+  updatedAt: text("updated_at").notNull(),
 });
 
 /** Additive quota accounting row for one user/instance/project scope. */
@@ -1234,6 +1291,7 @@ export const agentSpaceSkills = sqliteTable("agent_space_skills", {
   name: text("name").notNull(),
   description: text("description"),
   status: text("status").notNull().default("draft"),
+  isCore: integer("is_core").notNull().default(0),
   currentPrivateVersionId: text("current_private_version_id"),
   derivedFromReleaseId: text("derived_from_release_id"),
   createdAt: text("created_at").notNull(),

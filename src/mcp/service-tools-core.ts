@@ -42,6 +42,8 @@ import { ACTIVE_BACKEND, isWorkspaceBackend, planBackend, portfolioBackend, watc
 import { getMastraPortfolioRevision, isSameRevisionInstant, readMastraPortfolioProjection, replaceMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
+import * as state from "../services/agent-space/state.js";
+import { readMethodWorkingCopy } from "../services/agent-space/method-working-copies.js";
 import { comparableConfirmationBody, consumeSandboxConfirmation, createSandboxConfirmation, recordConfirmationRejection, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import { validateConfirmationContract } from "../lib/confirmation-contract.js";
 import type { SandboxContext } from "../lib/sandbox-context.js";
@@ -369,6 +371,8 @@ async function dispatchServiceTool(
       return listAssetsTool(input, context);
     case "assets.version.read":
       return readAssetVersionTool(input, context);
+    case "assets.working_copy.read":
+      return readMethodWorkingCopyTool(input, context);
     case "assets.version.commit":
       return submitAssetVersionTool(input, context);
     case "assets.conversation.save":
@@ -462,6 +466,91 @@ async function dispatchServiceTool(
       const result = await dryRunWatchRuleById(id, context.userId, context.instanceId);
       return { ok: true, userId: context.userId, instanceId: context.instanceId, result };
     }
+    case "state.candidate.propose":
+    case "state.candidate.revise": {
+      // T-540：owner 由请求上下文强制派生（conversation 优先，其次 task run），
+      // 模型不可自报——无会话且无任务的调用被结构性拒绝（不存在自主反思入口）。
+      const scope = {
+        userId: context.userId,
+        projectId: context.projectId || DEFAULT_PROJECT_ID,
+        instanceId: context.instanceId,
+      };
+      const owner = context.conversationId
+        ? { ownerKind: "conversation" as const, ownerId: context.conversationId }
+        : context.taskId
+          ? { ownerKind: "task" as const, ownerId: context.taskId }
+          : null;
+      if (!owner) {
+        return {
+          ok: false,
+          error: "STATE_CANDIDATE_NO_OWNER_CONTEXT",
+          message: "候选只能绑定当前对话或任务运行；本调用缺少两者之一，已拒绝（不存在脱离会话/任务的自主反思路径）。",
+        };
+      }
+      const kind = (input?.kind === "workflow" ? "workflow" : "lesson") as "lesson" | "workflow";
+      const title = typeof input?.title === "string" ? input.title.trim() : "";
+      if (!title) return { ok: false, error: "invalid_tool_input", tool: name, message: "title is required" };
+      const content: Record<string, unknown> = {};
+      if (kind === "lesson") {
+        if (typeof input?.trigger !== "string" || !input.trigger.trim() || typeof input?.guidance !== "string" || !input.guidance.trim()) {
+          return { ok: false, error: "invalid_tool_input", tool: name, message: "lesson requires trigger and guidance" };
+        }
+        content.trigger = input.trigger.trim();
+        content.guidance = input.guidance.trim();
+      } else {
+        if (typeof input?.scenario !== "string" || !input.scenario.trim()) {
+          return { ok: false, error: "invalid_tool_input", tool: name, message: "workflow requires scenario" };
+        }
+        content.scenario = input.scenario.trim();
+        if (!Array.isArray(input?.steps) || input.steps.length === 0 || input.steps.some((step) => !step || typeof (step as { action?: unknown }).action !== "string")) {
+          return { ok: false, error: "invalid_tool_input", tool: name, message: "workflow requires steps: [{ action }]" };
+        }
+        content.steps = input.steps;
+      }
+      if (name === "state.candidate.propose") {
+        const created = state.createStateCandidate({
+          scope,
+          kind,
+          title,
+          content,
+          ownerKind: owner.ownerKind,
+          ownerId: owner.ownerId,
+          origin: "agent",
+          actor: `agent:${context.userId}`,
+        });
+        await audit(context, {
+          operation: name,
+          resourceType: "agent_space_state_candidate",
+          resourceId: created.objectId,
+          requestBody: { kind, title, ownerKind: owner.ownerKind },
+          resultSummary: `proposed ${kind} candidate "${title}" (draft; requires user approval)`,
+        });
+        return {
+          ok: true,
+          userId: context.userId,
+          instanceId: context.instanceId,
+          candidate: { objectId: created.objectId, versionId: created.versionId, kind, title, status: "draft" },
+          note: "候选已保存为草稿；用户在 Portal 审阅批准后才可能影响后续行为。请用一句人话向用户说明你提交了什么候选、适用范围与预期改变。",
+        };
+      }
+      const objectId = typeof input?.objectId === "string" ? input.objectId.trim() : "";
+      if (!objectId) return { ok: false, error: "invalid_tool_input", tool: name, message: "objectId is required" };
+      const revised = state.reviseStateCandidate({ scope, kind, objectId, content, actor: `agent:${context.userId}` });
+      await audit(context, {
+        operation: name,
+        resourceType: "agent_space_state_candidate",
+        resourceId: objectId,
+        requestBody: { kind, title },
+        resultSummary: `revised ${kind} candidate "${title}" (new draft version)`,
+      });
+      return {
+        ok: true,
+        userId: context.userId,
+        instanceId: context.instanceId,
+        candidate: { objectId, versionId: revised.versionId, kind, title, status: "draft" },
+        note: "候选已更新为新的草稿版本；仍需用户在 Portal 明确批准。",
+      };
+    }
     default:
       throw new Error(`Unknown service tool: ${name}`);
   }
@@ -481,6 +570,37 @@ async function serviceWorkspaceBase(context: ServiceToolContext): Promise<string
   });
   await mkdir(root, { recursive: true });
   return realpath(root);
+}
+
+/** Portal「我的方法」编辑器的未发布工作副本读取：exists=false 表示无未发布修改。 */
+async function readMethodWorkingCopyTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const assetId = stringInput(input?.assetId);
+  if (!assetId) throw new UserAssetError("ASSET_NOT_FOUND", "assetId is required");
+  const scope = assetScope(context);
+  const workingCopy = readMethodWorkingCopy(scope, assetId);
+  await audit(context, {
+    operation: "assets.working_copy.read",
+    resourceType: "user_asset",
+    resourceId: assetId,
+    requestBody: { assetId },
+    resultSummary: workingCopy
+      ? `baseVersionId=${workingCopy.baseVersionId}; chars=${workingCopy.draftText?.length ?? 0}; updatedAt=${workingCopy.updatedAt}`
+      : "none",
+  });
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    assetId,
+    exists: workingCopy !== null,
+    workingCopy: workingCopy === null
+      ? null
+      : {
+          baseVersionId: workingCopy.baseVersionId,
+          updatedAt: workingCopy.updatedAt,
+          draftText: workingCopy.draftText,
+        },
+  };
 }
 
 async function readAssetVersionTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {

@@ -15,7 +15,7 @@ const REGISTERED_TOOLS = [
   "file.parse",
   "research.news_search", "research.web_search", "research.web_read",
   "assets.list", "assets.version.read",
-  "assets.version.commit", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete",
+  "assets.version.commit", "assets.working_copy.read", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete",
   "automation.list", "automation.get", "automation.create", "automation.update",
   "automation.activate", "automation.pause",
   "portfolio.read", "watchlist.read", "plans.read", "conversation.history",
@@ -27,6 +27,7 @@ const REGISTERED_TOOLS = [
   "confirmations.request", "artifacts.publish", "spreadsheet.create", "spreadsheet.transform",
   "onboarding.confirm_portfolio",
   "onboarding.draft.get", "onboarding.draft.upsert_step", "onboarding.draft.request_confirmation",
+  "state.candidate.propose", "state.candidate.revise",
 ];
 
 // ─── 分类表完整性 ──────────────────────────────────────────────
@@ -87,6 +88,8 @@ test("scheduled automation grant permits same-scope asset reads but no asset mut
   for (const tool of ["assets.version.commit", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete"]) {
     assert.ok(!grant.includes(tool), `scheduled automation grant exposes ${tool}`);
   }
+  // 未发布工作副本只属于交互会话：定时授权基线不得看到（草稿不影响运行行为）。
+  assert.ok(!grant.includes("assets.working_copy.read"), "scheduled grant must not read unpublished working copies");
 });
 
 test("weekly/monthly grant = reads + reviews.save (F2 controlled save)", () => {

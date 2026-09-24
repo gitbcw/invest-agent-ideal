@@ -501,7 +501,10 @@ function resolveRunBasisContent(scope: UserScope, identity: BasisRequestIdentity
     }
     if (dep.kind === "skill") {
       if (dep.pinned_version_id) {
-        // 依赖 pin 的正式版本直接执行（Agent 已升级不迫使其跳版本）。
+        // Pin preserves the chosen version, but cannot bypass an uninstall or pause.
+        if (!installed.has(dep.ref_id)) {
+          throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `required skill dependency ${dep.ref_id} is not enabled for the agent; blocked`);
+        }
         const version = getSkillVersionRow(dep.pinned_version_id);
         if (version.skill_id !== dep.ref_id) throw new AgentSpaceError("AGENT_SPACE_VERSION_INVALID", `pinned skill version does not belong to ${dep.ref_id}`);
         if (version.status !== "approved" && version.status !== "superseded") {
@@ -627,4 +630,3 @@ function resolveStatePacket(scope: UserScope, identity: BasisRequestIdentity, bu
     note: STATE_PACKET_NOTE,
   };
 }
-

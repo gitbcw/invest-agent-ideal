@@ -919,6 +919,16 @@ export function initDb() {
       idempotency_fingerprint TEXT,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS method_asset_working_copies (
+      asset_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'other',
+      draft_text TEXT,
+      base_version_id TEXT,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS automation_tasks (
       task_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -1106,6 +1116,8 @@ export function initDb() {
   ensureColumn("user_asset_versions", "parent_version_id", "TEXT");
   ensureColumn("user_asset_versions", "idempotency_fingerprint", "TEXT");
   ensureColumn("user_assets", "folder_id", "TEXT");
+  // Asset tags (additive, nullable JSON array of strings), e.g. ["系统模板"].
+  ensureColumn("user_assets", "tags", "TEXT");
   // Portal file-retention governance (additive, nullable). Backfill assigns
   // these values; rows left NULL behave as they did before the migration.
   ensureColumn("conversation_artifacts", "origin", "TEXT");
@@ -1232,6 +1244,7 @@ export function initDb() {
   migrateLegacyAcpTracesToAgentTraces();
   dropLegacyAlertsTable();
   ensureAgentSpaceTables();
+  ensureAttentionAndPreferenceTables();
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_username ON platform_users(username);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_roles_name ON platform_roles(name);
@@ -1944,6 +1957,7 @@ function ensureAgentSpaceTables() {
       user_id TEXT, project_id TEXT, instance_id TEXT,
       slug TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
+      is_core INTEGER NOT NULL DEFAULT 0,
       current_private_version_id TEXT,
       derived_from_release_id TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -2232,6 +2246,7 @@ function ensureAgentSpaceTables() {
   // W3：默认发布标记与私有派生血缘（发布不可变 + 派生可追溯）。
   ensureColumn("agent_space_skill_releases", "is_default", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("agent_space_skills", "derived_from_release_id", "TEXT");
+  ensureColumn("agent_space_skills", "is_core", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("agent_space_skill_versions", "derived_from_version_id", "TEXT");
   // 返工 W3-R2：默认清单是一次性的 Agent 初始化事件，完成后不再自动扩容。
   ensureColumn("agent_space_agents", "default_manifest_applied_at", "TEXT");
@@ -2239,6 +2254,59 @@ function ensureAgentSpaceTables() {
   ensureColumn("agent_space_run_basis", "request_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("agent_space_run_basis", "injection_json", "TEXT");
   markMigration(migrationKey);}
+
+/**
+ * T-539：服务拥有的失败告知事实（attention_items）与通知偏好
+ * （notification_preferences）。写入只发生在自动化终态钩子；首版不向用户
+ * 暴露事项状态机（Portal 只读列表 + resolved 归档展示）。
+ */
+function ensureAttentionAndPreferenceTables() {
+  const migrationKey = "attention_items_v1";
+  if (hasMigration(migrationKey)) return;
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS attention_items (
+      item_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      dedup_key TEXT NOT NULL,
+      task_id TEXT,
+      run_id TEXT,
+      title TEXT NOT NULL,
+      impact_summary TEXT NOT NULL,
+      system_status TEXT NOT NULL,
+      error_category TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      failure_count INTEGER NOT NULL DEFAULT 1,
+      wechat_notified INTEGER NOT NULL DEFAULT 0,
+      first_failed_at TEXT NOT NULL,
+      last_failed_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_run_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_attention_items_dedup
+      ON attention_items(user_id, project_id, instance_id, dedup_key);
+    CREATE INDEX IF NOT EXISTS idx_attention_items_open
+      ON attention_items(user_id, project_id, instance_id, status, last_failed_at DESC);
+
+    CREATE TABLE IF NOT EXISTS notification_preferences (
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      wechat_failure_enabled INTEGER NOT NULL DEFAULT 1,
+      wechat_recovery_enabled INTEGER NOT NULL DEFAULT 0,
+      quiet_hours_start TEXT,
+      quiet_hours_end TEXT,
+      categories_json TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, project_id, instance_id)
+    );
+  `);
+  markMigration(migrationKey);
+}
 
 /**
  * One-time cleanup (investment profile retirement, 2026-08-14): the retired

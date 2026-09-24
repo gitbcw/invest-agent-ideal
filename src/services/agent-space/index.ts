@@ -7,3 +7,4 @@ export * from "./tasks.js";
 export * from "./state.js";
 export * from "./assembly.js";
 export * from "./migration.js";
+export * from "./portal-actions.js";

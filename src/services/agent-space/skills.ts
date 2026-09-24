@@ -46,6 +46,8 @@ export interface UpsertSkillInput {
   slug: string;
   name: string;
   description?: string;
+  /** Developer-governed capability: never exposed as a user-manageable installation. */
+  isCore?: boolean;
   /** domain=system 时必填（owner 授权令牌）。 */
   ownerToken?: string;
   actor: string;
@@ -73,6 +75,7 @@ type SkillRow = {
   name: string;
   description: string | null;
   status: string;
+  is_core: number;
   current_private_version_id: string | null;
   derived_from_release_id: string | null;
   created_at: string;
@@ -215,6 +218,7 @@ async function verifySkillContentRef(
 
 export function upsertSkill(input: UpsertSkillInput): SkillRow {
   assertDomainRowShape(input.domain, input.scope);
+  if (input.isCore && input.domain !== "system") throw new AgentSpaceError("AGENT_SPACE_SYSTEM_DOMAIN_REQUIRED", "core skills must be system owned");
   if (input.domain === "user") assertScopeValid(input.scope as UserScope);
   requireSystemWriteAuthorization(input.domain, input.ownerToken, "system skill upsert");
   const existing = sqlite
@@ -222,18 +226,23 @@ export function upsertSkill(input: UpsertSkillInput): SkillRow {
       `SELECT * FROM agent_space_skills WHERE domain=? AND COALESCE(user_id,'')=? AND COALESCE(project_id,'')=? AND COALESCE(instance_id,'')=? AND slug=?`,
     )
     .get(input.domain, input.scope?.userId ?? "", input.scope?.projectId ?? "", input.scope?.instanceId ?? "", input.slug) as SkillRow | undefined;
-  if (existing) return existing;
+  if (existing) {
+    if (input.isCore !== undefined && (existing.is_core === 1) !== input.isCore) {
+      throw new AgentSpaceError("AGENT_SPACE_IMMUTABLE", "skill management class cannot change through upsert");
+    }
+    return existing;
+  }
   const now = nowIso();
   const tx = sqlite.transaction(() => {
     const skillId = newId("skill");
     sqlite
       .prepare(
         `INSERT INTO agent_space_skills (
-           skill_id, domain, user_id, project_id, instance_id, slug, name, description, status, current_private_version_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?)`,
+           skill_id, domain, user_id, project_id, instance_id, slug, name, description, status, is_core, current_private_version_id, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, ?, ?)`,
       )
       .run(skillId, input.domain, input.scope?.userId ?? null, input.scope?.projectId ?? null, input.scope?.instanceId ?? null,
-           input.slug, input.name, input.description ?? null, now, now);
+           input.slug, input.name, input.description ?? null, input.isCore ? 1 : 0, now, now);
     recordAgentSpaceAudit({
       domain: input.domain,
       scope: input.scope,

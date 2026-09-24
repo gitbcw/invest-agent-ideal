@@ -54,6 +54,13 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   // In-process staging-file transformation; asset version commits stay with
   // the automation runner, so this grants no service write path.
   "spreadsheet.transform": "read",
+  // Read-only by effect, but deliberately NOT "read": unpublished working
+  // copies (Portal editor drafts) must stay out of the scheduled read
+  // baseline — automations keep running on pinned/adopted versions only,
+  // so drafts never leak into scheduled outputs before the user commits
+  // and adopts them. Interactive conversations still see this tool via the
+  // Mastra face in tools/registry.ts.
+  "assets.working_copy.read": "other-write",
   "assets.version.commit": "other-write",
   "assets.conversation.save": "other-write",
   "assets.attachment.save": "other-write",
@@ -69,6 +76,11 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   "onboarding.draft.get": "other-write",
   "onboarding.draft.upsert_step": "other-write",
   "onboarding.draft.request_confirmation": "other-write",
+  // T-540 纠错候选：只能创建/修订草案（用户批准才生效），不进 scheduled
+  // grant 白名单——自动化轮默认无候选权，候选发生在交互会话（含问题处理
+  // 会话）内，owner 由请求上下文强制派生。
+  "state.candidate.propose": "other-write",
+  "state.candidate.revise": "other-write",
 };
 
 /** 查表分类；未知工具默认归 other-write（保守）。 */

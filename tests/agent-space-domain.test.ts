@@ -1779,6 +1779,76 @@ test("W4 rework R2-R4: identity chain, scoped keys, frozen replay, deps-only ass
   space.setAgentStatus(scopeA, agent.agent_id, "disabled", "user:a");
 });
 
+test("manageable skill pause preserves installation and blocks task pin bypass", async (t) => {
+  const { db, space } = await fixture;
+  const skill = space.upsertSkill({ domain: "system", scope: null, slug: "technical-analysis", name: "技术分析", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const version = await space.addSkillVersion({ domain: "system", scope: null, skillId: skill.skill_id,
+    contentRef: { contentRefType: "system_template", systemTemplatePath: "sys-default-skill/SKILL.md", contentChecksum: SYS_TPL_CHK },
+    origin: "system_seed", ownerToken: OWNER_TOKEN, actor: "owner" });
+  space.approveSkillVersion({ domain: "system", scope: null, skillId: skill.skill_id, versionId: version.version_id,
+    approvedBy: "owner", approvalRef: "owner-decision:pause-test-approve", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const release = space.publishSkillRelease({ domain: "system", scope: null, skillId: skill.skill_id,
+    versionId: version.version_id, releaseVersion: "1.0.0", visibility: "public", publishedBy: "owner", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const agent = space.createAgent({ scope: scopeA, name: "Pause test agent", actor: "test" });
+  space.setAgentStatus(scopeA, agent.agent_id, "active", "test");
+  t.after(() => space.setAgentStatus(scopeA, agent.agent_id, "disabled", "test"));
+  const installed = space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id,
+    source: "release", releaseId: release.releaseId, versionId: version.version_id, installedBy: "test",
+    approvalRef: "owner-decision:pause-test-install", ownerToken: OWNER_TOKEN, actor: "test" });
+  const pause = space.setInstalledSkillEnabled({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id,
+    enabled: false, approvalRef: "owner-decision:pause-test-disable", ownerToken: OWNER_TOKEN, actor: "test" });
+  assert.equal(pause.installationId, installed.installation_id);
+  assert.equal(space.listInstalledSkills(scopeA, agent.agent_id).length, 0);
+  await assert.rejects(() => space.resolveInstalledSkillContent(scopeA, agent.agent_id, skill.skill_id), /AGENT_SPACE_NOT_FOUND/);
+  assert.equal(space.setInstalledSkillEnabled({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id,
+    enabled: false, approvalRef: "owner-decision:pause-test-disable", ownerToken: OWNER_TOKEN, actor: "test" }).status, "disabled");
+  space.setInstalledSkillEnabled({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id,
+    enabled: true, approvalRef: "owner-decision:pause-test-enable", ownerToken: OWNER_TOKEN, actor: "test" });
+  assert.equal(space.listInstalledSkills(scopeA, agent.agent_id).length, 1);
+
+  db.sqlite.prepare(`INSERT INTO automation_tasks (task_id,user_id,project_id,instance_id,status,current_revision,created_at,updated_at)
+    VALUES ('task_pause_test',?,?,?,'active',1,?,?)`).run(scopeA.userId, scopeA.projectId, scopeA.instanceId, now, now);
+  db.sqlite.prepare(`INSERT INTO agent_space_task_dependencies
+    (dependency_id,task_id,user_id,project_id,instance_id,agent_id,kind,ref_id,version_policy,pinned_version_id,created_at,updated_at)
+    VALUES ('dep_pause_test','task_pause_test',?,?,?,?, 'skill',?,'pinned',?,?,?)`)
+    .run(scopeA.userId, scopeA.projectId, scopeA.instanceId, agent.agent_id, skill.skill_id, version.version_id, now, now);
+  assert.throws(() => space.setInstalledSkillEnabled({ scope: scopeA, agentId: agent.agent_id, skillId: skill.skill_id,
+    enabled: false, approvalRef: "owner-decision:pause-test-blocked", ownerToken: OWNER_TOKEN, actor: "test" }), /AGENT_SPACE_ADOPTION_CONSTRAINT/);
+  db.sqlite.prepare("UPDATE agent_space_agent_skill_installations SET status='disabled' WHERE installation_id=?").run(installed.installation_id);
+  assert.throws(() => space.assembleAndRecordRunBasis({ scope: scopeA, agentId: agent.agent_id,
+    entryKind: "generic_automation", basisKey: "task:pause-test", taskId: "task_pause_test", actor: "test" }),
+  /is not enabled/, "a pinned version cannot bypass a disabled installation");
+  db.sqlite.prepare("UPDATE agent_space_agent_skill_installations SET status='installed' WHERE installation_id=?").run(installed.installation_id);
+
+  const core = space.upsertSkill({ domain: "system", scope: null, slug: "automation-task-designer",
+    name: "任务设计", isCore: true, ownerToken: OWNER_TOKEN, actor: "owner" });
+  const coreVersion = await space.addSkillVersion({ domain: "system", scope: null, skillId: core.skill_id,
+    contentRef: { contentRefType: "system_template", systemTemplatePath: "sys-default-skill/SKILL.md", contentChecksum: SYS_TPL_CHK },
+    origin: "system_seed", ownerToken: OWNER_TOKEN, actor: "owner" });
+  space.approveSkillVersion({ domain: "system", scope: null, skillId: core.skill_id, versionId: coreVersion.version_id,
+    approvedBy: "owner", approvalRef: "owner-decision:core-test-approve", ownerToken: OWNER_TOKEN, actor: "owner" });
+  const coreRelease = space.publishSkillRelease({ domain: "system", scope: null, skillId: core.skill_id,
+    versionId: coreVersion.version_id, releaseVersion: "1.0.0", visibility: "public", publishedBy: "owner", ownerToken: OWNER_TOKEN, actor: "owner" });
+  space.installSkill({ scope: scopeA, agentId: agent.agent_id, skillId: core.skill_id,
+    source: "release", releaseId: coreRelease.releaseId, versionId: coreVersion.version_id, installedBy: "system-default",
+    approvalRef: "owner-decision:core-test-install", ownerToken: OWNER_TOKEN, actor: "owner" });
+  assert.throws(() => space.setInstalledSkillEnabled({ scope: scopeA, agentId: agent.agent_id, skillId: core.skill_id,
+    enabled: false, approvalRef: "owner-decision:core-test-disable", ownerToken: OWNER_TOKEN, actor: "test" }), /core skill cannot be disabled/);
+  assert.throws(() => space.removeInstalledSkill({ scope: scopeA, agentId: agent.agent_id, skillId: core.skill_id,
+    approvalRef: "owner-decision:core-test-remove", ownerToken: OWNER_TOKEN, actor: "test" }), /core skill cannot be removed/);
+  assert.ok(!space.listPortalInstalledSkills(scopeA, agent.agent_id).items.some((s: { skillId: string }) => s.skillId === core.skill_id));
+  assert.ok(!space.listPortalSkillCatalog(scopeA, agent.agent_id).items.some((s: { skillId: string }) => s.skillId === core.skill_id));
+});
+
+test("starter skills inject only for matching conversation requests", async () => {
+  const { isStarterSkillApplicable } = await import("../src/runtime/agent-space-context.js");
+  assert.equal(isStarterSkillApplicable("technical-analysis", "看这只股票的均线和量价"), true);
+  assert.equal(isStarterSkillApplicable("technical-analysis", "帮我修改每天的自动化任务"), false);
+  assert.equal(isStarterSkillApplicable("automation-task-designer", "帮我修改每天的自动化任务"), true);
+  assert.equal(isStarterSkillApplicable("automation-task-designer", "看公司财报"), false);
+  assert.equal(isStarterSkillApplicable("my-private-skill", "任意请求"), true, "private skills retain their existing behavior");
+});
+
 test("W4 rework R1: real-entry wiring — isolated injection captures the final model context", async (t) => {
   const { db, space } = await fixture;
   const { randomUUID } = await import("node:crypto");

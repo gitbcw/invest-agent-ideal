@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import { sqlite } from "../db/index.js";
 import { logger } from "../lib/logger.js";
+import {
+  getNotificationPreferences,
+  markAttentionWechatNotified,
+  recordAutomationFailureAttention,
+  resolveAutomationAttention,
+} from "./attention-items.js";
 import { enqueuePushJob } from "./push-queue.js";
 
 /**
@@ -9,6 +15,10 @@ import { enqueuePushJob } from "./push-queue.js";
  * scheduled run 失败终态首条通知（consecutive_failures=1）、失败消除后恢复通知
  * （最新通知 job 为 failure）；manual 不通知；模板正文不跑模型；查询式决策，
  * 可安全重复调用（幂等键含 runId）。
+ *
+ * T-539 调整（设计 §7）：attention_items 是失败告知的服务拥有事实——无论微信
+ * 偏好如何都写入并自动恢复；微信只是同一事项的提醒投影，受通知偏好 gate
+ * （失败提醒可关、恢复默认静默）。偏好不改变任务终态/失败事实/重试语义。
  */
 
 const FAILURE_VALIDITY_MS = 2 * 60 * 60 * 1000;
@@ -141,11 +151,29 @@ export async function notifyAutomationRunTerminal(input: {
       WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?
     `).get(input.taskId, scope.userId, scope.projectId, scope.instanceId) as { consecutive_failures: number } | undefined;
     const failures = Number(task?.consecutive_failures ?? 0);
-    if (failures !== 1) return { notified: null, reason: `consecutive_failures_${failures}` };
+    if (failures !== 1) {
+      // 连败非首条：不重复发微信，但去重更新既有 open 事项的计数与系统状态。
+      if (failures > 1) recordAutomationFailureAttention({ scope, taskId: input.taskId, runId: run.runId, errorCategory: run.errorCategory });
+      return { notified: null, reason: `consecutive_failures_${failures}` };
+    }
+    // 失败告知事实：无论微信偏好如何都写入（网页完整告知的事实源）。
+    recordAutomationFailureAttention({ scope, taskId: input.taskId, runId: run.runId, errorCategory: run.errorCategory });
+    const preferences = getNotificationPreferences(scope);
+    if (!preferences.wechatFailureEnabled) {
+      insertNotifyAuditRow({
+        taskId: input.taskId,
+        runId: run.runId,
+        scope,
+        action: "run.failure_notified",
+        details: { errorCategory: run.errorCategory, skippedByPreference: true, reason: "wechat_failure_disabled" },
+        createdAt: new Date().toISOString(),
+      });
+      return { notified: null, reason: "failure_wechat_suppressed_by_preference" };
+    }
     const idempotencyKey = `automation:${input.taskId}:failure:${run.runId}`;
     const message = [
       `【定时任务失败】任务 ${taskLabel(input.taskId)}（计划 ${beijingHm(run.scheduledFor)}）本次执行失败：${categoryLabel(run.errorCategory)}。`,
-      "系统将按原计划在下个周期自动重试；若连续 3 次失败，任务会自动暂停并需要人工处理。",
+      "系统将按原计划在下个周期自动重试；若连续 3 次失败，任务会自动暂停并需要人工处理。详情见网页端「待处理」。",
     ].join("");
     const job = await enqueuePushJob({
       userId: scope.userId,
@@ -158,6 +186,7 @@ export async function notifyAutomationRunTerminal(input: {
       expiresAt: new Date(Date.now() + FAILURE_VALIDITY_MS).toISOString(),
       message,
     });
+    markAttentionWechatNotified(scope, input.taskId);
     insertNotifyAuditRow({
       taskId: input.taskId,
       runId: run.runId,
@@ -174,8 +203,23 @@ export async function notifyAutomationRunTerminal(input: {
   }
 
   if (run.status === "succeeded") {
+    // 成功终态：自动恢复 open 事项（网页告知反映恢复；默认不推送成功消息）。
+    const resolved = resolveAutomationAttention({ scope, taskId: input.taskId, runId: run.runId });
     if (latestNotifyKind(input.taskId) !== AUTOMATION_FAILURE_MESSAGE_KIND) {
-      return { notified: null, reason: "no_open_failure_notice" };
+      return { notified: null, reason: resolved ? "attention_resolved" : "no_open_failure_notice" };
+    }
+    const preferences = getNotificationPreferences(scope);
+    if (!preferences.wechatRecoveryEnabled) {
+      // T-539（设计 §7.2）：成功与自动恢复默认不打扰；代码路径保留，偏好可开启。
+      insertNotifyAuditRow({
+        taskId: input.taskId,
+        runId: run.runId,
+        scope,
+        action: "run.recovery_notified",
+        details: { suppressedByPreference: true, reason: "wechat_recovery_disabled_default" },
+        createdAt: new Date().toISOString(),
+      });
+      return { notified: null, reason: "recovery_wechat_suppressed_by_preference" };
     }
     const idempotencyKey = `automation:${input.taskId}:recovery:${run.runId}`;
     const message = `【任务已恢复】任务 ${taskLabel(input.taskId)} 已于 ${beijingHm(run.finishedAt)} 成功完成，此前的连续失败已消除。`;

@@ -189,9 +189,15 @@ export const ALL_SERVICE_TOOL_SPECS: readonly ToolSpec[] = [
   },
   {
     id: "assets.version.commit",
-    description: "Submit validated bytes as a new same-scope asset version. Provide base64 directly, or filePath of a file inside the current spreadsheet workspace (e.g. a spreadsheet.transform output) — pass the versionId you read/staged from as expectedVersionId to avoid clobbering concurrent updates.",
+    description: "Explicitly save validated bytes as a new version of the same user asset. This is also the Agent action for ‘保存为新版本’ on a method file: first read the current version, show or explain the proposed change, and call this only after the user explicitly asks to save it as a new version. Ordinary edits or drafts must not call this tool. Provide base64 directly, or filePath of a file inside the current spreadsheet workspace — always pass the versionId you read as expectedVersionId. Creating this version does not adopt the method or change runtime behavior; adoption is a separate explicit action.",
     inputSchema: { assetId: z.string().min(1), fileName: z.string().min(1), mimeType: z.string().optional(), base64: z.string().min(1).optional(), filePath: z.string().min(1).max(400).optional(), expectedVersionId: z.string().nullable().optional(), idempotencyKey: z.string().max(500).optional() },
     annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    id: "assets.working_copy.read",
+    description: "Read the user's unpublished working copy of a method asset — edits saved from the Portal ‘我的方法’ editor that are NOT yet a version. Before modifying or proposing changes to a method file the user may have edited recently, read this first: if a working copy exists, treat its text as the user's latest intent (and still read the current version for diff context; baseVersionId shows which version the copy was based on). Working copies never change runtime behavior and never become versions by themselves; only assets.version.commit after explicit user confirmation creates a version, and adoption stays a separate explicit action.",
+    inputSchema: { assetId: z.string().min(1) },
+    annotations: { readOnlyHint: true },
   },
   {
     id: "assets.conversation.save",
@@ -567,5 +573,32 @@ export const ALL_SERVICE_TOOL_SPECS: readonly ToolSpec[] = [
     id: "onboarding.draft.commit_status",
     description: "Read whether a frozen onboarding draft is queued, applying, completed, or retrying after a failed commit.",
     inputSchema: {  },
+  },
+  {
+    id: "state.candidate.propose",
+    description: "Propose a reusable lesson or workflow candidate from the CURRENT conversation or task run, after finding a reusable handling for a concrete problem (e.g. an automation failure you just explained). This only creates a draft candidate — it never changes future default behavior, methods, skills, tasks or preferences; the user must explicitly approve it later in the Portal. Do not propose on every turn: only when the user asks for improvement, or a failure handling is genuinely reusable. The candidate is bound to the current conversation/task automatically; you cannot choose another owner.",
+    inputSchema: {
+      kind: z.enum(["lesson", "workflow"]).describe("lesson = a reusable handling rule; workflow = a work instruction for a scenario."),
+      title: z.string().min(1).max(200),
+      trigger: z.string().min(1).max(2000).describe("lesson only: when this handling applies (the failure/problem pattern)."),
+      guidance: z.string().min(1).max(4000).describe("lesson only: what to do, in user-comprehensible language."),
+      scenario: z.string().min(1).max(2000).describe("workflow only: the scenario this work instruction covers."),
+      steps: z.array(z.object({ action: z.string().min(1).max(500) }).passthrough()).min(1).max(20).optional().describe("workflow only: ordered steps of the work instruction."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    id: "state.candidate.revise",
+    description: "Revise a draft lesson/workflow candidate you proposed earlier in this conversation (e.g. after the user asked for changes). Creates a new draft version; still requires explicit user approval before taking effect. Only the candidate owned by the current conversation/task can be revised.",
+    inputSchema: {
+      objectId: z.string().min(1).max(100),
+      kind: z.enum(["lesson", "workflow"]),
+      title: z.string().min(1).max(200),
+      trigger: z.string().min(1).max(2000).optional(),
+      guidance: z.string().min(1).max(4000).optional(),
+      scenario: z.string().min(1).max(2000).optional(),
+      steps: z.array(z.object({ action: z.string().min(1).max(500) }).passthrough()).min(1).max(20).optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
   },
 ];

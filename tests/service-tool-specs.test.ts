@@ -64,3 +64,11 @@ test("write tools are not marked readOnly", () => {
     assert.equal(spec.annotations?.readOnlyHint ?? true, false, `${spec.id} is a write tool and must not claim readOnlyHint`);
   }
 });
+
+test("asset version commit is explicitly usable for method version saves without implying adoption", () => {
+  const spec = ALL_SERVICE_TOOL_SPECS.find((item) => item.id === "assets.version.commit");
+  assert.ok(spec);
+  assert.match(spec.description, /保存为新版本/);
+  assert.match(spec.description, /expectedVersionId/);
+  assert.match(spec.description, /adoption is a separate explicit action/);
+});

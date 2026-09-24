@@ -32,6 +32,19 @@ export const AGENT_SPACE_ASSEMBLY_MODE_ENV = "AGENT_SPACE_ASSEMBLY_MODE";
 export const AGENT_SPACE_CONTENT_BUDGET_ENV = "AGENT_SPACE_CONTENT_BUDGET_CHARS";
 const DEFAULT_CONTENT_BUDGET_CHARS = 24_000;
 
+const STARTER_SKILL_TRIGGERS: Record<string, RegExp> = {
+  "automation-task-designer": /自动化|定时|周期任务|每日.*(?:提醒|更新|推送)|每周.*(?:提醒|更新|推送)|任务提示词|schedule|automation/i,
+  "candidate-screening": /筛选|候选|选股|排雷|观察池|等待条件|跟踪清单/i,
+  "fundamental-analysis": /基本面|财报|财务|估值|护城河|商业模式|现金流|盈利|同行/i,
+  "macro-analysis": /宏观|政策|货币|财政|利率|汇率|流动性|地缘|大盘/i,
+  "risk-control": /风控|风险控制|仓位|回撤|止损|止盈|加仓|减仓|资产配置|交易纪律/i,
+  "technical-analysis": /技术面|技术分析|均线|趋势|量价|突破|回踩|K线|支撑|压力|买卖点|波段/i,
+};
+
+export function isStarterSkillApplicable(slug: string, request: string): boolean {
+  return STARTER_SKILL_TRIGGERS[slug]?.test(request) ?? true;
+}
+
 export function isAgentSpaceAssemblyModeEnabled(userId: string): boolean {
   const flag = (process.env[AGENT_SPACE_ASSEMBLY_MODE_ENV] ?? "").trim().toLowerCase();
   if (!flag || flag === "off" || flag === "0" || flag === "false") return false;
@@ -131,6 +144,8 @@ export async function buildAgentSpaceTurnOptions(input: {
   scope: { userId: string; projectId: string; instanceId: string };
   conversationId: string;
   messageId: string;
+  /** Current request text selects relevant starter skills; no text keeps legacy callers compatible. */
+  promptText?: string;
   /** 入口通道（平台 L1 通道呈现规则需要；缺省无通道段）。 */
   channel?: string | null;
   /** 入口显式标注优先（generic_automation/scheduled）；缺省按 taskType 识别。 */
@@ -203,6 +218,12 @@ export async function buildAgentSpaceTurnOptions(input: {
     );
   }
   for (const skill of basis.resolution.skills) {
+    const meta = sqlite.prepare("SELECT slug, name, is_core FROM agent_space_skills WHERE skill_id=?")
+      .get(skill.skillId) as { slug: string; name: string; is_core: number } | undefined;
+    if (entryKind === "conversation" && input.promptText !== undefined && meta && !isStarterSkillApplicable(meta.slug, input.promptText)) {
+      sections.push({ section: `skill:${skill.skillId}`, originalChars: 0, keptChars: 0, reason: "not-applicable-to-request" });
+      continue;
+    }
     let content: string;
     try {
       content = (await readSkillVersionContentBytes(getSkillVersionRow(skill.versionId))).toString("utf8");

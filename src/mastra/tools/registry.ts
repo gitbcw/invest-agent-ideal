@@ -30,6 +30,7 @@ const MASTRA_EXPOSED_TOOL_IDS: ReadonlySet<string> = new Set([
   "automation.pause",
   "assets.version.read",
   "assets.version.commit",
+  "assets.working_copy.read",
   "assets.conversation.save",
   "assets.attachment.save",
   "assets.rename",
@@ -61,6 +62,9 @@ const MASTRA_EXPOSED_TOOL_IDS: ReadonlySet<string> = new Set([
   "onboarding.draft.get",
   "onboarding.draft.upsert_step",
   "onboarding.draft.request_confirmation",
+  // T-540 纠错候选：交互会话内可提出/修订草案（approve 永不暴露）。
+  "state.candidate.propose",
+  "state.candidate.revise",
 ]);
 
 /** Mastra 工具面（ALL_SERVICE_TOOL_SPECS 的精选子集，保持原展示顺序）。 */

@@ -462,6 +462,7 @@ export function createRuntimeAgent(): RuntimeAgent {
               },
               conversationId,
               messageId: message.id,
+              promptText: promptContext.promptText,
               channel: userChannel,
               entryKind: annotated === "generic_automation" || annotated === "scheduled" ? annotated : undefined,
               taskType: typeof userContext.taskType === "string" ? userContext.taskType : null,

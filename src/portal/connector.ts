@@ -74,6 +74,57 @@ import { usageRange } from "./usage-range.js";
 import { backfillFormalReportAssetMappings, getReportAssetMappingForRead, listReportAssetMappings, registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import { modelRoutingSnapshot, resolveAutoModel } from "../services/model-health.js";
 import { pricingSummary } from "../services/model-pricing.js";
+import { AgentSpaceError } from "../services/agent-space/core.js";
+import {
+  countOpenAttention,
+  getAttentionItem,
+  getNotificationPreferences,
+  listAttentionItems,
+  updateNotificationPreferences,
+} from "../services/attention-items.js";
+import { getAutomationTaskDetail } from "../services/automation-detail.js";
+import { listProjectSkillPreviews } from "../services/agent-space/project-skills.js";
+import {
+  clearMethodWorkingCopy,
+  readMethodWorkingCopy,
+  saveMethodWorkingCopy,
+} from "../services/agent-space/method-working-copies.js";
+import { openAttentionConversation } from "../services/attention-items.js";
+import {
+  listAllStateCandidates,
+  listPendingStateCandidates,
+  portalApproveStateCandidate,
+  portalRejectStateCandidate,
+} from "../services/agent-space/state-portal.js";
+import {
+  comparePortalSkillVersions,
+  diffPortalMethodVersions,
+  getPortalMethodCard,
+  getPortalMethodDetail,
+  getPortalSkillDetail,
+  listPortalAgents,
+  listPortalInstalledSkills,
+  listPortalSkillCatalog,
+  listPortalMethods,
+  listPortalMethodAssets,
+  listPortalPrivateSkills,
+  listPortalWorkspaceUsageForAsset,
+  portalAddMethodVersion,
+  portalAdoptMethodVersion,
+  portalApproveSkillVersion,
+  portalCreateMethod,
+  portalCreateSkill,
+  portalEditSkill,
+  portalInstallSkill,
+  portalReadoptMethodVersion,
+  portalRemoveInstalledSkill,
+  portalSetInstalledSkillEnabled,
+  portalRetireMethod,
+  readPortalMethodVersionText,
+  resolvePortalAgent,
+  resolveSkillInstallTarget,
+  assertPortalManageableSkill,
+} from "../services/agent-space/portal-actions.js";
 
 const PROTOCOL_VERSION = "2026-08-05";
 const LEGACY_PROTOCOL_VERSION = "2026-07-04";
@@ -137,6 +188,41 @@ const TYPES = {
   ASSET_RESTORE_VERSION: "asset.restore_version",
   ASSET_CONVERT_TO_XLSX: "asset.convert_to_xlsx",
   ASSET_REFERENCES_LIST: "asset.references.list",
+  ASSET_WORKSPACE_USAGE: "asset.workspace_usage",
+  ATTENTION_LIST: "attention.list",
+  ATTENTION_GET: "attention.get",
+  AUTOMATION_DETAIL: "automation.detail",
+  PREFERENCE_GET: "preference.get",
+  PREFERENCE_SET: "preference.set",
+  ATTENTION_OPEN_CONVERSATION: "attention.open_conversation",
+  STATE_CANDIDATES_LIST: "state.candidates.list",
+  STATE_CANDIDATE_APPROVE: "state.candidate.approve",
+  STATE_CANDIDATE_REJECT: "state.candidate.reject",
+  METHOD_LIST: "method.list",
+  METHOD_ASSET_LIST: "method.asset.list",
+  METHOD_WORKING_COPY_GET: "method.working_copy.get",
+  METHOD_WORKING_COPY_SAVE: "method.working_copy.save",
+  METHOD_WORKING_COPY_CLEAR: "method.working_copy.clear",
+  METHOD_GET: "method.get",
+  METHOD_VERSIONS: "method.versions",
+  METHOD_DIFF: "method.diff",
+  METHOD_CREATE: "method.create",
+  METHOD_ADD_VERSION: "method.add_version",
+  METHOD_ADOPT: "method.adopt",
+  METHOD_REVOKE: "method.revoke",
+  SKILL_LIST_PRIVATE: "skill.list_private",
+  SKILL_LIST_INSTALLED: "skill.list_installed",
+  SKILL_LIST_CATALOG: "skill.list_catalog",
+  SKILL_LIST_PROJECT_FILES: "skill.list_project_files",
+  SKILL_GET: "skill.get",
+  SKILL_CREATE: "skill.create",
+  SKILL_EDIT: "skill.edit",
+  SKILL_COMPARE_VERSIONS: "skill.compare_versions",
+  SKILL_SET_ENABLED: "skill.set_enabled",
+  SKILL_INSTALL: "skill.install",
+  SKILL_UNINSTALL: "skill.uninstall",
+  SKILL_INSTALLATION_STATUS: "skill.installation_status",
+  SKILL_UPGRADE: "skill.upgrade",
 } as const;
 
 type PortalEnvelope = {
@@ -238,7 +324,7 @@ function withProtocolVersion(response: PortalResponse, requested: string): Porta
 }
 
 function requiresCurrentProtocol(type: string, payload: any): boolean {
-  if (type.startsWith("asset.") || type === TYPES.AUTOMATION_MIGRATE_LEGACY) return true;
+  if (type.startsWith("asset.") || type.startsWith("method.") || type.startsWith("skill.") || type.startsWith("attention.") || type.startsWith("preference.") || type === TYPES.AUTOMATION_DETAIL || type === TYPES.AUTOMATION_MIGRATE_LEGACY) return true;
   if (type !== TYPES.AUTOMATION_CREATE && type !== TYPES.AUTOMATION_UPDATE) return false;
   const hasLegacyAsset = payload && (Object.prototype.hasOwnProperty.call(payload, "sourceAsset") || Object.prototype.hasOwnProperty.call(payload, "asset"));
   const hasGenericFields = payload && ["instruction", "inputs", "output", "delivery"].some((field) => Object.prototype.hasOwnProperty.call(payload, field));
@@ -467,6 +553,63 @@ function isArtifactEventName(value: string): value is "open" | "success" | "fail
   return value === "open" || value === "success" || value === "failure" || value === "download";
 }
 
+// ---------- method.*/skill.* 工作空间消息的载荷规整（scope 一律来自注册 connector） ----------
+
+const MAX_WORKSPACE_TEXT_CHARS = 256 * 1024;
+
+function workspaceString(payload: any, field: string, opts: { required?: boolean; max?: number } = {}): string | undefined {
+  const value = payload?.[field];
+  if (value === undefined || value === null) {
+    if (opts.required) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${field} is required`);
+    return undefined;
+  }
+  if (typeof value !== "string") throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${field} must be a string`);
+  const trimmed = value.trim();
+  if (opts.required && !trimmed) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${field} is required`);
+  const max = opts.max ?? 300;
+  if (trimmed.length > max) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${field} exceeds ${max} chars`);
+  return trimmed;
+}
+
+function workspaceText(payload: any, field = "text"): string {
+  const value = payload?.[field];
+  if (typeof value !== "string" || !value.trim()) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${field} is required`);
+  if (value.length > MAX_WORKSPACE_TEXT_CHARS) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `${field} exceeds ${MAX_WORKSPACE_TEXT_CHARS} chars`);
+  return value;
+}
+
+function workspaceConstraints(payload: any): string[] | undefined {
+  const value = payload?.adoptionConstraints;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 6 || value.some((item) => typeof item !== "string")) {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "adoptionConstraints must be a string array");
+  }
+  return value as string[];
+}
+
+/** GUI 显式动作的幂等键/凭证来源引用。 */
+function workspaceActionKey(message: PortalEnvelope, payload: any): string {
+  const key = workspaceString(payload, "idempotencyKey", { max: 500 });
+  return key ?? `req:${message.requestId}`;
+}
+
+/** GUI 动作审计主体：已认证 Portal 会话用户（scope 派生，浏览器不可自报）。 */
+function portalActor(scope: ConnectorScope): string {
+  return `portal:${scope.userId}`;
+}
+
+/** method 与 skill 工作空间消息的统一响应包装：AgentSpaceError 透传服务层错误码。 */
+async function agentSpaceCall(message: PortalEnvelope, fn: () => unknown | Promise<unknown>): Promise<PortalResponse> {
+  try {
+    return ok(message.type, message.requestId, await fn());
+  } catch (error) {
+    if (error instanceof AgentSpaceError) {
+      return fail(message.type, message.requestId, error.code, error.message, false);
+    }
+    throw error;
+  }
+}
+
 async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
   const commandScope = localPayloadScope(scope, message.payload);
   const startedAt = Date.now();
@@ -478,7 +621,7 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
   if (requiresCurrentProtocol(message.type, message.payload) && message.protocolVersion !== PROTOCOL_VERSION) {
     return finish(fail(message.type, message.requestId, "PROTOCOL_VERSION_UNSUPPORTED", `命令 ${message.type} 需要协议 ${PROTOCOL_VERSION}`));
   }
-  if ((message.type.startsWith("asset.") || message.type.startsWith("automation.")) && declaredScopeField(message.payload)) {
+  if ((message.type.startsWith("asset.") || message.type.startsWith("automation.") || message.type.startsWith("method.") || message.type.startsWith("skill.") || message.type.startsWith("attention.") || message.type.startsWith("preference.")) && declaredScopeField(message.payload)) {
     return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "scope and workspace path must come from the registered connector"));
   }
   if (message.type === TYPES.CONVERSATION_CANCEL && declaredScopeField(message.payload)) {
@@ -1361,6 +1504,319 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         throw error;
       }
     }
+    // ---------- method.*/skill.* 工作空间消息（T-538；scope 一律来自注册 connector） ----------
+
+    case TYPES.ASSET_WORKSPACE_USAGE: {
+      const s = automationScope(scope);
+      const assetId = workspaceString(message.payload, "assetId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => listPortalWorkspaceUsageForAsset(s, assetId)));
+    }
+    case TYPES.METHOD_LIST: {
+      const s = automationScope(scope);
+      return finish(await agentSpaceCall(message, () => ({ items: listPortalMethods(s), agents: listPortalAgents(s) })));
+    }
+    case TYPES.METHOD_ASSET_LIST: {
+      const s = automationScope(scope);
+      return finish(await agentSpaceCall(message, async () => ({ items: await listPortalMethodAssets(s) })));
+    }
+    case TYPES.METHOD_WORKING_COPY_GET: {
+      const s = automationScope(scope);
+      const assetId = workspaceString(message.payload, "assetId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => {
+        const workingCopy = readMethodWorkingCopy(s, assetId);
+        // 工作副本不存在是编辑器的正常回落路径，用 exists:false 而不是 404。
+        return workingCopy === null
+          ? { exists: false, assetId }
+          : { exists: true, assetId, draftText: workingCopy.draftText, baseVersionId: workingCopy.baseVersionId, updatedAt: workingCopy.updatedAt };
+      }));
+    }
+    case TYPES.METHOD_WORKING_COPY_SAVE: {
+      const s = automationScope(scope);
+      const input = {
+        scope: s,
+        assetId: workspaceString(message.payload, "assetId", { required: true, max: 100 })!,
+        draftText: workspaceText(message.payload, "draftText"),
+        baseVersionId: workspaceString(message.payload, "baseVersionId", { max: 100 }) ?? undefined,
+        actor: portalActor(scope),
+      };
+      return finish(await agentSpaceCall(message, () => {
+        const saved = saveMethodWorkingCopy(input);
+        return { assetId: saved.assetId, baseVersionId: saved.baseVersionId, updatedAt: saved.updatedAt };
+      }));
+    }
+    case TYPES.METHOD_WORKING_COPY_CLEAR: {
+      const s = automationScope(scope);
+      const assetId = workspaceString(message.payload, "assetId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => clearMethodWorkingCopy(s, assetId, portalActor(scope))));
+    }
+    case TYPES.METHOD_GET: {
+      const s = automationScope(scope);
+      const methodId = workspaceString(message.payload, "methodId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => getPortalMethodDetail(s, methodId)));
+    }
+    case TYPES.METHOD_VERSIONS: {
+      const s = automationScope(scope);
+      const methodId = workspaceString(message.payload, "methodId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, async () => {
+        const detail = await getPortalMethodDetail(s, methodId);
+        return { method: detail.method, versions: detail.versions };
+      }));
+    }
+    case TYPES.METHOD_DIFF: {
+      const s = automationScope(scope);
+      const fromVersionId = workspaceString(message.payload, "fromVersionId", { required: true, max: 100 })!;
+      const toVersionId = workspaceString(message.payload, "toVersionId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => diffPortalMethodVersions(s, fromVersionId, toVersionId)));
+    }
+    case TYPES.METHOD_CREATE: {
+      const s = automationScope(scope);
+      const input = {
+        scope: s,
+        name: workspaceString(message.payload, "name", { required: true })!,
+        description: workspaceString(message.payload, "description"),
+        text: workspaceText(message.payload),
+        adoptionNote: workspaceString(message.payload, "adoptionNote", { max: 2000 }),
+        adoptionConstraints: workspaceConstraints(message.payload),
+        actor: portalActor(scope),
+        idempotencyKey: workspaceActionKey(message, message.payload),
+      };
+      return finish(await agentSpaceCall(message, async () => ({ method: getPortalMethodCard(s, (await portalCreateMethod(input)).method.method_id) })));
+    }
+    case TYPES.METHOD_ADD_VERSION: {
+      const s = automationScope(scope);
+      const input = {
+        scope: s,
+        methodId: workspaceString(message.payload, "methodId", { required: true, max: 100 })!,
+        text: workspaceText(message.payload),
+        fileName: workspaceString(message.payload, "fileName"),
+        adoptionNote: workspaceString(message.payload, "adoptionNote", { max: 2000 }),
+        adoptionConstraints: workspaceConstraints(message.payload),
+        actor: portalActor(scope),
+        idempotencyKey: workspaceActionKey(message, message.payload),
+      };
+      return finish(await agentSpaceCall(message, async () => {
+        const result = await portalAddMethodVersion(input);
+        return {
+          method: getPortalMethodCard(s, input.methodId),
+          version: { versionId: result.version.version_id, versionNumber: result.version.version_number, status: result.version.status, createdAt: result.version.created_at },
+        };
+      }));
+    }
+    case TYPES.METHOD_ADOPT: {
+      const s = automationScope(scope);
+      const methodId = workspaceString(message.payload, "methodId", { required: true, max: 100 })!;
+      const versionId = workspaceString(message.payload, "versionId", { required: true, max: 100 })!;
+      const mode = workspaceString(message.payload, "mode", { max: 20 }) ?? "adopt";
+      const ctx = { scope: s, actor: portalActor(scope), idempotencyKey: workspaceActionKey(message, message.payload) };
+      return finish(await agentSpaceCall(message, () => {
+        if (mode === "readopt") return portalReadoptMethodVersion(ctx, methodId, versionId);
+        if (mode !== "adopt") throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "mode must be adopt or readopt");
+        return portalAdoptMethodVersion(ctx, methodId, versionId);
+      }));
+    }
+    case TYPES.METHOD_REVOKE: {
+      const s = automationScope(scope);
+      const methodId = workspaceString(message.payload, "methodId", { required: true, max: 100 })!;
+      const ctx = { scope: s, actor: portalActor(scope), idempotencyKey: workspaceActionKey(message, message.payload) };
+      return finish(await agentSpaceCall(message, () => ({ method: portalRetireMethod(ctx, methodId) })));
+    }
+    case TYPES.SKILL_LIST_PRIVATE: {
+      const s = automationScope(scope);
+      return finish(await agentSpaceCall(message, () => ({ items: listPortalPrivateSkills(s) })));
+    }
+    case TYPES.SKILL_LIST_INSTALLED: {
+      const s = automationScope(scope);
+      const agentId = workspaceString(message.payload, "agentId", { max: 100 });
+      return finish(await agentSpaceCall(message, () => listPortalInstalledSkills(s, agentId)));
+    }
+    case TYPES.SKILL_LIST_CATALOG: {
+      const s = automationScope(scope);
+      return finish(await agentSpaceCall(message, () => listPortalSkillCatalog(s)));
+    }
+    case TYPES.SKILL_LIST_PROJECT_FILES: {
+      const s = automationScope(scope);
+      return finish(await agentSpaceCall(message, async () => ({ items: await listProjectSkillPreviews(s) })));
+    }
+    case TYPES.SKILL_GET: {
+      const s = automationScope(scope);
+      const skillId = workspaceString(message.payload, "skillId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => getPortalSkillDetail(s, skillId)));
+    }
+    case TYPES.SKILL_CREATE: {
+      const s = automationScope(scope);
+      const input = {
+        scope: s,
+        slug: workspaceString(message.payload, "slug", { required: true })!,
+        name: workspaceString(message.payload, "name", { required: true })!,
+        description: workspaceString(message.payload, "description"),
+        text: workspaceText(message.payload),
+        actor: portalActor(scope),
+        idempotencyKey: workspaceActionKey(message, message.payload),
+      };
+      return finish(await agentSpaceCall(message, () => portalCreateSkill(input)));
+    }
+    case TYPES.SKILL_EDIT: {
+      const s = automationScope(scope);
+      const input = {
+        scope: s,
+        skillId: workspaceString(message.payload, "skillId", { required: true, max: 100 })!,
+        text: workspaceText(message.payload),
+        fileName: workspaceString(message.payload, "fileName"),
+        actor: portalActor(scope),
+        idempotencyKey: workspaceActionKey(message, message.payload),
+      };
+      return finish(await agentSpaceCall(message, () => portalEditSkill(input)));
+    }
+    case TYPES.SKILL_COMPARE_VERSIONS: {
+      const s = automationScope(scope);
+      const skillId = workspaceString(message.payload, "skillId", { required: true, max: 100 })!;
+      const fromVersionId = workspaceString(message.payload, "fromVersionId", { required: true, max: 100 })!;
+      const toVersionId = workspaceString(message.payload, "toVersionId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => comparePortalSkillVersions(s, fromVersionId, toVersionId)));
+    }
+    case TYPES.SKILL_SET_ENABLED: {
+      const s = automationScope(scope);
+      const skillId = workspaceString(message.payload, "skillId", { required: true, max: 100 })!;
+      const versionId = workspaceString(message.payload, "versionId", { required: true, max: 100 })!;
+      if (message.payload?.enabled !== true) {
+        return finish(fail(message.type, message.requestId, "AGENT_SPACE_UNSUPPORTED", "first version disables via uninstall; enabled must be true to approve a version"));
+      }
+      const ctx = { scope: s, actor: portalActor(scope), idempotencyKey: workspaceActionKey(message, message.payload) };
+      return finish(await agentSpaceCall(message, () => portalApproveSkillVersion(ctx, skillId, versionId)));
+    }
+    case TYPES.SKILL_INSTALL:
+    case TYPES.SKILL_UPGRADE: {
+      const s = automationScope(scope);
+      const skillId = workspaceString(message.payload, "skillId", { required: true, max: 100 })!;
+      const releaseId = workspaceString(message.payload, "releaseId", { max: 100 });
+      const versionId = workspaceString(message.payload, "versionId", { max: 100 });
+      const agentId = workspaceString(message.payload, "agentId", { max: 100 });
+      const ctx = { scope: s, actor: portalActor(scope), idempotencyKey: workspaceActionKey(message, message.payload) };
+      return finish(await agentSpaceCall(message, () => {
+        assertPortalManageableSkill(skillId);
+        const agent = resolvePortalAgent(s, agentId);
+        const target = resolveSkillInstallTarget(s, skillId, releaseId, versionId);
+        const installation = portalInstallSkill({
+          ctx, agentId: agent.agentId, skillId,
+          source: target.source, releaseId: target.releaseId, versionId: target.versionId,
+          installedBy: portalActor(scope),
+        });
+        return { agent, installation: { installationId: installation.installation_id, skillId: installation.skill_id, versionId: installation.version_id, status: installation.status } };
+      }));
+    }
+    case TYPES.SKILL_UNINSTALL: {
+      const s = automationScope(scope);
+      const skillId = workspaceString(message.payload, "skillId", { required: true, max: 100 })!;
+      const agentId = workspaceString(message.payload, "agentId", { max: 100 });
+      const ctx = { scope: s, actor: portalActor(scope), idempotencyKey: workspaceActionKey(message, message.payload) };
+      return finish(await agentSpaceCall(message, () => {
+        const agent = resolvePortalAgent(s, agentId);
+        return { agent, result: portalRemoveInstalledSkill(ctx, agent.agentId, skillId) };
+      }));
+    }
+    case TYPES.SKILL_INSTALLATION_STATUS: {
+      const s = automationScope(scope);
+      const skillId = workspaceString(message.payload, "skillId", { required: true, max: 100 })!;
+      if (typeof message.payload?.enabled !== "boolean") {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "enabled must be boolean"));
+      }
+      const agentId = workspaceString(message.payload, "agentId", { max: 100 });
+      const ctx = { scope: s, actor: portalActor(scope), idempotencyKey: workspaceActionKey(message, message.payload) };
+      return finish(await agentSpaceCall(message, () => {
+        const agent = resolvePortalAgent(s, agentId);
+        return { agent, result: portalSetInstalledSkillEnabled(ctx, agent.agentId, skillId, message.payload.enabled) };
+      }));
+    }
+    // ---------- attention / automation.detail / preference（T-539；scope 一律来自注册 connector） ----------
+
+    case TYPES.ATTENTION_LIST: {
+      const s = automationScope(scope);
+      const status = message.payload?.status === "resolved" ? "resolved" : "open";
+      return finish(
+        await agentSpaceCall(message, () => ({
+          status,
+          items: listAttentionItems(s, { status }),
+          openCount: countOpenAttention(s),
+        })),
+      );
+    }
+    case TYPES.ATTENTION_GET: {
+      const s = automationScope(scope);
+      const itemId = workspaceString(message.payload, "itemId", { required: true, max: 100 })!;
+      const item = getAttentionItem(s, itemId);
+      if (!item) return finish(fail(message.type, message.requestId, "ATTENTION_NOT_FOUND", itemId));
+      return finish(ok(message.type, message.requestId, item));
+    }
+    case TYPES.AUTOMATION_DETAIL: {
+      const s = automationScope(scope);
+      const taskId = workspaceString(message.payload, "taskId", { required: true, max: 200 })!;
+      const detail = getAutomationTaskDetail(s, taskId);
+      if (!detail) return finish(fail(message.type, message.requestId, "AUTOMATION_TASK_NOT_FOUND", taskId));
+      return finish(ok(message.type, message.requestId, detail));
+    }
+    case TYPES.PREFERENCE_GET: {
+      const s = automationScope(scope);
+      return finish(ok(message.type, message.requestId, getNotificationPreferences(s)));
+    }
+    case TYPES.PREFERENCE_SET: {
+      const s = automationScope(scope);
+      const booleanOf = (value: unknown): boolean | undefined => (typeof value === "boolean" ? value : undefined);
+      const hoursOf = (value: unknown): string | null | undefined => {
+        if (value === null) return null;
+        if (typeof value !== "string") return undefined;
+        return /^[0-2]\d:[0-5]\d$/.test(value) ? value : undefined;
+      };
+      const patch = {
+        wechatFailureEnabled: booleanOf(message.payload?.wechatFailureEnabled),
+        wechatRecoveryEnabled: booleanOf(message.payload?.wechatRecoveryEnabled),
+        quietHoursStart: hoursOf(message.payload?.quietHoursStart),
+        quietHoursEnd: hoursOf(message.payload?.quietHoursEnd),
+      };
+      if (patch.wechatFailureEnabled === undefined && patch.wechatRecoveryEnabled === undefined
+        && patch.quietHoursStart === undefined && patch.quietHoursEnd === undefined) {
+        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "no preference fields to update"));
+      }
+      return finish(ok(message.type, message.requestId, updateNotificationPreferences(s, patch)));
+    }
+    case TYPES.ATTENTION_OPEN_CONVERSATION: {
+      const s = automationScope(scope);
+      const itemId = workspaceString(message.payload, "itemId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => openAttentionConversation(s, itemId)));
+    }
+    case TYPES.STATE_CANDIDATES_LIST: {
+      const s = automationScope(scope);
+      const includeHistory = message.payload?.includeHistory === true;
+      return finish(await agentSpaceCall(message, () => ({
+        items: includeHistory ? listAllStateCandidates(s) : listPendingStateCandidates(s),
+      })));
+    }
+    case TYPES.STATE_CANDIDATE_APPROVE: {
+      const s = automationScope(scope);
+      const objectId = workspaceString(message.payload, "objectId", { required: true, max: 100 })!;
+      const versionId = workspaceString(message.payload, "versionId", { required: true, max: 100 })!;
+      const kind = message.payload?.kind === "workflow" ? "workflow" : "lesson";
+      return finish(await agentSpaceCall(message, () => {
+        portalApproveStateCandidate({
+          scope: s,
+          kind,
+          objectId,
+          versionId,
+          portalRequestId: String(message.requestId),
+          actor: portalActor(scope),
+        });
+        return { approved: true, objectId };
+      }));
+    }
+    case TYPES.STATE_CANDIDATE_REJECT: {
+      const s = automationScope(scope);
+      const objectId = workspaceString(message.payload, "objectId", { required: true, max: 100 })!;
+      const kind = message.payload?.kind === "workflow" ? "workflow" : "lesson";
+      const reason = workspaceString(message.payload, "reason", { max: 500 });
+      return finish(await agentSpaceCall(message, () => {
+        portalRejectStateCandidate({ scope: s, kind, objectId, reason, actor: portalActor(scope) });
+        return { rejected: true, objectId };
+      }));
+    }
     default:
       return finish(fail(message.type, message.requestId, "INVALID_REQUEST", `unsupported command: ${message.type}`));
   }
@@ -1473,7 +1929,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.regenerate", "conversation.feedback", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list"],
+        capabilities: ["conversation.chat", "conversation.regenerate", "conversation.feedback", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list", "asset.workspace_usage", "method.list", "method.asset.list", "method.get", "method.versions", "method.diff", "method.create", "method.add_version", "method.adopt", "method.revoke", "skill.list_private", "skill.list_installed", "skill.list_project_files", "skill.get", "skill.create", "skill.edit", "skill.compare_versions", "skill.set_enabled", "skill.install", "skill.uninstall", "skill.upgrade", "attention.list", "attention.get", "automation.detail", "preference.get", "preference.set", "attention.open_conversation", "state.candidates.list", "state.candidate.approve", "state.candidate.reject"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {

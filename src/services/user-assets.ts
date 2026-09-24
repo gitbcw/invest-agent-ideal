@@ -68,6 +68,7 @@ export type UserAssetDescriptor = {
   folderId: string | null;
   name: string;
   status: UserAssetStatus;
+  tags: string[];
   currentVersionId: string | null;
   currentVersion: UserAssetVersionDescriptor | null;
   createdAt: string;
@@ -90,7 +91,7 @@ export type UserAssetMutationSource = {
 
 type AssetRow = {
   assetId: string; userId: string; projectId: string; instanceId: string; folderId: string | null; name: string;
-  status: string; currentVersionId: string | null; archivedAt: string | null;
+  status: string; tags: string | null; currentVersionId: string | null; archivedAt: string | null;
   createdAt: string; updatedAt: string;
 };
 type VersionRow = {
@@ -113,7 +114,7 @@ export type FinalizeAutomationRun = (input: {
 
 const ASSET_COLUMNS = [
   "asset_id AS assetId", "user_id AS userId", "project_id AS projectId", "instance_id AS instanceId", "folder_id AS folderId",
-  "name", "status", "current_version_id AS currentVersionId", "archived_at AS archivedAt",
+  "name", "status", "tags", "current_version_id AS currentVersionId", "archived_at AS archivedAt",
   "created_at AS createdAt", "updated_at AS updatedAt",
 ].join(", ");
 const VERSION_COLUMNS = [
@@ -254,7 +255,7 @@ export async function moveUserAsset(input: AssetScope & { assetId: string; folde
 }
 
 export async function createUserAsset(input: AssetScope & {
-  name?: string; fileName: string; mimeType?: string; bytes: Uint8Array; folderId?: string | null;
+  name?: string; fileName: string; mimeType?: string; bytes: Uint8Array; folderId?: string | null; tags?: string[];
 } & UserAssetMutationSource): Promise<UserAssetDescriptor> {
   const scope = normalizeScope(input);
   const normalized = await normalizeInput(input.fileName, input.mimeType, input.bytes);
@@ -262,6 +263,7 @@ export async function createUserAsset(input: AssetScope & {
   const idempotencyKey = normalizeKey(input.idempotencyKey);
   const name = normalizeName(input.name || defaultName(normalized.fileName));
   const folderId = input.folderId ? normalizeOpaqueId(input.folderId, "folderId") : null;
+  const tags = normalizeAssetTags(input.tags);
   const idempotencyFingerprint = fingerprint("asset.create", {
     name, fileName: normalized.fileName, mimeType: normalized.mimeType, checksum: normalized.checksum, source, folderId,
   });
@@ -294,9 +296,10 @@ export async function createUserAsset(input: AssetScope & {
         assertAutomationMutationLease(scope, source, input);
         sqlite.prepare(
           "INSERT INTO user_assets " +
-        "(asset_id,user_id,project_id,instance_id,folder_id,name,status,current_version_id,archived_at,created_at,updated_at) " +
-        "VALUES (?,?,?,?,?,?,'active',?,NULL,?,?)",
-        ).run(assetId, scope.userId, scope.projectId, scope.instanceId, folderId, name, versionId, now, now);
+        "(asset_id,user_id,project_id,instance_id,folder_id,name,status,tags,current_version_id,archived_at,created_at,updated_at) " +
+        "VALUES (?,?,?,?,?,?,'active',?,?,NULL,?,?)",
+        ).run(assetId, scope.userId, scope.projectId, scope.instanceId, folderId, name,
+              tags.length > 0 ? JSON.stringify(tags) : null, versionId, now, now);
         insertVersion({ versionId, versionNumber: 1, assetId, scope, normalized, storagePath, source, input, idempotencyKey, idempotencyFingerprint, createdAt: now });
         assertCommittedBytesWithinQuota(scope, normalized.bytes.length);
         recordStorageCommit(scope, normalized.bytes.length);
@@ -616,7 +619,7 @@ export async function findActiveAssetByFileName(input: AssetScope & { fileName: 
   if (!fileName) return null;
   const row = sqlite.prepare(
     "SELECT a.asset_id AS assetId, a.user_id AS userId, a.project_id AS projectId, a.instance_id AS instanceId, a.folder_id AS folderId, " +
-    "a.name AS name, a.status AS status, a.current_version_id AS currentVersionId, a.archived_at AS archivedAt, a.created_at AS createdAt, a.updated_at AS updatedAt " +
+    "a.name AS name, a.status AS status, a.tags AS tags, a.current_version_id AS currentVersionId, a.archived_at AS archivedAt, a.created_at AS createdAt, a.updated_at AS updatedAt " +
     "FROM user_assets a JOIN user_asset_versions v ON v.version_id = a.current_version_id " +
     "WHERE a.user_id = ? AND a.project_id = ? AND a.instance_id = ? AND a.status = 'active' AND v.file_name = ? " +
     "ORDER BY a.updated_at DESC LIMIT 1",
@@ -687,6 +690,24 @@ export async function renameUserAsset(input: AssetScope & { assetId: string; nam
     ).run(name, nowIso(), assetId, scope.userId, scope.projectId, scope.instanceId);
     const result = await hydrate(requireAsset({ ...scope, assetId }), scope);
     recordAssetLifecycle(scope, assetId, "asset.renamed", "success", { name });
+    return result;
+  });
+}
+
+/** 设置资产标签（整体替换；空数组=清空）。标签是展示语义，不是安全边界。 */
+export async function setUserAssetTags(input: AssetScope & { assetId: string; tags: string[] }): Promise<UserAssetDescriptor> {
+  const scope = normalizeScope(input);
+  const assetId = normalizeOpaqueId(input.assetId, "assetId");
+  const tags = normalizeAssetTags(input.tags);
+  return withResourceMutationLock(scope, "user-asset:" + assetId, async () => {
+    requireAsset({ ...scope, assetId });
+    const now = nowIso();
+    sqlite.prepare(
+      "UPDATE user_assets SET tags = ?, updated_at = ? " +
+      "WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?",
+    ).run(tags.length > 0 ? JSON.stringify(tags) : null, now, assetId, scope.userId, scope.projectId, scope.instanceId);
+    const result = await hydrate(requireAsset({ ...scope, assetId }), scope);
+    recordAssetLifecycle(scope, assetId, "asset.tags_set", "success", { tags: tags.join(",") });
     return result;
   });
 }
@@ -865,7 +886,8 @@ function descriptorFrom(row: AssetRow, version: VersionRow | undefined, scope: A
   if (version) assertScope(version, scope);
   return {
     assetId: row.assetId, userId: row.userId, projectId: row.projectId, instanceId: row.instanceId,
-    name: row.name, folderId: row.folderId, status: normalizeStatus(row.status), currentVersionId: row.currentVersionId,
+    name: row.name, folderId: row.folderId, status: normalizeStatus(row.status), tags: parseAssetTags(row.tags),
+    currentVersionId: row.currentVersionId,
     currentVersion: version ? versionFromRow(version) : null,
     createdAt: row.createdAt, updatedAt: row.updatedAt, archivedAt: row.archivedAt,
   };
@@ -1036,6 +1058,30 @@ function normalizeSource(value?: UserAssetSource): UserAssetSource {
 function normalizeStatus(value: string): UserAssetStatus {
   if (value === "active" || value === "archived") return value;
   throw new UserAssetError("ASSET_COMMIT_FAILED", "asset status is corrupt");
+}
+const MAX_ASSET_TAGS = 8;
+/** 标签是展示层语义（如「系统模板」徽章），不是安全边界；仅做形状与长度规整。 */
+function normalizeAssetTags(value?: string[] | null): string[] {
+  if (!value) return [];
+  if (!Array.isArray(value)) throw new UserAssetError("ASSET_INVALID_NAME", "tags must be an array of strings");
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const tag = String(raw ?? "").trim();
+    if (!tag) continue;
+    if (tag.length > 24 || /[\u0000-\u001f\u007f]/.test(tag)) throw new UserAssetError("ASSET_INVALID_NAME", "invalid tag");
+    seen.add(tag);
+    if (seen.size > MAX_ASSET_TAGS) throw new UserAssetError("ASSET_INVALID_NAME", "too many tags");
+  }
+  return [...seen];
+}
+function parseAssetTags(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((t) => String(t)).filter(Boolean).slice(0, MAX_ASSET_TAGS) : [];
+  } catch {
+    return [];
+  }
 }
 function normalizeFormat(value: string): AssetFormat {
   if (Object.prototype.hasOwnProperty.call(MAX_BYTES, value)) return value as AssetFormat;

@@ -58,7 +58,7 @@ type InstallationRow = {
   release_id: string | null;
   release_version: string | null;
   version_id: string;
-  status: "installed" | "superseded" | "removed";
+  status: "installed" | "disabled" | "superseded" | "removed";
   installed_by: string | null;
   installed_at: string;
   approval_ref: string | null;
@@ -199,7 +199,7 @@ export function installSkill(input: {
     const previous = sqlite
       .prepare(
         `SELECT * FROM agent_space_agent_skill_installations
-         WHERE agent_id=? AND skill_id=? AND status='installed'`,
+         WHERE agent_id=? AND skill_id=? AND status IN ('installed','disabled')`,
       )
       .get(input.agentId, input.skillId) as InstallationRow | undefined;
     const isUpgrade = Boolean(previous);
@@ -377,11 +377,20 @@ export function removeInstalledSkill(input: {
     const installed = sqlite
       .prepare(
         `SELECT * FROM agent_space_agent_skill_installations
-         WHERE agent_id=? AND skill_id=? AND user_id=? AND project_id=? AND instance_id=? AND status='installed'`,
+         WHERE agent_id=? AND skill_id=? AND user_id=? AND project_id=? AND instance_id=? AND status IN ('installed','disabled')`,
       )
       .get(input.agentId, input.skillId, input.scope.userId, input.scope.projectId, input.scope.instanceId) as InstallationRow | undefined;
     if (!installed) {
       throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "skill is not installed for this agent");
+    }
+    const skill = sqlite.prepare("SELECT is_core FROM agent_space_skills WHERE skill_id=?").get(input.skillId) as { is_core: number } | undefined;
+    if (skill?.is_core === 1) throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "core skill cannot be removed by a user");
+    const dependencies = sqlite.prepare(
+      `SELECT COUNT(*) AS n FROM agent_space_task_dependencies
+       WHERE user_id=? AND project_id=? AND instance_id=? AND kind='skill' AND ref_id=?`,
+    ).get(input.scope.userId, input.scope.projectId, input.scope.instanceId, input.skillId) as { n: number };
+    if (dependencies.n > 0) {
+      throw new AgentSpaceError("AGENT_SPACE_ADOPTION_CONSTRAINT", "先调整引用此 Skill 的任务，再卸载");
     }
     sqlite
       .prepare("UPDATE agent_space_agent_skill_installations SET status='removed' WHERE installation_id=?")
@@ -392,12 +401,57 @@ export function removeInstalledSkill(input: {
       action: "agent.skill.removed",
       objectType: "agent_space_agent_skill_installation",
       objectId: installed.installation_id,
-      fromStatus: "installed",
+      fromStatus: installed.status,
       toStatus: "removed",
       detail: { agentId: input.agentId, skillId: input.skillId, versionId: installed.version_id, approvalRef: input.approvalRef },
     });
     recordAuthorizationOutcome(approval.authorizationId, { installationId: installed.installation_id });
     return { installationId: installed.installation_id, status: "removed" as const };
+  });
+  return tx();
+}
+
+/** Keep the installation/version fixed while changing availability for future runs. */
+export function setInstalledSkillEnabled(input: {
+  scope: UserScope; agentId: string; skillId: string; enabled: boolean;
+  approvalRef: string; ownerToken?: string; actor: string;
+}): { installationId: string; status: "installed" | "disabled" } {
+  assertScopeValid(input.scope);
+  getAgent(input.scope, input.agentId);
+  const status = input.enabled ? "installed" : "disabled";
+  const tx = sqlite.transaction(() => {
+    const approval = verifyAuthorization(input.scope, {
+      operation: "skill.installation.set_enabled", objectType: "agent_space_agent_skill_installation",
+      objectId: input.agentId, versionId: null,
+      extraBinding: { skillId: input.skillId, enabled: String(input.enabled) },
+    }, input.approvalRef, input.ownerToken);
+    if (approval.replayed) return approval.replayResult as { installationId: string; status: "installed" | "disabled" };
+    const row = sqlite.prepare(
+      `SELECT i.*, s.is_core FROM agent_space_agent_skill_installations i
+       JOIN agent_space_skills s ON s.skill_id=i.skill_id
+       WHERE i.agent_id=? AND i.skill_id=? AND i.user_id=? AND i.project_id=? AND i.instance_id=?
+         AND i.status IN ('installed','disabled')`,
+    ).get(input.agentId, input.skillId, input.scope.userId, input.scope.projectId, input.scope.instanceId) as (InstallationRow & { is_core: number }) | undefined;
+    if (!row) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", "skill is not installed for this agent");
+    if (row.is_core === 1) throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "core skill cannot be disabled by a user");
+    if (row.status === status) throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", `skill is already ${status}`);
+    if (!input.enabled) {
+      const deps = sqlite.prepare(
+        `SELECT COUNT(*) AS n FROM agent_space_task_dependencies
+         WHERE user_id=? AND project_id=? AND instance_id=? AND kind='skill' AND ref_id=?`,
+      ).get(input.scope.userId, input.scope.projectId, input.scope.instanceId, input.skillId) as { n: number };
+      if (deps.n > 0) throw new AgentSpaceError("AGENT_SPACE_ADOPTION_CONSTRAINT", "先调整引用此 Skill 的任务，再停用");
+    }
+    sqlite.prepare("UPDATE agent_space_agent_skill_installations SET status=? WHERE installation_id=?").run(status, row.installation_id);
+    recordAgentSpaceAudit({ scope: input.scope, actor: input.actor,
+      action: input.enabled ? "agent.skill.enabled" : "agent.skill.disabled",
+      objectType: "agent_space_agent_skill_installation", objectId: row.installation_id,
+      fromStatus: row.status, toStatus: status,
+      detail: { agentId: input.agentId, skillId: input.skillId, versionId: row.version_id },
+    });
+    const result = { installationId: row.installation_id, status };
+    recordAuthorizationOutcome(approval.authorizationId, result);
+    return result;
   });
   return tx();
 }

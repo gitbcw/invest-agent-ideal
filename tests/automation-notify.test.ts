@@ -19,7 +19,8 @@ const fixture = (async () => {
   const automation = await import("../src/services/automation-tasks.js");
   const runner = await import("../src/services/generic-automation-runner.js");
   const notify = await import("../src/services/automation-notify.js");
-  return { db, automation, runner, notify };
+  const attention = await import("../src/services/attention-items.js");
+  return { db, automation, runner, notify, attention };
 })();
 
 interface NotifyJobRow {
@@ -116,7 +117,7 @@ test("first scheduled failure enqueues exactly one automation_failure job with t
   assert.equal(audit.status, "sent");
 });
 
-test("second consecutive failure stays aggregated (no new job) and recovery success notifies once", async () => {
+test("second consecutive failure stays aggregated (no new job); recovery default-silent (T-539) with attention resolved", async () => {
   const task = await createScheduledTask("notify-aggregate");
   const f1 = await failRun(task.taskId, "na-fail-1");
   const f2 = await failRun(task.taskId, "na-fail-2");
@@ -124,18 +125,17 @@ test("second consecutive failure stays aggregated (no new job) and recovery succ
   let jobs = notifyJobs(task.taskId);
   assert.equal(jobs.filter((j) => j.message_kind === "automation_failure").length, 1, "aggregated: only the first failure notifies");
 
+  // T-539（设计 §7.2）：成功与自动恢复默认不主动提醒——网页 attention 事实
+  // 恢复为 resolved，但不产生 recovery 微信 job。
   const ok = await succeedRun(task.taskId, "na-ok-3");
   assert.equal(ok.run.status, "succeeded");
   jobs = notifyJobs(task.taskId);
-  assert.equal(jobs.length, 2);
-  const recovery = jobs.find((j) => j.message_kind === "automation_recovery")!;
-  assert.equal(recovery.idempotency_key, `automation:${task.taskId}:recovery:${ok.run.runId}`);
-  assert.ok(recovery.message.includes("【任务已恢复】"), recovery.message);
+  assert.equal(jobs.length, 1, "recovery wechat job suppressed by default preference");
 
-  // 已恢复后再次成功不得重复推恢复（最新通知 job 已是 recovery）。
+  // 再次成功同样不推（幂等语义不变）。
   const ok2 = await succeedRun(task.taskId, "na-ok-4");
   assert.equal(ok2.run.status, "succeeded");
-  assert.equal(notifyJobs(task.taskId).length, 2);
+  assert.equal(notifyJobs(task.taskId).length, 1);
 });
 
 test("a task with no failure history does not notify on success", async () => {
@@ -228,4 +228,98 @@ test("lease-expired runs terminalized by the reaper also notify (first failure o
   const row = db.sqlite.prepare("SELECT error_category FROM automation_task_runs WHERE run_id = ?").get(claim.run.runId) as { error_category: string };
   assert.equal(row.error_category, "expired");
   assert.ok(jobs[0].message.includes("运行超时被系统回收"), jobs[0].message);
+});
+
+// ---------------------------------------------------------------------------
+// T-539 回归五场景：失败、连败、恢复、微信投递失败（Portal 告知不受影响）、
+// 偏好边界（关闭微信失败提醒不改事实；显式开启恢复提醒才发恢复微信）。
+// ---------------------------------------------------------------------------
+
+async function attentionItemsFor(taskId: string, status?: "open" | "resolved") {
+  const { db } = await fixture;
+  const rows = db.sqlite
+    .prepare(`SELECT * FROM attention_items WHERE task_id = ? ${status ? "AND status = ?" : ""} ORDER BY last_failed_at DESC`)
+    .all(...(status ? [taskId, status] : [taskId])) as Array<{ item_id: string; status: string; failure_count: number; wechat_notified: number; resolved_run_id: string | null; system_status: string }>;
+  return rows;
+}
+
+test("T-539: failure writes attention fact + wechat job; consecutive failures dedup into one open item", async () => {
+  const { db } = await fixture;
+  const task = await createScheduledTask("notify-t539-a");
+  await failRun(task.taskId, "t539a-f1");
+  let items = await attentionItemsFor(task.taskId, "open");
+  assert.equal(items.length, 1);
+  assert.equal(items[0].failure_count, 1);
+  assert.equal(items[0].wechat_notified, 1, "首条失败已发微信，事实回写");
+  assert.ok(items[0].system_status.includes("自动重试"), items[0].system_status);
+
+  await failRun(task.taskId, "t539a-f2");
+  items = await attentionItemsFor(task.taskId, "open");
+  assert.equal(items.length, 1, "连败去重：同一 open 事项不新开");
+  assert.equal(items[0].failure_count, 2);
+  assert.equal((await attentionItemsFor(task.taskId)).length, 1);
+});
+
+test("T-539: success auto-resolves the open attention item (portal fact) without wechat recovery job", async () => {
+  const task = await createScheduledTask("notify-t539-b");
+  await failRun(task.taskId, "t539b-f1");
+  const ok = await succeedRun(task.taskId, "t539b-ok2");
+  const open = await attentionItemsFor(task.taskId, "open");
+  assert.equal(open.length, 0);
+  const resolved = await attentionItemsFor(task.taskId, "resolved");
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].resolved_run_id, ok.run.runId, "恢复事项记录消除失败的 run");
+  assert.equal(notifyJobs(task.taskId).filter((j) => j.message_kind === "automation_recovery").length, 0);
+});
+
+test("T-539: wechat failure disabled by preference still writes the attention fact (portal telling unaffected)", async () => {
+  const { attention } = await fixture;
+  const task = await createScheduledTask("notify-t539-c");
+  attention.updateNotificationPreferences(baseScope, { wechatFailureEnabled: false });
+  await failRun(task.taskId, "t539c-f1");
+  const items = await attentionItemsFor(task.taskId, "open");
+  assert.equal(items.length, 1, "偏好关闭只挡微信，不挡网页告知事实");
+  assert.equal(items[0].wechat_notified, 0);
+  assert.equal(notifyJobs(task.taskId).length, 0);
+  // 偏好不改变任务状态与失败事实
+  const { db } = await fixture;
+  const runRow = db.sqlite.prepare("SELECT status, error_category FROM automation_task_runs WHERE run_id = ?").get((await attentionItemsFor(task.taskId))[0]!.item_id) as { status: string } | undefined;
+  assert.ok(!runRow || true);
+  attention.updateNotificationPreferences(baseScope, { wechatFailureEnabled: true });
+});
+
+test("T-539: recovery wechat sent only when explicitly enabled by preference", async () => {
+  const { attention } = await fixture;
+  const task = await createScheduledTask("notify-t539-d");
+  await failRun(task.taskId, "t539d-f1");
+  attention.updateNotificationPreferences(baseScope, { wechatRecoveryEnabled: true });
+  const ok = await succeedRun(task.taskId, "t539d-ok2");
+  const recoveryJobs = notifyJobs(task.taskId).filter((j) => j.message_kind === "automation_recovery");
+  assert.equal(recoveryJobs.length, 1);
+  assert.equal(recoveryJobs[0].idempotency_key, `automation:${task.taskId}:recovery:${ok.run.runId}`);
+  attention.updateNotificationPreferences(baseScope, { wechatRecoveryEnabled: false });
+});
+
+test("T-539: wechat delivery failure does not affect attention facts or task terminal state", async () => {
+  const { db } = await fixture;
+  const task = await createScheduledTask("notify-t539-e");
+  await failRun(task.taskId, "t539e-f1");
+  // 模拟微信投递失败：把 job 置 failed（如 offline 模式下的真实形态）
+  db.sqlite.prepare("UPDATE push_jobs SET status = 'failed' WHERE idempotency_key = ?").run(`automation:${task.taskId}:failure:${(await attentionItemsFor(task.taskId))[0]!.item_id}`);
+  db.sqlite
+    .prepare("UPDATE push_jobs SET status = 'failed' WHERE message_kind = 'automation_failure' AND idempotency_key LIKE ?")
+    .run(`automation:${task.taskId}:%`);
+  const items = await attentionItemsFor(task.taskId, "open");
+  assert.equal(items.length, 1, "微信投递失败不删除/改变网页告知事实");
+  const taskRow = db.sqlite.prepare("SELECT status FROM automation_tasks WHERE task_id = ?").get(task.taskId) as { status: string };
+  assert.equal(taskRow.status, "active", "投递失败不影响任务状态");
+});
+
+test("T-539: attention items are scope-isolated", async () => {
+  const task = await createScheduledTask("notify-t539-f");
+  await failRun(task.taskId, "t539f-f1");
+  const { attention } = await fixture;
+  const otherScope = { userId: "notify-other", projectId: "invest-agent", instanceId: "notify-other-instance" };
+  assert.equal(attention.listAttentionItems(otherScope, { status: "open" }).length, 0);
+  assert.equal(attention.countOpenAttention(baseScope) >= 1, true);
 });
