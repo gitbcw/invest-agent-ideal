@@ -97,6 +97,23 @@ export type PortalErrorCode =
   | "AUTOMATION_TASK_NOT_ACTIVE"
   | "AUTOMATION_TASK_NEEDS_ATTENTION"
   | "AUTOMATION_TASK_ARCHIVED"
+  // Agent-space object errors (T-538) are raised by the runtime service layer
+  // (src/services/agent-space/core.ts AgentSpaceError) and surfaced verbatim.
+  | "AGENT_SPACE_SCOPE_MISMATCH"
+  | "AGENT_SPACE_NOT_FOUND"
+  | "AGENT_SPACE_INVALID_TRANSITION"
+  | "AGENT_SPACE_APPROVAL_REQUIRED"
+  | "AGENT_SPACE_IMMUTABLE"
+  | "AGENT_SPACE_VERSION_INVALID"
+  | "AGENT_SPACE_SYSTEM_DOMAIN_REQUIRED"
+  | "AGENT_SPACE_VISIBILITY_INVALID"
+  | "AGENT_SPACE_ARGUMENT_INVALID"
+  | "AGENT_SPACE_IDEMPOTENCY_CONFLICT"
+  | "AGENT_SPACE_OWNER_AUTH_REQUIRED"
+  | "AGENT_SPACE_ADOPTION_CONSTRAINT"
+  | "AGENT_SPACE_UNSUPPORTED"
+  | "ATTENTION_NOT_FOUND"
+  | "STATE_CANDIDATE_NOT_FOUND"
   | "AUTOMATION_BATCH_INVALID"
   | "AUTOMATION_INVALID_CURSOR"
   | "AUTOMATION_DATA_CORRUPT"
@@ -192,6 +209,47 @@ export const PORTAL_TYPES = {
   ASSET_RESTORE_VERSION: "asset.restore_version",
   ASSET_CONVERT_TO_XLSX: "asset.convert_to_xlsx",
   ASSET_REFERENCES_LIST: "asset.references.list",
+  ASSET_WORKSPACE_USAGE: "asset.workspace_usage",
+  // Workspace methods & skills (T-538): agent-space objects exposed through
+  // the connector with scope derived from the registered connector scope.
+  // Keep the keys aligned with the connector-side TYPES table in
+  // src/portal/connector.ts.
+  METHOD_LIST: "method.list",
+  METHOD_ASSET_LIST: "method.asset.list",
+  METHOD_WORKING_COPY_GET: "method.working_copy.get",
+  METHOD_WORKING_COPY_SAVE: "method.working_copy.save",
+  METHOD_WORKING_COPY_CLEAR: "method.working_copy.clear",
+  METHOD_GET: "method.get",
+  METHOD_VERSIONS: "method.versions",
+  METHOD_DIFF: "method.diff",
+  METHOD_CREATE: "method.create",
+  METHOD_ADD_VERSION: "method.add_version",
+  METHOD_ADOPT: "method.adopt",
+  METHOD_REVOKE: "method.revoke",
+  SKILL_LIST_PRIVATE: "skill.list_private",
+  SKILL_LIST_INSTALLED: "skill.list_installed",
+  SKILL_LIST_CATALOG: "skill.list_catalog",
+  SKILL_INSTALLATION_STATUS: "skill.installation_status",
+  SKILL_LIST_PROJECT_FILES: "skill.list_project_files",
+  SKILL_GET: "skill.get",
+  SKILL_CREATE: "skill.create",
+  SKILL_EDIT: "skill.edit",
+  SKILL_COMPARE_VERSIONS: "skill.compare_versions",
+  SKILL_SET_ENABLED: "skill.set_enabled",
+  SKILL_INSTALL: "skill.install",
+  SKILL_UNINSTALL: "skill.uninstall",
+  SKILL_UPGRADE: "skill.upgrade",
+  // Attention & preferences (T-539): failure-telling facts owned by the
+  // service layer; Portal renders the list/card, WeChat is only a projection.
+  ATTENTION_LIST: "attention.list",
+  ATTENTION_GET: "attention.get",
+  AUTOMATION_DETAIL: "automation.detail",
+  PREFERENCE_GET: "preference.get",
+  PREFERENCE_SET: "preference.set",
+  ATTENTION_OPEN_CONVERSATION: "attention.open_conversation",
+  STATE_CANDIDATES_LIST: "state.candidates.list",
+  STATE_CANDIDATE_APPROVE: "state.candidate.approve",
+  STATE_CANDIDATE_REJECT: "state.candidate.reject",
   // Retained only so old route modules can return a deterministic disabled
   // response during the Portal read-only migration. The connector no longer
   // advertises or handles these commands.

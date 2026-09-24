@@ -21,7 +21,7 @@ import {
   conversationNavigationUrl
 } from "@/components/chat/conversation-navigation";
 
-type PortalSection = "automations" | "assets";
+type PortalSection = "automations" | "assets" | "workspace" | "attention" | "settings";
 // Reuse the chat page's actual sidebar, including its conversation list and
 // account actions, rather than maintaining a second navigation implementation.
 export function PortalSidebar({ active }: { active: PortalSection }) {
@@ -32,6 +32,7 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
   const [hasNext, setHasNext] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [username, setUsername] = useState("用户");
+  const [attentionCount, setAttentionCount] = useState<number | undefined>(undefined);
   const cursorRef = useRef<string | null>(null);
 
   const refreshConversations = useCallback(async () => {
@@ -57,6 +58,13 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
   useEffect(() => {
     void refreshLabels().catch(() => undefined);
     void fetchCurrentUser().then((user) => setUsername(user?.username || "用户")).catch(() => undefined);
+    // 未处理失败事项计数（侧栏徽标）；失败静默，不打扰页面加载
+    void fetch("/api/attention")
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => null)) as { ok?: boolean; data?: { openCount?: number } } | null;
+        if (payload?.ok === true && typeof payload.data?.openCount === "number") setAttentionCount(payload.data.openCount);
+      })
+      .catch(() => undefined);
   }, [refreshLabels]);
 
   const navigateToConversation = useCallback((conversationId: string) => {
@@ -128,6 +136,9 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
     username={username}
     onOpenAutomations={() => window.location.assign("/automations")}
     onOpenAssets={() => window.location.assign("/assets")}
+    onOpenWorkspace={() => window.location.assign("/workspace")}
+    onOpenAttention={() => window.location.assign("/attention")}
+    attentionCount={attentionCount}
     onOpenManual={() => window.location.assign("/manual")}
     onOpenUsage={() => window.location.assign("/usage")}
     onChangePassword={() => window.location.assign("/change-password")}

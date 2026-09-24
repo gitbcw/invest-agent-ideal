@@ -12,6 +12,19 @@ RELAY_PORT="${MAS_TRA_RELAY_PORT:-23658}"
 
 mkdir -p "$STATE_ROOT"
 
+# Keep the isolated Portal usable after a fresh state-root creation. This only
+# seeds the local Portal database and never touches the runtime or production DB.
+(
+  cd "$PORTAL_DIR"
+  NODE_ENV=development \
+  PORTAL_PORT="$PORTAL_PORT" \
+  PORTAL_DB_PATH="$STATE_ROOT/portal.db" \
+  PORTAL_JWT_SECRET="mastra-local-portal-session-secret-20260813" \
+  PORTAL_CONNECTOR_TOKEN="mastra-local-connector-token" \
+  PORTAL_DISTRIBUTION_TOKEN="mastra-local-distribution-token" \
+    npm run seed
+)
+
 # The local Portal seed account has one explicit, service-owned Mastra project.
 # Bootstrap it before connector registration, rather than allowing a file route
 # to infer a directory from Portal input.
@@ -21,6 +34,17 @@ mkdir -p "$STATE_ROOT"
     MASTRA_PROJECTS_ROOT="$STATE_ROOT/runtime/projects" \
     WORKSPACE_BACKEND=mastra \
     node --import tsx -e 'import("./src/platform/project-registry.ts").then((module) => (module.ensureDefaultProjectForUser || module.default?.ensureDefaultProjectForUser)("primary"))'
+)
+
+# The Portal workspace actions target the agent-space Agent, not only the
+# Mastra project registry. Create the local primary Agent before the runtime
+# connector opens its SQLite handle, so Skill installation has a valid target.
+(
+  cd "$ROOT_DIR"
+  DB_PATH="$STATE_ROOT/runtime/invest-agent.db" \
+  MASTRA_PROJECTS_ROOT="$STATE_ROOT/runtime/projects" \
+  WORKSPACE_BACKEND=mastra \
+  node --import tsx -e 'import("./src/services/agent-space/index.ts").then(({ default: space }) => { const scope = { userId: "primary", projectId: "invest-agent", instanceId: "invest-agent-primary" }; const agent = space.createAgent({ scope, name: "Primary 投资助手 Agent", idempotencyKey: "local:primary:agent", actor: "local-seed" }); if (agent.status === "draft") space.setAgentStatus(scope, agent.agent_id, "active", "local-seed"); console.log(`[agent-seed] ${space.getAgent(scope, agent.agent_id).agent_id} active`); })'
 )
 
 cleanup() {

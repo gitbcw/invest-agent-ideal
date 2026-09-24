@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState, type DragEvent, type RefObject } from "react";
 import { useSearchParams } from "next/navigation";
-import { ChevronRight, Download, File, FileImage, FileText, Folder, FolderInput, FolderOpen, Loader2, MoreHorizontal, Pencil, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
+import { ChevronRight, Download, File, FileImage, FileText, Folder, FolderInput, FolderOpen, Link2, Loader2, MoreHorizontal, Pencil, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
 import type { ReportAssetMapping, StorageUsage, UserAsset, UserAssetCatalogItem } from "@/lib/protocol";
 import { createClientId } from "@/lib/client-id";
 import { AssetRequestError, createFolder, deleteAsset, deleteFolder, downloadAsset, getAssetVersion, listAssets, moveAsset, renameFolder, uploadAsset, uploadAssets, prepareImageUpload } from "./api";
 import { PortalSidebar } from "@/components/navigation/PortalSidebar";
 import { useFilePanel } from "@/components/file-panel/FilePanelProvider";
+import { AssetLinksDialog } from "./AssetLinksDialog";
 
 type SourceFilter = "all" | "upload" | "conversation" | "automation" | "report";
 type SourceCounts = Record<SourceFilter, number>;
@@ -403,13 +404,15 @@ function FolderActions({ folder, busy, onRename, onDelete }: { folder: FolderRec
 
 function FileRow({ asset, selected, dragging, busy, onOpen, onDownload, onDelete, onMove, onDragStart, onDragEnd }: { asset: UserAsset; selected: boolean; dragging: boolean; busy: string | null; onOpen: () => void; onDownload: () => void; onDelete: () => void; onMove: () => void; onDragStart: (event: DragEvent<HTMLDivElement>) => void; onDragEnd: () => void }) {
   const current = asset.currentVersion;
+  const [linksOpen, setLinksOpen] = useState(false);
   return <div data-asset-id={asset.assetId} draggable={!busy} onDragStart={onDragStart} onDragEnd={onDragEnd} aria-grabbed={dragging ? "true" : "false"} className={`group grid ${busy ? "cursor-default" : "cursor-grab"} grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-[#edf0ed] px-5 py-3.5 transition last:border-b-0 active:cursor-grabbing sm:grid-cols-[minmax(0,1fr)_150px_100px] sm:gap-4 sm:px-7 ${dragging ? "bg-[#f4f9f5] opacity-60" : selected ? "bg-[#f4f9f5]" : "hover:bg-[#fafcfb]"}`}>
     <button type="button" className="flex min-w-0 items-center gap-3 text-left" onClick={onOpen} aria-label={`打开文件 ${asset.name}`}>
       <span data-primary-icon className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#edf6ef] text-[#52705f]"><AssetIcon format={current?.format} /></span>
-      <span className="min-w-0"><span className="block truncate text-sm font-medium text-[#303632]">{asset.name}</span><span className="mt-1 block truncate text-xs text-[#8a938c]">{current ? `${current.fileName} · ${formatBytes(current.sizeBytes)}` : "文件内容不可用"}</span></span>
+      <span className="min-w-0"><span className="flex min-w-0 items-center gap-1.5"><span className="block truncate text-sm font-medium text-[#303632]">{asset.name}</span>{(asset.tags ?? []).includes("系统模板") ? <span className="shrink-0 rounded bg-[#eef2fb] px-1.5 py-0.5 text-[11px] text-[#3b5bab]">系统模板</span> : null}</span><span className="mt-1 block truncate text-xs text-[#8a938c]">{current ? `${current.fileName} · ${formatBytes(current.sizeBytes)}` : "文件内容不可用"}</span></span>
     </button>
     <span className="hidden text-xs text-[#7a827c] sm:block">{formatDate(asset.updatedAt)}</span>
-    <div className="flex items-center justify-end gap-1"><button type="button" className="rounded-md p-2 text-[#6d776f] hover:bg-[#f0f5f0] disabled:opacity-40" onClick={onDownload} disabled={!current || busy === `download:${asset.assetId}`} aria-label={`下载 ${asset.name}`} title="下载文件">{busy === `download:${asset.assetId}` ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}</button><AssetActions name={asset.name} onMove={onMove} onDelete={onDelete} deleteBusy={busy === `delete:${asset.assetId}`} /></div>
+    <div className="flex items-center justify-end gap-1"><button type="button" className="rounded-md p-2 text-[#6d776f] hover:bg-[#f0f5f0] disabled:opacity-40" onClick={onDownload} disabled={!current || busy === `download:${asset.assetId}`} aria-label={`下载 ${asset.name}`} title="下载文件">{busy === `download:${asset.assetId}` ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}</button><AssetActions name={asset.name} onMove={onMove} onDelete={onDelete} deleteBusy={busy === `delete:${asset.assetId}`} onLinks={current ? () => setLinksOpen(true) : undefined} /></div>
+    {linksOpen ? <AssetLinksDialog assetId={asset.assetId} name={asset.name} source={current?.source} onClose={() => setLinksOpen(false)} /> : null}
   </div>;
 }
 
@@ -427,7 +430,7 @@ function ReportRow({ report, mapping, backingAsset, dragging, busy, onOpen, onDo
   </div>;
 }
 
-function AssetActions({ name, onMove, onDelete, deleteDisabled = false, deleteBusy = false }: { name: string; onMove?: () => void; onDelete: () => void; deleteDisabled?: boolean; deleteBusy?: boolean }) {
+function AssetActions({ name, onMove, onDelete, deleteDisabled = false, deleteBusy = false, onLinks }: { name: string; onMove?: () => void; onDelete: () => void; deleteDisabled?: boolean; deleteBusy?: boolean; onLinks?: () => void }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -446,7 +449,7 @@ function AssetActions({ name, onMove, onDelete, deleteDisabled = false, deleteBu
   }, [open]);
 
   const invoke = (action: () => void) => { setOpen(false); action(); };
-  return <div ref={menuRef} className="relative"><button type="button" className="rounded-md p-2 text-[#6d776f] hover:bg-[#f0f5f0]" onClick={() => setOpen((current) => !current)} aria-label={`更多操作：${name}`} aria-expanded={open} title="更多操作"><MoreHorizontal size={17} /></button>{open ? <div className="absolute bottom-full right-0 z-30 mb-1 w-36 overflow-hidden rounded-lg border border-[#dfe3df] bg-white p-1 shadow-lg">{onMove ? <button type="button" className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-[#303632] hover:bg-[#f3f7f3]" onClick={() => invoke(onMove)}><FolderInput size={14} />移动</button> : null}<button type="button" className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-[#8a625f] hover:bg-[#fbefed] disabled:cursor-not-allowed disabled:opacity-40" onClick={() => invoke(onDelete)} disabled={deleteDisabled || deleteBusy}>{deleteBusy ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}删除</button></div> : null}</div>;
+  return <div ref={menuRef} className="relative"><button type="button" className="rounded-md p-2 text-[#6d776f] hover:bg-[#f0f5f0]" onClick={() => setOpen((current) => !current)} aria-label={`更多操作：${name}`} aria-expanded={open} title="更多操作"><MoreHorizontal size={17} /></button>{open ? <div className="absolute bottom-full right-0 z-30 mb-1 w-36 overflow-hidden rounded-lg border border-[#dfe3df] bg-white p-1 shadow-lg">{onLinks ? <button type="button" className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-[#303632] hover:bg-[#f3f7f3]" onClick={() => invoke(onLinks)}><Link2 size={14} />关联信息</button> : null}{onMove ? <button type="button" className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-[#303632] hover:bg-[#f3f7f3]" onClick={() => invoke(onMove)}><FolderInput size={14} />移动</button> : null}<button type="button" className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-[#8a625f] hover:bg-[#fbefed] disabled:cursor-not-allowed disabled:opacity-40" onClick={() => invoke(onDelete)} disabled={deleteDisabled || deleteBusy}>{deleteBusy ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}删除</button></div> : null}</div>;
 }
 
 function StorageUsageIndicator({ usage }: { usage: StorageUsage }) {

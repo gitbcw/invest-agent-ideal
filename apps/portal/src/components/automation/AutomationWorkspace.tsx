@@ -63,6 +63,7 @@ import {
   type AutomationTemplate,
 } from "@/lib/automation-templates";
 import { PortalSidebar } from "@/components/navigation/PortalSidebar";
+import { TaskDetailPanel } from "./TaskDetailPanel";
 import { PatrolShell } from "@/components/patrol/PatrolShell";
 import { useFilePanel } from "@/components/file-panel/FilePanelProvider";
 import {
@@ -2458,6 +2459,7 @@ function TaskDetailView({
   }
   return (
     <main className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 lg:py-8">
+      <TaskDetailPanel taskId={taskId} />
       <Link
         href="/automations"
         className="inline-flex items-center gap-1 text-sm text-[#6f7d73] hover:text-[#36543d]"

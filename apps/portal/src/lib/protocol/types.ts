@@ -563,6 +563,7 @@ export interface UserAsset {
   name: string;
   folderId: string | null;
   status: "active" | "archived";
+  tags?: string[];
   currentVersionId: string | null;
   currentVersion: UserAssetVersion | null;
   createdAt: string;

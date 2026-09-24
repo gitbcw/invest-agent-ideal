@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const assetFormatSchema = z.enum(["markdown", "html", "csv", "xlsx", "pdf", "png", "jpeg", "webp", "svg"]);
 const singleAssetUploadSchema = z.object({
+  assetId: z.string().trim().min(1).max(300).optional(),
+  expectedVersionId: z.string().trim().min(1).max(300).optional(),
   name: z.string().trim().min(1).max(200).optional(),
   fileName: z.string().trim().min(1).max(255),
   mimeType: z.string().trim().max(160).optional(),
