@@ -38,6 +38,7 @@ const STARTER_SKILL_TRIGGERS: Record<string, RegExp> = {
   "fundamental-analysis": /基本面|财报|财务|估值|护城河|商业模式|现金流|盈利|同行/i,
   "macro-analysis": /宏观|政策|货币|财政|利率|汇率|流动性|地缘|大盘/i,
   "risk-control": /风控|风险控制|仓位|回撤|止损|止盈|加仓|减仓|资产配置|交易纪律/i,
+  "skill-creator": /skill|技能/i,
   "technical-analysis": /技术面|技术分析|均线|趋势|量价|突破|回踩|K线|支撑|压力|买卖点|波段/i,
 };
 

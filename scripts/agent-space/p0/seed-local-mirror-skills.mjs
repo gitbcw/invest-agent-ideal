@@ -21,6 +21,7 @@ const space = await import("../../../src/services/agent-space/index.ts");
 const mirror = JSON.parse(fs.readFileSync(path.join(root, "mirror-manifest.json"), "utf8"));
 const definitions = [
   ["automation-task-designer", true],
+  ["skill-creator", true],
   ["candidate-screening", false],
   ["fundamental-analysis", false],
   ["macro-analysis", false],

@@ -51,6 +51,7 @@ test("workspace file browser lists user project files but excludes secrets and r
       "skills/fundamental-analysis/SKILL.md",
       "skills/macro-analysis/SKILL.md",
       "skills/risk-control/SKILL.md",
+      "skills/skill-creator/SKILL.md",
       "skills/technical-analysis/SKILL.md",
     ]);
     assert.equal(result.items.find((item) => item.relativePath === "preview.html")?.previewMode, "html");

@@ -100,7 +100,7 @@ export function SkillsPanel() {
           <button type="button" className="btn-secondary px-2.5 py-1.5 text-xs" onClick={openCatalog}>
             <Search size={15} />找回 Skill
           </button>
-          <button type="button" className="btn-primary px-2.5 py-1.5 text-xs" onClick={() => window.location.assign(`/chat?new=1&prompt=${encodeURIComponent(SKILL_CREATION_PROMPT)}`)}>
+          <button type="button" className="btn-primary px-2.5 py-1.5 text-xs" onClick={() => window.location.assign(`/chat?new=1&autosend=1&prompt=${encodeURIComponent(SKILL_CREATION_PROMPT)}`)}>
             <Plus size={15} />新建 Skill
           </button>
         </div>
@@ -251,8 +251,9 @@ export function SkillsPanel() {
   );
 }
 
-/** 新建 Skill 走 AI 对话（契约：用户通过对话请求变更，不手输 SKILL.md）。 */
-const SKILL_CREATION_PROMPT = "我想新建一个 Skill。请先向我确认三件事：名称、用途（什么场景该触发它）、以及主要步骤要点；然后起草 SKILL.md 给我看。我确认内容后，请用 skill.create 把它保存为私有 Skill 草案——创建后只是待确认状态，不会自动启用或发布，我会去「技能管理」页批准。";
+/** 新建 Skill 走 AI 对话（契约：用户通过对话请求变更，不手输 SKILL.md）。
+ *  落地即自动发送；skill-creator 系统技能负责引导访谈与起草。 */
+const SKILL_CREATION_PROMPT = "我想新建一个 Skill。请按创建流程引导我：确认该不该建、名称与用途，起草 SKILL.md 给我确认，我同意后再保存为私有草案。";
 
 function SkillDetail({ skillId, onBack, onNotice }: { skillId: string; onBack: () => void; onNotice: (message: string) => void }) {
   const [detail, setDetail] = useState<SkillDetailView | null>(null);
