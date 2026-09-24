@@ -100,7 +100,7 @@ export function SkillsPanel() {
           <button type="button" className="btn-secondary px-2.5 py-1.5 text-xs" onClick={openCatalog}>
             <Search size={15} />找回 Skill
           </button>
-          <button type="button" className="btn-primary px-2.5 py-1.5 text-xs" onClick={() => window.location.assign(`/chat?new=1&autosend=1&prompt=${encodeURIComponent(SKILL_CREATION_PROMPT)}`)}>
+          <button type="button" className="btn-primary px-2.5 py-1.5 text-xs" onClick={() => window.location.assign("/chat?new=1&guide=skill-create")}>
             <Plus size={15} />新建 Skill
           </button>
         </div>
@@ -250,10 +250,6 @@ export function SkillsPanel() {
     </div>
   );
 }
-
-/** 新建 Skill 走 AI 对话（契约：用户通过对话请求变更，不手输 SKILL.md）。
- *  落地即自动发送；skill-creator 系统技能负责引导访谈与起草。 */
-const SKILL_CREATION_PROMPT = "我想新建一个 Skill。请按创建流程引导我：确认该不该建、名称与用途，起草 SKILL.md 给我确认，我同意后再保存为私有草案。";
 
 function SkillDetail({ skillId, onBack, onNotice }: { skillId: string; onBack: () => void; onNotice: (message: string) => void }) {
   const [detail, setDetail] = useState<SkillDetailView | null>(null);

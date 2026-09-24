@@ -50,9 +50,6 @@ export interface ComposerAttachment extends PortalAttachmentPayload {
   previewUrl?: string;
 }
 
-/** 跳转带入的 prompt 自动发送只执行一次（StrictMode 双挂载也不会重发）。 */
-let autoSentPromptKey: string | null = null;
-
 export function MessageComposer({
   disabled,
   disabledReason,
@@ -75,34 +72,6 @@ export function MessageComposer({
   const draftInitializedRef = useRef(false);
   const restoringDraftRef = useRef(false);
   const clearedDraftKeysRef = useRef(new Set<string>());
-
-  // 从其他页面跳转来的新建会话可带 ?prompt= 预填（如「新建 Skill」）；
-  // 带 &autosend=1 时落地即发送（用户不再手动点）。只生效一次并抹掉 URL 参数。
-  useEffect(() => {
-    try {
-      const url = new URL(window.location.href);
-      if (url.searchParams.get("new") !== "1") return;
-      const prompt = url.searchParams.get("prompt");
-      if (!prompt) return;
-      const autosend = url.searchParams.get("autosend") === "1";
-      url.searchParams.delete("prompt");
-      url.searchParams.delete("autosend");
-      // autosend 时连 new=1 一起抹掉：handleSend 会同步写入会话 URL，
-      // 父组件的导航初始化随后读到的是会话参数而不是 new=1，
-      // 否则会话被父 effect 重置为空视图。
-      if (autosend) url.searchParams.delete("new");
-      window.history.replaceState(null, "", url.toString());
-      if (autosend) {
-        const key = prompt.slice(0, 200);
-        if (autoSentPromptKey === key) return;
-        autoSentPromptKey = key;
-        void onSend(prompt.slice(0, 20000), []);
-        return;
-      }
-      setValue((current) => current || prompt.slice(0, 20000));
-    } catch { /* 预填失败不影响输入 */ }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const inputDisabled = disabled || processing || stopping;
   const cancelPending = stopping || cancelRequested;

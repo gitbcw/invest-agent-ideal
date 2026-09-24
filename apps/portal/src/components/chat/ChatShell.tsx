@@ -104,6 +104,8 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const cursorRef = useRef<string | null>(null);
   // T-199：当前等待轮的实时工作过程事件（按 conversationId 分组，尽力而为）。
   const [liveSteps, setLiveSteps] = useState<Record<string, WorkStepView[]>>({});
+  // 引导式新建（技能管理页「新建 Skill」等）：开场白确定，本地渲染不调模型。
+  const [guidedStart, setGuidedStart] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const processingConversationsRef = useRef<Record<string, boolean>>({});
   const navigationInitializedRef = useRef(false);
@@ -170,7 +172,23 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     }
   }, []);
 
-  const activeView = activeId ? conversationViews[activeId] ?? EMPTY_CONVERSATION_VIEW : EMPTY_CONVERSATION_VIEW;
+  const guidedView = guidedStart && !activeId
+    ? {
+        ...EMPTY_CONVERSATION_VIEW,
+        messages: [
+          {
+            messageId: "guided_opening",
+            conversationId: "guided",
+            role: "assistant" as const,
+            content: GUIDE_OPENINGS[guidedStart] ?? "",
+            status: "sent" as const,
+            createdAt: new Date().toISOString(),
+            isLocal: true,
+          },
+        ],
+      }
+    : null;
+  const activeView = activeId ? conversationViews[activeId] ?? EMPTY_CONVERSATION_VIEW : (guidedView ?? EMPTY_CONVERSATION_VIEW);
   const messages = activeView.messages;
   const loadingMessages = activeView.loading;
   const waiting = activeView.waiting || Boolean(activeId && processingConversations[activeId]);
@@ -497,6 +515,22 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   useEffect(() => {
     if (navigationInitializedRef.current) return;
     navigationInitializedRef.current = true;
+    // 引导式新建（如技能管理页「新建 Skill」）：开场白是确定内容，本地立即
+    // 渲染，不调模型；用户首次发送时才创建真实会话并带引导前缀。
+    try {
+      const url = new URL(window.location.href);
+      const guide = url.searchParams.get("guide");
+      if (url.searchParams.get("new") === "1" && guide && GUIDE_OPENINGS[guide]) {
+        setGuidedStart(guide);
+        url.searchParams.delete("new");
+        url.searchParams.delete("guide");
+        window.history.replaceState(window.history.state, "", url.toString());
+        activeIdRef.current = null;
+        setActiveId(null);
+        syncConversationNavigation(null);
+        return;
+      }
+    } catch { /* 引导参数缺失时按普通新建会话处理 */ }
     let storedConversationId: string | null = null;
     try {
       storedConversationId = window.sessionStorage.getItem(ACTIVE_CONVERSATION_STORAGE_KEY);
@@ -622,6 +656,10 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   // ---- 发送消息 ----
   const handleSend = useCallback(
     async (text: string, attachments: ComposerAttachment[] = []): Promise<ComposerSendResult> => {
+      if (guidedStart) {
+        setGuidedStart(null);
+        text = `${GUIDE_SEND_PREFIXES[guidedStart] ?? ""}${text}`;
+      }
       const offline = status && !status.online;
       if (offline) return { ok: false, draftKey: buildComposerDraftKey(initialUser, activeId) };
       const conversationId = activeId ?? `web_${nanoid(16)}`;
@@ -813,7 +851,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         }, 1200);
       }
     },
-    [activeId, initialUser.assistantId, initialUser.id, initialUser.instanceId, selectedModel, setConversationProcessing, status, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]
+    [activeId, guidedStart, initialUser.assistantId, initialUser.id, initialUser.instanceId, selectedModel, setConversationProcessing, status, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]
   );
 
   const handleCancelConversation = useCallback(async () => {
@@ -1414,6 +1452,15 @@ function findUniqueWorkspacePath(artifact: ArtifactCardView, files: WorkspaceFil
   );
   return sameNameAndType.length === 1 ? sameNameAndType[0].relativePath : undefined;
 }
+
+/** 引导式新建：开场白为确定内容，本地渲染；内容须与 skill-creator 系统技能的访谈口径一致。 */
+const GUIDE_SKILL_CREATE = "skill-create";
+const GUIDE_OPENINGS: Record<string, string> = {
+  [GUIDE_SKILL_CREATE]: "我们来新建一个 Skill。请告诉我：\n\n1. **名称**（暂定即可）\n2. **用途与触发场景**：它解决什么问题，什么情况下该用它\n3. **核心规则/步骤要点**\n\n如果还没想好，直接描述你想沉淀的流程——我会先帮你判断是否值得建 Skill，再起草 SKILL.md 给你确认；你同意后才会保存为私有草案（待确认，不会自动启用）。",
+};
+const GUIDE_SEND_PREFIXES: Record<string, string> = {
+  [GUIDE_SKILL_CREATE]: "新建 Skill：",
+};
 
 function EmptyConversation({ offline }: { offline: boolean }) {
   return (
