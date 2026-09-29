@@ -6,7 +6,7 @@
  */
 
 export interface MastraModelConfig {
-  /** Mastra provider/model id, for example `gateway/gpt-5.6-terra`. */
+  /** Mastra provider/model id, for example `gateway/gpt-5.6-luna`. */
   id: string;
   /** OpenAI-compatible `/v1` base URL. */
   url: string;
@@ -50,7 +50,7 @@ export function createModelGateway(options: ModelGatewayOptions = {}): MastraMod
     options.defaultModel,
     env.MASTRA_DEFAULT_MODEL,
     env.LLM_DEFAULT_MODEL,
-  ) ?? "gpt-5.6-terra";
+  ) ?? "gpt-5.6-luna";
   const provider = firstNonEmpty(
     options.provider,
     env.MASTRA_GATEWAY_PROVIDER,

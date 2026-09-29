@@ -22,26 +22,22 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
-    // GPT 系列裁撤（2026-08-26 二次修订）：terra/luna 需要各自 <=10s 探针；terra 优先于 luna。
+    // GPT 系列裁撤（2026-08-26 二次修订）+ terra 先禁用（owner 2026-09-29）：
+    // luna 是链内唯一 GPT 档，需要 <=10s 探针；terra 即使探针良好也不再入链。
     recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 9_000, source: "probe" });
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 9_000, source: "probe" });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
     // 单次慢证据不降级（防抖：需要连续 2 个）。
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 45_000 });
-    assert.equal(getModelHealth("gpt-5.6-terra").healthy, true);
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
-
-    // terra 两个慢证据降级后，路由落到 luna，再进国产链。
-    clock += 60_000;
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 45_000 });
-    assert.equal(getModelHealth("gpt-5.6-terra").healthy, false);
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 45_000 });
+    assert.equal(getModelHealth("gpt-5.6-luna").healthy, true);
     assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
+
+    // luna 两个慢证据降级后，路由直接进国产链（terra 已出链，2026-09-29）。
     clock += 60_000;
-    recordModelFeedback("gpt-5.6-luna", { ok: false });
-    clock += 60_000;
-    recordModelFeedback("gpt-5.6-luna", { ok: false });
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 45_000 });
+    assert.equal(getModelHealth("gpt-5.6-luna").healthy, false);
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
@@ -71,31 +67,31 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     recordModelFeedback("qwen3.8-flash", { ok: false });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "doubao-seed-2-1-turbo-260628");
 
-    // 全链降级时按优先级硬选通过探针门禁的链首（terra）。
+    // 全链降级时按优先级硬选通过探针门禁的链首（luna，terra 已出链）。
     clock += 60_000;
     recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
     clock += 60_000;
     recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
 
     // P2 缓刑恢复语义：冷却期满后不立即恢复，需连续 2 次好证据（探针或真实调用）。
     __resetModelHealthForTest(() => clock);
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 1_000, source: "probe" });
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 1_000, source: "probe" });
     clock += 60_000;
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 45_000 });
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 45_000 });
     clock += 60_000;
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 45_000 });
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 45_000 });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     clock += 31 * 60 * 1000;
     // 冷却期满：仍处缓刑，不回到链首。
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     // 第 1 次好证据（探针）：仍在缓刑。
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 1_000, source: "probe" });
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 1_000, source: "probe" });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     // 第 2 次好证据：恢复健康，回到链首。
     clock += 60_000;
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 1_000, source: "probe" });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 1_000, source: "probe" });
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
@@ -114,9 +110,11 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     __resetModelHealthForTest();
     recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 1_000, source: "probe" });
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 1_000, source: "probe" });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
+    // terra 已出链（owner 2026-09-29）：exclude terra 是无操作，路由仍是链首 luna。
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra"] }).model, "gpt-5.6-luna");
-    assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra", "gpt-5.6-luna"] }).model, "glm-5.3-flash");
+    assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-luna"] }).model, "glm-5.3-flash");
+    assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-luna", "glm-5.3-flash"] }).model, "deepseek-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash"] }).model, "deepseek-flash");
     assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-flash"] }).model, "qwen3.8-flash");
@@ -144,33 +142,34 @@ test("GPT auto routing requires that model's latest probe to be <=10s and recent
     __resetModelHealthForTest(() => clock);
 
     // Real calls, even fast ones, never unlock GPT automatic routing.
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 500 });
-    assert.equal(getGptProbeEligibility("gpt-5.6-terra").reason, "missing");
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 500 });
+    assert.equal(getGptProbeEligibility("gpt-5.6-luna").reason, "missing");
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
 
-    // A luna probe must not unlock terra: only the exact model with the fast probe is unlocked.
+    // A terra probe must not unlock luna: only the exact model with the fast probe is unlocked
+    // (terra itself stays out of the chain, owner 2026-09-29).
+    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 10_000, source: "probe" });
+    assert.equal(getGptProbeEligibility("gpt-5.6-terra").eligible, true);
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
+
+    // 10 seconds is inclusive; a fast luna probe takes the chain head.
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 10_000, source: "probe" });
     assert.equal(getGptProbeEligibility("gpt-5.6-luna").eligible, true);
     assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
 
-    // 10 seconds is inclusive; a terra probe takes the chain head back.
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 10_000, source: "probe" });
-    assert.equal(getGptProbeEligibility("gpt-5.6-terra").eligible, true);
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-terra");
-
     // A newer slow or failed probe immediately closes that model's gate.
     clock += 60_000;
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 10_001, source: "probe" });
-    assert.equal(getGptProbeEligibility("gpt-5.6-terra").reason, "slow");
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 10_001, source: "probe" });
+    assert.equal(getGptProbeEligibility("gpt-5.6-luna").reason, "slow");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     clock += 60_000;
-    recordModelFeedback("gpt-5.6-terra", { ok: false, firstTokenMs: 100, source: "probe" });
-    assert.equal(getGptProbeEligibility("gpt-5.6-terra").reason, "failed");
+    recordModelFeedback("gpt-5.6-luna", { ok: false, firstTokenMs: 100, source: "probe" });
+    assert.equal(getGptProbeEligibility("gpt-5.6-luna").reason, "failed");
 
     // A fast probe expires after two hours, preventing stale evidence from unlocking GPT forever.
-    recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 1_000, source: "probe" });
+    recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 1_000, source: "probe" });
     clock += 2 * 60 * 60 * 1000 + 1;
-    assert.equal(getGptProbeEligibility("gpt-5.6-terra").reason, "stale");
+    assert.equal(getGptProbeEligibility("gpt-5.6-luna").reason, "stale");
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
@@ -179,9 +178,10 @@ test("GPT auto routing requires that model's latest probe to be <=10s and recent
   }
 });
 
-test("model catalog keeps terra+luna from the GPT series; sol and 5.5 stay disabled (owner 2026-08-26)", async () => {
+test("model catalog keeps luna as the only GPT tier; terra/sol/5.5 stay disabled (owner 2026-09-29)", async () => {
   const { MODEL_DESCRIPTIONS } = await import("../src/services/model-health.js");
-  assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-terra"] !== undefined, true);
+  // terra 先禁用（owner 2026-09-29）：临时出册，恢复时双链 + 选择器 + Portal 默认值同步放回。
+  assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-terra"], undefined);
   assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-luna"] !== undefined, true);
   assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-sol"], undefined);
   assert.equal(MODEL_DESCRIPTIONS["gpt-5.5"], undefined);

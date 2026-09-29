@@ -6,6 +6,8 @@
  * 展示口径（owner 2026-08-17）：输入/输出双价（元/百万 tokens），
  * 峰谷模型统一按峰值。GPT 系列裁撤（owner 2026-08-26，同日二次修订）：
  * sol/5.5 禁用，terra + luna 可用且 terra 优先。
+ * terra 先禁用（owner 2026-09-29）：选择器出册，luna 顶为默认；
+ * 属临时禁用，恢复时与 runtime 注册表同步放回。
  * DeepSeek 4.1 统一合并（owner 2026-09-10，同日二次裁决）：全系统只保留
  * deepseek-flash（V4.1-Flash）一个 DeepSeek 模型；旧 v4-pro / v4-flash /
  * vision-exp 全部出册（历史用量行的显示名仅在 UsageShell 维护）。
@@ -25,12 +27,12 @@ export interface ModelOption {
 
 export const AUTO_MODEL_VALUE = "auto";
 
-/** 选择器默认选中值（owner 2026-08-26）：默认推荐 gpt-5.6-terra；「自动」仍在下拉中可选。 */
-export const DEFAULT_MODEL_VALUE = "gpt-5.6-terra";
+/** 选择器默认选中值：terra 先禁用（owner 2026-09-29）后默认推荐
+ * gpt-5.6-luna；「自动」仍在下拉中可选。 */
+export const DEFAULT_MODEL_VALUE = "gpt-5.6-luna";
 
 /** 兜底快照（与 runtime 注册表同步维护，峰谷按峰值）。 */
 export const FALLBACK_MODEL_OPTIONS: ModelOption[] = [
-  { value: "gpt-5.6-terra", label: "GPT-5.6 Terra", description: "高质量均衡档，日常深度分析推荐", inputPrice: 1.0, outputPrice: 6.0 },
   { value: "gpt-5.6-luna", label: "GPT-5.6 Luna", description: "轻量快速档，低成本兜底", inputPrice: 0.08, outputPrice: 0.48 },
   { value: "deepseek-flash", label: "DeepSeek V4.1 Flash", description: "全模态档，支持图片理解与工具调用，国产次选", inputPrice: 2.0, outputPrice: 8.0 },
   { value: "glm-5.3-flash", label: "GLM-5.3 Flash", description: "智谱全模态轻量档，国产链兜底", inputPrice: 0.8, outputPrice: 2.8 },

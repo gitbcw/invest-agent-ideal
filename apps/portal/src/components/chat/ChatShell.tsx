@@ -96,7 +96,8 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const [rightPanelWidth, setRightPanelWidth] = useState<number | null>(null);
   // Attachment opened from a message card via attachment.get → image Lightbox.
   const [attachmentLightbox, setAttachmentLightbox] = useState<{ attachmentId: string; title: string } | null>(null);
-  // 按回合模型选择（D25）：默认推荐 gpt-5.6-terra（owner 2026-08-26）；「自动」可在下拉中切换。
+  // 按回合模型选择（D25）：默认推荐 gpt-5.6-luna（terra 先禁用 owner
+  // 2026-09-29，8-26 裁决的默认推荐从 terra 换挡）；「自动」可在下拉中切换。
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_VALUE);
   // Historical artifact cards still accept a deleted-id set, but the current
   // read-only Portal never mutates it.

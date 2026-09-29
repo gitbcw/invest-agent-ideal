@@ -39,6 +39,9 @@ import { logger } from "../lib/logger.js";
  * - glm 容忍度放宽（owner 2026-09-18）：glm 国产通道稳定性可靠，偶发空响应/
  *   慢首字（如 9-18 一次空响应+一次 32.6s 首字连续触发降级）不应轻易退出链位
  *   ——坏证据阈值放宽到 3，其余模型维持 2。
+ * - terra 先禁用（owner 2026-09-29）：文本/图片双链移除、选择器出册；
+ *   luna 顶为 GPT 档首位。计价表保留 terra 条目供历史 trace 计价。
+ *   属临时禁用，恢复时双链 + 选择器 + Portal 默认值同步放回。
  */
 
 export interface AutoChainEntry {
@@ -50,7 +53,6 @@ export interface AutoChainEntry {
 }
 
 export const AUTO_MODEL_CHAIN: AutoChainEntry[] = [
-  { model: "gpt-5.6-terra" },
   { model: "gpt-5.6-luna" },
   { model: "glm-5.3-flash" },
   { model: "deepseek-flash" },
@@ -66,7 +68,6 @@ export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
   { model: "deepseek-flash" },
   { model: "qwen3.8-flash" },
   { model: "doubao-seed-2-1-turbo-260628" },
-  { model: "gpt-5.6-terra" },
   { model: "gpt-5.6-luna" },
 ];
 
@@ -74,9 +75,8 @@ export const IMAGE_AUTO_MODEL_CHAIN: AutoChainEntry[] = [
  * deepseek 4.1 统一合并（owner 2026-09-10 二次裁决）：全系统只保留
  * deepseek-flash 一个 DeepSeek 模型，旧 ID 全部出册。
  * qwen3.7-flash 出册（owner 2026-09-11）；qwen3.8-flash 同日深夜回归
- * 顶替其链位。 */
+ * 顶替其链位。terra 先禁用出册（owner 2026-09-29，见文件头注）。 */
 export const MODEL_DESCRIPTIONS: Record<string, string> = {
-  "gpt-5.6-terra": "高质量均衡档，日常深度分析推荐",
   "gpt-5.6-luna": "轻量快速档，低成本兜底",
   "glm-5.3-flash": "智谱全模态轻量档，国产链兜底",
   "qwen3.8-flash": "全模态极速档，支持图片理解与工具调用",
