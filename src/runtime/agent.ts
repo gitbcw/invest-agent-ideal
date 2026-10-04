@@ -16,7 +16,7 @@ import { createMastraToolMap, filterServiceToolsByGrant } from "../mastra/tools/
 import { classifyThinkingDepth, THINKING_DEPTH_MODELS, type ThinkingDepthDecision } from "../services/thinking-depth-router.js";
 import { getMastraBindings } from "../mastra/bindings.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
-import { recordModelFeedback, resolveAutoModel } from "../services/model-health.js";
+import { isModelDisabled, recordModelFeedback, resolveAutoModel } from "../services/model-health.js";
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { buildAgentSpaceTurnOptions, isAgentSpaceAssemblyModeEnabled } from "./agent-space-context.js";
 import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../mastra/external-mcp.js";
@@ -229,9 +229,11 @@ export function createRuntimeAgent(): RuntimeAgent {
         : undefined;
       // D25/W1: per-turn model selection. Explicit model locks in; empty or
       // "auto" routes through the health-gated auto chain.
-      const requestedModel = typeof message.context?.model === "string" && message.context.model.trim()
+      const requestedModelRaw = typeof message.context?.model === "string" && message.context.model.trim()
         ? message.context.model.trim()
         : undefined;
+      // 生产临时禁用模型即使客户端绕过选择器显式传入，也必须回落自动链。
+      const requestedModel = isModelDisabled(requestedModelRaw) ? undefined : requestedModelRaw;
       const hasImageTurn = Array.isArray(message.context?.attachments)
         && message.context.attachments.some((item) => {
           const record = item as Record<string, unknown> | null;

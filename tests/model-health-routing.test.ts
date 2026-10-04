@@ -26,13 +26,13 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     // luna 是链内唯一 GPT 档，需要 <=10s 探针；terra 即使探针良好也不再入链。
     recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 9_000, source: "probe" });
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 9_000, source: "probe" });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
     // 单次慢证据不降级（防抖：需要连续 2 个）。
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 45_000 });
     assert.equal(getModelHealth("gpt-5.6-luna").healthy, true);
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
 
     // luna 两个慢证据降级后，路由直接进国产链（terra 已出链，2026-09-29）。
     clock += 60_000;
@@ -72,7 +72,7 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
     clock += 60_000;
     recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
 
     // P2 缓刑恢复语义：冷却期满后不立即恢复，需连续 2 次好证据（探针或真实调用）。
     __resetModelHealthForTest(() => clock);
@@ -91,7 +91,7 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     // 第 2 次好证据：恢复健康，回到链首。
     clock += 60_000;
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 1_000, source: "probe" });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;
@@ -111,8 +111,8 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     recordModelFeedback("gpt-5.6-terra", { ok: true, firstTokenMs: 1_000, source: "probe" });
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 1_000, source: "probe" });
     // terra 已出链（owner 2026-09-29）：exclude terra 是无操作，路由仍是链首 luna。
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
-    assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra"] }).model, "gpt-5.6-luna");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
+    assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-terra"] }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-luna"] }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: false, exclude: ["gpt-5.6-luna", "glm-5.3-flash"] }).model, "deepseek-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
@@ -155,7 +155,7 @@ test("GPT auto routing requires that model's latest probe to be <=10s and recent
     // 10 seconds is inclusive; a fast luna probe takes the chain head.
     recordModelFeedback("gpt-5.6-luna", { ok: true, firstTokenMs: 10_000, source: "probe" });
     assert.equal(getGptProbeEligibility("gpt-5.6-luna").eligible, true);
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "gpt-5.6-luna");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
 
     // A newer slow or failed probe immediately closes that model's gate.
     clock += 60_000;
@@ -182,7 +182,7 @@ test("model catalog keeps luna as the only GPT tier; terra/sol/5.5 stay disabled
   const { MODEL_DESCRIPTIONS } = await import("../src/services/model-health.js");
   // terra 先禁用（owner 2026-09-29）：临时出册，恢复时双链 + 选择器 + Portal 默认值同步放回。
   assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-terra"], undefined);
-  assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-luna"] !== undefined, true);
+  assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-luna"], undefined);
   assert.equal(MODEL_DESCRIPTIONS["gpt-5.6-sol"], undefined);
   assert.equal(MODEL_DESCRIPTIONS["gpt-5.5"], undefined);
   assert.equal(MODEL_DESCRIPTIONS["glm-5.3-flash"] !== undefined, true);

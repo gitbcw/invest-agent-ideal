@@ -20,9 +20,8 @@ interface ModelsStateResponse {
 // 二次裁决）：只保留 deepseek-flash，旧 ID 不再出现在任何选择器映射里
 // （历史用量行的显示名在 UsageShell 单独维护）。qwen3.7-flash 下线、
 // qwen3.8-flash 顶替（owner 2026-09-11 裁决，3.7 不再保留）。
-// terra 先禁用出册（owner 2026-09-29，临时）。
+// GPT-5.6 Terra/Luna 临时禁用出册（owner 2026-10-04）。
 const LABELS: Record<string, string> = {
-  "gpt-5.6-luna": "GPT-5.6 Luna",
   "deepseek-flash": "DeepSeek V4.1 Flash",
   "glm-5.3-flash": "GLM-5.3 Flash",
   "qwen3.8-flash": "Qwen3.8 Flash",
@@ -75,7 +74,7 @@ export function ModelPicker({
   const selectedLabel = value === AUTO_MODEL_VALUE
     ? `自动${autoModel ? ` · ${LABELS[autoModel] ?? autoModel}` : "（推荐）"}`
     : LABELS[value] ?? value;
-  const autoOption = options.find((opt) => opt.value === (autoModel ?? "gpt-5.6-luna"));
+  const autoOption = options.find((opt) => opt.value === autoModel);
 
   return (
     <div ref={rootRef} className="relative mr-2 shrink-0">

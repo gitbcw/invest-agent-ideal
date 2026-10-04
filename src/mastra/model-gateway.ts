@@ -50,7 +50,7 @@ export function createModelGateway(options: ModelGatewayOptions = {}): MastraMod
     options.defaultModel,
     env.MASTRA_DEFAULT_MODEL,
     env.LLM_DEFAULT_MODEL,
-  ) ?? "gpt-5.6-luna";
+  ) ?? "glm-5.3-flash";
   const provider = firstNonEmpty(
     options.provider,
     env.MASTRA_GATEWAY_PROVIDER,
