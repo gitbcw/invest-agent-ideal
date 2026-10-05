@@ -41,7 +41,7 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
 
-    // 国产链逐级降级：glm → deepseek-flash → qwen3.8-flash → doubao
+    // 国产链逐级降级：glm → deepseek-flash → qwen3.8-flash；豆包已临时禁用
     // （qwen3.7-flash 下线 owner 2026-09-11；同日深夜二次调整 deepseek 前置
     // qwen3.8——首夜 qwen3.8 重载自动化空响应、deepseek 接管完成工作）。
     // glm 容忍度放宽（owner 2026-09-18）：坏证据阈值 3，两个坏证据不降级
@@ -65,13 +65,10 @@ test("auto chain routes by health and capability with degrade hysteresis", async
     recordModelFeedback("qwen3.8-flash", { ok: false });
     clock += 60_000;
     recordModelFeedback("qwen3.8-flash", { ok: false });
-    assert.equal(resolveAutoModel({ hasImage: false }).model, "doubao-seed-2-1-turbo-260628");
+    assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
 
     // 全链降级时按优先级硬选通过探针门禁的链首（luna，terra 已出链）。
     clock += 60_000;
-    recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
-    clock += 60_000;
-    recordModelFeedback("doubao-seed-2-1-turbo-260628", { ok: false });
     assert.equal(resolveAutoModel({ hasImage: false }).model, "glm-5.3-flash");
 
     // P2 缓刑恢复语义：冷却期满后不立即恢复，需连续 2 次好证据（探针或真实调用）。
@@ -118,7 +115,7 @@ test("resolveAutoModel exclude honors in-turn fallback skips", async () => {
     assert.equal(resolveAutoModel({ hasImage: true }).model, "glm-5.3-flash");
     assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash"] }).model, "deepseek-flash");
     assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-flash"] }).model, "qwen3.8-flash");
-    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-flash", "qwen3.8-flash"] }).model, "doubao-seed-2-1-turbo-260628");
+    assert.equal(resolveAutoModel({ hasImage: true, exclude: ["glm-5.3-flash", "deepseek-flash", "qwen3.8-flash"] }).model, "glm-5.3-flash");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
     delete process.env.DB_PATH;

@@ -19,6 +19,8 @@ import { logger } from "../lib/logger.js";
  *   qwen3.7-flash 单一价 0.6/2.4 提到 vision-exp 之前；doubao-seed-2-1-turbo
  *   官方价 3/15/0.6 全时段不低于 deepseek（输出贵 67%、缓存读贵 6 倍），
  *   维持在 deepseek 之后，仅作末位兜底。
+ * - 豆包临时禁用（owner 2026-10-05）：生产工具型交互中作为末位兜底仍会重复完整
+ *   工具轮并产生高额费用；保留历史计价与目录信息，但不参与新调用。
  * - DeepSeek 4.1 换挡（owner 2026-09-10）：上游 V4.1-Flash 以新 ID
  *   deepseek-flash 上线（全模态），顶替 vision-exp 的链内位置与计价档
  *   （峰2/8、闲1/4，工作日峰谷，较旧档整体更便宜）。
@@ -52,7 +54,11 @@ export interface AutoChainEntry {
 }
 
 /** 当前生产端不可用的模型。历史 trace/计价仍保留，但不得进入路由或新调用。 */
-export const DISABLED_MODELS = new Set(["gpt-5.6-terra", "gpt-5.6-luna"]);
+export const DISABLED_MODELS = new Set([
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "doubao-seed-2-1-turbo-260628",
+]);
 
 export function isModelDisabled(model: string | undefined): boolean {
   return typeof model === "string" && DISABLED_MODELS.has(model.trim().toLowerCase());

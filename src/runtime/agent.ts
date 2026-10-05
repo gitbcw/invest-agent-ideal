@@ -494,6 +494,12 @@ export function createRuntimeAgent(): RuntimeAgent {
               || normalized.includes("fetch failed")
               || normalized.includes("econnreset");
           };
+          // 工具阶段失败后换模型会复制整套工具调用，放大 MCP 限流/超时和模型费用。
+          // 失败异常由 runMastraTurn 携带已观测工具调用；此类轮次必须直接收敛。
+          const hasObservedToolCalls = (error: unknown) => {
+            const calls = (error as { toolCalls?: unknown } | null)?.toolCalls;
+            return Array.isArray(calls) && calls.length > 0;
+          };
           let mastraResult: Awaited<ReturnType<typeof runMastraTurn>>;
           if (!autoRoute) {
             mastraResult = await runMastraTurn(turnParams, turnDeps);
@@ -524,6 +530,7 @@ export function createRuntimeAgent(): RuntimeAgent {
                 const canRetry = attempt < AUTO_FALLBACK_MAX
                   && !excluded.includes(next.model)
                   && isRetriableTurnError(errorText)
+                  && !hasObservedToolCalls(error)
                   && !(cancelSignal?.aborted ?? false)
                   && hasExecutionBudgetForFallback({ executionDeadlineMs, minimumRemainingMs: AUTO_FALLBACK_MIN_REMAINING_MS });
                 if (!canRetry) throw error;
