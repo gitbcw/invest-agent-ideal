@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Publish and install the six reviewed starter skills in the isolated local mirror only. */
+/** Publish and install the reviewed starter skills in the isolated local mirror only. */
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -27,6 +27,7 @@ const definitions = [
   ["macro-analysis", false],
   ["risk-control", false],
   ["technical-analysis", false],
+  // strategy-simulation 已于 2026-10-10 用户裁决从镜像移除（remove-mirror-strategy-simulation.mjs）。
 ];
 const backupPath = path.join(root, "runtime-before-skills.db");
 if (!fs.existsSync(backupPath)) await sqlite.backup(backupPath);

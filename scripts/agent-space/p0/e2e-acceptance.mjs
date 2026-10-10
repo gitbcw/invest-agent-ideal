@@ -45,7 +45,7 @@ async function main() {
   const attention = await api("/api/attention");
   record("待处理入口", attention.payload?.ok === true, `open=${attention.payload?.data?.openCount}`);
   const automations = await api("/api/automations");
-  record("自动化任务入口", automations.payload?.ok === true);
+  record("定时任务入口", automations.payload?.ok === true);
   const assets = await api("/api/assets");
   record("我的文件入口", assets.payload?.ok === true);
   const skillsPrivate = await api("/api/skills?view=private");

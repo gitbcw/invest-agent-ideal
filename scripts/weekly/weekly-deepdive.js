@@ -2,7 +2,7 @@
 /* 深挖：用户×模型交叉、mg 每日/样本、mgreplay 用途 */
 const { DatabaseSync } = require('node:sqlite');
 const DB = 'data/runtime.db';
-const WB = '2026-09-11T16:00:00.000Z', WE = '2026-09-18T12:10:00.000Z';
+const WB = '2026-10-02T16:00:00.000Z', WE = '2026-10-09T12:10:00.000Z';
 function q(sql, p = []) { const db = new DatabaseSync(DB, { readOnly: true }); const r = db.prepare(sql).all(...p); db.close(); return r; }
 
 console.log('[USER x MODEL] ' + JSON.stringify(q(`SELECT user_id, agent_model m, COUNT(*) n, ROUND(SUM(cost_amount),2) cost

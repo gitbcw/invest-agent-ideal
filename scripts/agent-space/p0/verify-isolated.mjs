@@ -78,7 +78,7 @@ async function main() {
   };
   record(`${SCOPE.userId} 会话/消息形态可读`, counts.conversations > 0 && counts.messages > 0, JSON.stringify(counts));
   record(`${SCOPE.userId} 资产与版本形态可读`, counts.assets > 0 && counts.assetVersions > 0);
-  record(`${SCOPE.userId} 自动化任务与运行历史可读`, counts.automationTasks > 0 && counts.automationRuns > 0);
+  record(`${SCOPE.userId} 定时任务与运行历史可读`, counts.automationTasks > 0 && counts.automationRuns > 0);
   record(`${SCOPE.userId} agent_space 装配态存在（agents/run_basis/outcomes）`, counts.agents > 0 && counts.runBasis > 0 && counts.runOutcomes > 0);
   record("工作空间对象可读（方法/Skills 数量按源备份保留）", counts.methods + counts.skills > 0, `methods=${counts.methods} skills=${counts.skills}`);
   const portalUser = one("SELECT id FROM portal_users WHERE username=? AND instance_id=?", SCOPE.userId, SCOPE.instanceId);

@@ -4,7 +4,7 @@
  *
  * 产物形态（对应 GUI 验证需要）：
  *   - 1 个方法体系（≥2 版本：v1 采用后被替代、v2 当前采用、v3 待确认草稿），
- *     并绑定到 111 的 daily-review 自动化任务（pinned v2）；
+ *     并绑定到 111 的 daily-review 定时任务（pinned v2）；
  *   - 2 个私有 Skill（其一首个版本启用 + 安装到 111 Agent；其二留草稿展示待确认态）。
  *
  * 幂等：方法/Skill 按 name/slug 判存在即跳过；绑定按 taskId+kind+refId 唯一键 upsert。

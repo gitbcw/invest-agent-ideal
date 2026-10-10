@@ -6,8 +6,8 @@ const { DatabaseSync } = require('node:sqlite');
 const DB = 'data/runtime.db';
 
 // ===== 窗口（北京 → UTC）=====
-const wb = '2026-09-12T00:00:00'; // 北京周六 00:00
-const we = '2026-09-18T20:10:00'; // 北京周五 20:10
+const wb = '2026-10-03T00:00:00'; // 北京周六 00:00
+const we = '2026-10-09T20:10:00'; // 北京周五 20:10
 const toUTC = (b) => new Date(b + '+08:00').toISOString();
 const WB = toUTC(wb), WE = toUTC(we);
 const PB = new Date(new Date(WB).getTime() - 7 * 86400000).toISOString();
