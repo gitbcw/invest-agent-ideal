@@ -449,8 +449,12 @@ export async function runGenericAutomationTaskNow(input: {
     }
   } catch (error) {
     const classified = error instanceof AutomationExecutionFailure ? error.taskError : classifyTaskError(error);
+    // run 落库带内部错误码前缀（与 LEASE_EXPIRED/QUEUE_DELAY 等原生错误一致）；
+    // 用户可见文案走 attention-items 的类目映射，不读此字段。2026-10-10 前
+    // AutomationExecutionFailure 只存 userMessage，「后台任务没有完成」族无法
+    // 从 run 行归因，只能翻日志。
     const message = error instanceof AutomationExecutionFailure
-      ? classified.userMessage
+      ? `${classified.code}: ${classified.userMessage}`
       : error instanceof Error ? error.message : String(error);
     let failed: AutomationTaskRunRecord;
     try {
