@@ -311,6 +311,10 @@ export function approveSkillVersion(input: {
   assertDomainRowShape(input.domain, input.scope);
   const skill = getSkillRow(input.skillId);
   assertSkillScope(skill, input.domain, input.scope);
+  // 2026-10-08 裁决「删除就消失」：墓碑技能不可再启用新版本（避免复活）。
+  if (skill.status === "deleted") {
+    throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `skill ${input.skillId} has been deleted`);
+  }
   const version = getVersionRow(input.versionId);
   if (version.skill_id !== input.skillId) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to skill");
@@ -496,7 +500,7 @@ export function getSkillReleaseForInstaller(installerScope: UserScope, releaseId
   return release;
 }
 
-/** 市场查询：只返回 public + published；私有内容不进任何市场面。 */
+/** 市场查询：只返回 public + published；私有内容不进任何市场面；墓碑技能（2026-10-08 裁决）不出现。 */
 export function listPublicSkillReleases(): Array<{
   releaseId: string;
   skillId: string;
@@ -507,8 +511,9 @@ export function listPublicSkillReleases(): Array<{
 }> {
   return sqlite
     .prepare(
-      `SELECT release_id, skill_id, release_version, version_id, content_checksum, published_at
-       FROM agent_space_skill_releases WHERE visibility='public' AND status='published' ORDER BY created_at DESC`,
+      `SELECT r.release_id, r.skill_id, r.release_version, r.version_id, r.content_checksum, r.published_at
+       FROM agent_space_skill_releases r JOIN agent_space_skills s ON s.skill_id = r.skill_id
+       WHERE r.visibility='public' AND r.status='published' AND s.status <> 'deleted' ORDER BY r.created_at DESC`,
     )
     .all()
     .map((r: { release_id: string; skill_id: string; release_version: string; version_id: string; content_checksum: string; published_at: string }) => ({
@@ -555,6 +560,7 @@ export interface SkillCatalogEntry {
 /**
  * 市场目录（W3）：只呈现 public + published 的发布（含系统默认标记）；
  * private/shared 不进任何目录枚举面。目录只暴露元数据与 checksum，不吐正文。
+ * 2026-10-08 裁决「删除就消失」：墓碑技能（status='deleted'）的发布不出现。
  */
 export function listSkillCatalog(): SkillCatalogEntry[] {
   return (
@@ -563,7 +569,7 @@ export function listSkillCatalog(): SkillCatalogEntry[] {
         `SELECT r.release_id, r.skill_id, s.slug, s.name, r.domain, r.release_version, r.version_id,
                 r.content_ref_type, r.content_checksum, r.is_default, r.published_at
          FROM agent_space_skill_releases r JOIN agent_space_skills s ON s.skill_id = r.skill_id
-         WHERE r.visibility='public' AND r.status='published'
+         WHERE r.visibility='public' AND r.status='published' AND s.status <> 'deleted'
          ORDER BY r.published_at DESC`,
       )
       .all() as Array<{

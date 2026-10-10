@@ -53,6 +53,12 @@ export const CONFIRMATION_CONTRACTS: Readonly<Record<string, Readonly<Record<str
     name: { type: "string", required: false, aliases: ["stockName"], label: "股票名称（可选，缺省用代码）" },
     reason: { type: "string", required: false, label: "加入理由（可选）" },
   },
+  // 2026-10-09 fresh 回归：截图批量录入走单只 add 会产生 N 次登记/执行，撞
+  // maxSteps 后整轮空响应。批量草案一次登记一次执行；条目级校验在
+  // validateConfirmationDraft（normalizeWatchlistBatchItems）完成。
+  "watchlist.add_many": {
+    items: { type: "array", required: true, nonEmpty: true, label: "待加入自选池的标的数组，每项 {code(必填 6 位), name(可选), reason(可选)}；多只录入必须用本操作而不是逐只 watchlist.add" },
+  },
   "plans.set": {
     stockCode: { type: "string", required: true, nonEmpty: true, pattern: STOCK_CODE_PATTERN, aliases: ["code"], label: STOCK_CODE_LABEL },
     stockName: { type: "string", required: false, aliases: ["name"], label: "股票名称（可选）" },
@@ -83,6 +89,19 @@ export const CONFIRMATION_CONTRACTS: Readonly<Record<string, Readonly<Record<str
   },
   "assets.delete": {
     assetId: { type: "string", required: true, nonEmpty: true, label: "要删除的资产 assetId" },
+  },
+  "automation.delete": {
+    taskId: { type: "string", required: true, nonEmpty: true, label: "要删除的定时任务 taskId（删除任务 X，可用 automation.list 查到）" },
+    expectedRevision: { type: "number", required: false, label: "期望的任务 revision（可选，防止确认后任务被改过）" },
+  },
+  "skill.set_enabled": {
+    skillId: { type: "string", required: true, nonEmpty: true, label: "要停用的技能 skillId（skill.list 可查；仅停用需确认）" },
+    enabled: { type: "boolean", required: true, label: "必须为 false（停用）；启用无需确认，直接调 skill.set_enabled（enabled:true）" },
+    agentId: { type: "string", required: false, label: "目标 Agent（可选，scope 内多 Agent 时必填）" },
+  },
+  "skill.uninstall": {
+    skillId: { type: "string", required: true, nonEmpty: true, label: "要卸载的技能 skillId（skill.list 可查）" },
+    agentId: { type: "string", required: false, label: "目标 Agent（可选，scope 内多 Agent 时必填）" },
   },
 };
 

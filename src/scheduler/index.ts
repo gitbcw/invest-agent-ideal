@@ -279,7 +279,7 @@ export async function startScheduler() {
   }, 60 * 60 * 1000);
 
   const pushTime = await getReviewPushTime();
-  logger.info(`定时任务已启动（规则巡检分钟扫描默认间隔 ${intervalMin}min；Onboarding 草稿提交 5s；复盘/盯盘由 typed 自动化任务驱动；复盘推送 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}；数据质量 15:30）`);
+  logger.info(`定时任务已启动（规则巡检分钟扫描默认间隔 ${intervalMin}min；Onboarding 草稿提交 5s；复盘/盯盘由 typed 定时任务驱动；复盘推送 ${pushTime.hour}:${String(pushTime.minute).padStart(2, "0")}；数据质量 15:30）`);
 }
 
 /** 停止所有定时任务 */

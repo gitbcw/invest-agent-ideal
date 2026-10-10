@@ -60,6 +60,35 @@ function beijingHm(iso: string | null | undefined): string {
   }
 }
 
+function quietHoursEndAt(now: Date, start: string | null, end: string | null): string | null {
+  if (!start || !end) return null;
+  const parse = (value: string) => {
+    const match = /^(\d{2}):(\d{2})$/.exec(value);
+    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+  };
+  const startMinutes = parse(start);
+  const endMinutes = parse(end);
+  if (startMinutes === null || endMinutes === null || startMinutes === endMinutes) return null;
+
+  const beijingNow = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+  const currentMinutes = beijingNow.getUTCHours() * 60 + beijingNow.getUTCMinutes();
+  const active = startMinutes < endMinutes
+    ? currentMinutes >= startMinutes && currentMinutes < endMinutes
+    : currentMinutes >= startMinutes || currentMinutes < endMinutes;
+  if (!active) return null;
+
+  const target = new Date(Date.UTC(
+    beijingNow.getUTCFullYear(), beijingNow.getUTCMonth(), beijingNow.getUTCDate(),
+    Math.floor(endMinutes / 60), endMinutes % 60, 0, 0,
+  ));
+  if (endMinutes <= currentMinutes && startMinutes >= endMinutes) target.setUTCDate(target.getUTCDate() + 1);
+  return new Date(target.getTime() - 8 * 60 * 60 * 1000).toISOString();
+}
+
+function categoryEnabled(categories: string[] | null, category: "failure" | "recovery"): boolean {
+  return !categories || categories.length === 0 || categories.includes(category);
+}
+
 interface NotifyRunRow {
   runId: string;
   taskId: string;
@@ -159,13 +188,17 @@ export async function notifyAutomationRunTerminal(input: {
     // 失败告知事实：无论微信偏好如何都写入（网页完整告知的事实源）。
     recordAutomationFailureAttention({ scope, taskId: input.taskId, runId: run.runId, errorCategory: run.errorCategory });
     const preferences = getNotificationPreferences(scope);
-    if (!preferences.wechatFailureEnabled) {
+    if (!preferences.wechatFailureEnabled || !categoryEnabled(preferences.categories, "failure")) {
       insertNotifyAuditRow({
         taskId: input.taskId,
         runId: run.runId,
         scope,
         action: "run.failure_notified",
-        details: { errorCategory: run.errorCategory, skippedByPreference: true, reason: "wechat_failure_disabled" },
+        details: {
+          errorCategory: run.errorCategory,
+          skippedByPreference: true,
+          reason: preferences.wechatFailureEnabled ? "failure_category_disabled" : "wechat_failure_disabled",
+        },
         createdAt: new Date().toISOString(),
       });
       return { notified: null, reason: "failure_wechat_suppressed_by_preference" };
@@ -184,6 +217,7 @@ export async function notifyAutomationRunTerminal(input: {
       idempotencyKey,
       originTaskKey: input.taskId,
       expiresAt: new Date(Date.now() + FAILURE_VALIDITY_MS).toISOString(),
+      nextRetryAt: quietHoursEndAt(new Date(), preferences.quietHoursStart, preferences.quietHoursEnd) ?? undefined,
       message,
     });
     markAttentionWechatNotified(scope, input.taskId);
@@ -209,14 +243,17 @@ export async function notifyAutomationRunTerminal(input: {
       return { notified: null, reason: resolved ? "attention_resolved" : "no_open_failure_notice" };
     }
     const preferences = getNotificationPreferences(scope);
-    if (!preferences.wechatRecoveryEnabled) {
+    if (!preferences.wechatRecoveryEnabled || !categoryEnabled(preferences.categories, "recovery")) {
       // T-539（设计 §7.2）：成功与自动恢复默认不打扰；代码路径保留，偏好可开启。
       insertNotifyAuditRow({
         taskId: input.taskId,
         runId: run.runId,
         scope,
         action: "run.recovery_notified",
-        details: { suppressedByPreference: true, reason: "wechat_recovery_disabled_default" },
+        details: {
+          suppressedByPreference: true,
+          reason: preferences.wechatRecoveryEnabled ? "recovery_category_disabled" : "wechat_recovery_disabled_default",
+        },
         createdAt: new Date().toISOString(),
       });
       return { notified: null, reason: "recovery_wechat_suppressed_by_preference" };
@@ -232,6 +269,7 @@ export async function notifyAutomationRunTerminal(input: {
       idempotencyKey,
       originTaskKey: input.taskId,
       expiresAt: new Date(Date.now() + FAILURE_VALIDITY_MS).toISOString(),
+      nextRetryAt: quietHoursEndAt(new Date(), preferences.quietHoursStart, preferences.quietHoursEnd) ?? undefined,
       message,
     });
     insertNotifyAuditRow({

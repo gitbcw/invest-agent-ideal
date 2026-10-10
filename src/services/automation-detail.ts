@@ -3,7 +3,7 @@ import { sqlite } from "../db/index.js";
 import { listAttentionItems, type AttentionItemView } from "./attention-items.js";
 
 /**
- * T-539 自动化任务详情聚合读模型（设计 §6 四块）：
+ * T-539 定时任务详情聚合读模型（设计 §6 四块）：
  * 目标 / 依赖与产物 / 最近结果（执行·产物·投递分层）/ 需要注意。
  * 只读组装，不复制既有事实；scope 强制在每个查询上。
  */

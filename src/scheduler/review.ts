@@ -206,7 +206,7 @@ export async function startReviewScheduler(
     }
   }, 60 * 1000);
 
-  logger.info(`复盘偏好调度已退役（P4b）：复盘/预生成由 typed 自动化任务驱动；本循环仅保留 scheduled_task_runs reconcile`);
+  logger.info(`复盘偏好调度已退役（P4b）：复盘/预生成由 typed 定时任务驱动；本循环仅保留 scheduled_task_runs reconcile`);
 }
 
 export function stopReviewScheduler() {

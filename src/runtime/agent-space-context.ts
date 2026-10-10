@@ -23,6 +23,7 @@ import {
 } from "../services/agent-space/index.js";
 import { getVersionRow as getSkillVersionRow, readSkillVersionContentBytes } from "../services/agent-space/skills.js";
 import { readStateVersionContent } from "../services/agent-space/state.js";
+import { logger } from "../lib/logger.js";
 import { buildPlatformBaseInstructions } from "./agent-instructions.js";
 import type { UserContext } from "../lib/user-context.js";
 
@@ -68,11 +69,11 @@ export function detectAssemblyEntryKind(taskType: string | null | undefined): As
  * 停用校验）；新请求优先用任务依赖声明的显式 Agent 绑定；无绑定且同 scope
  * 存在多个 active Agent 时**明确拒绝歧义**——绝不按创建时间猜测。
  */
-function resolveAssemblyAgentId(input: {
+async function resolveAssemblyAgentId(input: {
   scope: { userId: string; projectId: string; instanceId: string };
   basisKey: string;
   taskId?: string | null;
-}): string {
+}): Promise<string> {
   // 1) 冻结身份回用：同请求重试不因新增 Agent 换身份。
   const frozen = findRunBasis(input.scope, input.basisKey);
   if (frozen) {
@@ -112,10 +113,52 @@ function resolveAssemblyAgentId(input: {
     .all(input.scope.userId, input.scope.projectId, input.scope.instanceId) as Array<{ agent_id: string }>;
   if (actives.length === 1) return actives[0]!.agent_id;
   if (actives.length === 0) {
-    throw new AgentSpaceError(
-      "AGENT_SPACE_INVALID_TRANSITION",
-      "agent-space assembly mode requires an active agent for the scope; refusing to fall back to the legacy workspace",
-    );
+    // 2026-10-08 冷启动自愈：新用户首条消息时 scope 尚无 agent（生产无注册
+    // 钩子自动创建）——按 scope 建一个默认 agent 并激活，而不是拒绝。首个
+    // agent 即该用户的交互身份；多 agent 歧义仍明确拒绝。
+    const { createAgent: createDefaultAgent, setAgentStatus } = await import("../services/agent-space/agents.js");
+    const created = createDefaultAgent({ scope: input.scope, name: `${input.scope.userId} 助手`, actor: "system:cold-start" });
+    setAgentStatus(input.scope, created.agent_id, "active", "system:cold-start");
+    logger.info(`冷启动：已为 scope ${input.scope.userId} 创建默认 agent ${created.agent_id}`);
+    // 2026-10-09 冷启动播种：系统预置技能集（有默认发布的 active 系统技
+    // 能）逐个安装到新 agent——111 的技能是历史 seed 脚本装的，装配模式一
+    // 直缺新用户的自动播种，技能页此前是空的。
+    try {
+      const { sqlite: dbSqlite } = await import("../db/index.js");
+      const systemSkills = dbSqlite.prepare(
+        `SELECT s.skill_id AS skillId, r.release_id AS releaseId, r.version_id AS versionId
+         FROM agent_space_skills s
+         JOIN agent_space_skill_releases r ON r.skill_id=s.skill_id AND r.is_default=1
+         WHERE s.domain='system' AND s.status='active'
+         GROUP BY s.skill_id`,
+      ).all() as Array<{ skillId: string; releaseId: string; versionId: string }>;
+      const { portalInstallSkill } = await import("../services/agent-space/portal-actions.js");
+      let installed = 0;
+      for (const skill of systemSkills) {
+        try {
+          portalInstallSkill({
+            ctx: {
+              scope: input.scope,
+              actor: "system:cold-start",
+              idempotencyKey: `cold-start-skill:${input.scope.userId}:${skill.skillId}`,
+            },
+            agentId: created.agent_id,
+            skillId: skill.skillId,
+            source: "release",
+            releaseId: skill.releaseId,
+            versionId: skill.versionId,
+            installedBy: "system:cold-start",
+          });
+          installed += 1;
+        } catch {
+          // 单个技能安装失败不阻断冷启动（下次冷启动不重试：agent 已存在）。
+        }
+      }
+      logger.info(`冷启动：已为 ${input.scope.userId} 播种 ${installed}/${systemSkills.length} 个系统技能`);
+    } catch (error) {
+      logger.warn(`冷启动技能播种失败（不影响会话）: ${(error as Error).message}`);
+    }
+    return created.agent_id;
   }
   throw new AgentSpaceError(
     "AGENT_SPACE_ARGUMENT_INVALID",
@@ -163,7 +206,7 @@ export async function buildAgentSpaceTurnOptions(input: {
     : input.runId
       ? `run:${input.runId}:basis`
       : `task:${input.taskId}:message:${input.messageId}`;
-  const agentId = resolveAssemblyAgentId({ scope: input.scope, basisKey, taskId: entryKind === "conversation" ? null : input.taskId });
+  const agentId = await resolveAssemblyAgentId({ scope: input.scope, basisKey, taskId: entryKind === "conversation" ? null : input.taskId });
   const basis = assembleAndRecordRunBasis({
     scope: input.scope,
     agentId,
@@ -177,8 +220,8 @@ export async function buildAgentSpaceTurnOptions(input: {
   const budgetChars = Math.max(1, Number(process.env[AGENT_SPACE_CONTENT_BUDGET_ENV] ?? DEFAULT_CONTENT_BUDGET_CHARS));
   const lines: string[] = [
     `# Agent Space 装配（${entryKind}）`,
-    `Agent: ${basis.resolution.agent.name} (${basis.resolution.agent.agentId})`,
-    "本轮技能/方法/资产全部为固定版本，按 versionId+checksum 读取。",
+    `执行 Agent：${basis.resolution.agent.name}（${basis.resolution.agent.agentId}）`,
+    "本轮技能、方法和资产全部使用固定版本，按 versionId 和校验和读取。",
   ];
   const sections: RunBasisInjection["sections"] = [];
   let remaining = budgetChars;
@@ -202,6 +245,30 @@ export async function buildAgentSpaceTurnOptions(input: {
   // 返工 R6：已解析且需注入的方法/技能正文读取/校验失败 → **阻断本轮模型
   // 调用**（不标成 reference-only 成功注入）；解析 basis 保留为失败证据。
   // 恢复正确字节后同请求可重试成功（resolution 冻结，注入重算）。
+  // 2026-10-08 两层裁决：投资框架（kind=framework）整体常驻——不走绑定，
+  // 该 scope 全部已采用的 framework 方法正文逐份注入。
+  {
+    const frameworks = sqlite.prepare(
+      `SELECT m.method_id AS methodId, m.name AS name, m.current_version_id AS versionId
+       FROM agent_space_methods m
+       WHERE m.user_id=? AND m.project_id=? AND m.instance_id=? AND m.status='active'
+         AND m.kind='framework' AND m.current_version_id IS NOT NULL
+       ORDER BY m.created_at ASC`,
+    ).all(input.scope.userId, input.scope.projectId, input.scope.instanceId) as Array<{ methodId: string; name: string; versionId: string }>;
+    for (const framework of frameworks) {
+      try {
+        const content = (await readMethodVersionContent(input.scope, framework.versionId)).bytes.toString("utf8");
+        pushContent(
+          `framework:${framework.methodId}`,
+          `## 投资框架·${framework.name}（整体常驻的方法论体系，${framework.versionId}）——每轮判断都在此框架内进行`,
+          content,
+        );
+      } catch (error) {
+        logger.error(`装配投资框架内容读取失败，已跳过 framework=${framework.methodId}: ${(error as Error).message}`);
+        lines.push(`- 已跳过投资框架 ${framework.name}：内容源缺失（${(error as Error).message}），本轮不可用`);
+      }
+    }
+  }
   for (const method of basis.resolution.methods) {
     let content: string;
     try {
@@ -214,9 +281,27 @@ export async function buildAgentSpaceTurnOptions(input: {
     }
     pushContent(
       `method:${method.methodId}`,
-      `## 方法 ${method.methodId} @ ${method.versionId} (checksum ${method.contentChecksum}, ${method.versionPolicy}${method.origin === "task-dependency-pinned" ? ", task-pinned" : ""})`,
+      `## 主策略 ${method.methodId} @ ${method.versionId}（校验和 ${method.contentChecksum}，${method.versionPolicy}${method.origin === "task-dependency-pinned" ? "，任务固定" : ""}）——以下规则每轮常驻生效，给出买卖、仓位或风控判断前必须遵循`,
       content,
     );
+  }
+  // 2026-10-08 owner 裁决「我的策略」：非主策略不常驻，但注入引用清单供点名
+  // 使用（用户说「用 XX 策略」时用 strategy.read 读取并遵循当轮）。
+  {
+    const primaryRow = sqlite.prepare(
+      `SELECT b.method_id AS methodId FROM agent_space_agent_method_bindings b
+       JOIN agent_space_agents a ON a.agent_id=b.agent_id
+       WHERE b.user_id=? AND b.project_id=? AND b.instance_id=? AND b.status='active' AND a.status='active'
+       LIMIT 1`,
+    ).get(input.scope.userId, input.scope.projectId, input.scope.instanceId) as { methodId: string } | undefined;
+    const others = sqlite.prepare(
+      `SELECT m.method_id AS methodId, m.name AS name FROM agent_space_methods m
+       WHERE m.user_id=? AND m.project_id=? AND m.instance_id=? AND m.status='active' AND m.current_version_id IS NOT NULL
+         AND m.kind='strategy' AND m.method_id != ?`,
+    ).all(input.scope.userId, input.scope.projectId, input.scope.instanceId, primaryRow?.methodId ?? "") as Array<{ methodId: string; name: string }>;
+    if (others.length > 0) {
+      lines.push(`可用策略（非常驻）：${others.map((s) => `${s.name}（${s.methodId}）`).join("、")}——默认不注入正文；用户点名使用时用 strategy.read 读取该策略并在当轮遵循。`);
+    }
   }
   for (const skill of basis.resolution.skills) {
     const meta = sqlite.prepare("SELECT slug, name, is_core FROM agent_space_skills WHERE skill_id=?")
@@ -229,14 +314,27 @@ export async function buildAgentSpaceTurnOptions(input: {
     try {
       content = (await readSkillVersionContentBytes(getSkillVersionRow(skill.versionId))).toString("utf8");
     } catch (error) {
-      throw new AgentSpaceError(
-        "AGENT_SPACE_VERSION_INVALID",
-        `required skill content ${skill.skillId}@${skill.versionId} failed verification (${(error as Error).message}); blocking the model call`,
+      // 2026-10-08 镜像定性：内容源缺失（如内容资产被删除）时按入口分叉——
+      // 任务轮（scheduled/generic_automation）保持 fail-closed：依赖技能缺失
+      // 必须失败进重试/通知链路，不允许静默少技能跑任务（W4 返工语义）；
+      // 交互会话降级为跳过该技能并注入可见提示，不让一个坏技能阻断用户
+      // 全部对话。
+      if (entryKind !== "conversation") {
+        throw new AgentSpaceError(
+          "AGENT_SPACE_VERSION_INVALID",
+          `required skill content ${skill.skillId}@${skill.versionId} failed verification (${(error as Error).message}); blocking the model call`,
+        );
+      }
+      logger.error(
+        `装配技能内容读取失败，已跳过 skill=${skill.skillId}@${skill.versionId}: ${(error as Error).message}`,
       );
+      lines.push(`- 已跳过技能 ${meta?.slug ?? skill.skillId}@${skill.versionId}：内容源缺失（${(error as Error).message}），本轮不可用；请到技能管理中修复或删除该技能`);
+      sections.push({ section: `skill:${skill.skillId}`, originalChars: 0, keptChars: 0, reason: `content-unavailable:${(error as Error).message}` });
+      continue;
     }
     pushContent(
       `skill:${skill.skillId}`,
-      `## 技能 ${skill.skillId} @ ${skill.versionId} (checksum ${skill.contentChecksum}, source ${skill.source}${skill.origin === "task-dependency-pinned" ? ", task-pinned" : ""})`,
+      `## 技能 ${skill.skillId} @ ${skill.versionId}（校验和 ${skill.contentChecksum}，来源 ${skill.source}${skill.origin === "task-dependency-pinned" ? "，任务固定" : ""}）`,
       content,
     );
   }
@@ -258,9 +356,9 @@ export async function buildAgentSpaceTurnOptions(input: {
     );
   }
   lines.push(`状态包说明：${basis.resolution.statePacket.note}（检索 ${basis.resolution.statePacket.retrieval.scanned} 条，纳入 ${basis.resolution.statePacket.retrieval.included} 条，预算 ${basis.resolution.statePacket.retrieval.usedChars}/${basis.resolution.statePacket.retrieval.budgetChars}）`);
-  for (const ex of basis.resolution.statePacket.exclusions) lines.push(`- state-excluded: ${ex.objectType}:${ex.objectId} — ${ex.reason}`);
-  for (const item of basis.resolution.skipped) lines.push(`- skipped: ${item.kind}:${item.ref} — ${item.reason}`);
-  for (const item of basis.resolution.pruned) lines.push(`- pruned: ${item.kind}:${item.ref} — ${item.reason}`);
+  for (const ex of basis.resolution.statePacket.exclusions) lines.push(`- 状态排除：${ex.objectType}:${ex.objectId}：${ex.reason}`);
+  for (const item of basis.resolution.skipped) lines.push(`- 已跳过：${item.kind}:${item.ref}：${item.reason}`);
+  for (const item of basis.resolution.pruned) lines.push(`- 已裁剪：${item.kind}:${item.ref}：${item.reason}`);
   lines.push("未装配的内容（含任何旧 Workspace/默认技能）不可用；不要引用不存在的工具或文件。");
 
   // 返工 R5：平台 L1 基础段（身份/能力边界/事实纪律/工具原则/通道规则 +

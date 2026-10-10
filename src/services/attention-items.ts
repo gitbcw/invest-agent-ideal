@@ -6,11 +6,13 @@ import { appendConversationMessage, createConversationSession } from "./conversa
 /**
  * T-539 失败告知事实（attention_items）。服务拥有：写入只发生在自动化终态
  * 钩子（automation-notify 决策器），去重/恢复/保留由本模块维护；Portal 与
- * 微信只是同一事实的两个投影，且首版不向用户暴露状态机（无手动收口）。
+ * 微信只是同一事实的两个投影。除任务恢复自动 resolve 外，用户也可在 Portal
+ * 直接手动关闭（closeAttentionItem，幂等）。
  *
  * 语义：
- * - dedup_key = `automation_failure:<taskId>`；同任务存在 open 事项时新失败
- *   只更新该事项（failure_count/last_failed_at/run_id/system_status），不新开；
+ * - dedup_key = `automation_failure:<taskId>`（每任务唯一一行，唯一索引兜底）；
+ *   新失败在 open 时只更新该行计数/状态，已收口（自动恢复/手动关闭）时重开
+ *   同一行并清空收口痕迹，不新开行；
  * - 任务成功终态自动 resolve（resolved_run_id 记录消除失败的 run）；
  * - resolved 事项保留展示（网页可查历史），不删除。
  */
@@ -128,7 +130,7 @@ function systemStatusFor(scope: AttentionScope, taskId: string): string {
   return "系统将按原计划在下一个周期自动重试";
 }
 
-/** 失败终态记录/去重更新。返回写入后的行。 */
+/** 失败终态记录/去重更新（dedup_key 每任务一行；resolved 后再失败重开同一行）。返回写入后的行。 */
 export function recordAutomationFailureAttention(input: {
   scope: AttentionScope;
   taskId: string;
@@ -141,27 +143,41 @@ export function recordAutomationFailureAttention(input: {
   const existing = sqlite
     .prepare(
       `SELECT * FROM attention_items
-       WHERE user_id=? AND project_id=? AND instance_id=? AND dedup_key=? AND status='open'`,
+       WHERE user_id=? AND project_id=? AND instance_id=? AND dedup_key=?`,
     )
     .get(input.scope.userId, input.scope.projectId, input.scope.instanceId, dedupKey) as AttentionItemRow | undefined;
 
   if (existing) {
-    const updated = sqlite
-      .prepare(
-        `UPDATE attention_items
-         SET run_id=?, error_category=?, failure_count=failure_count+1,
-             system_status=?, last_failed_at=?, updated_at=?
-         WHERE item_id=?`,
-      )
-      .run(
-        input.runId,
-        input.errorCategory,
-        systemStatusFor(input.scope, input.taskId),
-        now,
-        now,
-        existing.item_id,
-      );
-    if (updated.changes !== 1) throw new Error(`attention update failed for ${existing.item_id}`);
+    if (existing.status !== "open") {
+      // 已收口（自动恢复或手动关闭）后再失败：重开同一行，清空收口痕迹与本轮微信标记。
+      const reopened = sqlite
+        .prepare(
+          `UPDATE attention_items
+           SET status='open', run_id=?, error_category=?, failure_count=failure_count+1,
+               system_status=?, last_failed_at=?, updated_at=?,
+               resolved_at=NULL, resolved_run_id=NULL, wechat_notified=0
+           WHERE item_id=?`,
+        )
+        .run(input.runId, input.errorCategory, systemStatusFor(input.scope, input.taskId), now, now, existing.item_id);
+      if (reopened.changes !== 1) throw new Error(`attention reopen failed for ${existing.item_id}`);
+    } else {
+      const updated = sqlite
+        .prepare(
+          `UPDATE attention_items
+           SET run_id=?, error_category=?, failure_count=failure_count+1,
+               system_status=?, last_failed_at=?, updated_at=?
+           WHERE item_id=?`,
+        )
+        .run(
+          input.runId,
+          input.errorCategory,
+          systemStatusFor(input.scope, input.taskId),
+          now,
+          now,
+          existing.item_id,
+        );
+      if (updated.changes !== 1) throw new Error(`attention update failed for ${existing.item_id}`);
+    }
     const row = sqlite.prepare("SELECT * FROM attention_items WHERE item_id=?").get(existing.item_id) as AttentionItemRow;
     return toView(row);
   }
@@ -183,7 +199,7 @@ export function recordAutomationFailureAttention(input: {
       dedupKey,
       input.taskId,
       input.runId,
-      `自动化任务失败：${taskTitle(input.taskId)}`,
+      `定时任务失败：${taskTitle(input.taskId)}`,
       impactFor(input.errorCategory),
       systemStatusFor(input.scope, input.taskId),
       input.errorCategory,
@@ -220,6 +236,22 @@ export function resolveAutomationAttention(input: {
       `automation_failure:${input.taskId}`,
     );
   return result.changes > 0;
+}
+
+/**
+ * 用户手动关闭关注项（不开问题处理会话直接丢弃）。
+ * 2026-10-08 用户裁决：手动关闭的行直接删除，不保留「已关闭」历史；
+ * 任务再次失败时 recordAutomationFailureAttention 按 dedup_key 重新生成。
+ * 幂等：行不存在（含已被丢弃）时同样视为成功。
+ */
+export function closeAttentionItem(scope: AttentionScope, itemId: string): { discarded: true } {
+  sqlite
+    .prepare(
+      `DELETE FROM attention_items
+       WHERE item_id=? AND user_id=? AND project_id=? AND instance_id=?`,
+    )
+    .run(itemId, scope.userId, scope.projectId, scope.instanceId);
+  return { discarded: true };
 }
 
 /** 微信首条提醒发出后回写（事实记录，不影响事项状态）。 */
@@ -277,6 +309,7 @@ export interface NotificationPreferences {
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
   categories: string[] | null;
+  defaultDeliveryMode: "wechat" | "none";
 }
 
 const DEFAULT_PREFERENCES: NotificationPreferences = {
@@ -285,12 +318,13 @@ const DEFAULT_PREFERENCES: NotificationPreferences = {
   quietHoursStart: null,
   quietHoursEnd: null,
   categories: null,
+  defaultDeliveryMode: "none",
 };
 
 export function getNotificationPreferences(scope: AttentionScope): NotificationPreferences {
   const row = sqlite
     .prepare(
-      `SELECT wechat_failure_enabled, wechat_recovery_enabled, quiet_hours_start, quiet_hours_end, categories_json
+      `SELECT wechat_failure_enabled, wechat_recovery_enabled, quiet_hours_start, quiet_hours_end, categories_json, default_delivery_mode
        FROM notification_preferences WHERE user_id=? AND project_id=? AND instance_id=?`,
     )
     .get(scope.userId, scope.projectId, scope.instanceId) as
@@ -300,6 +334,7 @@ export function getNotificationPreferences(scope: AttentionScope): NotificationP
         quiet_hours_start: string | null;
         quiet_hours_end: string | null;
         categories_json: string | null;
+        default_delivery_mode: string | null;
       }
     | undefined;
   if (!row) return { ...DEFAULT_PREFERENCES };
@@ -309,12 +344,13 @@ export function getNotificationPreferences(scope: AttentionScope): NotificationP
     quietHoursStart: row.quiet_hours_start,
     quietHoursEnd: row.quiet_hours_end,
     categories: row.categories_json ? (JSON.parse(row.categories_json) as string[]) : null,
+    defaultDeliveryMode: row.default_delivery_mode === "wechat" ? "wechat" : "none",
   };
 }
 
 export function updateNotificationPreferences(
   scope: AttentionScope,
-  patch: Partial<Pick<NotificationPreferences, "wechatFailureEnabled" | "wechatRecoveryEnabled" | "quietHoursStart" | "quietHoursEnd" | "categories">>,
+  patch: Partial<Pick<NotificationPreferences, "wechatFailureEnabled" | "wechatRecoveryEnabled" | "quietHoursStart" | "quietHoursEnd" | "categories" | "defaultDeliveryMode">>,
 ): NotificationPreferences {
   const current = getNotificationPreferences(scope);
   const next: NotificationPreferences = {
@@ -323,19 +359,21 @@ export function updateNotificationPreferences(
     quietHoursStart: patch.quietHoursStart !== undefined ? patch.quietHoursStart : current.quietHoursStart,
     quietHoursEnd: patch.quietHoursEnd !== undefined ? patch.quietHoursEnd : current.quietHoursEnd,
     categories: patch.categories !== undefined ? patch.categories : current.categories,
+    defaultDeliveryMode: patch.defaultDeliveryMode ?? current.defaultDeliveryMode,
   };
   sqlite
     .prepare(
       `INSERT INTO notification_preferences (
          user_id, project_id, instance_id,
-         wechat_failure_enabled, wechat_recovery_enabled, quiet_hours_start, quiet_hours_end, categories_json, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         wechat_failure_enabled, wechat_recovery_enabled, quiet_hours_start, quiet_hours_end, categories_json, default_delivery_mode, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(user_id, project_id, instance_id) DO UPDATE SET
          wechat_failure_enabled=excluded.wechat_failure_enabled,
          wechat_recovery_enabled=excluded.wechat_recovery_enabled,
          quiet_hours_start=excluded.quiet_hours_start,
          quiet_hours_end=excluded.quiet_hours_end,
          categories_json=excluded.categories_json,
+         default_delivery_mode=excluded.default_delivery_mode,
          updated_at=excluded.updated_at`,
     )
     .run(
@@ -347,6 +385,7 @@ export function updateNotificationPreferences(
       next.quietHoursStart,
       next.quietHoursEnd,
       next.categories ? JSON.stringify(next.categories) : null,
+      next.defaultDeliveryMode,
       new Date().toISOString(),
     );
   return next;
@@ -403,7 +442,7 @@ export function openAttentionConversation(scope: AttentionScope, itemId: string)
       `发生时间：${item.lastFailedAt}；累计失败 ${item.failureCount} 次。`,
       `直接影响：${item.impactSummary}`,
       `当前系统状态：${item.status === "open" ? item.systemStatus : "已自动恢复（历史事项）"}。`,
-      "请用用户能理解的语言解释这次失败的原因、影响与现在的恢复状态，并提出可选的处理方案（重试、修改任务、暂停或补充资料）。如发现可复用的处置方法，可以提交改进候选；候选需用户批准才会生效。不要展示错误码、堆栈或内部版本号。",
+      "请用用户能理解的语言解释这次失败的原因、影响与现在的恢复状态，并提出可选的处理方案（重试、修改任务、暂停或归档）。如发现可复用的处置方法，可以提交改进候选；候选需用户批准才会生效。不要展示错误码、堆栈或内部版本号，也不要建议当前界面不存在的删除操作。",
     ].join("\n"),
     metadata: { attentionItemId: item.itemId, taskId: item.taskId, runId: item.runId, origin: "attention_issue" },
   });

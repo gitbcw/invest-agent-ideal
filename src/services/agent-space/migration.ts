@@ -287,6 +287,19 @@ function isReplay(scope: UserScope, key: string): boolean {
   return Boolean(row);
 }
 
+/** 内容级防重（2026-10-08 镜像定性）：该 scope 已有同 checksum 的 active 资产
+ * 时（如复盘报告先经会话保存、workspace 文件又被迁移登记），返回其 assetId。
+ * idempotencyKey 只防同 key 重放，防不了"同内容两条资产记录"。 */
+function existingAssetIdByChecksum(scope: UserScope, checksum: string): string | null {
+  const row = sqlite
+    .prepare(
+      "SELECT a.asset_id AS assetId FROM user_assets a JOIN user_asset_versions v ON v.version_id=a.current_version_id " +
+      "WHERE a.user_id=? AND a.project_id=? AND a.instance_id=? AND a.status='active' AND v.checksum=? LIMIT 1",
+    )
+    .get(scope.userId, scope.projectId, scope.instanceId, checksum) as { assetId?: string } | undefined;
+  return row?.assetId ?? null;
+}
+
 /**
  * 导入已 staged 的项到（隔离）库。幂等：同 idempotencyKey 重放返回原对象，
  * 零新增副作用（user-assets 与 agent-space 服务层既有幂等语义）。
@@ -308,7 +321,16 @@ export async function importStagedMigration(
     }
     try {
       const bytes = readFileSync(path.join(copyRoot, copy.copyPath));
+      // 先判同 key 重放（返回原对象），再判内容级重复：同内容不同 key 的
+      // 登记才跳过（如复盘报告已由会话保存、workspace 文件又被迁移登记）。
       const replay = isReplay(item.scope, idemKey(item.itemId));
+      if (!replay) {
+        const existingAssetId = existingAssetIdByChecksum(item.scope, item.sourceHash);
+        if (existingAssetId) {
+          skipped.push({ itemId: item.itemId, reason: `content-duplicate of active asset ${existingAssetId}` });
+          continue;
+        }
+      }
       const asset = await createUserAsset({
         ...item.scope,
         name: item.path,

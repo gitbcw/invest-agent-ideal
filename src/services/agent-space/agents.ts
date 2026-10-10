@@ -158,6 +158,11 @@ export function installSkill(input: {
   if (version.skill_id !== input.skillId) {
     throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "version does not belong to skill");
   }
+  // 2026-10-08 裁决「删除就消失」：墓碑技能不可再安装（含其历史发布）。
+  const skillRow = sqlite.prepare("SELECT status FROM agent_space_skills WHERE skill_id=?").get(input.skillId) as { status: string } | undefined;
+  if (skillRow?.status === "deleted") {
+    throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `skill ${input.skillId} has been deleted`);
+  }
   const tx = sqlite.transaction(() => {
     // R9：核验+消耗与安装写入、审计同事务。releaseId 影响安装结果（发布来源
     // 与发布版本号），release 安装纳入完整操作绑定（验收 R9 第五轮）。
@@ -351,6 +356,10 @@ export function applyDefaultSkillManifest(input: {
  * 显式移除安装（W3）：用户决定，走授权凭证（operation=skill.remove，绑定
  * agentId+skillId）；R9 契约同安装——核验+消耗+状态转换+审计+结果记录同事务，
  * 重放返回原结果。安装行保留（status=removed）供追溯，运行解析随即拒绝。
+ * 2026-10-08 裁决「删除就消失」：卸载 user 域技能时同事务给技能行打墓碑
+ * （status='deleted'，slug 让位 `-deleted-<时间戳>`，避开 (domain,scope,slug)
+ * 唯一约束），此后私有列表/目录/找回面都不再出现；系统域行为不变（卸载后仍可
+ * 从目录找回）。
  */
 export function removeInstalledSkill(input: {
   scope: UserScope;
@@ -383,7 +392,7 @@ export function removeInstalledSkill(input: {
     if (!installed) {
       throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "skill is not installed for this agent");
     }
-    const skill = sqlite.prepare("SELECT is_core FROM agent_space_skills WHERE skill_id=?").get(input.skillId) as { is_core: number } | undefined;
+    const skill = sqlite.prepare("SELECT is_core, domain, slug, status FROM agent_space_skills WHERE skill_id=?").get(input.skillId) as { is_core: number; domain: string; slug: string; status: string } | undefined;
     if (skill?.is_core === 1) throw new AgentSpaceError("AGENT_SPACE_INVALID_TRANSITION", "core skill cannot be removed by a user");
     const dependencies = sqlite.prepare(
       `SELECT COUNT(*) AS n FROM agent_space_task_dependencies
@@ -405,6 +414,25 @@ export function removeInstalledSkill(input: {
       toStatus: "removed",
       detail: { agentId: input.agentId, skillId: input.skillId, versionId: installed.version_id, approvalRef: input.approvalRef },
     });
+    // 2026-10-08 裁决「删除就消失」：user 域技能在移除安装的同一事务打墓碑；
+    // slug 改名让出 (domain,scope,slug) 唯一约束，之后同 slug 可重新创建。
+    // 系统域（含预置发布）不打墓碑，卸载后仍可从目录找回。
+    if (skill && skill.domain === "user" && skill.status !== "deleted") {
+      const tombstoneSlug = `${skill.slug}-deleted-${Date.now()}`;
+      sqlite
+        .prepare("UPDATE agent_space_skills SET status='deleted', slug=?, updated_at=? WHERE skill_id=?")
+        .run(tombstoneSlug, nowIso(), input.skillId);
+      recordAgentSpaceAudit({
+        scope: input.scope,
+        actor: input.actor,
+        action: "skill.tombstoned",
+        objectType: "agent_space_skill",
+        objectId: input.skillId,
+        fromStatus: skill.status,
+        toStatus: "deleted",
+        detail: { agentId: input.agentId, slug: skill.slug, tombstoneSlug, approvalRef: input.approvalRef },
+      });
+    }
     recordAuthorizationOutcome(approval.authorizationId, { installationId: installed.installation_id });
     return { installationId: installed.installation_id, status: "removed" as const };
   });
@@ -554,9 +582,14 @@ export function bindMethod(input: {
   getAgent(input.scope, input.agentId);
   const method = sqlite
     .prepare("SELECT * FROM agent_space_methods WHERE method_id=?")
-    .get(input.methodId) as { user_id: string; project_id: string; instance_id: string; current_version_id: string | null } | undefined;
+    .get(input.methodId) as { user_id: string; project_id: string; instance_id: string; current_version_id: string | null; kind?: string } | undefined;
   if (!method) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `method ${input.methodId}`);
   assertRowScope(method, input.scope);
+  // 2026-10-08 两层裁决：主策略绑定只作用于 strategy；framework 整体常驻，
+  // 不参与「设为主策略」。
+  if (method.kind === "framework") {
+    throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", `framework ${input.methodId} 不参与主策略绑定（投资框架整体常驻）`);
+  }
   if (input.versionPolicy === "pinned") {
     if (!input.pinnedVersionId) {
       throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "pinned policy requires pinnedVersionId");
@@ -565,17 +598,28 @@ export function bindMethod(input: {
   }
   const now = nowIso();
   const bindingId = newId("mbind");
-  sqlite
-    .prepare(
-      `INSERT INTO agent_space_agent_method_bindings (
-         binding_id, agent_id, user_id, project_id, instance_id, method_id, version_policy, pinned_version_id, status, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-       ON CONFLICT(agent_id, method_id) DO UPDATE SET
-         version_policy=excluded.version_policy, pinned_version_id=excluded.pinned_version_id,
-         status='active', updated_at=excluded.updated_at`,
-    )
-    .run(bindingId, input.agentId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
-         input.methodId, input.versionPolicy, input.pinnedVersionId ?? null, now, now);
+  // 2026-10-08 owner 裁决「我的策略」：策略可多份，但主策略唯一——agent 的
+  // 方法绑定即主策略，绑定为换绑语义（同一 agent 只保留一条 active 绑定，
+  // 旧主策略自动让位）。被任务固定引用的版本不受影响（任务走依赖路径）。
+  const supersede = sqlite.transaction(() => {
+    sqlite.prepare(
+      `UPDATE agent_space_agent_method_bindings
+       SET status='superseded', updated_at=?
+       WHERE agent_id=? AND user_id=? AND project_id=? AND instance_id=? AND status='active' AND method_id != ?`,
+    ).run(now, input.agentId, input.scope.userId, input.scope.projectId, input.scope.instanceId, input.methodId);
+    sqlite
+      .prepare(
+        `INSERT INTO agent_space_agent_method_bindings (
+           binding_id, agent_id, user_id, project_id, instance_id, method_id, version_policy, pinned_version_id, status, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+         ON CONFLICT(agent_id, method_id) DO UPDATE SET
+           version_policy=excluded.version_policy, pinned_version_id=excluded.pinned_version_id,
+           status='active', updated_at=excluded.updated_at`,
+      )
+      .run(bindingId, input.agentId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
+           input.methodId, input.versionPolicy, input.pinnedVersionId ?? null, now, now);
+  });
+  supersede();
   recordAgentSpaceAudit({
     scope: input.scope,
     actor: input.actor,
@@ -583,7 +627,7 @@ export function bindMethod(input: {
     objectType: "agent_space_agent_method_binding",
     objectId: bindingId,
     toStatus: "active",
-    detail: { agentId: input.agentId, methodId: input.methodId, versionPolicy: input.versionPolicy, pinnedVersionId: input.pinnedVersionId ?? null },
+    detail: { agentId: input.agentId, methodId: input.methodId, versionPolicy: input.versionPolicy, pinnedVersionId: input.pinnedVersionId ?? null, primaryOnly: true },
   });
   return { bindingId };
 }

@@ -46,6 +46,8 @@ export interface CreateMethodInput {
   scope: UserScope;
   name: string;
   description?: string;
+  /** 2026-10-08 两层裁决：framework=投资框架（整体常驻）；strategy=策略（主策略唯一）。 */
+  kind?: "framework" | "strategy";
   idempotencyKey?: string;
   actor: string;
 }
@@ -89,6 +91,7 @@ type MethodRow = {
   name: string;
   description: string | null;
   status: MethodStatus;
+  kind?: "framework" | "strategy";
   current_version_id: string | null;
   created_at: string;
   updated_at: string;
@@ -171,11 +174,11 @@ export function createMethod(input: CreateMethodInput): MethodRow {
     sqlite
       .prepare(
         `INSERT INTO agent_space_methods (
-           method_id, user_id, project_id, instance_id, name, description, status, current_version_id, idempotency_key, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?, ?)`,
+           method_id, user_id, project_id, instance_id, name, description, status, kind, current_version_id, idempotency_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, NULL, ?, ?, ?)`,
       )
       .run(methodId, input.scope.userId, input.scope.projectId, input.scope.instanceId,
-           input.name, input.description ?? null, input.idempotencyKey ?? null, now, now);
+           input.name, input.description ?? null, input.kind ?? "strategy", input.idempotencyKey ?? null, now, now);
     recordAgentSpaceAudit({
       scope: input.scope,
       actor: input.actor,

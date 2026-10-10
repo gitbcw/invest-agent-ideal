@@ -35,7 +35,7 @@ import { logger } from "../lib/logger.js";
  *   探针 HTTP 200，顶回原 qwen 链位（glm 与 deepseek 之间）。3.7 维持
  *   出册不再使用。
  * - 同日深夜二次调整（owner）：deepseek 前置于 qwen3.8——首夜实测
- *   qwen3.8 在重载自动化任务上空响应（MASTRA_EMPTY_RESPONSE，探针正常），
+ *   qwen3.8 在重载定时任务上空响应（MASTRA_EMPTY_RESPONSE，探针正常），
  *   deepseek 接管完成实际工作；峰时价差（deepseek 峰 2/8 vs qwen 0.8/2.7）
  *   让位于可靠性。qwen3.8 降为 deepseek 之后的次选。
  * - glm 容忍度放宽（owner 2026-09-18）：glm 国产通道稳定性可靠，偶发空响应/
@@ -296,7 +296,11 @@ function isGptModel(model: string): boolean {
 }
 
 function autoChainFor(input: { hasImage: boolean }): AutoChainEntry[] {
-  return input.hasImage ? IMAGE_AUTO_MODEL_CHAIN : AUTO_MODEL_CHAIN;
+  const chain = input.hasImage ? IMAGE_AUTO_MODEL_CHAIN : AUTO_MODEL_CHAIN;
+  const preferred = process.env.INVEST_AGENT_AUTO_PREFERRED_MODEL?.trim();
+  return preferred && chain.some((entry) => entry.model === preferred)
+    ? [...chain.filter((entry) => entry.model === preferred), ...chain.filter((entry) => entry.model !== preferred)]
+    : chain;
 }
 
 /** GPT models are never auto-routed without a recent <=10s probe for that exact model. */

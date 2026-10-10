@@ -1245,6 +1245,7 @@ export function initDb() {
   dropLegacyAlertsTable();
   ensureAgentSpaceTables();
   ensureAttentionAndPreferenceTables();
+  ensureNotificationPreferenceDeliveryMode();
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_users_username ON platform_users(username);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_roles_name ON platform_roles(name);
@@ -1918,6 +1919,7 @@ function ensureAgentSpaceTables() {
       user_id TEXT NOT NULL, project_id TEXT NOT NULL, instance_id TEXT NOT NULL,
       name TEXT NOT NULL, description TEXT,
       status TEXT NOT NULL DEFAULT 'draft',
+      kind TEXT NOT NULL DEFAULT 'strategy',
       current_version_id TEXT,
       idempotency_key TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -2235,6 +2237,9 @@ function ensureAgentSpaceTables() {
   // W1 返工（验收 R3/R4/R6）增量列与新表：新建表语句已含；
   // ensureColumn 仅为已初始化过的 W1 隔离库幂等补齐。
   ensureColumn("agent_space_method_versions", "adoption_constraints", "TEXT");
+  // 2026-10-08 owner 裁决「投资框架 vs 我的策略」两层：framework=整体常驻的
+  // 方法论体系（不参与主策略切换）；strategy=用户定义的执行规则（主策略唯一）。
+  ensureColumn("agent_space_methods", "kind", "TEXT NOT NULL DEFAULT 'strategy'");
   ensureColumn("agent_space_lessons", "draft_version_id", "TEXT");
   ensureColumn("agent_space_lessons", "owner_kind", "TEXT");
   ensureColumn("agent_space_lessons", "owner_id", "TEXT");
@@ -2304,6 +2309,19 @@ function ensureAttentionAndPreferenceTables() {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (user_id, project_id, instance_id)
     );
+  `);
+  markMigration(migrationKey);
+}
+
+/** T-565：新建定时任务未声明 delivery 时使用的用户级默认渠道。 */
+function ensureNotificationPreferenceDeliveryMode() {
+  const migrationKey = "notification_preferences_delivery_mode_v1";
+  if (hasMigration(migrationKey)) return;
+  ensureColumn("notification_preferences", "default_delivery_mode", "TEXT NOT NULL DEFAULT 'none'");
+  sqlite.exec(`
+    UPDATE notification_preferences
+    SET default_delivery_mode = 'none'
+    WHERE default_delivery_mode IS NULL OR default_delivery_mode NOT IN ('wechat', 'none');
   `);
   markMigration(migrationKey);
 }

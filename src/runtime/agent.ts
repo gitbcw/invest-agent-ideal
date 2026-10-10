@@ -3,7 +3,7 @@ import { textResponse } from "./protocol.js";
 import { stat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { logger } from "../lib/logger.js";
-import { dedupeRepeatedCustomerText, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
+import { dedupeRepeatedCustomerText, isLikelyInternalAgentDraft, sanitizeCustomerText, sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { formatUnknownError } from "../lib/errors.js";
 import { recordAgentTrace } from "../runtime/trace.js";
 import { DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
@@ -20,6 +20,7 @@ import { isModelDisabled, recordModelFeedback, resolveAutoModel } from "../servi
 import { createRegisteredMastraWorkspace } from "../mastra/workspace-registry.js";
 import { buildAgentSpaceTurnOptions, isAgentSpaceAssemblyModeEnabled } from "./agent-space-context.js";
 import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../mastra/external-mcp.js";
+import { createToolResultReadTool, TOOLRESULT_READ_TOOL_NAME, TOOLRESULT_SERVER_ID } from "../mastra/tool-result-offload.js";
 import {
   applyInteractiveExternalToolDiscovery,
   applyInteractiveServiceToolDiscovery,
@@ -31,6 +32,7 @@ import { isConversationWorkingStateEnabled } from "../services/conversation-work
 import { buildConversationCoherenceContext } from "../services/conversation-working-state-store.js";
 import { buildAgentInstructions } from "./agent-instructions.js";
 import { hasExecutionBudgetForFallback, resolveTurnExecutionBudget } from "./execution-budget.js";
+import { hidePreparedMarketTools, preparePortfolioScreening, type ScreeningPreparationResult } from "./screening-preparation.js";
 import { MastraUserPreferenceStore } from "../services/user-preferences.js";
 import { readMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { readMastraTradingStrategies } from "../lib/mastra-strategy-library.js";
@@ -54,7 +56,7 @@ async function hasAnyTypedScheduledTask(userContext: UserContext): Promise<boole
  * portfolio-adjacent questions. Later turns stay guided through the
  * service notice injected into the prompt.
  */
-async function isInitializationUnfinished(userContext: UserContext): Promise<boolean> {
+export async function isInitializationUnfinished(userContext: UserContext): Promise<boolean> {
   try {
     const instanceId = userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId);
     const projectId = userContext.projectId ?? "invest-agent";
@@ -67,8 +69,13 @@ async function isInitializationUnfinished(userContext: UserContext): Promise<boo
       | null;
     const hasHoldings = Array.isArray(portfolio?.holdings) && portfolio!.holdings!.length > 0;
     const hasWatchlist = Array.isArray(portfolio?.watchlist) && portfolio!.watchlist!.length > 0;
+    // 2026-10-08 两层模型：新策略域（framework/strategy 任一已采用）即视为
+    // 已有策略；老策略库（历史用户）仍作为兼容判定。
     const strategies = readMastraTradingStrategies({ userId: userContext.userId, projectId, instanceId });
-    return !hasHoldings && !hasWatchlist && strategies.length === 0;
+    const hasDomainStrategy = Boolean(sqlite.prepare(
+      "SELECT 1 AS one FROM agent_space_methods WHERE user_id=? AND project_id=? AND instance_id=? AND status='active' AND current_version_id IS NOT NULL",
+    ).get(userContext.userId, projectId, instanceId));
+    return !hasHoldings && !hasWatchlist && strategies.length === 0 && !hasDomainStrategy;
   } catch {
     return false;
   }
@@ -83,7 +90,7 @@ function buildInitializationNotice(): string {
   return [
     "",
     "【服务提示·初始化状态】当前用户尚未完成初始化：无持仓、无观察仓、无策略包。",
-    "引导要求：正常回答用户的问题，不要拒绝或只输出引导；在回答中或结尾顺带、自然地提醒一次——完成初始化后（Portal「初始化」向导，或直接在对话里粘贴持仓，每行「股票名称 + 6 位代码」），分析、复盘和提醒才能围绕用户的真实持仓展开。",
+    "引导要求：正常回答用户的问题，不要拒绝或只输出引导；在回答中或结尾顺带、自然地提醒一次初始化，但注意话术面向普通用户：只说「可以直接在对话里粘贴持仓（每行：股票名称 + 6 位代码），我来帮你导入」，或「网页顶部有初始化入口，两分钟就能完成」——不要向用户提及 Portal、runtime、向导编号或任何内部系统名称。",
     "用户表示不需要、已了解或明确拒绝时，本轮起不再重复提醒；用户主动要开始导入时，使用 onboarding draft 工具带领导入。",
   ].join("\n");
 }
@@ -142,6 +149,11 @@ function resolvePositiveTimeoutMs(name: string, fallback: number): number {
 // 与 generic-automation-runner 的 GENERIC_AUTOMATION_MAX_TOOL_CALLS 同步调整
 //（2026-08-26：10 -> 30）。此处是硬顶：低于 runner 值会把任务预算压回去。
 const INTERNAL_AUTOMATION_MAX_STEPS = 30;
+// 2026-10-09：重交互轮（思考深度路由 depth=high）的步数上限。默认 20 会让
+// 策略模拟/多标的报告类轮次撞顶空响应（web_hjtN… 217s 实证）。
+const INTERACTIVE_HEAVY_MAX_STEPS = 32;
+// 对应的轮次墙钟预算（ms）：heavy 轮 32 步在 600s 内经常跑不完。
+const INTERACTIVE_HEAVY_TURN_TIMEOUT_MS = 900_000;
 // 2026-08-27：480s → 570s（mgreplay 回放实测 glm-5.3-flash 三步 ~480s，最终
 // JSON 步差 ~90s 被掐）。570 + 300 兜底 + 30 提交 = 900s 恰为 15 分钟租约；
 // 兜底仅在 attempt 早期失败时发生，全时长 attempt 后无兜底属预期。
@@ -322,7 +334,8 @@ export function createRuntimeAgent(): RuntimeAgent {
           userContext,
           includeContextPacket: false,
         });
-        promptTextForTrace = promptContext.promptText;
+        let preparedPromptText = promptContext.promptText;
+        promptTextForTrace = preparedPromptText;
         // Multi-turn context: the authoritative conversation_messages rows for
         // this conversation, minus the already-persisted current turn. The
         // adapter appends the live user message itself.
@@ -386,11 +399,16 @@ export function createRuntimeAgent(): RuntimeAgent {
         const grantedServiceTools = interactiveDiscovery
           ? await applyInteractiveServiceToolDiscovery(mastraTools)
           : filterServiceToolsByGrant(mastraTools, userContext.mcpAllowedTools);
+        // W4-R1：装配模式判定提前到 workspace 创建之前——装配 scope 的技能可见性
+        // 只走注册表（装配注入 instructions），workspace 不得自动挂载 skills/
+        // 目录；legacy scope 保持 skills 挂载（系统技能靠它到达模型）。
+        const agentSpaceAssemblyMode = isAgentSpaceAssemblyModeEnabled(userContext.userId);
         // This returns undefined unless a service-owned bootstrap explicitly
         // registered an isolated project root for the authenticated scope.
         const scopedWorkspace = await createRegisteredMastraWorkspace({
           scope: workspaceScope,
           bindings: await getMastraBindings(),
+          autoLoadSkills: !agentSpaceAssemblyMode,
         });
         const externalMcp = await resolveExternalMastraToolsets("interactive");
         const observedToolsets = withExternalToolCallObserver(externalMcp.toolsets, {
@@ -400,12 +418,58 @@ export function createRuntimeAgent(): RuntimeAgent {
           conversationId,
           runId: turnRequestId ?? message.id,
         });
+        // 工具结果分片读取（2026-10-09 预览+引用）：观察者层把超预算外部结果
+        // 改写为「预览 + result_ref」并暂存全量；本合成组给模型一个常驻的
+        // 分片读取工具，scope 与观察者同口径闭包绑定（跨会话不可读）。
+        try {
+          observedToolsets[TOOLRESULT_SERVER_ID] = {
+            [TOOLRESULT_READ_TOOL_NAME]: await createToolResultReadTool({
+              userId,
+              projectId: userContext.projectId ?? "invest-agent",
+              instanceId: userContext.instanceId ?? defaultInstanceIdForUser(userId),
+              conversationId,
+            }),
+          };
+        } catch (error) {
+          logger.warn(`toolresult.read 挂载失败，本轮降级为仅预览: ${formatUnknownError(error)}`);
+        }
+        // Full-scope screening gets a deterministic, read-only data-preparation
+        // pass before the Agent reasons. The Agent keeps ownership of judgment;
+        // this only prevents repeated per-symbol exploration and separates ETFs.
+        let preparedScreening: ScreeningPreparationResult = { enabled: false, prompt: "", stockCodes: [], etfCodes: [], toolCalls: [] };
+        if (channel !== "automation") {
+          try {
+            const projection = readMastraPortfolioProjection(
+              userContext.userId,
+              userContext.instanceId ?? defaultInstanceIdForUser(userContext.userId),
+            );
+            const preparation = await preparePortfolioScreening({
+              userText: text,
+              userContext,
+              projection,
+              externalToolsets: observedToolsets,
+            });
+            if (preparation.enabled) {
+              preparedScreening = preparation;
+              preparedPromptText = `${preparedPromptText}\n\n${preparation.prompt}`;
+              promptTextForTrace = preparedPromptText;
+              logger.info(
+                `筛选数据准备完成 conversation=${conversationId} stocks=${preparation.stockCodes.length} etfs=${preparation.etfCodes.length} tools=${preparation.toolCalls.join(",") || "none"}`,
+              );
+            }
+          } catch (error) {
+            // Preparation is an optimization, not a correctness boundary. If
+            // it fails, keep the ordinary Agent path and let it disclose gaps.
+            logger.warn(`筛选数据准备失败，回退 Agent 自主路径: ${formatUnknownError(error)}`);
+          }
+        }
+        const preparedObservedToolsets = hidePreparedMarketTools(observedToolsets, preparedScreening);
         // T-400：两段式外部轨——壳必须 delegate 到 observer 包装后的对象（审计
         // 继承），所以重组发生在 observer 之后。T-401：automation 通道外部轨
         // 同走两段式（服务轨仍走白名单，见上）。
         const publicToolsets = interactiveDiscovery || automationExternalDiscovery
-          ? await applyInteractiveExternalToolDiscovery(observedToolsets)
-          : observedToolsets;
+          ? await applyInteractiveExternalToolDiscovery(preparedObservedToolsets)
+          : preparedObservedToolsets;
         try {
           // Generic automation runs carry service-owned internal budget hints.
           // They are intentionally ignored for interactive/API messages and
@@ -418,7 +482,14 @@ export function createRuntimeAgent(): RuntimeAgent {
             fallbackMinRemainingMs: message.context?._fallbackMinRemainingMs,
           });
           const genericAutomationExecution = automationBudget.enabled;
-          const maxSteps = automationBudget.maxSteps;
+          // 2026-10-09：重交互任务步数放宽——多标的行情、策略模拟出报告这类
+          // 轮次（思考深度路由判 high）此前 20 步频繁撞顶：流终止无最终回复，
+          // 空响应兜底再把英文工作叙述当回复送出。high 轮放宽到 32；low 与
+          // 自动化预算不变。上限仍在 run-turn 的 50 硬顶内。
+          const interactiveHeavy = !genericAutomationExecution && thinkingRouter?.depth === "high";
+          const maxSteps = genericAutomationExecution
+            ? automationBudget.maxSteps
+            : interactiveHeavy ? INTERACTIVE_HEAVY_MAX_STEPS : automationBudget.maxSteps;
           const inlineImages = await loadImageAttachmentParts(message.context?.attachments, userContext.workspacePath);
           const executionDeadlineMs = typeof message.context?._executionDeadlineAt === "string"
             ? Date.parse(message.context._executionDeadlineAt)
@@ -428,15 +499,21 @@ export function createRuntimeAgent(): RuntimeAgent {
             : userChannel === "web"
               ? PORTAL_DIRECT_AGENT_TIMEOUT_MS
               : AGENT_EVALUATION_CASE_TIMEOUT_MS > 0 ? AGENT_EVALUATION_CASE_TIMEOUT_MS : undefined;
+          // 2026-10-09：重交互轮（depth=high）步数放宽到 32 后，600s 通道超时
+          // 成为下一堵墙（策略模拟 20 日报告 602s 被掐）。heavy 轮放宽数到
+          // 900s；relay 侧 20min 预算仍留足余量。
+          const effectiveChannelTimeoutMs = interactiveHeavy && channelTimeoutMs && channelTimeoutMs < INTERACTIVE_HEAVY_TURN_TIMEOUT_MS
+            ? INTERACTIVE_HEAVY_TURN_TIMEOUT_MS
+            : channelTimeoutMs;
           const initialBudget = resolveTurnExecutionBudget({
             executionDeadlineMs,
-            configuredTimeoutMs: genericAutomationExecution ? automationBudget.attemptTimeoutMs : channelTimeoutMs,
+            configuredTimeoutMs: genericAutomationExecution ? automationBudget.attemptTimeoutMs : effectiveChannelTimeoutMs,
             firstTokenTimeoutMs: Number(process.env.MASTRA_AUTO_FIRST_TOKEN_TIMEOUT_MS ?? 45_000),
           });
           if (initialBudget.expired) throw new Error("TASK_CANCELLED: execution deadline exceeded");
           const turnParams = {
             conversationId,
-            text: promptContext.promptText,
+            text: preparedPromptText,
             messageId: message.id,
             history,
             ...(selectedModel ? { model: selectedModel } : {}),
@@ -450,10 +527,10 @@ export function createRuntimeAgent(): RuntimeAgent {
             ...(message.context?._onProgress ? { onProgress: message.context._onProgress as import("./protocol.js").AgentTurnProgressCallback } : {}),
           } as Parameters<typeof runMastraTurn>[0];
           // W4-R1：Agent Space 装配模式（默认关闭，按 scope 显式启用）。
-          // 启用后 instructions/tools/workspace 来自装配与固定版本内容，
-          // 不回落旧 Workspace 挂载/默认技能发现；装配失败即本轮失败。
+          // 启用后 instructions/tools 来自装配与固定版本内容，不回落默认技
+          // 能发现；装配失败即本轮失败。scoped workspace 两个分支都挂（见下）。
           let turnDeps: { agentOptions: { instructions: unknown; tools: Record<string, unknown>; workspace?: unknown } };
-          if (isAgentSpaceAssemblyModeEnabled(userContext.userId)) {
+          if (agentSpaceAssemblyMode) {
             // 入口显式标注（_agentSpaceAssembly）优先；未标注时按 taskType 识别。
             const annotated = typeof message.context?._agentSpaceAssembly === "string" ? message.context._agentSpaceAssembly : null;
             const assemblyOptions = await buildAgentSpaceTurnOptions({
@@ -473,7 +550,12 @@ export function createRuntimeAgent(): RuntimeAgent {
               grantedTools: grantedServiceTools,
               toolAllowlist: Array.isArray(userContext.mcpAllowedTools) ? (userContext.mcpAllowedTools as string[]) : null,
             });
-            turnDeps = { agentOptions: { instructions: assemblyOptions.instructions, tools: assemblyOptions.tools } };
+            // 挂载 scoped workspace 与旧 Workspace 挂载/技能发现无关：它是
+            // scope 隔离的项目根 + 只读为主的工具策略（写工具走审计 +
+            // 轮内写入语义），装配模式仍需要它来履行通道文件交付契约
+            // （写 reports/ 文件 → artifacts.publish 出卡片；2026-10-07
+            // 镜像验证：不挂时装配轮没有写文件路径，HTML 交付主路径整体失效）。
+            turnDeps = { agentOptions: { instructions: assemblyOptions.instructions, tools: assemblyOptions.tools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
           } else {
             turnDeps = { agentOptions: { instructions: buildAgentInstructions({ channel: userChannel }), tools: grantedServiceTools, ...(scopedWorkspace ? { workspace: scopedWorkspace } : {}) } };
           }
@@ -624,6 +706,36 @@ export function createRuntimeAgent(): RuntimeAgent {
           firstTokenMs: (error as { firstTokenMs?: number }).firstTokenMs,
           modelSource,
         });
+        const partialText = typeof (error as { partialText?: unknown }).partialText === "string"
+          ? (error as { partialText: string }).partialText.trim()
+          : "";
+        // 2026-10-09 扩展到全通道 + 改为占比判定（web_duHM… 复盘实证：叙述
+        // 89% 英文但引用中文策略名/股票名，逐字「含汉字即放行」失效）。glm
+        // flash 思考档的英文工作叙述会被空响应/超时兜底拼成「英文回复」；
+        // 汉字占字母类字符不足 30% 的 partial 一律按内部叙述丢弃，走确定性
+        // 中文降级文案。正常完成的回复不走此路径，不受影响。
+        const partialCjk = (partialText.match(/[\u4e00-\u9fff]/g) ?? []).length;
+        const partialLatin = (partialText.match(/[a-zA-Z]/g) ?? []).length;
+        const partialUsable = partialText
+          && !isLikelyInternalAgentDraft(partialText)
+          && partialCjk + partialLatin >= 4
+          && partialCjk / (partialCjk + partialLatin) >= 0.3;
+        if (partialUsable) {
+          const partial = channel === "weixin-mobile"
+            ? sanitizeWeixinCustomerText(partialText)
+            : sanitizeCustomerText(partialText);
+          return textResponse(
+            `${partial}\n\n当前先给出已取得的阶段性结果；仍有部分数据或核验未完成。你可以继续追问缺口，或稍后重试以补齐结果。`,
+            true,
+            {
+              executionStatus: "partial",
+              executionErrorCode,
+              executionErrorCategory: taskError.category,
+              executionRetryable: true,
+              executionPartial: true,
+            },
+          );
+        }
         if (isBusy) {
           return textResponse(
             "上一条消息还在处理中，我处理完会直接回复。你可以稍等一下再发下一条。",
@@ -727,7 +839,7 @@ function buildAttachmentPrompt(input: unknown): string | null {
     "【附件上下文】用户随消息发送了附件，附件已保存到当前 workspace 的受控目录。",
     "图片附件：已作为图片内容直接附在本条消息中，请直接查看图片识别内容；不要用文件工具读取图片字节（读出来的是二进制文本，没有意义）。如附件是持仓/观察仓/交易记录截图，请先识别成结构化草案，列出股票名称/代码/数量或金额/成本价/关注原因/不确定字段，并明确要求用户确认后再写入；不要直接落库。",
     "文档附件：PDF/Word/PPT/Excel/CSV/html/md/txt 等，若当前会话接入了文档解析工具（如 mineru），优先调用该工具把附件解析为结构化文本，不要自己写解析代码；解析后请先概括内容，再提取和投资决策相关的结构化信息、事实依据和不确定字段。",
-    "所有附件：不要向用户暴露 localPath 或内部目录；如果用户明确要求保存附件、或要求基于附件创建自动化任务，先调用 assets.attachment.save 将 attachment_id 保存到“我的文件”，再使用返回的 assetId；不要手工读取或编码附件字节。若只是分析附件，保持临时状态。",
+    "所有附件：不要向用户暴露 localPath 或内部目录；如果用户明确要求保存附件、或要求基于附件创建定时任务，先调用 assets.attachment.save 将 attachment_id 保存到“我的文件”，再使用返回的 assetId；不要手工读取或编码附件字节。若只是分析附件，保持临时状态。",
     ...lines,
   ].join("\n");
 }

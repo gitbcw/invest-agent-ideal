@@ -58,6 +58,17 @@ export function replaceWeixinAccount(accountId: string, update: WeixinAccountRec
   return replacedAccountIds;
 }
 
+/** 清空该 stateDir 的全部账号（解绑用）：删除账号文件并把索引置空。 */
+export function clearWeixinAccounts(stateDir = config.weixin.stateDir) {
+  const accountsDir = resolveAccountsDir(stateDir);
+  if (fs.existsSync(accountsDir)) {
+    for (const entry of fs.readdirSync(accountsDir)) {
+      fs.rmSync(path.join(accountsDir, entry), { recursive: true, force: true });
+    }
+  }
+  fs.writeFileSync(resolveAccountIndexPath(stateDir), JSON.stringify([], null, 2), "utf-8");
+}
+
 function removeWeixinAccountState(accountId: string, stateDir: string) {
   const accountsDir = resolveAccountsDir(stateDir);
   if (!fs.existsSync(accountsDir)) return;

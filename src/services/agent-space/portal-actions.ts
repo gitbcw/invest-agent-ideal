@@ -192,19 +192,23 @@ export interface CommitWorkspaceContentInput {
   fileName: string;
   bytes: Buffer;
   idempotencyKey?: string;
+  /** 2026-10-08：技能内容用 skill_content、方法/策略内容用 method_content
+   * （「我的文件」默认隐藏，各自管理页负责）；历史默认 upload 保持兼容。 */
+  source?: "upload" | "skill_content" | "method_content";
 }
 
 export async function commitWorkspaceContent(
   input: CommitWorkspaceContentInput,
 ): Promise<{ assetId: string; assetVersionId: string; contentChecksum: string }> {
   assertScopeValid(input.scope);
+  const contentSource = input.source ?? "upload";
   if (input.assetId) {
     const asset = await uploadUserAssetVersion({
       ...input.scope,
       assetId: input.assetId,
       fileName: input.fileName,
       bytes: input.bytes,
-      source: "upload",
+      source: contentSource,
       idempotencyKey: input.idempotencyKey,
     });
     const version = asset.currentVersion;
@@ -217,7 +221,7 @@ export async function commitWorkspaceContent(
     ...input.scope,
     fileName: input.fileName,
     bytes: input.bytes,
-    source: "upload",
+    source: contentSource,
     idempotencyKey: input.idempotencyKey,
   });
   const version = asset.currentVersion;
@@ -372,6 +376,7 @@ export async function portalCreateMethod(input: PortalCreateMethodInput) {
     fileName: contentFileName(input.name),
     bytes: Buffer.from(input.text, "utf8"),
     idempotencyKey: `${key}:content`,
+    source: "method_content",
   });
   const method = createMethod({
     scope: input.scope,
@@ -419,6 +424,7 @@ export async function portalAddMethodVersion(input: PortalAddMethodVersionInput)
     fileName: input.fileName ?? contentFileName(method.name),
     bytes: Buffer.from(input.text, "utf8"),
     idempotencyKey: input.idempotencyKey,
+    source: "method_content",
   });
   const version = addMethodVersion({
     scope: input.scope,
@@ -506,7 +512,7 @@ export function portalInstallSkill(input: PortalInstallSkillInput) {
   return tx();
 }
 
-/** 卸载（安装行保留 status=removed 供追溯，运行解析随即拒绝）。 */
+/** 卸载（安装行保留 status=removed 供追溯，运行解析随即拒绝）；user 域技能同事务打墓碑（2026-10-08 裁决「删除就消失」），系统域不变。 */
 export function portalRemoveInstalledSkill(
   ctx: PortalActionContext,
   agentId: string,
@@ -586,6 +592,7 @@ export async function portalCreateSkill(input: PortalCreateSkillInput) {
     fileName: contentFileName(input.slug),
     bytes: Buffer.from(input.text, "utf8"),
     idempotencyKey: `${key}:content`,
+    source: "skill_content",
   });
   const skill = upsertSkill({ domain: "user", scope: input.scope, slug: input.slug, name: input.name, description: input.description, actor: input.actor });
   const version = await addSkillVersion({
@@ -603,12 +610,15 @@ export interface PortalEditSkillInput {
   scope: UserScope;
   skillId: string;
   text: string;
+  name?: string;
+  description?: string;
   fileName?: string;
   actor: string;
   idempotencyKey?: string;
 }
 
-/** 编辑私有 Skill：新草稿版本（继承 contentRefType=user_asset_version 的内容链）。 */
+/** 编辑私有 Skill：新草稿版本（继承 contentRefType=user_asset_version 的内容链）。
+ * name/description 可选一并更新（对话 Agent 的 skill.edit 开放元信息修改）。 */
 export async function portalEditSkill(input: PortalEditSkillInput) {
   assertScopeValid(input.scope);
   const skill = sqlite
@@ -620,6 +630,16 @@ export async function portalEditSkill(input: PortalEditSkillInput) {
     | { skill_id: string; slug: string; status: string }
     | undefined;
   if (!skill) throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `skill ${input.skillId}`);
+  // 2026-10-08 裁决「删除就消失」：墓碑技能不可再编辑（避免复活）。
+  if (skill.status === "deleted") throw new AgentSpaceError("AGENT_SPACE_NOT_FOUND", `skill ${input.skillId}`);
+  if (input.name !== undefined || input.description !== undefined) {
+    if (input.name !== undefined && !input.name.trim()) {
+      throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "name must be non-empty when provided");
+    }
+    sqlite
+      .prepare("UPDATE agent_space_skills SET name=COALESCE(?, name), description=COALESCE(?, description), updated_at=? WHERE skill_id=?")
+      .run(input.name?.trim() ?? null, input.description?.trim() ?? null, nowIso(), input.skillId);
+  }
   const assetId = latestSkillAssetId(input.scope, input.skillId);
   const content = await commitWorkspaceContent({
     scope: input.scope,
@@ -627,6 +647,7 @@ export async function portalEditSkill(input: PortalEditSkillInput) {
     fileName: input.fileName ?? contentFileName(skill.slug),
     bytes: Buffer.from(input.text, "utf8"),
     idempotencyKey: input.idempotencyKey,
+    source: "skill_content",
   });
   const version = await addSkillVersion({
     domain: "user",
@@ -1194,7 +1215,7 @@ function countSkillTaskBindings(scope: UserScope, skillId: string): number {
   return row.c;
 }
 
-/** 私有 Skill 列表读模型（两区块之一：scope 内 user 域技能）。 */
+/** 私有 Skill 列表读模型（两区块之一：scope 内 user 域技能）；墓碑技能不出现（2026-10-08 裁决「删除就消失」）。 */
 export function listPortalPrivateSkills(scope: UserScope): PortalPrivateSkillCard[] {
   assertScopeValid(scope);
   const skills = sqlite
@@ -1205,7 +1226,7 @@ export function listPortalPrivateSkills(scope: UserScope): PortalPrivateSkillCar
               (SELECT v.asset_id FROM agent_space_skill_versions v WHERE v.skill_id = s.skill_id
                ORDER BY v.version_number DESC LIMIT 1) AS asset_id
        FROM agent_space_skills s
-       WHERE s.domain='user' AND s.user_id=? AND s.project_id=? AND s.instance_id=?
+       WHERE s.domain='user' AND s.user_id=? AND s.project_id=? AND s.instance_id=? AND s.status <> 'deleted'
        ORDER BY s.updated_at DESC`,
     )
     .all(scope.userId, scope.projectId, scope.instanceId) as Array<{
@@ -1285,14 +1306,14 @@ export function listPortalInstalledSkills(scope: UserScope, agentId?: string): {
   };
 }
 
-/** Small recovery directory: latest installable release/private version per skill. */
+/** Small recovery directory: latest installable release/private version per skill. Tombstoned skills (2026-10-08 裁决) never appear. */
 export function listPortalSkillCatalog(scope: UserScope, agentId?: string) {
   const agent = resolvePortalAgent(scope, agentId);
   const releases = sqlite.prepare(
     `SELECT r.skill_id AS skillId, s.slug, s.name, s.description, r.release_id AS releaseId,
             r.release_version AS releaseVersion, r.version_id AS versionId
      FROM agent_space_skill_releases r JOIN agent_space_skills s ON s.skill_id=r.skill_id
-     WHERE r.visibility='public' AND r.status='published' AND s.is_core=0
+     WHERE r.visibility='public' AND r.status='published' AND s.is_core=0 AND s.status <> 'deleted'
        AND NOT EXISTS (SELECT 1 FROM agent_space_agent_skill_installations i
          WHERE i.agent_id=? AND i.skill_id=r.skill_id AND i.status IN ('installed','disabled'))
      ORDER BY r.published_at DESC`,
@@ -1302,7 +1323,7 @@ export function listPortalSkillCatalog(scope: UserScope, agentId?: string) {
             s.current_private_version_id AS versionId
      FROM agent_space_skills s
      WHERE s.domain='user' AND s.user_id=? AND s.project_id=? AND s.instance_id=?
-       AND s.current_private_version_id IS NOT NULL
+       AND s.current_private_version_id IS NOT NULL AND s.status <> 'deleted'
        AND NOT EXISTS (SELECT 1 FROM agent_space_agent_skill_installations i
          WHERE i.agent_id=? AND i.skill_id=s.skill_id AND i.status IN ('installed','disabled'))`,
   ).all(scope.userId, scope.projectId, scope.instanceId, agent.agentId) as Array<{ skillId: string; slug: string; name: string; description: string | null; versionId: string }>;

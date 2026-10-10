@@ -105,6 +105,8 @@ export interface StrategyYaml {
   last_confirmed_by?: string | null;
   last_confirmation_id?: string | null;
   last_method_change_candidate_id?: string | null;
+  last_strategy_version_id?: string | null;
+  strategy_version_parent_id?: string | null;
 }
 
 export interface WatchYaml {

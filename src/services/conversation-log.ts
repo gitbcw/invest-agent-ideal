@@ -596,6 +596,17 @@ export function listConversations(input: {
     LIMIT ? OFFSET ?
   `).all(...params) as ConversationSummary[];
   const items = rows.slice(0, limit);
+  // 2026-10-09：附带活动轮状态——前端切页/重载后据此恢复「处理中」标记
+  // （服务端执行不受前端断开影响，状态必须能从服务端重建）。
+  if (items.length > 0) {
+    const activeRows = sqlite.prepare(
+      `SELECT conversation_id AS id FROM conversation_turn_active WHERE user_id = ? AND instance_id = ?`,
+    ).all(scope.userId, scope.instanceId) as Array<{ id: string }>;
+    const activeSet = new Set(activeRows.map((row) => row.id));
+    for (const item of items) {
+      (item as ConversationSummary & { turnActive?: boolean }).turnActive = activeSet.has(item.conversationId);
+    }
+  }
   return {
     items,
     nextCursor: rows.length > limit ? String(offset + limit) : undefined,
@@ -614,6 +625,12 @@ export function getConversation(input: {
   const scope = normalizeConversationScope(input);
   const limit = Math.min(Math.max(Number(input.limit || 100), 1), 200);
   const offset = Math.max(Number(input.cursor || 0) || 0, 0);
+  // 活动轮权威状态（与 listConversations 同源）：门户 1s 轮询据此判定
+  // 「处理中」，mirror 的 pending 启发式在消息同步后恒为 false，不能单独依赖。
+  const activeRow = sqlite.prepare(
+    `SELECT 1 AS active FROM conversation_turn_active WHERE user_id = ? AND instance_id = ? AND conversation_id = ? LIMIT 1`,
+  ).get(scope.userId, scope.instanceId, input.conversationId) as { active: number } | undefined;
+  const turnActive = Boolean(activeRow);
   const session = sqlite.prepare(`
     SELECT conversation_id AS conversationId, title
     FROM conversation_sessions
@@ -625,6 +642,7 @@ export function getConversation(input: {
       title: "新对话",
       messages: [] as ConversationMessageRecord[],
       nextCursor: undefined as string | undefined,
+      turnActive,
     };
   }
   const rows = sqlite.prepare(`
@@ -659,6 +677,7 @@ export function getConversation(input: {
     title: session.title,
     messages,
     nextCursor: rows.length > limit ? String(offset + limit) : undefined,
+    turnActive,
   };
 }
 
@@ -1085,12 +1104,12 @@ async function chatViaConversationLogOnce(input: {
     ? regenerateUserMessage.content
     : automationConversation
     ? [
-        "这是一次受控自动化任务的后续互动。",
+        "这是一次受控定时任务的后续互动。",
         `任务名称：${automationConversation.task.revision.name}`,
         `任务说明：${automationConversation.task.revision.description || "（未提供额外说明）"}`,
         `源文件：source/${automationConversation.task.sourceAsset?.fileName || "source"}`,
         `工作文件：working/${automationConversation.task.workingAsset?.fileName || "working"}`,
-        "只能读取 source/ 与 working/ 的当前任务文件；不得修改 source/，不得访问其他文件或确定性投资状态。XLSX 使用当前目录的 automation-sheet.mjs 结构化读取/写入，不能按纯文本拼接。若用户要求修改任务的规则、时间、文件绑定或启停，说明必须回到自动化任务编辑页，而不要静默修改。",
+        "只能读取 source/ 与 working/ 的当前任务文件；不得修改 source/，不得访问其他文件或确定性投资状态。XLSX 使用当前目录的 automation-sheet.mjs 结构化读取/写入，不能按纯文本拼接。若用户要求修改任务的规则、时间、文件绑定或启停，说明必须回到定时任务编辑页，而不要静默修改。",
         `用户本次要求：${String(input.text || "请说明本次运行结果")}`,
       ].join("\n")
     : buildPortalUserText(input.text, storedAttachments);

@@ -25,7 +25,7 @@ export { UserAssetError } from "./user-asset-error.js";
 
 export type AssetFormat = "markdown" | "html" | "csv" | "xlsx" | "pdf" | "png" | "jpeg" | "webp" | "svg" | "yaml" | "jsonl" | "docx";
 export type UserAssetStatus = "active" | "archived";
-export type UserAssetSource = "upload" | "conversation" | "automation" | "restore" | "system";
+export type UserAssetSource = "upload" | "conversation" | "automation" | "restore" | "system" | "skill_content" | "method_content";
 export type AssetScope = { userId: string; projectId: string; instanceId: string };
 export type UserAssetFolderDescriptor = {
   folderId: string;
@@ -161,7 +161,14 @@ const EXTENSION_FORMAT: Record<string, AssetFormat> = {
   ".yaml": "yaml", ".yml": "yaml", ".jsonl": "jsonl", ".ndjson": "jsonl",
   ".docx": "docx",
 };
-const SOURCES = new Set<UserAssetSource>(["upload", "conversation", "automation", "restore", "system"]);
+const SOURCES = new Set<UserAssetSource>(["upload", "conversation", "automation", "restore", "system", "skill_content", "method_content"]);
+
+/**
+ * 2026-10-08 用户裁决：技能与策略内容资产不在「我的文件」中管理——技能由
+ * 技能管理、策略由「我的策略」页统一负责，内容文件（skill_content /
+ * method_content）默认从资产列表隐藏。两个域读内容走各自的版本引用。
+ */
+const HIDDEN_DOMAIN_CONTENT_SOURCES: readonly UserAssetSource[] = ["skill_content", "method_content"];
 
 const FOLDER_COLUMNS = [
   "folder_id AS folderId", "user_id AS userId", "project_id AS projectId", "instance_id AS instanceId",
@@ -174,6 +181,36 @@ export async function listUserAssetFolders(input: AssetScope): Promise<UserAsset
     "SELECT " + FOLDER_COLUMNS + " FROM user_asset_folders WHERE user_id = ? AND project_id = ? AND instance_id = ? ORDER BY parent_folder_id IS NOT NULL, name COLLATE NOCASE, folder_id",
   ).all(scope.userId, scope.projectId, scope.instanceId) as UserAssetFolderDescriptor[];
   return rows;
+}
+
+/**
+ * 报告产出默认归组（2026-10-08 镜像定性配套）：reports/ 路径的服务产出
+ * （每日/周/月复盘等）落资产时进「报告」文件夹，避免在「我的文件」平铺。
+ * 只对无 folder 的判定生效点使用；并发安全（同名冲突时重查）。
+ */
+export const DEFAULT_REPORT_FOLDER_NAME = "报告";
+
+export function isReportRelativePath(relativePath: string | null | undefined): boolean {
+  return typeof relativePath === "string" && relativePath.startsWith("reports/");
+}
+
+export async function ensureDefaultReportFolderId(scope: AssetScope): Promise<string> {
+  const normalized = normalizeScope(scope);
+  const find = () => sqlite.prepare(
+    "SELECT folder_id AS folderId FROM user_asset_folders WHERE user_id = ? AND project_id = ? AND instance_id = ? AND parent_folder_id IS NULL AND name = ? COLLATE NOCASE LIMIT 1",
+  ).get(normalized.userId, normalized.projectId, normalized.instanceId, DEFAULT_REPORT_FOLDER_NAME) as { folderId?: string } | undefined;
+  const existing = find();
+  if (existing?.folderId) return existing.folderId;
+  try {
+    const folder = await createUserAssetFolder({ ...normalized, name: DEFAULT_REPORT_FOLDER_NAME });
+    return folder.folderId;
+  } catch (error) {
+    if (error instanceof UserAssetError && error.code === "ASSET_FOLDER_NAME_CONFLICT") {
+      const raced = find();
+      if (raced?.folderId) return raced.folderId;
+    }
+    throw error;
+  }
 }
 
 export async function createUserAssetFolder(input: AssetScope & { name: string; parentFolderId?: string | null }): Promise<UserAssetFolderDescriptor> {
@@ -568,6 +605,8 @@ export async function saveConversationAttachmentAsUserAsset(input: AssetScope & 
 
 export async function listUserAssets(input: AssetScope & {
   status?: UserAssetStatus | "all"; search?: string; format?: AssetFormat; source?: UserAssetSource; folderId?: string | null; limit?: number;
+  /** 技能内容资产默认隐藏；显式 source=skill_content 查询时自然可见。 */
+  includeSkillContent?: boolean;
 }): Promise<UserAssetDescriptor[]> {
   const scope = normalizeScope(input);
   const limit = clampLimit(input.limit);
@@ -593,6 +632,10 @@ export async function listUserAssets(input: AssetScope & {
   if (input.source) {
     if (!SOURCES.has(input.source)) throw new UserAssetError("ASSET_INVALID_SCOPE", "invalid source");
     clauses.push("current_version_id IN (SELECT version_id FROM user_asset_versions WHERE source = ?)"); params.push(input.source);
+  } else if (input.includeSkillContent !== true) {
+    clauses.push(
+      `current_version_id NOT IN (SELECT version_id FROM user_asset_versions WHERE source IN (${HIDDEN_DOMAIN_CONTENT_SOURCES.map((s) => `'${s}'`).join(",")}))`,
+    );
   }
   const rows = sqlite.prepare(
     "SELECT " + ASSET_COLUMNS + " FROM user_assets WHERE " + clauses.join(" AND ") +
@@ -738,7 +781,24 @@ export async function deleteUserAsset(input: AssetScope & { assetId: string }): 
       "WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? LIMIT 1",
     ).get(assetId, scope.userId, scope.projectId, scope.instanceId) as { taskId?: string } | undefined;
     if (binding?.taskId) {
-      throw new UserAssetError("ASSET_IN_USE", "该文件正在被自动化任务使用，请先修改或删除对应任务", { taskId: binding.taskId });
+      throw new UserAssetError("ASSET_IN_USE", "该文件正在被定时任务使用，请先修改或删除对应任务", { taskId: binding.taskId });
+    }
+    // 2026-10-08 镜像定性：技能/方法版本的内容源也是 user_asset_version——
+    // 删掉它会让装配层校验失败并阻断该用户后续所有会话。与任务绑定同罚：
+    // 被引用即拒绝删除。
+    const skillRef = sqlite.prepare(
+      "SELECT s.slug AS slug FROM agent_space_skill_versions v JOIN agent_space_skills s ON s.skill_id=v.skill_id " +
+      "WHERE v.asset_id = ? AND v.content_ref_type='user_asset_version' LIMIT 1",
+    ).get(assetId) as { slug?: string } | undefined;
+    if (skillRef?.slug) {
+      throw new UserAssetError("ASSET_IN_USE", `该文件是技能 ${skillRef.slug} 的内容源，请先在技能管理中删除或修改该技能`, { slug: skillRef.slug });
+    }
+    const methodRef = sqlite.prepare(
+      "SELECT m.name AS name FROM agent_space_method_versions v JOIN agent_space_methods m ON m.method_id=v.method_id " +
+      "WHERE v.asset_version_id IN (SELECT version_id FROM user_asset_versions WHERE asset_id = ? AND user_id = ? AND project_id = ? AND instance_id = ?) LIMIT 1",
+    ).get(assetId, scope.userId, scope.projectId, scope.instanceId) as { name?: string } | undefined;
+    if (methodRef?.name) {
+      throw new UserAssetError("ASSET_IN_USE", `该文件是方法「${methodRef.name}」的内容源，请先在方法管理中处理该方法`, { name: methodRef.name });
     }
     const versions = sqlite.prepare(
       "SELECT " + VERSION_COLUMNS + " FROM user_asset_versions " +

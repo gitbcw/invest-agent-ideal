@@ -163,6 +163,14 @@ export async function createRegisteredMastraWorkspace(input: {
   scope: MastraWorkspaceScope;
   registry?: MastraWorkspaceRegistry;
   bindings: MastraBindings;
+  /**
+   * Whether the Workspace auto-mounts the skills/ directory (default true,
+   * legacy behavior). Agent Space assembly mode passes false: skill visibility
+   * there is registry-only — installed skill content is injected into
+   * instructions by the assembler, so the filesystem skills channel must not
+   * reach the model (2026-10-08 裁决).
+   */
+  autoLoadSkills?: boolean;
 }): Promise<MastraWorkspaceLike | undefined> {
   const scope = normalizeScope(input.scope);
   const entry = await (input.registry ?? mastraWorkspaceRegistry).resolve(scope);
@@ -178,7 +186,9 @@ export async function createRegisteredMastraWorkspace(input: {
       contained: true,
       allowedPaths: [],
     }),
-    skills: ["skills"],
+    // Mastra treats an absent (or empty) `skills` config as "no skills":
+    // Workspace.skills stays undefined and the Agent skips skill discovery.
+    ...((input.autoLoadSkills ?? true) ? { skills: ["skills"] } : {}),
     tools: workspaceToolPolicy(scope),
   });
   return workspace;

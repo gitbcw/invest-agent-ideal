@@ -2,6 +2,7 @@ import { z } from "zod/v4";
 import { callServiceTool as defaultCallServiceTool, type ServiceToolContext } from "../../mcp/service-tools-core.js";
 import { lenientZodObject } from "../lenient-tool-input.js";
 import { TOOL_SPECS, type ToolSpec } from "./registry.js";
+import { toolDescriptionZh } from "./tool-descriptions-zh.js";
 import { checkToolScope, scopeDeniedResult, type MastraToolContext } from "./scope-guard.js";
 
 export interface InProcessTool {
@@ -22,7 +23,7 @@ export function createInProcessToolset(options: InProcessToolsetOptions = {}): r
   const call = options.callServiceTool ?? defaultCallServiceTool;
   return (options.specs ?? TOOL_SPECS).map((spec) => ({
     id: spec.id,
-    description: spec.description,
+    description: toolDescriptionZh(spec.id, spec.description),
     // 宽容矫正（2026-09-11）：兜底档模型把 number/boolean/object 参数写成
     // JSON 字符串（"50"/"True"/"{}"）时先按声明类型还原再校验；严格校验
     // 直接通过的正常路径零改动。toJSONSchema 按 shape 生成，模型侧定义不变。

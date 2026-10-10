@@ -17,6 +17,7 @@ import { DEFAULT_PROJECT_ID } from "../lib/user-context.js";
 import { validateReportKey } from "../lib/periodic-review-backend.js";
 import {
   createUserAsset,
+  ensureDefaultReportFolderId,
   getUserAsset,
   readUserAssetVersion,
   uploadUserAssetVersion,
@@ -870,8 +871,11 @@ export async function publishServiceOwnedReviewArtifact(
           const assetKey = existing?.assetId
             ? `${idempotencyKey}:replacement:${checksum}`
             : `${idempotencyKey}:asset`;
+          // 报告产出默认归组：周/月复盘 system 资产进「报告」文件夹（2026-10-08）。
+          const reportFolderId = await ensureDefaultReportFolderId(scope);
           asset = await createUserAsset({
             ...scope,
+            ...(reportFolderId ? { folderId: reportFolderId } : {}),
             name: title,
             fileName: `${input.reportKey}.md`,
             mimeType,

@@ -73,6 +73,22 @@ export function sanitizeCustomerText(text: string) {
     .trim();
 }
 
+/** Do not forward an unfinished model/tool-planning draft as a customer reply. */
+export function isLikelyInternalAgentDraft(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return [
+    /^need to actually execute:/,
+    /^the draft was confirmed/,
+    /\buse (svc|mdt|qsse)[_.]/,
+    /\btool (schema|call|catalog)\b/,
+    /\bconfirmationid\b.*\bstrategypatch\b/,
+    /\bthis is a fresh context\b/,
+    /\bprevious turns were summarized\b/,
+    /\bmaybe .* supports\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 export function sanitizeWeixinCustomerText(text: string) {
   return replaceKnownSourceUrlsForWeixin(sanitizeCustomerText(text));
 }

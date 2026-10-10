@@ -256,7 +256,7 @@ export function computeModelCost(
     cachedWriteTokens?: number;
     costAmount?: number;
   },
-  options?: { at?: Date | string | number },
+  options?: { at?: Date | string | number; accounting?: "inclusive" | "exclusive" },
 ): ModelCostResult {
   if (typeof usage.costAmount === "number" && Number.isFinite(usage.costAmount) && usage.costAmount > 0) {
     return { amount: usage.costAmount, currency: "CNY", source: "gateway" };
@@ -264,6 +264,22 @@ export function computeModelCost(
   const when = options?.at === undefined ? new Date() : new Date(options.at);
   const { tier, source } = tierFor(model, Number.isNaN(when.getTime()) ? undefined : when);
   const perM = (tokens: number | undefined, rate: number) => (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0 ? (tokens / 1_000_000) * rate : 0);
+  // AI SDK totals include cached input and reasoning output. Legacy callers
+  // retain their explicit, disjoint bucket contract unless opted in.
+  if (options?.accounting === "inclusive") {
+    const count = (n: number | undefined) => typeof n === "number" && Number.isFinite(n) ? Math.max(0, n) : 0;
+    const input = count(usage.inputTokens);
+    const output = count(usage.outputTokens);
+    const cached = Math.min(input, count(usage.cachedReadTokens));
+    const written = Math.min(input - cached, count(usage.cachedWriteTokens));
+    const thought = Math.min(output, count(usage.thoughtTokens));
+    const amount = perM(input - cached - written, tier.input)
+      + perM(cached, tier.cacheRead ?? tier.input / 10)
+      + perM(written, tier.cacheWrite ?? tier.input)
+      + perM(output - thought, tier.output)
+      + perM(thought, tier.thought ?? tier.output);
+    return { amount: Math.round(amount * 1e6) / 1e6, currency: "CNY", source };
+  }
   const amount =
     perM(usage.inputTokens, tier.input)
     + perM(usage.outputTokens, tier.output)

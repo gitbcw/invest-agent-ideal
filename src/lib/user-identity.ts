@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
-import { db } from "../db/index.js";
+import { db, sqlite as sqliteOf } from "../db/index.js";
 import { channelIdentities, channelIdentityInstances, users } from "../db/schema.js";
 import type { UserContext } from "./user-context.js";
 import { DEFAULT_PROJECT_ID } from "./user-context.js";
@@ -55,6 +55,25 @@ export async function resolveOrCreateChannelUser(params: {
 
   if (existing[0]) {
     const bindingUserId = projectBinding?.sharedUsers ? existing[0].userId : projectBinding?.ownerUserId || existing[0].userId;
+    // 2026-10-09 改绑归档：微信号是「人」的通道，账号是「投资档案」。专属
+    // 实例下身份换绑到新账号时，旧会话是旧档案的一部分——归档改名留在原
+    // 账号（网页端仍可查），该微信的下一条消息以原会话 ID 在新账号下开新
+    // 会话。既避免 scope mismatch，也不让新档案读到旧账号的投资上下文。
+    if (!projectBinding?.sharedUsers && existing[0].userId !== bindingUserId && projectBinding) {
+      const migrate = sqliteOf(db);
+      migrate.transaction(() => {
+        const archivedSuffix = `#prev-${existing[0].userId}`;
+        const rows = migrate.prepare(
+          "SELECT conversation_id AS id FROM conversation_sessions WHERE conversation_id LIKE ? AND user_id=?",
+        ).all(`${params.externalUserId}%`, existing[0].userId) as Array<{ id: string }>;
+        for (const row of rows) {
+          const archivedId = `${row.id}${archivedSuffix}`;
+          migrate.prepare("UPDATE conversation_sessions SET conversation_id=?, updated_at=? WHERE conversation_id=?").run(archivedId, now, row.id);
+          migrate.prepare("UPDATE conversation_messages SET conversation_id=? WHERE conversation_id=?").run(archivedId, row.id);
+        }
+        console.log(`[channel-rebind] ${params.externalUserId}: ${rows.length} sessions archived under ${existing[0].userId}, new conversations start fresh for ${bindingUserId}`);
+      })();
+    }
     await db
       .update(channelIdentities)
       .set({

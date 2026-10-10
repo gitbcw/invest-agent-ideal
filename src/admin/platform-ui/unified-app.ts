@@ -85,7 +85,7 @@ function adminViewsHtml(): string {
             <div class="segmented segmented-3">
               <button id="auditScopeConversation" class="segment active" onclick="setAuditScope('conversation')">对话审计</button>
               <button id="auditScopePush" class="segment" onclick="setAuditScope('push')">推送审计</button>
-              <button id="auditScopeAutomation" class="segment" onclick="setAuditScope('automation')">自动化任务</button>
+              <button id="auditScopeAutomation" class="segment" onclick="setAuditScope('automation')">定时任务</button>
             </div>
             <div class="field"><label>用户</label><select id="auditUser" class="select" onchange="onAuditUserChange()"></select></div>
             <div class="field"><label>用户助手</label><select id="auditInstance" class="select" onchange="loadAudit()"></select></div>
@@ -107,7 +107,7 @@ function adminViewsHtml(): string {
           <div class="panel-head"><h2>全链路诊断入口</h2><span class="muted" id="diagUpdated">未查询</span></div>
           <div class="panel-body"><div class="form-grid">
             <div class="diag-entry-row">
-              <div class="field"><label>ID 类型</label><select id="diagBy" class="select"><option value="traceId">traceId · Agent 回合</option><option value="messageId">messageId · 渠道消息</option><option value="conversationId">conversationId · 会话</option><option value="runId">runId · 运行（调度为 taskKey）</option><option value="taskId">taskId · 自动化任务定义</option><option value="deliveryId">deliveryId · 投递尝试</option></select></div>
+              <div class="field"><label>ID 类型</label><select id="diagBy" class="select"><option value="traceId">traceId · Agent 回合</option><option value="messageId">messageId · 渠道消息</option><option value="conversationId">conversationId · 会话</option><option value="runId">runId · 运行（调度为 taskKey）</option><option value="taskId">taskId · 定时任务定义</option><option value="deliveryId">deliveryId · 投递尝试</option></select></div>
               <div class="field diag-id-field"><label>ID 值</label><input id="diagId" placeholder="粘贴要追查的 ID…" onkeydown="if(event.key==='Enter')loadDiagnostic()" /></div>
               <button class="btn btn-primary" onclick="loadDiagnostic()">查链路</button>
             </div>

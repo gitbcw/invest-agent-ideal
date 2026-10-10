@@ -28,6 +28,7 @@ const MASTRA_EXPOSED_TOOL_IDS: ReadonlySet<string> = new Set([
   "automation.update",
   "automation.activate",
   "automation.pause",
+  "automation.delete",
   "assets.version.read",
   "assets.version.commit",
   "assets.working_copy.read",
@@ -44,6 +45,7 @@ const MASTRA_EXPOSED_TOOL_IDS: ReadonlySet<string> = new Set([
   "confirmations.request",
   "portfolio.apply_changes",
   "watchlist.add",
+  "watchlist.add_many",
   "plans.set",
   "plans.watch_conditions",
   "method_changes.propose",
@@ -67,6 +69,20 @@ const MASTRA_EXPOSED_TOOL_IDS: ReadonlySet<string> = new Set([
   "state.candidate.revise",
   // 交互会话内按用户确认的内容创建私有 Skill 草案（批准权在 Portal）。
   "skill.create",
+  // 对话 Agent 技能管理（2026-10-08 裁决）：启用/安装/编辑/创建无需确认；
+  // 停用/卸载走 confirmations.request 确认流。
+  "skill.list",
+  "skill.install",
+  "skill.set_enabled",
+  "skill.uninstall",
+  "skill.edit",
+  // 「我的策略」域（2026-10-08 owner 裁决）：策略=规则/口径/风控，主策略唯一
+  // 常驻；切换主策略走确认流。
+  "strategy.list",
+  "strategy.create",
+  "strategy.edit",
+  "strategy.read",
+  "strategy.set_primary",
 ]);
 
 /** Mastra 工具面（ALL_SERVICE_TOOL_SPECS 的精选子集，保持原展示顺序）。 */

@@ -143,9 +143,9 @@ export async function runAutomationSchedulerTick(now = new Date(), dependencies:
 
 export async function startAutomationScheduler() {
   stopAutomationScheduler();
-  await runAutomationSchedulerTick().catch((error) => logger.error("自动化任务首次扫描失败:", error));
+  await runAutomationSchedulerTick().catch((error) => logger.error("定时任务首次扫描失败:", error));
   automationIntervalId = setInterval(() => {
-    runAutomationSchedulerTick().catch((error) => logger.error("自动化任务扫描失败:", error));
+    runAutomationSchedulerTick().catch((error) => logger.error("定时任务扫描失败:", error));
   }, 60_000);
   automationIntervalId.unref?.();
 }

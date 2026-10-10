@@ -26,11 +26,14 @@ import {
   saveConversationAttachmentAsUserAsset,
   saveConversationArtifactAsUserAsset,
   uploadUserAssetVersion,
+  ensureDefaultReportFolderId,
+  isReportRelativePath,
   UserAssetError,
 } from "../services/user-assets.js";
 import {
   activateAutomationTask,
   createAutomationTask,
+  deleteAutomationTask,
   getAutomationTask,
   getAutomationTaskRun,
   listAutomationTaskRevisions,
@@ -43,7 +46,26 @@ import { getMastraPortfolioRevision, isSameRevisionInstant, readMastraPortfolioP
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
 import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import * as state from "../services/agent-space/state.js";
-import { portalCreateSkill } from "../services/agent-space/portal-actions.js";
+import { AgentSpaceError } from "../services/agent-space/core.js";
+import {
+  listPortalPrivateSkills,
+  portalApproveSkillVersion,
+  portalCreateSkill,
+  portalEditSkill,
+  portalInstallSkill,
+  portalRemoveInstalledSkill,
+  portalSetInstalledSkillEnabled,
+  resolvePortalAgent,
+  resolveSkillInstallTarget,
+} from "../services/agent-space/portal-actions.js";
+import {
+  createStrategy,
+  editStrategy,
+  listStrategies,
+  readStrategyContent,
+  setPrimaryStrategy,
+} from "../services/agent-space/strategy-actions.js";
+import { getVersionRow as getSkillVersionRow } from "../services/agent-space/skills.js";
 import { readMethodWorkingCopy } from "../services/agent-space/method-working-copies.js";
 import { comparableConfirmationBody, consumeSandboxConfirmation, createSandboxConfirmation, recordConfirmationRejection, validateSandboxConfirmation } from "../lib/sandbox-confirmation.js";
 import { validateConfirmationContract } from "../lib/confirmation-contract.js";
@@ -150,12 +172,13 @@ export async function callServiceTool(
     const resourceKeys = [
       ...mutationResourceKeysForOperation(name, input),
       ...directAutomationResourceKeys(name, input),
+      ...directSkillResourceKeys(name, input),
     ];
     return resourceKeys.length > 0
       ? await withResourceMutationLock(context, resourceKeys, () => dispatchServiceTool(name, input, context))
       : await dispatchServiceTool(name, input, context);
   } catch (error) {
-    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || DIRECT_AUTOMATION_OPERATIONS.has(name) || name === "confirmations.request" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read" || name.startsWith("assets.")) {
+    if (CONFIRMED_WRITE_OPERATIONS.has(name) || DRAFT_OPERATIONS.has(name) || DIRECT_AUTOMATION_OPERATIONS.has(name) || name === "confirmations.request" || name === "reviews.save" || name === "artifacts.publish" || name === "research.web_search" || name === "research.web_read" || name.startsWith("assets.") || name.startsWith("skill.")) {
       await audit(context, {
         operation: name,
         resourceType: "service_tool",
@@ -182,6 +205,19 @@ function directAutomationResourceKeys(name: string, input: Record<string, unknow
   if (name === "automation.update" || name === "automation.activate" || name === "automation.pause") {
     const taskId = stringInput(input?.taskId);
     return [taskId ? `automation-task:${taskId}` : "automation-task:invalid"];
+  }
+  if (name === "automation.delete") {
+    const taskId = stringInput(input?.taskId);
+    return [taskId ? `automation-task:${taskId}` : "automation-delete:invalid"];
+  }
+  return [];
+}
+
+/** Agent Space 技能写操作按 skillId 串行化（安装/启停/卸载/编辑互斥同技能）。 */
+function directSkillResourceKeys(name: string, input: Record<string, unknown> | undefined): string[] {
+  if (name === "skill.install" || name === "skill.set_enabled" || name === "skill.uninstall" || name === "skill.edit") {
+    const skillId = stringInput(input?.skillId);
+    return [skillId ? `agent-skill:${skillId}` : "agent-skill:invalid"];
   }
   return [];
 }
@@ -398,6 +434,8 @@ async function dispatchServiceTool(
       return setAutomationActiveTool(input, context);
     case "automation.pause":
       return setAutomationPausedTool(input, context);
+    case "automation.delete":
+      return deleteAutomationTool(input, context);
     case "confirmations.pending":
       return readPendingConfirmations(input, context);
     case "confirmations.request":
@@ -414,6 +452,8 @@ async function dispatchServiceTool(
       return requestOnboardingDraftStepConfirmation(input, context);
     case "watchlist.add":
       return addWatchlist(input, context);
+    case "watchlist.add_many":
+      return addWatchlistMany(input, context);
     case "plans.set":
       return setPlan(input, context);
     case "plans.watch_conditions":
@@ -554,8 +594,8 @@ async function dispatchServiceTool(
     }
     case "skill.create": {
       // 只允许交互会话（要求 conversation 上下文）：与 state.candidate 同一
-      // 纪律，不存在脱离会话的自主创建。创建结果是私有 Skill 草案，批准/
-      // 安装权在 Portal 技能管理页。
+      // 纪律，不存在脱离会话的自主创建。创建结果是私有 Skill 草案；用户在
+      // 对话中明确要求「做成技能」时，由 agent 同轮编排 skill.install 启用。
       if (!context.conversationId) {
         return {
           ok: false,
@@ -589,15 +629,128 @@ async function dispatchServiceTool(
         resourceType: "agent_space_skill",
         resourceId: created.skill.skill_id,
         requestBody: { slug, name },
-        resultSummary: `created private skill draft "${name}" (待确认; Portal approval required before install)`,
+        resultSummary: `created private skill draft "${name}" (draft; enable via skill.install in-conversation)`,
       });
       return {
         ok: true,
         userId: context.userId,
         instanceId: context.instanceId,
         skill: { skillId: created.skill.skill_id, slug: created.skill.slug, name: created.skill.name, status: "draft_pending_approval" },
-        note: "Skill 已保存为私有草案（待确认）；请告诉用户去「技能管理」页审阅批准后才可安装启用。",
+        note: "Skill 已保存为私有草案；用户在对话中明确要求「做成技能/创建技能」时，创建后应立即用 skill.install 启用，并告知用户「已创建并启用」。",
       };
+    }
+    case "skill.list":
+      return listSkillTool(input, context);
+    case "skill.install":
+      return installSkillTool(input, context);
+    case "skill.set_enabled":
+      return setSkillEnabledTool(input, context);
+    case "skill.uninstall":
+      return uninstallSkillTool(input, context);
+    case "skill.edit":
+      return editSkillTool(input, context);
+    case "strategy.list": {
+      const items = listStrategies(strategyScope(context));
+      // 两层裁决（2026-10-08）：返回必须分组——投资框架不是策略，计数与
+      // 陈述只算 strategies；frameworks 仅供完整呈现。
+      const frameworks = items.filter((item) => item.kind === "framework");
+      const strategies = items.filter((item) => item.kind !== "framework");
+      const primary = strategies.find((item) => item.isPrimary) ?? null;
+      await audit(context, {
+        operation: name,
+        resourceType: "agent_space_method",
+        requestBody: {},
+        resultSummary: `listed ${strategies.length} strategies + ${frameworks.length} framework entries (primary: ${primary?.name ?? "none"})`,
+      });
+      return {
+        ok: true,
+        userId: context.userId,
+        instanceId: context.instanceId,
+        strategies,
+        frameworks,
+        primary,
+        note: `用户有 ${strategies.length} 条策略${primary ? `，主策略为「${primary.name}」（常驻生效）` : "（当前无主策略）"}；另有 ${frameworks.length} 项投资框架（整体常驻的方法论体系，不属于策略，不要计入策略数量）`,
+      };
+    }
+    case "strategy.create": {
+      if (!context.conversationId) {
+        return { ok: false, error: "STRATEGY_CREATE_REQUIRES_CONVERSATION", message: "创建策略只能发生在用户对话中（内容须为用户已确认的）。" };
+      }
+      const strategyName = stringInput(input?.name) ?? "";
+      const text = stringInput(input?.text) ?? "";
+      if (!strategyName.trim() || !text.trim()) throw new Error("name and non-empty text are required");
+      const created = await createStrategy({
+        scope: strategyScope(context),
+        name: strategyName,
+        text,
+        actor: `agent:${context.userId}`,
+        idempotencyKey: `agent:strategy-create:${context.userId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      });
+      await audit(context, {
+        operation: name,
+        resourceType: "agent_space_method",
+        resourceId: created.strategy.strategyId,
+        requestBody: { name: strategyName },
+        resultSummary: `created strategy "${strategyName}"${created.becamePrimary ? " (primary)" : ""}`,
+      });
+      return {
+        ok: true,
+        userId: context.userId,
+        instanceId: context.instanceId,
+        strategy: created.strategy,
+        note: created.becamePrimary
+          ? "已保存并设为主策略：规则即日起每轮常驻生效。"
+          : "已保存为策略（非主策略）。主策略未变；用户要求切换时走 strategy.set_primary 确认流。",
+      };
+    }
+    case "strategy.edit": {
+      const strategyId = stringInput(input?.strategyId) ?? "";
+      const text = stringInput(input?.text) ?? "";
+      if (!strategyId || !text.trim()) throw new Error("strategyId and non-empty text are required");
+      const edited = await editStrategy({
+        scope: strategyScope(context),
+        strategyId,
+        text,
+        actor: `agent:${context.userId}`,
+        idempotencyKey: `agent:strategy-edit:${context.userId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      });
+      await audit(context, {
+        operation: name,
+        resourceType: "agent_space_method",
+        resourceId: strategyId,
+        requestBody: { strategyId },
+        resultSummary: `edited strategy "${edited.name}" (new adopted version)`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, strategy: edited };
+    }
+    case "strategy.read": {
+      const strategyId = stringInput(input?.strategyId);
+      if (!strategyId) throw new Error("strategyId is required");
+      const read = await readStrategyContent({ scope: strategyScope(context), strategyId });
+      await audit(context, {
+        operation: name,
+        resourceType: "agent_space_method",
+        resourceId: strategyId,
+        requestBody: { strategyId },
+        resultSummary: `read strategy "${read.name}" @ ${read.versionId}`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, ...read };
+    }
+    case "strategy.set_primary": {
+      const strategyId = stringInput(input?.strategyId);
+      if (!strategyId) throw new Error("strategyId is required");
+      const confirmation = await prepareBoundConfirmation(input, context, "strategy.set_primary");
+      const boundStrategyId = stringInput(confirmation.payload.strategyId) || strategyId;
+      const updated = setPrimaryStrategy({ scope: strategyScope(context), strategyId: boundStrategyId, actor: `agent:${context.userId}` });
+      await confirmation.consume();
+      await audit(context, {
+        operation: name,
+        resourceType: "agent_space_method",
+        resourceId: boundStrategyId,
+        requestBody: { strategyId: boundStrategyId },
+        resultSummary: `switched primary strategy to "${updated.name}"`,
+      });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, strategy: updated, note: "主策略已切换，下一轮起常驻生效。" };
     }
     default:
       throw new Error(`Unknown service tool: ${name}`);
@@ -774,8 +927,8 @@ async function listAssetsTool(input: Record<string, unknown> | undefined, contex
 async function listAutomationTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const value = input ?? {};
   const statuses = Array.isArray(value.statuses)
-    ? value.statuses.filter((status): status is "paused" | "active" | "needs_attention" | "archived" =>
-      status === "paused" || status === "active" || status === "needs_attention" || status === "archived")
+    ? value.statuses.filter((status): status is "paused" | "active" | "needs_attention" | "archived" | "deleted" =>
+      status === "paused" || status === "active" || status === "needs_attention" || status === "archived" || status === "deleted")
     : undefined;
   const frequencies = Array.isArray(value.frequencies)
     ? value.frequencies.filter((frequency): frequency is "daily" | "trading_days" | "weekdays" | "weekly" | "monthly" =>
@@ -924,6 +1077,270 @@ async function setAutomationPausedTool(input: Record<string, unknown> | undefine
   return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
 }
 
+async function deleteAutomationTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const confirmation = await prepareBoundConfirmation(input, context, "automation.delete");
+  const taskId = stringInput(confirmation.payload.taskId) || stringInput(input?.taskId);
+  if (!taskId) throw new Error("taskId is required");
+  const expectedRevision = typeof confirmation.payload.expectedRevision === "number"
+    ? confirmation.payload.expectedRevision
+    : typeof input?.expectedRevision === "number"
+      ? input.expectedRevision
+      : undefined;
+  const task = await deleteAutomationTask({
+    ...automationToolScope(context),
+    taskId,
+    expectedRevision,
+    editSource: "agent",
+    editSourceRef: context.runId ?? context.conversationId ?? context.traceId,
+  });
+  await confirmation.consume();
+  await audit(context, {
+    operation: "automation.delete",
+    resourceType: "automation_task",
+    resourceId: taskId,
+    requestBody: { taskId, expectedRevision: expectedRevision ?? null },
+    resultSummary: `deleted; revision=${task.currentRevision}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, task };
+}
+
+/** 对话 Agent 技能工具共享的 scope / 授权上下文（与 Portal connector 同形状）。 */
+function skillToolScope(context: ServiceToolContext) {
+  return {
+    userId: context.userId,
+    projectId: context.projectId || DEFAULT_PROJECT_ID,
+    instanceId: context.instanceId,
+  };
+}
+
+/** 策略工具的 scope（与技能工具同形状）。 */
+function strategyScope(context: ServiceToolContext) {
+  return skillToolScope(context);
+}
+
+/** 每次 Portal 动作必须独立 ctx：同一 sourceRef（userId:idempotencyKey）只能命名
+ * 一个操作，approve 与 install 复用同一把钥匙会被拒绝。 */
+function skillToolCtx(context: ServiceToolContext, operation: string) {
+  return {
+    scope: skillToolScope(context),
+    actor: `agent:${context.userId}`,
+    idempotencyKey: `agent:skill:${operation}:${context.userId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+  };
+}
+
+/** 系统域（预置）技能的结构化拒绝：与技能管理页权限一致，对话 Agent 只能
+ * 操作当前 scope 的用户私有技能（publishArtifact catch 范式，执行代理依赖
+ * 错误文本自纠，裸异常会被误判为工具不可用）。 */
+function skillGuardRejection(
+  skillId: string,
+  context: ServiceToolContext,
+  action: string,
+  reason?: string,
+) {
+  return {
+    ok: false,
+    error: "SKILL_NOT_USER_MANAGEABLE",
+    userId: context.userId,
+    instanceId: context.instanceId,
+    skillId,
+    message: reason
+      ? `技能 ${skillId} ${reason}：对话 Agent 只能${action}当前 scope 的用户私有技能，系统域/预置技能不可操作（与技能管理页权限一致）。`
+      : `技能 ${skillId} 不存在、不属于当前 scope 或是系统域（预置）技能：对话 Agent 只能${action}当前 scope 的用户私有技能，与技能管理页权限一致。`,
+    hint: "先用 skill.list 查看当前 scope 的私有技能与安装状态，确认 skillId 无误；系统提供的技能请用户在技能管理页处理。",
+  };
+}
+
+/** 只允许 user 域：存在性 + domain + 墓碑判定（不校验 scope 归属，跨 scope 由服务层拒绝）。
+ * status='deleted' 的技能已按 2026-10-08 裁决彻底移除，所有技能操作一律拒绝。 */
+function userDomainSkillRow(skillId: string): { domain: string; status: string } | undefined {
+  return sqlite
+    .prepare("SELECT domain, status FROM agent_space_skills WHERE skill_id=?")
+    .get(skillId) as { domain: string; status: string } | undefined;
+}
+
+/** user 域且未墓碑才可由对话 Agent 操作。 */
+function isAgentManageableSkill(row: { domain: string; status: string } | undefined): boolean {
+  return row !== undefined && row.domain === "user" && row.status !== "deleted";
+}
+
+function latestDraftSkillVersionId(scope: ReturnType<typeof skillToolScope>, skillId: string): string | null {
+  const row = sqlite
+    .prepare(
+      `SELECT version_id FROM agent_space_skill_versions
+       WHERE skill_id=? AND user_id=? AND project_id=? AND instance_id=? AND status='draft'
+       ORDER BY version_number DESC LIMIT 1`,
+    )
+    .get(skillId, scope.userId, scope.projectId, scope.instanceId) as { version_id: string } | undefined;
+  return row?.version_id ?? null;
+}
+
+async function listSkillTool(_input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const items = listPortalPrivateSkills(skillToolScope(context));
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, items };
+}
+
+async function installSkillTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const skillId = stringInput(input?.skillId);
+  if (!skillId) throw new Error("skillId is required");
+  const scope = skillToolScope(context);
+  const row = userDomainSkillRow(skillId);
+  if (!isAgentManageableSkill(row)) return skillGuardRejection(skillId, context, "安装/启用");
+  const releaseId = stringInput(input?.releaseId);
+  if (releaseId) {
+    return skillGuardRejection(skillId, context, "安装/启用", "是系统发布（releaseId 仅用于系统域发布，对话 Agent 只能安装私有技能版本）");
+  }
+  let versionId = stringInput(input?.versionId) || undefined;
+  if (!versionId) {
+    // 无显式版本：最新草稿版本优先（skill.create/skill.edit 后一轮启用生效）；
+    // 无草稿时回退当前已批准版本。
+    const skill = sqlite
+      .prepare(
+        `SELECT current_private_version_id FROM agent_space_skills
+         WHERE skill_id=? AND domain='user' AND user_id=? AND project_id=? AND instance_id=?`,
+      )
+      .get(skillId, scope.userId, scope.projectId, scope.instanceId) as { current_private_version_id: string | null } | undefined;
+    if (!skill) return skillGuardRejection(skillId, context, "安装/启用", "不属于当前 scope");
+    versionId = latestDraftSkillVersionId(scope, skillId) ?? skill.current_private_version_id ?? undefined;
+    if (!versionId) throw new Error(`skill ${skillId} has no versions to install`);
+  }
+  const target = resolveSkillInstallTarget(scope, skillId, undefined, versionId);
+  if (target.source === "private") {
+    const version = getSkillVersionRow(target.versionId);
+    if (version.status === "draft") {
+      portalApproveSkillVersion(skillToolCtx(context, "approve-version"), skillId, version.version_id);
+    }
+  }
+  const agent = resolvePortalAgent(scope, stringInput(input?.agentId) || undefined);
+  const ctx = skillToolCtx(context, "install");
+  const installation = portalInstallSkill({
+    ctx,
+    agentId: agent.agentId,
+    skillId,
+    source: target.source,
+    releaseId: target.releaseId,
+    versionId: target.versionId,
+    installedBy: ctx.actor,
+  });
+  await audit(context, {
+    operation: "skill.install",
+    resourceType: "agent_space_agent_skill_installation",
+    resourceId: installation.installation_id,
+    requestBody: { skillId, versionId: target.versionId, agentId: agent.agentId },
+    resultSummary: `installed skill ${skillId}@${target.versionId} on agent ${agent.agentId}`,
+  });
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    agent,
+    installation: { installationId: installation.installation_id, skillId: installation.skill_id, versionId: installation.version_id, status: installation.status },
+    note: "技能已安装并启用，立即生效（无需确认）。",
+  };
+}
+
+async function setSkillEnabledTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const skillId = stringInput(input?.skillId);
+  if (!skillId) throw new Error("skillId is required");
+  if (typeof input?.enabled !== "boolean") throw new Error("enabled must be boolean");
+  const scope = skillToolScope(context);
+  const ctx = skillToolCtx(context, "set-enabled");
+  if (input.enabled) {
+    // 启用直接生效，无需确认（裁决 2/4）。
+    const row = userDomainSkillRow(skillId);
+    if (!isAgentManageableSkill(row)) return skillGuardRejection(skillId, context, "启用");
+    const agent = resolvePortalAgent(scope, stringInput(input?.agentId) || undefined);
+    const result = portalSetInstalledSkillEnabled(ctx, agent.agentId, skillId, true);
+    await audit(context, {
+      operation: "skill.set_enabled",
+      resourceType: "agent_space_agent_skill_installation",
+      resourceId: result.installationId,
+      requestBody: { skillId, enabled: true, agentId: agent.agentId },
+      resultSummary: `enabled skill ${skillId}`,
+    });
+    return { ok: true, userId: context.userId, instanceId: context.instanceId, agent, result, note: "技能已启用，立即生效（无需确认）。" };
+  }
+  // 停用：走确认流（裁决 2）。
+  const confirmation = await prepareBoundConfirmation(input, context, "skill.set_enabled");
+  const boundSkillId = stringInput(confirmation.payload.skillId) || skillId;
+  const row = userDomainSkillRow(boundSkillId);
+  if (!isAgentManageableSkill(row)) return skillGuardRejection(boundSkillId, context, "停用");
+  const agent = resolvePortalAgent(scope, stringInput(confirmation.payload.agentId) || stringInput(input?.agentId) || undefined);
+  const result = portalSetInstalledSkillEnabled(ctx, agent.agentId, boundSkillId, false);
+  await confirmation.consume();
+  await audit(context, {
+    operation: "skill.set_enabled",
+    resourceType: "agent_space_agent_skill_installation",
+    resourceId: result.installationId,
+    requestBody: { skillId: boundSkillId, enabled: false, agentId: agent.agentId },
+    resultSummary: `disabled skill ${boundSkillId}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, agent, result, note: "技能已停用。" };
+}
+
+async function uninstallSkillTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  // 卸载（页面语义=删除）：必须走确认流（裁决 2）；任务引用约束由后端
+  // 既有行为保持（removeInstalledSkill 对 taskBindingCount>0 拒绝）。私有技能
+  // 卸载即墓碑（2026-10-08 裁决「删除就消失」），技能本体从列表与目录彻底消失。
+  const confirmation = await prepareBoundConfirmation(input, context, "skill.uninstall");
+  const skillId = stringInput(confirmation.payload.skillId) || stringInput(input?.skillId);
+  if (!skillId) throw new Error("skillId is required");
+  const scope = skillToolScope(context);
+  const ctx = skillToolCtx(context, "uninstall");
+  const row = userDomainSkillRow(skillId);
+  if (!isAgentManageableSkill(row)) return skillGuardRejection(skillId, context, "卸载");
+  const agent = resolvePortalAgent(scope, stringInput(confirmation.payload.agentId) || stringInput(input?.agentId) || undefined);
+  const result = portalRemoveInstalledSkill(ctx, agent.agentId, skillId);
+  await confirmation.consume();
+  await audit(context, {
+    operation: "skill.uninstall",
+    resourceType: "agent_space_agent_skill_installation",
+    resourceId: result.installationId,
+    requestBody: { skillId, agentId: agent.agentId },
+    resultSummary: `uninstalled skill ${skillId}`,
+  });
+  return { ok: true, userId: context.userId, instanceId: context.instanceId, agent, result, note: "技能已删除：该技能已从列表与目录彻底移除，不可找回；如需类似能力请重新创建。" };
+}
+
+async function editSkillTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const skillId = stringInput(input?.skillId);
+  if (!skillId) throw new Error("skillId is required");
+  const text = typeof input?.text === "string" ? input.text : "";
+  if (!text.trim()) throw new Error("text is required");
+  const name = stringInput(input?.name) || undefined;
+  const description = stringInput(input?.description) || undefined;
+  try {
+    const result = await portalEditSkill({
+      scope: skillToolScope(context),
+      skillId,
+      text,
+      name,
+      description,
+      actor: `agent:${context.userId}`,
+      idempotencyKey: `agent:skill-edit:${context.userId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    });
+    await audit(context, {
+      operation: "skill.edit",
+      resourceType: "agent_space_skill",
+      resourceId: skillId,
+      requestBody: { skillId, name: name ?? null },
+      resultSummary: `edited private skill ${skillId}; new draft version ${result.version.version_number}`,
+    });
+    return {
+      ok: true,
+      userId: context.userId,
+      instanceId: context.instanceId,
+      skillId,
+      version: { versionId: result.version.version_id, versionNumber: result.version.version_number, status: result.version.status },
+      note: "已保存为新版本草案；可立即用 skill.install 启用生效（启用不需要确认）。",
+    };
+  } catch (error) {
+    if (error instanceof AgentSpaceError && (error.code === "AGENT_SPACE_NOT_FOUND" || error.code === "AGENT_SPACE_SCOPE_MISMATCH")) {
+      return skillGuardRejection(skillId, context, "编辑");
+    }
+    throw error;
+  }
+}
+
 async function submitAssetVersionTool(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   const assetId = stringInput(input?.assetId);
   const fileName = stringInput(input?.fileName);
@@ -979,21 +1396,40 @@ async function saveConversationAssetTool(input: Record<string, unknown> | undefi
   if (run) {
     assertAutomationOutputTarget(run, stringInput(input?.assetId), "save");
   }
-  const saved = await saveConversationArtifactAsUserAsset({
-    ...assetScope(context),
-    name: stringInput(input?.name),
-    fileName,
-    mimeType: stringInput(input?.mimeType),
-    bytes: decodeAssetBase64(base64),
-    assetId: stringInput(input?.assetId),
-    // MCP permission authorizes ordinary conversation saves. The service
-    // retains its confirmation guard for callers outside this capability.
-    confirmedByUser: true,
-    conversationId: context.conversationId ?? null,
-    taskId: run?.taskId ?? null,
-    runId: context.runId ?? null,
-    idempotencyKey: stringInput(input?.idempotencyKey),
-  });
+  let saved: Awaited<ReturnType<typeof saveConversationArtifactAsUserAsset>>;
+  try {
+    saved = await saveConversationArtifactAsUserAsset({
+      ...assetScope(context),
+      name: stringInput(input?.name),
+      fileName,
+      mimeType: stringInput(input?.mimeType),
+      bytes: decodeAssetBase64(base64),
+      assetId: stringInput(input?.assetId),
+      // MCP permission authorizes ordinary conversation saves. The service
+      // retains its confirmation guard for callers outside this capability.
+      confirmedByUser: true,
+      conversationId: context.conversationId ?? null,
+      taskId: run?.taskId ?? null,
+      runId: context.runId ?? null,
+      idempotencyKey: stringInput(input?.idempotencyKey),
+    });
+  } catch (error) {
+    // 结构化拒绝（而非抛出）：参照 artifacts.publish / spreadsheet.transform
+    // 的 catch 范式。执行代理把裸 ASSET_NOT_FOUND 泛化成「保存能力不可用」
+    // 并放弃交付（2026-10-07 镜像两轮复现）；给出可自纠的下一步。
+    if (error instanceof UserAssetError && error.code === "ASSET_NOT_FOUND" && stringInput(input?.assetId)) {
+      return {
+        ok: false,
+        error: "asset_not_found",
+        userId: context.userId,
+        instanceId: context.instanceId,
+        assetId: stringInput(input?.assetId),
+        message: `${stringInput(input?.assetId)} 不是已存在的用户资产 ID：传 assetId 表示「向已有资产追加版本」，查无该资产，已拒绝。`,
+        hint: "若目标是新建文件资产：去掉 assetId，只传 fileName + base64（真实文件内容的 base64，不是占位符），工具会创建新资产；若目标是更新已有资产：先 assets.list 查到真实 assetId（asset_ 前缀 opaque ID）再重试。",
+      };
+    }
+    throw error;
+  }
   await audit(context, {
     operation: "assets.conversation.save",
     resourceType: "user_asset",
@@ -1233,7 +1669,9 @@ async function readPendingConfirmations(input: Record<string, unknown> | undefin
     if (latest && isExplicitConfirmationText(latest.content?.trim() || "")) {
       const ready = confirmations.find((row) => new Date(row.createdAt).getTime() < new Date(latest.createdAt).getTime());
       if (ready) {
-        actionHint = `用户当前消息已确认草案 ${ready.confirmationId}（注册早于该确认）：立即调用 ${ready.operation} 并只传 confirmationId 即可完成写入（服务端按已确认草案执行）；不要注册新草案，也不要再次要求用户确认。`;
+        actionHint = ready.operation === "method_changes.apply"
+          ? `用户当前消息已确认草案 ${ready.confirmationId}（注册早于该确认）：立即调用 ${ready.operation}，传入 {confirmedByUser:true, confirmationId:"${ready.confirmationId}"}；服务端会从已确认草案恢复 candidateId、strategyPatch 等字段，不要注册新草案，也不要再次要求用户确认。`
+          : `用户当前消息已确认草案 ${ready.confirmationId}（注册早于该确认）：立即调用 ${ready.operation}，传入 {confirmedByUser:true, confirmationId:"${ready.confirmationId}"}；服务端按已确认草案执行，不要注册新草案，也不要再次要求用户确认。`;
       }
     }
   }
@@ -1412,6 +1850,94 @@ async function addWatchlist(input: Record<string, unknown> | undefined, context:
     message: `已添加 ${stockName}(${stockCode}) 到自选池`,
     stockCode,
     stockName,
+    ...artifactPublicationFields(publication),
+  };
+}
+
+interface WatchlistBatchItem {
+  code: string;
+  name: string;
+  reason: string;
+}
+
+/** watchlist.add_many 草案/执行的条目归一化：每项必须含 6 位 code，name/reason
+ * 可选；条目内 code 去重（重复登记同码在登记端就打回，避免确认语义含糊）。 */
+function normalizeWatchlistBatchItems(value: unknown): WatchlistBatchItem[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("watchlist.add_many 的 items 必须是非空数组，每项 {code, name?, reason?}");
+  }
+  const items: WatchlistBatchItem[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("watchlist.add_many 的 items 每项必须是对象 {code, name?, reason?}");
+    }
+    const record = raw as Record<string, unknown>;
+    const code = stringInput(record.code ?? record.stockCode);
+    if (!code || !/^\d{6}$/.test(code)) {
+      throw new Error(`watchlist.add_many 条目 code 必须是 6 位数字代码（如 600519）：${JSON.stringify(record)}`);
+    }
+    if (seen.has(code)) {
+      throw new Error(`watchlist.add_many items 内 code 重复：${code}；请去重后重新登记`);
+    }
+    seen.add(code);
+    items.push({
+      code,
+      name: stringInput(record.name ?? record.stockName) || code,
+      reason: stringInput(record.reason) || "AI 助手根据对话加入",
+    });
+  }
+  return items;
+}
+
+/** 2026-10-09 fresh 微信录入回归：10 只截图录入迫使模型串行登记/执行 19 次单只
+ * watchlist.add，两轮撞上交互 maxSteps=20 后以 MASTRA_EMPTY_RESPONSE 死掉（用户
+ * 「确认了几次没反应」）。批量操作把 N 只收敛为 1 次登记 + 1 次执行；已在自选池
+ * 的条目跳过并在结果里明示，不再让重复条目把整批打回。 */
+async function addWatchlistMany(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
+  const confirmation = await prepareBoundConfirmation(input, context, "watchlist.add_many");
+  const payload = confirmation.payload;
+  const items = normalizeWatchlistBatchItems(payload.items);
+  const added: Array<{ code: string; name: string }> = [];
+  const skipped: Array<{ code: string; name: string; reason: string }> = [];
+  for (const item of items) {
+    const existing = await watchlistBackend.find(context.userId, context.instanceId, item.code);
+    if (existing) {
+      skipped.push({ code: item.code, name: existing.name, reason: "已在自选池" });
+      continue;
+    }
+    // 每只写入前重读版本：watchlist 每次写入都会推进 revision，批量内沿用首读值
+    // 会被乐观锁误拒（与单只 add 的时序语义一致）。
+    const expectedRevision = getMastraPortfolioRevision(context.userId, context.instanceId);
+    await watchlistBackend.add(context.userId, context.instanceId, {
+      code: item.code,
+      name: item.name,
+      reason: normalizeWatchlistReason(item.reason),
+      source: "ai_conversation",
+      expectedRevision,
+    });
+    added.push({ code: item.code, name: item.name });
+  }
+  await confirmation.consume();
+  await audit(context, {
+    operation: "watchlist.add_many",
+    resourceType: "watchlist",
+    resourceId: context.instanceId,
+    requestBody: input,
+    resultSummary: `added=${added.length}; skipped=${skipped.length}`,
+  });
+  const publication: WorkspaceArtifactPublication = { artifacts: [], failures: [] };
+  return {
+    ok: true,
+    userId: context.userId,
+    instanceId: context.instanceId,
+    addedCount: added.length,
+    skippedCount: skipped.length,
+    added,
+    skipped,
+    message: added.length > 0
+      ? `已添加 ${added.length} 只到自选池${skipped.length > 0 ? `；${skipped.length} 只已在自选池，跳过：${skipped.map((item) => `${item.name}(${item.code})`).join("、")}` : ""}`
+      : "没有新增：所有条目都已在自选池中",
     ...artifactPublicationFields(publication),
   };
 }
@@ -2083,6 +2609,17 @@ async function publishArtifact(input: Record<string, unknown> | undefined, conte
         hint: "若这是用户明确要求交付的已有文件，带 existingFileRequest:true 重试；否则先用工具在本轮真实生成或更新该文件，再发布。",
       };
     }
+    if (error instanceof ConversationArtifactError && error.code === "ARTIFACT_NOT_FOUND") {
+      return {
+        ok: false,
+        error: "artifact_not_found",
+        userId: context.userId,
+        instanceId: context.instanceId,
+        relativePath,
+        message: `${relativePath} 不存在：artifacts.publish 只登记已存在的文件，本身不创建文件，因此无法发布。`,
+        hint: "先用 workspace 写工具在本轮把完整内容写入该路径（交付用 HTML/报告放 reports/ 下），确认写入成功后再重新调用 artifacts.publish；不要在不存在的路径上重试发布，也不要因此判定交付能力不可用。",
+      };
+    }
     throw error;
   }
 }
@@ -2322,11 +2859,21 @@ async function attachPublishedArtifactToUserFiles(
         userId: published.userId,
         instanceId: published.instanceId,
       });
+      // 报告产出默认归组：reports/ 路径的产出保存时进「报告」文件夹，
+      // 不在「我的文件」平铺（2026-10-08）。
+      const reportFolderId = isReportRelativePath(published.relativePath)
+        ? await ensureDefaultReportFolderId({
+            userId: published.userId,
+            projectId: published.scope.projectId,
+            instanceId: published.instanceId,
+          })
+        : undefined;
       const save = (assetId?: string) => saveConversationArtifactAsUserAsset({
         userId: published.userId,
         projectId: published.scope.projectId,
         instanceId: published.instanceId,
         assetId,
+        ...(reportFolderId ? { folderId: reportFolderId } : {}),
         name: published.title,
         fileName: payload.fileName,
         mimeType: payload.mimeType,
@@ -2414,24 +2961,30 @@ async function planPortfolioChanges(
   input: Record<string, unknown>,
   context: ServiceToolContext
 ): Promise<PlannedPortfolioChanges> {
-  if (!Object.prototype.hasOwnProperty.call(input, "expectedLastConfirmedAt")) {
-    throw new Error("expectedLastConfirmedAt is required; read the current portfolio first and copy its revision value verbatim into expectedLastConfirmedAt");
-  }
-  const rawExpected = input.expectedLastConfirmedAt === null
-    ? null
-    : stringInput(input.expectedLastConfirmedAt);
-  if (input.expectedLastConfirmedAt !== null && !rawExpected) {
-    throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
-  }
-  const expectedLastConfirmedAt: string | null = rawExpected ?? null;
-  if (expectedLastConfirmedAt && Number.isNaN(Date.parse(expectedLastConfirmedAt))) {
-    throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
-  }
-
   const current = readMastraPortfolioProjection(context.userId, context.instanceId) as PortfolioYaml;
   const currentRevision = getMastraPortfolioRevision(context.userId, context.instanceId);
-  if (!isSameRevisionInstant(currentRevision, expectedLastConfirmedAt)) {
-    throw new Error(`portfolio state changed; expected revision ${expectedLastConfirmedAt ?? "null"}, current revision ${currentRevision ?? "null"}; copy the current revision verbatim from portfolio.read into expectedLastConfirmedAt`);
+  // 2026-10-09 fresh 微信录入回归（登记 6 连拒 → 模型降级 payload 丢股数/成本）：
+  // expectedLastConfirmedAt 不再要求模型从 portfolio.read 回抄。缺省时服务端在规划
+  // 时点绑定当前版本——登记与执行两侧的 canonical 摘要都经此绑定各自时点的版本，
+  // 中途发生其它写入时两侧摘要不一致、执行被 mismatch 拒绝，乐观并发语义不变；
+  // 显式传入时仍按原口径校验（登记时即须与当前版本一致）。
+  let expectedLastConfirmedAt: string | null;
+  if (Object.prototype.hasOwnProperty.call(input, "expectedLastConfirmedAt")) {
+    const rawExpected = input.expectedLastConfirmedAt === null
+      ? null
+      : stringInput(input.expectedLastConfirmedAt);
+    if (input.expectedLastConfirmedAt !== null && !rawExpected) {
+      throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
+    }
+    expectedLastConfirmedAt = rawExpected ?? null;
+    if (expectedLastConfirmedAt && Number.isNaN(Date.parse(expectedLastConfirmedAt))) {
+      throw new Error("expectedLastConfirmedAt must be an ISO timestamp or null");
+    }
+    if (!isSameRevisionInstant(currentRevision, expectedLastConfirmedAt)) {
+      throw new Error(`portfolio state changed; expected revision ${expectedLastConfirmedAt ?? "null"}, current revision ${currentRevision ?? "null"}; copy the current revision verbatim from portfolio.read into expectedLastConfirmedAt`);
+    }
+  } else {
+    expectedLastConfirmedAt = currentRevision;
   }
 
   const removeHoldingCodes = [...new Set(normalizeCodes(input.removeHoldingCodes))];
@@ -2604,6 +3157,16 @@ function portfolioChangeResult(
   keptWatchlistCodes: string[],
   artifact?: ConversationArtifact,
 ) {
+  const writtenHoldings = upsertedHoldings.map((holding) => ({
+    code: holding.code,
+    name: holding.name,
+    shares: holding.shares ?? null,
+    cost: holding.cost ?? null,
+    weight: holding.weight ?? null,
+  }));
+  // 2026-10-09 fresh 回归：模型执行后凭记忆汇报「数量成本已记账」，实际写入为
+  // 空。回读明细 + 显式指令把汇报锚定在真实写入值上（null 即未录入）。
+  const missingQuantity = writtenHoldings.filter((holding) => holding.shares === null && holding.weight === null && holding.cost === null);
   return {
     ok: true,
     userId: context.userId,
@@ -2616,9 +3179,13 @@ function portfolioChangeResult(
     applied: {
       removedHoldingCodes: removedHoldings.map((item) => item.code),
       upsertedHoldingCodes: upsertedHoldings.map((item) => item.code),
+      upsertedHoldings: writtenHoldings,
       removedWatchlistCodes: removedWatchlist.map((item) => item.code),
       keptWatchlistCodes,
     },
+    reportInstruction: missingQuantity.length > 0
+      ? `向用户汇报时必须以下方回读值为准：${missingQuantity.map((holding) => `${holding.name}(${holding.code})`).join("、")} 的 shares/cost/weight 均为 null（未录入）。不要声称数量或成本价已记录；应告知用户这些值仍为空，并请用户提供后再补录。`
+      : "向用户汇报写入结果时，必须以 applied.upsertedHoldings 回读的 shares/cost/weight 实际值为准，null 表示未录入。",
   };
 }
 
@@ -2705,6 +3272,7 @@ const CONFIRMED_WRITE_OPERATIONS = new Set([
   "onboarding.confirm_portfolio",
   "onboarding.confirm_step",
   "watchlist.add",
+  "watchlist.add_many",
   "plans.set",
   "plans.watch_conditions",
   "method_changes.propose",
@@ -2712,6 +3280,9 @@ const CONFIRMED_WRITE_OPERATIONS = new Set([
   "preferences.apply",
   "watch_rules.create",
   "assets.delete",
+  "automation.delete",
+  "skill.set_enabled",
+  "skill.uninstall",
 ]);
 
 async function requestConfirmation(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
@@ -2749,7 +3320,8 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
     if (executable) {
       const canonical = await canonicalizeConfirmationPayload(operation, payload, context);
       const target = confirmationTarget(operation, canonical, context);
-      if (stableStringify(comparableConfirmationBody(operation, target.requestBody)) === stableStringify(comparableConfirmationBody(operation, executable.targetRequestBody))) {
+      const sameConfirmedMethodCandidate = operation === "method_changes.propose";
+      if (sameConfirmedMethodCandidate || stableStringify(comparableConfirmationBody(operation, target.requestBody)) === stableStringify(comparableConfirmationBody(operation, executable.targetRequestBody))) {
         await audit(context, {
           operation: "confirmations.request",
           resourceType: executable.record.resourceType,
@@ -2765,7 +3337,7 @@ async function requestConfirmation(input: Record<string, unknown> | undefined, c
           reused: true,
           operation,
           expiresAt: executable.record.expiresAt,
-          instruction: `用户当前消息已确认此草案（草案注册时间早于该确认消息）：请立即调用 ${operation} 执行写入，只传 confirmationId（可不带业务参数，服务端按已确认草案执行）；不要重新注册草案，也不要再次要求用户确认。`,
+          instruction: `用户当前消息已确认这份${operation === "method_changes.propose" ? "方法候选" : "待执行变更"}（登记时间早于该确认消息）：请立即调用 ${operation}，传入 {confirmedByUser:true, confirmationId:"${executable.record.id}"}；服务端按已确认记录恢复业务参数并执行，不要重新登记，也不要再次要求用户确认。`,
         };
       }
       // 内容不一致：这是新草案，正常注册（走下方通用路径），但 warning 指路
@@ -2811,6 +3383,7 @@ async function registerConfirmationDraft(
   // 引导模型本轮只展示草案、等用户下一条确认，而不是当轮直接写入被拒后让用户反复重确认。
   const latest = await latestUserMessage(context);
   const registeredAfterUserConfirmation = latest ? isExplicitConfirmationText(latest.content?.trim() || "") : false;
+  const completenessWarnings = portfolioDraftCompletenessWarnings(operation, preview);
   return {
     ok: true,
     userId: context.userId,
@@ -2818,11 +3391,36 @@ async function registerConfirmationDraft(
     confirmationId: pending.id,
     operation,
     expiresAt: pending.expiresAt,
+    ...(completenessWarnings.length > 0 ? { warnings: completenessWarnings } : {}),
     ...(registeredAfterUserConfirmation
       ? { warning: `本草案注册晚于用户当前已发送的确认消息，用户本轮的确认不能用于执行此草案：请在回复中展示草案，用户下一条确认消息到达后立即调用 ${operation} 完成写入（只传 confirmationId 即可）。` }
       : {}),
     ...(preview ? { preview } : {}),
   };
+}
+
+/** 2026-10-09 fresh 微信录入回归：模型被登记校验连续打回后会降级 payload，丢掉
+ * 用户已提供的股数/成本，执行端又忠实写入残缺草案（4 只持仓数量全空 + 模型谎报
+ * 已记账）。登记时对「三无」持仓（shares/weight/cost 全缺）显式警告，让模型在
+ * 展示草案前就发现丢字段并重新登记完整草案；不硬拒——仅改备注等局部更新是合法
+ * 场景，硬拒会复刻本次事故的连拒降级循环。 */
+function portfolioDraftCompletenessWarnings(operation: string, preview: unknown): string[] {
+  if (operation !== "portfolio.apply_changes" || !preview || typeof preview !== "object") return [];
+  const upserted = (preview as { upsertedHoldings?: Array<{ code?: unknown; name?: unknown; shares?: unknown; weight?: unknown; cost?: unknown }> }).upsertedHoldings;
+  if (!Array.isArray(upserted)) return [];
+  const incomplete = upserted.filter((holding) => {
+    const empty = (value: unknown) => value === null || value === undefined || value === "";
+    return empty(holding.shares) && empty(holding.weight) && empty(holding.cost);
+  });
+  if (incomplete.length === 0) return [];
+  const labels = incomplete
+    .map((holding) => `${String(holding.name ?? holding.code)}(${String(holding.code)})`)
+    .join("、");
+  return [
+    `草案完整性警告：${labels} 的 shares/weight/cost 全部为空，确认执行后将写入无数量、无成本的持仓。`
+    + "若用户本轮已提供股数、成本价或权重，这份草案不完整：不要向用户展示它，先用包含这些字段的完整 payload 重新调用 confirmations.request 登记新草案，旧草案会自然过期；"
+    + "仅当用户确实还没提供任何数量信息（例如只报了股票名单）时才可展示此草案，并在展示时明确告知持仓数量待补。",
+  ];
 }
 
 /** 用户消息已是显式确认时，寻找同 operation、未过期、且注册时间早于该确认
@@ -2887,11 +3485,65 @@ async function validateConfirmationDraft(
       throw new Error(`确认草案不可执行：${existing.name}(${existing.code}) 已在自选池中，无需重复添加。请告知用户现状，不要继续登记此草案。`);
     }
   }
+  if (operation === "watchlist.add_many") {
+    // 条目形状/去重在归一化里强制；已存在的条目不拒整批（执行端跳过并明示），
+    // 只在「全部都已存在」时打回——那种草案对用户没有任何可确认的新内容。
+    const items = normalizeWatchlistBatchItems(payload.items);
+    const existingCodes: string[] = [];
+    for (const item of items) {
+      const existing = await watchlistBackend.find(context.userId, context.instanceId, item.code);
+      if (existing) existingCodes.push(`${existing.name}(${existing.code})`);
+    }
+    if (existingCodes.length === items.length) {
+      throw new Error(`确认草案不可执行：items 中的 ${existingCodes.join("、")} 已全部在自选池中，没有可新增的标的。请告知用户现状，不要继续登记此草案。`);
+    }
+  }
   if (operation === "assets.delete") {
     const assetId = stringInput(payload.assetId);
     const asset = assetId ? await getUserAsset({ ...assetScope(context), assetId }) : null;
     if (!asset) {
       throw new Error(`确认草案不可执行：资产 ${assetId ?? "(空)"} 不存在或不属于当前用户。请核对 assetId 后重新登记草案。`);
+    }
+  }
+  if (operation === "automation.delete") {
+    const taskId = stringInput(payload.taskId);
+    let task: Awaited<ReturnType<typeof getAutomationTask>> = null;
+    if (taskId) {
+      // 跨 scope 的 taskId 在 getAutomationTask 里抛 SCOPE_MISMATCH；登记入口统一
+      // 折成「不可执行」的契约错误，让模型核对 ID 后重报。
+      task = await getAutomationTask({ ...automationToolScope(context), taskId }).catch(() => null);
+    }
+    if (!task || task.status === "deleted") {
+      throw new Error(`确认草案不可执行：定时任务 ${taskId ?? "(空)"} 不存在、已删除或不属于当前用户。请核对 taskId 后重新登记草案。`);
+    }
+  }
+  if (operation === "skill.set_enabled" || operation === "skill.uninstall") {
+    const skillId = stringInput(payload.skillId);
+    const verb = operation === "skill.uninstall" ? "卸载" : "停用";
+    if (operation === "skill.set_enabled" && payload.enabled !== false) {
+      throw new Error("确认草案不可执行：skill.set_enabled 的确认流只用于停用（enabled:false）；启用无需确认，直接调用 skill.set_enabled（enabled:true）即可。");
+    }
+    const skill = skillId ? userDomainSkillRow(skillId) : undefined;
+    if (!isAgentManageableSkill(skill)) {
+      throw new Error(`确认草案不可执行：技能 ${skillId ?? "(空)"} 不存在、已删除、不属于当前用户或是系统域技能。请核对 skillId（skill.list 可查）后重新登记草案。`);
+    }
+    const installed = sqlite
+      .prepare(
+        `SELECT installation_id FROM agent_space_agent_skill_installations
+         WHERE skill_id=? AND user_id=? AND project_id=? AND instance_id=? AND status IN ('installed','disabled') LIMIT 1`,
+      )
+      .get(skillId, context.userId, context.projectId || DEFAULT_PROJECT_ID, context.instanceId) as { installation_id: string } | undefined;
+    if (!installed) {
+      throw new Error(`确认草案不可执行：技能 ${skillId} 当前未安装，无需${verb}；可用 skill.list 核对安装状态。`);
+    }
+    const deps = sqlite
+      .prepare(
+        `SELECT COUNT(*) AS n FROM agent_space_task_dependencies
+         WHERE user_id=? AND project_id=? AND instance_id=? AND kind='skill' AND ref_id=?`,
+      )
+      .get(context.userId, context.projectId || DEFAULT_PROJECT_ID, context.instanceId, skillId) as { n: number };
+    if (deps.n > 0) {
+      throw new Error(`确认草案不可执行：有 ${deps.n} 个任务引用此技能，先调整任务依赖再${verb}。请告知用户现状，不要继续登记此草案。`);
     }
   }
   if (operation === "onboarding.confirm_step") {
@@ -2995,6 +3647,14 @@ async function prepareBoundConfirmation(
   const confirmationId = stringInput(input?.confirmationId);
   if (!confirmationId) throw new Error("confirmationId is required after requesting confirmation");
   if (!context.conversationId) throw new Error("conversationId is required for confirmed writes");
+  const [registeredOperation] = await db
+    .select({ operation: pendingSandboxConfirmations.operation })
+    .from(pendingSandboxConfirmations)
+    .where(eq(pendingSandboxConfirmations.id, confirmationId))
+    .limit(1);
+  if (registeredOperation && registeredOperation.operation !== operation) {
+    throw new Error(`confirmation invalid: confirmationId 属于 ${registeredOperation.operation}，不能用于 ${operation}；请调用 ${registeredOperation.operation} 执行该确认。`);
+  }
   await requireRecentUserConfirmation(context, operation, confirmationId);
   const { summary: _summary, ...businessFields } = stripConfirmationFields(input);
   // 摩擦修复（2026-09-03）：模型只传 confirmationId（不带业务字段）时，从注册
@@ -3067,6 +3727,7 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
     "onboarding.confirm_portfolio": "onboarding_portfolio",
     "onboarding.confirm_step": "onboarding_step",
     "watchlist.add": "watchlist",
+    "watchlist.add_many": "watchlist",
     "plans.set": "stock_plan",
     "plans.watch_conditions": "stock_plan",
     "method_changes.propose": "method_change_candidate",
@@ -3074,6 +3735,9 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
     "preferences.apply": "user_preferences",
     "watch_rules.create": "watch_rule",
     "assets.delete": "user_asset",
+    "automation.delete": "automation_task",
+    "skill.set_enabled": "agent_space_skill_installation",
+    "skill.uninstall": "agent_space_skill_installation",
   };
   const resourceType = resourceByOperation[operation];
   if (!resourceType) throw new Error("operation is not confirmable");
@@ -3086,11 +3750,15 @@ function confirmationTarget(operation: string, payload: Record<string, unknown>,
       : operation.startsWith("plans.")
         ? stringInput(payload.stockCode ?? payload.code)
         : operation === "method_changes.apply"
-      ? stringInput(payload.candidateId)
-      : operation === "preferences.apply"
+        ? stringInput(payload.candidateId)
+        : operation === "preferences.apply"
           ? context.instanceId
         : operation === "assets.delete"
           ? stringInput(payload.assetId) || context.instanceId
+        : operation === "automation.delete"
+          ? stringInput(payload.taskId)
+          : operation === "skill.set_enabled" || operation === "skill.uninstall"
+            ? stringInput(payload.skillId)
         : undefined;
   const requestBody = operation === "method_changes.apply"
     ? stripMethodChangeConfirmationMetadata(payload)

@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs
 import path from "node:path";
 
 import { sqlite } from "../db/index.js";
+import { getNotificationPreferences } from "./attention-items.js";
 import { logger } from "../lib/logger.js";
 import { isAshareTradingDay } from "../lib/market-calendar.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
@@ -41,7 +42,7 @@ const AUTOMATION_RUN_LEASE_MS = positiveInteger(process.env.AUTOMATION_TASK_LEAS
  * same day, long enough not to fight a restart loop. */
 const LEASE_EXPIRY_RETRY_DELAY_MS = 5 * 60 * 1000;
 
-export type AutomationTaskStatus = "paused" | "active" | "needs_attention" | "archived";
+export type AutomationTaskStatus = "paused" | "active" | "needs_attention" | "archived" | "deleted";
 export type AutomationTaskRunOrigin = "manual" | "scheduled";
 export type AutomationTaskRunStatus = "running" | "succeeded" | "failed" | "skipped" | "cancelled";
 export type AutomationErrorCategory =
@@ -328,7 +329,7 @@ export interface AutomationBatchActionItem {
 }
 
 export interface AutomationBatchActionInput extends AutomationScope {
-  action: "pause" | "activate" | "archive";
+  action: "pause" | "activate" | "delete";
   items: AutomationBatchActionItem[];
   idempotencyKey: string;
 }
@@ -471,6 +472,7 @@ export class AutomationTaskError extends Error {
       | "AUTOMATION_TASK_NOT_ACTIVE"
       | "AUTOMATION_TASK_NEEDS_ATTENTION"
       | "AUTOMATION_TASK_ARCHIVED"
+      | "AUTOMATION_TASK_DELETED"
       | "AUTOMATION_BATCH_INVALID"
       | "AUTOMATION_INVALID_CURSOR"
       | "AUTOMATION_DATA_CORRUPT",
@@ -848,6 +850,7 @@ export async function updateAutomationTask(input: UpdateAutomationTaskInput): Pr
   const scope = assertAutomationScope(input);
   const taskId = normalizeTaskId(input.taskId);
   const task = requireTaskRow(taskId, scope);
+  if (task.status === "deleted") throw new AutomationTaskError("AUTOMATION_TASK_DELETED", taskId);
   if (task.status === "archived") throw new AutomationTaskError("AUTOMATION_TASK_ARCHIVED", taskId);
   if (input.expectedRevision !== undefined && input.expectedRevision !== task.currentRevision) {
     throw new AutomationTaskError("AUTOMATION_REVISION_CONFLICT", String(input.expectedRevision));
@@ -1095,7 +1098,11 @@ async function normalizeGenericDefinition(scope: AutomationScope, input: {
     throw new AutomationTaskError("AUTOMATION_ASSET_BINDING_INVALID", "update_target must be writable by the task output mode");
   }
   const output = await validateOutputPolicy(scope, normalizedOutput);
-  const delivery = normalizeDeliveryPolicy(input.delivery);
+  const delivery = normalizeDeliveryPolicy(
+    input.delivery === undefined
+      ? (getNotificationPreferences(scope).defaultDeliveryMode === "wechat" ? { mode: "wechat_summary" } : { mode: "none" })
+      : input.delivery,
+  );
   return { instruction, inputs, output, delivery };
 }
 
@@ -1326,6 +1333,51 @@ export async function archiveAutomationTask(input: AutomationTaskLookup & { expe
   return setAutomationTaskStatus(input, "archived");
 }
 
+/**
+ * Soft delete: the task leaves the scheduler and the default list, while
+ * revisions, runs, assets, and audit history stay readable for audit. The
+ * transition is terminal — a deleted task can never be revived or edited.
+ */
+export async function deleteAutomationTask(input: AutomationTaskLookup & {
+  expectedRevision?: number;
+  editSource?: AutomationTaskEditSource;
+  editSourceRef?: string;
+}): Promise<AutomationTaskRecord> {
+  const scope = assertAutomationScope(input);
+  const taskId = normalizeTaskId(input.taskId);
+  const task = requireTaskRow(taskId, scope);
+  if (input.expectedRevision !== undefined && input.expectedRevision !== task.currentRevision) {
+    throw new AutomationTaskError("AUTOMATION_REVISION_CONFLICT", String(input.expectedRevision));
+  }
+  if (task.status === "deleted") return requireAutomationTask({ ...scope, taskId });
+  if (hasRunningAutomationTaskRun(taskId, scope)) throw new AutomationTaskError("AUTOMATION_TASK_BUSY", taskId);
+  const now = nowIso();
+  const transaction = sqlite.transaction(() => {
+    sqlite.prepare(`
+      UPDATE automation_tasks
+      SET status = 'deleted', next_run_at = NULL, updated_at = ?
+      WHERE task_id = ? AND user_id = ? AND project_id = ? AND instance_id = ? AND status != 'deleted'
+    `).run(now, taskId, scope.userId, scope.projectId, scope.instanceId);
+    insertAuditRow({
+      taskId,
+      revisionId: task.currentRevisionId,
+      scope,
+      action: "task.deleted",
+      status: "success",
+      details: {
+        revision: task.currentRevision,
+        previousStatus: task.status,
+        status: "deleted",
+        editSource: normalizeEditSource(input.editSource),
+        editSourceRef: normalizeEditSourceRef(input.editSourceRef),
+      },
+      createdAt: now,
+    });
+  });
+  transaction();
+  return requireAutomationTask({ ...scope, taskId });
+}
+
 export async function listAutomationTasks(input: AutomationScope, query: AutomationListQuery = {}): Promise<AutomationTaskSummary[]> {
   return (await listAutomationTaskPage(input, query)).items;
 }
@@ -1449,6 +1501,7 @@ export async function claimAutomationTaskRun(input: ClaimAutomationTaskRunInput)
   const scope = assertAutomationScope(input);
   const taskId = normalizeTaskId(input.taskId);
   const task = requireTaskRow(taskId, scope);
+  if (task.status === "deleted") throw new AutomationTaskError("AUTOMATION_TASK_DELETED", taskId);
   if (task.status === "archived") throw new AutomationTaskError("AUTOMATION_TASK_ARCHIVED", taskId);
   const origin = input.origin ?? "manual";
   if (origin !== "manual" && origin !== "scheduled") {
@@ -1655,6 +1708,7 @@ export async function expireStaleScheduledAutomationTaskRun(
   const scope = assertAutomationScope(input);
   const taskId = normalizeTaskId(input.taskId);
   const task = requireTaskRow(taskId, scope);
+  if (task.status === "deleted") throw new AutomationTaskError("AUTOMATION_TASK_DELETED", taskId);
   if (task.status === "archived") throw new AutomationTaskError("AUTOMATION_TASK_ARCHIVED", taskId);
   const revision = input.revisionId
     ? requireRevisionById(input.revisionId, scope, taskId)
@@ -2405,7 +2459,7 @@ function latestRunsByTask(scope: AutomationScope): Map<string, NonNullable<Autom
 }
 
 function taskStatusRank(status: AutomationTaskStatus): number {
-  return status === "needs_attention" ? 0 : status === "active" ? 1 : status === "paused" ? 2 : 3;
+  return status === "needs_attention" ? 0 : status === "active" ? 1 : status === "paused" ? 2 : status === "archived" ? 3 : 4;
 }
 
 function taskCursorKey(task: AutomationTaskRecord): string {
@@ -2528,7 +2582,7 @@ export async function listAutomationTaskRunsPage(input: AutomationTaskRunListInp
   `).all(...params, limit + 1) as DbRunRow[];
   const items = rows.slice(0, limit).map((row) => {
     const run = runRecordFromRow(row);
-    return { ...run, taskName: run.taskName ?? "自动化任务" };
+    return { ...run, taskName: run.taskName ?? "定时任务" };
   });
   const last = items.at(-1);
   return { items, ...(rows.length > limit && last ? { nextCursor: encodeRunCursor(last) } : {}) };
@@ -2536,7 +2590,7 @@ export async function listAutomationTaskRunsPage(input: AutomationTaskRunListInp
 
 export async function batchAutomationTaskAction(input: AutomationBatchActionInput): Promise<AutomationBatchActionResult> {
   const scope = assertAutomationScope(input);
-  if (!["pause", "activate", "archive"].includes(input.action)) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "action");
+  if (!["pause", "activate", "delete"].includes(input.action)) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "action");
   if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 100) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "items must contain 1..100 tasks");
   if (typeof input.idempotencyKey !== "string" || !input.idempotencyKey.trim() || input.idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "idempotencyKey");
   const seen = new Set<string>();
@@ -2561,7 +2615,7 @@ export async function batchAutomationTaskAction(input: AutomationBatchActionInpu
         ? await setAutomationTaskStatus({ ...scope, taskId, expectedRevision: item.expectedRevision }, "paused", correlationId)
         : input.action === "activate"
           ? await setAutomationTaskStatus({ ...scope, taskId, expectedRevision: item.expectedRevision }, "active", correlationId)
-          : await setAutomationTaskStatus({ ...scope, taskId, expectedRevision: item.expectedRevision }, "archived", correlationId);
+          : await deleteAutomationTask({ ...scope, taskId, expectedRevision: item.expectedRevision });
       results.push({ taskId, ok: true, task });
     } catch (error) {
       if (error instanceof AutomationTaskError) {
@@ -2572,7 +2626,7 @@ export async function batchAutomationTaskAction(input: AutomationBatchActionInpu
               taskId,
               revisionId: current.currentRevisionId,
               scope,
-              action: input.action === "activate" ? "task.activated" : input.action === "archive" ? "task.archived" : "task.paused",
+              action: input.action === "activate" ? "task.activated" : input.action === "delete" ? "task.deleted" : "task.paused",
               status: "failed",
               details: { revision: current.currentRevision, correlationId, errorCode: error.code },
               createdAt: nowIso(),
@@ -2857,6 +2911,7 @@ async function setAutomationTaskStatus(input: AutomationTaskLookup & { expectedR
   if (status === "active" && task.status === "needs_attention") {
     throw new AutomationTaskError("AUTOMATION_TASK_NEEDS_ATTENTION", taskId);
   }
+  if (task.status === "deleted") throw new AutomationTaskError("AUTOMATION_TASK_DELETED", taskId);
   if (status !== "archived" && task.status === "archived") throw new AutomationTaskError("AUTOMATION_TASK_ARCHIVED", taskId);
   if (status === "archived" && task.status === "archived") return requireAutomationTask({ ...scope, taskId });
   const now = nowIso();
@@ -3561,7 +3616,7 @@ function assertRowScope(row: { userId: string; projectId: string; instanceId: st
 }
 
 function parseTaskStatus(value: string): AutomationTaskStatus {
-  if (["paused", "active", "needs_attention", "archived"].includes(value)) return value as AutomationTaskStatus;
+  if (["paused", "active", "needs_attention", "archived", "deleted"].includes(value)) return value as AutomationTaskStatus;
   throw new AutomationTaskError("AUTOMATION_DATA_CORRUPT", value);
 }
 

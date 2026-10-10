@@ -1250,6 +1250,7 @@ export const agentSpaceMethods = sqliteTable("agent_space_methods", {
   name: text("name").notNull(),
   description: text("description"),
   status: text("status").notNull().default("draft"),
+  kind: text("kind").notNull().default("strategy"),
   currentVersionId: text("current_version_id"),
   idempotencyKey: text("idempotency_key"),
   createdAt: text("created_at").notNull(),

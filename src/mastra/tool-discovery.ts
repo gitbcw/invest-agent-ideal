@@ -17,9 +17,11 @@
  */
 import { z } from "zod/v4";
 import { getMastraBindings, type MastraBindingsProvider } from "./bindings.js";
+import { TOOLRESULT_READ_TOOL_NAME, TOOLRESULT_SERVER_ID } from "./tool-result-offload.js";
 import { TOOL_SPECS } from "./tools/registry.js";
+import { toolDescriptionZh } from "./tools/tool-descriptions-zh.js";
 
-/** 交互轮服务工具常驻核心集（流程必备 13 + 高频读 5；docs §3.2）。 */
+/** 交互轮服务工具常驻核心集（流程必备 + 高频读；docs §3.2）。 */
 export const INTERACTIVE_CORE_SERVICE_TOOLS: readonly string[] = [
   // 确认流与会话流程（结构性依赖，频次无关）
   "confirmations.pending",
@@ -37,6 +39,18 @@ export const INTERACTIVE_CORE_SERVICE_TOOLS: readonly string[] = [
   "assets.version.commit",
   "assets.conversation.save",
   "assets.attachment.save",
+  // 技能主路径（2026-10-08 镜像定性：创建技能被两段式发现埋进目录后，
+  // 模型改走 workspace 写文件，不进技能管理也不生效——list/create/install/edit
+  // 必须常驻；停用/卸载走目录 + 确认流）
+  "skill.list",
+  "skill.create",
+  "skill.install",
+  "skill.edit",
+  // 策略主路径（2026-10-08 owner 裁决「我的策略」）：保存/使用策略与技能同级
+  // 主路径——list/create/read 常驻；edit/set_primary 走目录。
+  "strategy.list",
+  "strategy.create",
+  "strategy.read",
   // 高频读（W13 持仓台账 ~40% 交互 + 联网检索）
   "portfolio.read",
   "watchlist.read",
@@ -45,7 +59,7 @@ export const INTERACTIVE_CORE_SERVICE_TOOLS: readonly string[] = [
   "research.news_search",
 ];
 
-/** 外部 MCP 每 server 的常驻核心工具（30 天调用画像前五；qsse 全走目录）。 */
+/** 外部 MCP 每 server 的常驻核心工具（30 天调用画像前五 + owner 增补）。 */
 export const EXTERNAL_CORE_TOOLS: Record<string, readonly string[]> = {
   "market-data-tool": [
     "get_stock_news",
@@ -53,8 +67,21 @@ export const EXTERNAL_CORE_TOOLS: Record<string, readonly string[]> = {
     "get_stock_profile",
     "get_hist_kline",
     "get_market_summary",
+    // 2026-10-09 owner 增补：涨停池 30 天 110 次/3 用户（长尾调用量第一），
+    // 盯盘高频且 schema 小。
+    "get_zt_pool",
   ],
-  "qsse-qlib": [],
+  // 2026-10-09 owner 裁决：qsse 仅 4 个工具，全部常驻——量化链是模拟/选股
+  // 主路径，逐个走目录徒增发现跳数（镜像实测全市场请求在目录间耗尽预算）。
+  "qsse-qlib": [
+    "quant_capabilities",
+    "quant_validate_expression",
+    "quant_screen_stocks",
+    "quant_backtest",
+  ],
+  // 工具结果分片读取（预览+引用）：单工具合成组，常驻直挂、免目录/调度壳
+  // （见 applyInteractiveExternalToolDiscovery 的合成组分支）。
+  [TOOLRESULT_SERVER_ID]: [TOOLRESULT_READ_TOOL_NAME],
 };
 
 const CATALOG_HINT = "需要清单里没有的数据或管理能力时：先调用本目录工具查看可用工具名与参数，再用同名 call 调度工具执行（name 用目录中的原始名）。";
@@ -108,7 +135,7 @@ function toolNameCandidates(name: string, prefixes: readonly string[]): string[]
   return [...variants];
 }
 
-interface ToolLike {
+export interface ToolLike {
   id?: string;
   description?: string;
   inputSchema?: unknown;
@@ -123,7 +150,7 @@ function buildServiceCatalogLines(): string[] {
   const core = new Set(INTERACTIVE_CORE_SERVICE_TOOLS);
   return TOOL_SPECS
     .filter((spec) => !core.has(spec.id))
-    .map((spec) => `- ${spec.id}（参数：${extractSchemaKeys(spec.inputSchema).join(", ") || "无"}）：${firstSentence(spec.description)}`);
+    .map((spec) => `- ${spec.id}（参数：${extractSchemaKeys(spec.inputSchema).join(", ") || "无"}）：${firstSentence(toolDescriptionZh(spec.id, spec.description))}`);
 }
 
 function buildExternalCatalogLines(toolset: Record<string, unknown>, core: readonly string[], serverId: string): string[] {
@@ -241,6 +268,12 @@ export async function applyInteractiveExternalToolDiscovery(
     if (!anyToolLike) {
       // 形态不符合（保留原样，宁可全量也不破坏运行）
       result[serverId] = toolset;
+      continue;
+    }
+    // 合成组（工具结果分片读取）：常驻直挂，不注入目录/调度壳——单工具
+    // 直连不需要发现跳数，多两个壳反而进目录噪音。
+    if (serverId === TOOLRESULT_SERVER_ID) {
+      result[serverId] = container.tools ? { ...container, tools: kept } : kept;
       continue;
     }
     const label = serverLabel(serverId);

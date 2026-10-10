@@ -22,11 +22,6 @@ import {
   findAttachmentRecord,
   readAttachmentBytes,
 } from "../services/file-retention.js";
-import {
-  listWorkspaceFiles,
-  readWorkspaceFile,
-  WorkspaceFileError,
-} from "../services/workspace-files.js";
 import { ConcurrentTaskLimiter, portalConcurrentTaskLimit } from "./concurrent-task-limiter.js";
 import {
   AutomationTaskError,
@@ -89,13 +84,19 @@ import {
   readMethodWorkingCopy,
   saveMethodWorkingCopy,
 } from "../services/agent-space/method-working-copies.js";
-import { openAttentionConversation } from "../services/attention-items.js";
+import { closeAttentionItem, openAttentionConversation } from "../services/attention-items.js";
 import {
   listAllStateCandidates,
   listPendingStateCandidates,
   portalApproveStateCandidate,
   portalRejectStateCandidate,
 } from "../services/agent-space/state-portal.js";
+import {
+  createStrategy,
+  editStrategy,
+  listStrategies,
+  setPrimaryStrategy,
+} from "../services/agent-space/strategy-actions.js";
 import {
   comparePortalSkillVersions,
   diffPortalMethodVersions,
@@ -146,8 +147,6 @@ const TYPES = {
   ARTIFACT_PUBLISH_LEGACY: "artifact.publish.legacy",
   ARTIFACT_EVENT: "artifact.event",
   ATTACHMENT_GET: "attachment.get",
-  WORKSPACE_FILE_LIST: "workspace.file.list",
-  WORKSPACE_FILE_GET: "workspace.file.get",
   AUTOMATION_LIST: "automation.list",
   AUTOMATION_GET: "automation.get",
   AUTOMATION_CREATE: "automation.create",
@@ -195,6 +194,7 @@ const TYPES = {
   PREFERENCE_GET: "preference.get",
   PREFERENCE_SET: "preference.set",
   ATTENTION_OPEN_CONVERSATION: "attention.open_conversation",
+  ATTENTION_RESOLVE: "attention.resolve",
   STATE_CANDIDATES_LIST: "state.candidates.list",
   STATE_CANDIDATE_APPROVE: "state.candidate.approve",
   STATE_CANDIDATE_REJECT: "state.candidate.reject",
@@ -209,6 +209,7 @@ const TYPES = {
   METHOD_CREATE: "method.create",
   METHOD_ADD_VERSION: "method.add_version",
   METHOD_ADOPT: "method.adopt",
+  STRATEGY_SET_PRIMARY: "strategy.set_primary",
   METHOD_REVOKE: "method.revoke",
   SKILL_LIST_PRIVATE: "skill.list_private",
   SKILL_LIST_INSTALLED: "skill.list_installed",
@@ -483,7 +484,7 @@ function normalizeAutomationListQuery(payload: any) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
   return {
     query: typeof payload.query === "string" ? payload.query.trim() || undefined : undefined,
-    statuses: normalizeStringArray(payload.statuses, ["paused", "active", "needs_attention", "archived"], "statuses") as any,
+    statuses: normalizeStringArray(payload.statuses, ["paused", "active", "needs_attention", "archived", "deleted"], "statuses") as any,
     frequencies: normalizeStringArray(payload.frequencies, ["daily", "trading_days", "weekdays", "weekly"], "frequencies") as any,
     deliveryModes: normalizeStringArray(payload.deliveryModes, ["none", "wechat_summary", "wechat_on_condition"], "deliveryModes") as any,
     outputModes: normalizeStringArray(payload.outputModes, ["none", "agent", "create", "update"], "outputModes") as any,
@@ -510,10 +511,10 @@ function normalizeAutomationRunListQuery(payload: any) {
 
 function normalizeAutomationBatchActionPayload(payload: any) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "payload");
-  if (!["pause", "activate", "archive"].includes(payload.action)) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "action");
+  if (!["pause", "activate", "delete"].includes(payload.action)) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "action");
   if (!Array.isArray(payload.items)) throw new AutomationTaskError("AUTOMATION_BATCH_INVALID", "items");
   return {
-    action: payload.action as "pause" | "activate" | "archive",
+    action: payload.action as "pause" | "activate" | "delete",
     items: payload.items,
     idempotencyKey: typeof payload.idempotencyKey === "string" ? payload.idempotencyKey : "",
   };
@@ -1328,7 +1329,6 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
           kind: result.descriptor.kind,
           previewMode: result.descriptor.previewMode,
           createdAt: result.descriptor.createdAt,
-          workspacePath: isWorkspaceBrowsableArtifact(result.descriptor.previewMode) ? result.descriptor.relativePath : undefined,
         }));
       } catch (error) {
         const reason = error instanceof ConversationArtifactError ? error.code : (error as Error).message;
@@ -1369,36 +1369,6 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       });
       return finish(ok(message.type, message.requestId, result));
     }
-    case TYPES.WORKSPACE_FILE_LIST: {
-      const payload = (message.payload ?? {}) as Record<string, unknown>;
-      if (Object.keys(payload).length > 0) {
-        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "workspace file list does not accept filters", false));
-      }
-      return finish(ok(message.type, message.requestId, await listWorkspaceFiles({
-        userId: scope.userId,
-        projectId: scope.projectId,
-        instanceId: scope.instanceId,
-      })));
-    }
-    case TYPES.WORKSPACE_FILE_GET: {
-      const relativePath = String(message.payload?.relativePath || "");
-      if (!relativePath) {
-        return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "relativePath is required", false));
-      }
-      try {
-        return finish(ok(message.type, message.requestId, await readWorkspaceFile({
-          userId: scope.userId,
-          projectId: scope.projectId,
-          instanceId: scope.instanceId,
-          relativePath,
-        })));
-      } catch (error) {
-        if (error instanceof WorkspaceFileError) {
-          return finish(fail(message.type, message.requestId, error.code, error.message, false));
-        }
-        throw error;
-      }
-    }
     case TYPES.ARTIFACT_PUBLISH_LEGACY: {
       const record = await publishLegacyPathArtifact({
         userId: scope.userId,
@@ -1427,7 +1397,6 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         previewMode: record.previewMode,
         createdAt: record.createdAt,
         checksum: record.checksum,
-        workspacePath: isWorkspaceBrowsableArtifact(record.previewMode) ? record.relativePath : undefined,
       }));
     }
     case TYPES.ARTIFACT_EVENT: {
@@ -1513,7 +1482,17 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
     }
     case TYPES.METHOD_LIST: {
       const s = automationScope(scope);
-      return finish(await agentSpaceCall(message, () => ({ items: listPortalMethods(s), agents: listPortalAgents(s) })));
+      // 2026-10-08「我的策略」裁决：列表改带主策略标记（isPrimary），形状来自
+      // strategy-actions 的 StrategyCard；agents 一并返回供切换主策略。
+      return finish(await agentSpaceCall(message, () => ({ items: listStrategies(s), agents: listPortalAgents(s) })));
+    }
+    case TYPES.STRATEGY_SET_PRIMARY: {
+      const s = automationScope(scope);
+      const strategyId = workspaceString(message.payload, "strategyId", { required: true, max: 100 })!;
+      return finish(await agentSpaceCall(message, () => {
+        const strategy = setPrimaryStrategy({ scope: s, strategyId, actor: portalActor(scope) });
+        return { strategy };
+      }));
     }
     case TYPES.METHOD_ASSET_LIST: {
       const s = automationScope(scope);
@@ -1580,7 +1559,12 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         actor: portalActor(scope),
         idempotencyKey: workspaceActionKey(message, message.payload),
       };
-      return finish(await agentSpaceCall(message, async () => ({ method: getPortalMethodCard(s, (await portalCreateMethod(input)).method.method_id) })));
+      // 2026-10-08「我的策略」：创建即采用（内容来自用户在页面确认的输入）；
+      // 无主策略时自动绑定为主策略。
+      return finish(await agentSpaceCall(message, async () => {
+        const created = await createStrategy({ scope: s, name: input.name, text: input.text, actor: portalActor(scope), idempotencyKey: input.idempotencyKey });
+        return { method: getPortalMethodCard(s, created.strategy.strategyId), becamePrimary: created.becamePrimary };
+      }));
     }
     case TYPES.METHOD_ADD_VERSION: {
       const s = automationScope(scope);
@@ -1594,11 +1578,14 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         actor: portalActor(scope),
         idempotencyKey: workspaceActionKey(message, message.payload),
       };
+      // 2026-10-08「我的策略」：编辑保存即采用（editStrategy 内含 approve+adopt）；
+      // 主策略内容随下轮装配更新。
       return finish(await agentSpaceCall(message, async () => {
-        const result = await portalAddMethodVersion(input);
+        const strategy = await editStrategy({ scope: s, strategyId: input.methodId, text: input.text, actor: portalActor(scope), idempotencyKey: input.idempotencyKey });
         return {
           method: getPortalMethodCard(s, input.methodId),
-          version: { versionId: result.version.version_id, versionNumber: result.version.version_number, status: result.version.status, createdAt: result.version.created_at },
+          version: { versionId: strategy.currentVersionId ?? "", versionNumber: 0, status: "approved", createdAt: strategy.updated_at },
+          strategy,
         };
       }));
     }
@@ -1732,10 +1719,12 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
     case TYPES.ATTENTION_LIST: {
       const s = automationScope(scope);
       const status = message.payload?.status === "resolved" ? "resolved" : "open";
+      const rawLimit = Number(message.payload?.limit);
+      const limit = Number.isFinite(rawLimit) ? Math.min(200, Math.max(1, Math.floor(rawLimit))) : undefined;
       return finish(
         await agentSpaceCall(message, () => ({
           status,
-          items: listAttentionItems(s, { status }),
+          items: listAttentionItems(s, { status, ...(limit ? { limit } : {}) }),
           openCount: countOpenAttention(s),
         })),
       );
@@ -1771,9 +1760,16 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
         wechatRecoveryEnabled: booleanOf(message.payload?.wechatRecoveryEnabled),
         quietHoursStart: hoursOf(message.payload?.quietHoursStart),
         quietHoursEnd: hoursOf(message.payload?.quietHoursEnd),
+        categories: Array.isArray(message.payload?.categories)
+          ? message.payload.categories.filter((value: unknown): value is string => value === "failure" || value === "recovery")
+          : undefined,
+        defaultDeliveryMode: message.payload?.defaultDeliveryMode === "wechat" || message.payload?.defaultDeliveryMode === "none"
+          ? message.payload.defaultDeliveryMode
+          : undefined,
       };
       if (patch.wechatFailureEnabled === undefined && patch.wechatRecoveryEnabled === undefined
-        && patch.quietHoursStart === undefined && patch.quietHoursEnd === undefined) {
+        && patch.quietHoursStart === undefined && patch.quietHoursEnd === undefined && patch.categories === undefined
+        && patch.defaultDeliveryMode === undefined) {
         return finish(fail(message.type, message.requestId, "INVALID_REQUEST", "no preference fields to update"));
       }
       return finish(ok(message.type, message.requestId, updateNotificationPreferences(s, patch)));
@@ -1782,6 +1778,18 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
       const s = automationScope(scope);
       const itemId = workspaceString(message.payload, "itemId", { required: true, max: 100 })!;
       return finish(await agentSpaceCall(message, () => openAttentionConversation(s, itemId)));
+    }
+    case TYPES.ATTENTION_RESOLVE: {
+      const s = automationScope(scope);
+      const itemId = workspaceString(message.payload, "itemId", { required: true, max: 100 })!;
+      try {
+        return finish(ok(message.type, message.requestId, closeAttentionItem(s, itemId)));
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("ATTENTION_NOT_FOUND")) {
+          return finish(fail(message.type, message.requestId, "ATTENTION_NOT_FOUND", itemId));
+        }
+        throw error;
+      }
     }
     case TYPES.STATE_CANDIDATES_LIST: {
       const s = automationScope(scope);
@@ -1820,10 +1828,6 @@ async function handleCommand(scope: ConnectorScope, message: PortalEnvelope) {
     default:
       return finish(fail(message.type, message.requestId, "INVALID_REQUEST", `unsupported command: ${message.type}`));
   }
-}
-
-function isWorkspaceBrowsableArtifact(previewMode: string): boolean {
-  return previewMode === "markdown" || previewMode === "html" || previewMode === "image";
 }
 
 export const __test__ = { handleCommand, scopeFromProject };
@@ -1929,7 +1933,7 @@ function startPortalConnectorForScope(scope: ConnectorScope) {
         displayName: scope.displayName,
         version: "0.1.0-local",
         startedAt,
-        capabilities: ["conversation.chat", "conversation.regenerate", "conversation.feedback", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "workspace.file.list", "workspace.file.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list", "asset.workspace_usage", "method.list", "method.asset.list", "method.get", "method.versions", "method.diff", "method.create", "method.add_version", "method.adopt", "method.revoke", "skill.list_private", "skill.list_installed", "skill.list_project_files", "skill.get", "skill.create", "skill.edit", "skill.compare_versions", "skill.set_enabled", "skill.install", "skill.uninstall", "skill.upgrade", "attention.list", "attention.get", "automation.detail", "preference.get", "preference.set", "attention.open_conversation", "state.candidates.list", "state.candidate.approve", "state.candidate.reject"],
+        capabilities: ["conversation.chat", "conversation.regenerate", "conversation.feedback", "conversation.cancel", "trace.get", "conversation.chat.progress", "conversation.list", "conversation.get", "conversation.sync", "conversation.attachments", "report.asset.get", "report.mapping.get", "artifact.get", "artifact.library.list", "artifact.publish.legacy", "artifact.event", "attachment.get", "automation.list", "automation.get", "automation.create", "automation.update", "automation.activate", "automation.pause", "automation.batch_action", "automation.run_now", "automation.runs.list", "automation.run.get", "automation.asset.get", "automation.continue_in_chat", "automation.migrate_legacy", "asset.list", "asset.folder.list", "asset.folder.create", "asset.folder.rename", "asset.folder.delete", "asset.move", "asset.get", "asset.version.get", "asset.versions.list", "asset.upload", "asset.conversation.save", "asset.rename", "asset.archive", "asset.delete", "asset.restore_version", "asset.convert_to_xlsx", "asset.references.list", "asset.workspace_usage", "method.list", "method.asset.list", "method.get", "method.versions", "method.diff", "method.create", "method.add_version", "method.adopt", "method.revoke", "skill.list_private", "skill.list_installed", "skill.list_project_files", "skill.get", "skill.create", "skill.edit", "skill.compare_versions", "skill.set_enabled", "skill.install", "skill.uninstall", "skill.upgrade", "attention.list", "attention.get", "automation.detail", "preference.get", "preference.set", "attention.open_conversation", "attention.resolve", "state.candidates.list", "state.candidate.approve", "state.candidate.reject"],
         mode: env("PORTAL_CONNECTOR_MODE", "real"),
       }));
       if (!registered) {

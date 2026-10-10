@@ -34,6 +34,8 @@ export class MastraTurnError extends Error {
    * 正文。mg 持仓复盘 atrun_061599bc 超时被杀后载荷零落库证明：失败场景
    * 恰是最需要「模型当时看到什么」的场景，采集不能只在成功路径发生。 */
   toolPayloads?: MastraToolPayload[];
+  /** 用户可见文本在流中已产生、但轮次随后超时/失败时保留的阶段性结果。 */
+  partialText?: string;
   constructor(
     message: string,
     readonly code: MastraTurnErrorCode,
@@ -457,7 +459,7 @@ function textFromChunk(chunk: unknown): string {
   return candidates.find((candidate): candidate is string => typeof candidate === "string") ?? "";
 }
 
-async function collectStream(value: unknown, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback, toolCallsSink?: unknown[]): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
+async function collectStream(value: unknown, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback, toolCallsSink?: unknown[], onText?: (text: string) => void): Promise<{ text: string; usage?: unknown; toolCalls: unknown[]; firstTextAtMs?: number }> {
   const iterable = asAsyncIterable(value);
   if (!iterable) return { text: "", toolCalls: [] };
   const chunks: string[] = [];
@@ -471,6 +473,7 @@ async function collectStream(value: unknown, onFirstText?: () => void, onChunk?:
       firstTextAtMs = Date.now();
       onFirstText?.();
     }
+    if (chunkText) onText?.(chunks.join("") + chunkText);
     chunks.push(chunkText);
     if (isRecord(chunk)) {
       const type = typeof chunk.type === "string" ? chunk.type : "";
@@ -527,7 +530,7 @@ async function collectStream(value: unknown, onFirstText?: () => void, onChunk?:
   return { text: chunks.join(""), usage, toolCalls, ...(firstTextAtMs !== undefined ? { firstTextAtMs } : {}) };
 }
 
-async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback, toolCallsSink?: unknown[]): Promise<{
+async function resolveOutput(outputValue: unknown, promptText: string, startedAt: string, onFirstText?: () => void, onChunk?: import("../runtime/protocol.js").AgentTurnProgressCallback, toolCallsSink?: unknown[], onText?: (text: string) => void): Promise<{
   text: string;
   usage?: unknown;
   toolCalls?: unknown;
@@ -541,7 +544,7 @@ async function resolveOutput(outputValue: unknown, promptText: string, startedAt
   // fullStream 优先：它携带 tool-call/tool-result/usage 事件，textStream 只有文本增量
   // （T-199 实时过程事件依赖 fullStream；聚合 toolCalls 字段要等轮结束才可用）。
   const stream = directRecord?.fullStream ?? directRecord?.textStream;
-  const collected = stream === undefined ? { text: "", toolCalls: [] as unknown[] } : await collectStream(stream, onFirstText, onChunk, toolCallsSink);
+  const collected = stream === undefined ? { text: "", toolCalls: [] as unknown[] } : await collectStream(stream, onFirstText, onChunk, toolCallsSink, onText);
   const directText = directRecord ? await awaitValue(directRecord.text as string | PromiseLike<string> | undefined) : undefined;
   const text = typeof directText === "string" ? directText : collected.text;
   const usage = directRecord ? await awaitValue(directRecord.usage) : undefined;
@@ -637,6 +640,7 @@ export async function runMastraTurn(
   const firstTokenWindow = Number(params.firstTokenTimeoutMs);
   // T-327 取证：失败轮次也保留已发生的工具调用，随异常抛给调用方落 trace。
   const observedToolCalls: unknown[] = [];
+  const partialText = { value: "" };
   // 2026-08-27 取证补全：首字时间同样要在 race 打断时随错误带出（外层作用域
   // 供 catch 读取；思考流即计入首字）。
   let firstTokenAtMs: number | undefined;
@@ -752,7 +756,8 @@ export async function runMastraTurn(
               if (event.kind === "tool_call" || event.kind === "tool_result") emitProgress(event);
             }
           : undefined,
-        observedToolCalls),
+        observedToolCalls,
+        (text) => { partialText.value = text; }),
       timeoutPromise,
     ]);
     outputCollectMs = Math.max(0, Date.now() - outputStartedAtMs);
@@ -801,6 +806,7 @@ export async function runMastraTurn(
     const failedPayloads = collectMastraToolPayloads(observedToolCalls, [], new Date().toISOString());
     if (failedPayloads.length > 0) mapped.toolPayloads = failedPayloads;
     if (firstTokenAtMs !== undefined) mapped.firstTokenMs = firstTokenAtMs;
+    if (partialText.value.trim()) mapped.partialText = partialText.value.trim();
     throw mapped;
   } finally {
     clearFirstTokenWatchdog();

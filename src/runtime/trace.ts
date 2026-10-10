@@ -98,10 +98,10 @@ export async function recordAgentTrace(input: AgentTraceInput) {
     // (per-model registry; provider-reported cost wins when present). The
     // computed source rides along in the bounded usageRaw envelope.
     const priced = input.usage
-      ? computeModelCost(input.agentModel, input.usage)
+      ? computeModelCost(input.agentModel, input.usage, { accounting: input.agentBackend === "mastra" ? "inclusive" : "exclusive" })
       : undefined;
     const usageRawEnvelope = input.usage && priced
-      ? { costSource: priced.source, raw: input.usage.raw }
+      ? { costSource: priced.source, ...(input.agentBackend === "mastra" ? { tokenAccounting: "inclusive-v1" } : {}), raw: input.usage.raw }
       : input.usage?.raw;
     await db.insert(agentTraces).values({
       traceId: truncate(input.traceId, 300),

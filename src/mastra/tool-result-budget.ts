@@ -25,7 +25,18 @@ interface ToolResultBudgetProcessor {
   processLLMRequest(args: { prompt: unknown }): { prompt?: unknown } | undefined;
 }
 
-const TRUNCATION_NOTICE = "\n\n[工具结果已按体积上限截断。如需完整数据，请用更小的 limit 或更窄的日期/范围参数重新查询；截断保留了结果开头部分。]";
+const TRUNCATION_NOTICE = "工具结果超过上下文预算，未展示数据（不是数据源缺失）。禁止依据截断数据判断全量覆盖或形成全窗口结论。请用更小的 limit 或更少标的重新查询；保留指标预热窗口，不可只缩短回看期。";
+
+function compactStructuredResult(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text) as Record<string, unknown>;
+    if (!value || typeof value !== "object" || !Array.isArray(value.rows)) return {};
+    const rows = value.rows as unknown[];
+    return { returned_rows: rows.length };
+  } catch {
+    return {};
+  }
+}
 
 export function toolResultBudgetChars(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number.parseInt(env.TOOL_RESULT_BUDGET_CHARS ?? "", 10);
@@ -72,9 +83,11 @@ export function applyToolResultBudget(prompt: LlmPrompt, budgetChars: number): L
       if (text === null || text.length <= budgetChars) return part;
       messageChanged = true;
       anyChanged = true;
+      const compact = JSON.stringify({ status: "requires_smaller_query", data_truncated_for_context: true,
+        original_chars: text.length, rows_visible_to_model: 0, ...compactStructuredResult(text), instruction: TRUNCATION_NOTICE });
       return {
         ...record,
-        output: { type: "text", text: text.slice(0, budgetChars) + TRUNCATION_NOTICE },
+        output: { type: "text", text: compact },
       };
     });
     return messageChanged ? { ...message, content } : message;
@@ -93,6 +106,12 @@ export function createToolResultBudgetProcessor(env: NodeJS.ProcessEnv = process
     name: "tool-result-budget",
     description: `Truncate tool-result outputs beyond ${budget} chars before each model call (model-facing only).`,
     processLLMRequest: (args) => {
+      // Mastra's LanguageModelV2Prompt is an array, not a messages envelope.
+      if (budget > 0 && Array.isArray(args.prompt)) {
+        const envelope = { messages: args.prompt };
+        const rewritten = applyToolResultBudget(envelope, budget);
+        return rewritten === envelope ? undefined : { prompt: rewritten.messages };
+      }
       if (budget <= 0 || !isRewritable(args.prompt)) return undefined;
       const rewritten = applyToolResultBudget(args.prompt, budget);
       return rewritten === args.prompt ? undefined : { prompt: rewritten };

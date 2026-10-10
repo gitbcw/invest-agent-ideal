@@ -1,6 +1,8 @@
 import { logger } from "../lib/logger.js";
 import { buildExternalRegistrations, isExternalRegistrationActivated } from "../mcp/external-mcp-registrations.js";
 import { recordObservedExternalToolCall } from "../services/external-mcp-observer.js";
+import { maybeOffloadToolResult } from "./tool-result-offload.js";
+import { toolResultBudgetChars } from "./tool-result-budget.js";
 import { withLenientInputValidation } from "./lenient-tool-input.js";
 
 export interface ResolvedExternalMcp {
@@ -196,10 +198,15 @@ function wrapObservableTool(
     try {
       const result = await originalExecute.apply(tool, args);
       outputChars = serializedLength(result);
-      return result;
+      // 审计先记全量体积，再改写超阈值结果为「预览 + result_ref」（2026-10-09
+      // owner 裁决：截断升级为预览+引用；全量进 toolresult 暂存库供分片复读）。
+      return maybeOffloadToolResult(result, scope, serverId, toolName, toolResultBudgetChars());
     } catch (error) {
       status = "failed";
       errorClass = error instanceof Error ? error.name : typeof error;
+      if (error instanceof Error && /timeout|timed out|-32001/i.test(error.message)) {
+        throw new Error(`${serverId}.${toolName} 本次请求超时，不代表数据不存在。批量请求请拆为小批次或单标的，保持同一日期、单位及指标回看窗口；至多再尝试两次。仍失败则标记该项超时/未知，不得写成条件不成立。`);
+      }
       throw error;
     } finally {
       try {

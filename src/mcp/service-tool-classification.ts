@@ -41,6 +41,7 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   // ── other-write: 持仓/观察/计划/方法变更 (6) ──
   "portfolio.apply_changes": "other-write",
   "watchlist.add": "other-write",
+  "watchlist.add_many": "other-write",
   "plans.set": "other-write",
   "plans.watch_conditions": "other-write",
   "method_changes.propose": "other-write",
@@ -71,6 +72,10 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   "automation.update": "other-write",
   "automation.activate": "other-write",
   "automation.pause": "other-write",
+  // 删除是终态软删（status=deleted），但分类语义里的 final-action 专指定时任务的
+  // 唯一最终动作并会进入定时授权；删除只允许交互会话确认后执行，与 assets.delete
+  // 同归 other-write。
+  "automation.delete": "other-write",
   // ── other-write: onboarding 族 (10) ──
   "onboarding.confirm_portfolio": "other-write",
   "onboarding.draft.get": "other-write",
@@ -81,9 +86,25 @@ export const SERVICE_TOOL_CLASSIFICATION: Record<string, ServiceToolClass> = {
   // 会话）内，owner 由请求上下文强制派生。
   "state.candidate.propose": "other-write",
   "state.candidate.revise": "other-write",
-  // 模型侧创建私有 Skill（草案→用户 Portal 批准后才可安装）：只发生在
-  // 交互会话（要求 conversation 上下文），自动化轮无此工具。
+  // 模型侧创建私有 Skill（草案；对话中用户明确要求时同轮 skill.install 启用）：
+  // 只发生在交互会话（要求 conversation 上下文），自动化轮无此工具。
   "skill.create": "other-write",
+  // 对话 Agent 技能管理（2026-10-08 裁决）：list 只读；install/set_enabled
+  // （启用侧）/edit 为免确认写；set_enabled（停用侧）/uninstall 虽走确认流，
+  // 但执行仍发生在交互会话，归 other-write 而不进 scheduled 授权基线。
+  "skill.list": "read",
+  "skill.install": "other-write",
+  "skill.set_enabled": "other-write",
+  "skill.uninstall": "other-write",
+  "skill.edit": "other-write",
+  // 2026-10-08「我的策略」：list/read 只读；create/edit 保存即采用（用户已在
+  // 会话中确认内容）归 other-write；set_primary 走确认流后执行，同样
+  // other-write（与 skill.set_enabled 同档，不进 scheduled 授权基线）。
+  "strategy.list": "read",
+  "strategy.read": "read",
+  "strategy.create": "other-write",
+  "strategy.edit": "other-write",
+  "strategy.set_primary": "other-write",
 };
 
 /** 查表分类；未知工具默认归 other-write（保守）。 */

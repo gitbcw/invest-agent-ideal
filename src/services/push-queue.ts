@@ -26,6 +26,8 @@ export interface PushJobInput {
   retryPolicy?: string;
   message: string;
   maxAttempts?: number;
+  /** Delay initial delivery until this ISO timestamp. */
+  nextRetryAt?: string;
 }
 
 export type PushSender = (job: {
@@ -50,7 +52,7 @@ const RETRY_DELAYS_MS = [
 
 const USER_ACTIVE_DEFER_MS = 2 * 60 * 1000;
 const PUSH_PROCESSING_LEASE_MS = 2 * 60 * 1000;
-// automation（typed 自动化任务）与 scheduler/onboarding 一样可安全滞留：撞上
+// automation（typed 定时任务）与 scheduler/onboarding 一样可安全滞留：撞上
 // context_expired 等"等用户来消息"类失败时挂起为 awaiting_user 等会话恢复，
 // 而不是烧完重试判死。8-06 引入 automation source 时漏同步本清单与
 // weixin-delivery 的 resume 过滤器（T-414：mg 持仓复盘推送 ret=-2 5 连败）。
@@ -91,7 +93,7 @@ export async function enqueuePushJob(input: PushJobInput) {
     status: "pending",
     attempts: 0,
     maxAttempts: input.maxAttempts ?? 5,
-    nextRetryAt: now,
+    nextRetryAt: input.nextRetryAt ?? now,
     createdAt: now,
     updatedAt: now,
   };

@@ -3,7 +3,6 @@ import { ConversationScopeError, chatViaConversationLog, getConversation, listCo
 import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { logger } from "../lib/logger.js";
 import { AttachmentStoreError, type IncomingPortalAttachment } from "../lib/attachment-store.js";
-import { listWorkspaceFiles, readWorkspaceFile, WorkspaceFileError } from "../services/workspace-files.js";
 
 export const PORTAL_HEALTH_CAPABILITIES = [
   "conversation.chat",
@@ -18,9 +17,6 @@ export const PORTAL_HEALTH_CAPABILITIES = [
   "asset.upload",
   "asset.archive",
   "asset.delete",
-  // Read-only compatibility for older Portal clients.
-  "workspace.file.list",
-  "workspace.file.get",
 ] as const;
 
 function scopeFrom(input: {
@@ -56,10 +52,6 @@ export function registerPortalRoutes(app: FastifyInstance) {
         if (error instanceof ConversationScopeError) {
           return reply.status(403).send({ ok: false, error: "conversation does not belong to this scope", code: "CONVERSATION_SCOPE_MISMATCH" });
         }
-        if (error instanceof WorkspaceFileError) {
-          const status = error.code === "WORKSPACE_FILE_NOT_FOUND" ? 404 : error.code === "WORKSPACE_FILE_TOO_LARGE" ? 413 : error.code === "WORKSPACE_FILE_SCOPE_UNAVAILABLE" ? 409 : 403;
-          return reply.status(status).send({ ok: false, error: error.message, code: error.code });
-        }
         logger.error("Portal 本地接口失败:", error);
         return reply.status(500).send({
           ok: false,
@@ -74,23 +66,6 @@ export function registerPortalRoutes(app: FastifyInstance) {
     capabilities: [...PORTAL_HEALTH_CAPABILITIES],
     timestamp: new Date().toISOString(),
   })));
-
-  app.get<{ Querystring: { userId?: string; assistantId?: string; instanceId?: string; projectId?: string } }>(
-    "/api/portal/workspace/files",
-    safe(async (request) => {
-      const scope = scopeFrom(request.query);
-      return { ok: true, ...(await listWorkspaceFiles(scope)) };
-    }),
-  );
-
-  app.get<{
-    Querystring: { userId?: string; assistantId?: string; instanceId?: string; projectId?: string; relativePath?: string };
-  }>("/api/portal/workspace/file", safe(async (request, reply) => {
-    const relativePath = String(request.query.relativePath || "");
-    if (!relativePath) return reply.status(400).send({ ok: false, error: "relativePath is required", code: "INVALID_REQUEST" });
-    const scope = scopeFrom(request.query);
-    return { ok: true, ...(await readWorkspaceFile({ ...scope, relativePath })) };
-  }));
 
   app.get<{
     Querystring: {

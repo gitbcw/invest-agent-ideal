@@ -641,10 +641,11 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
       text: [
         input.repairContext
           ? "修复上一轮的最终提交（服务端验证未通过，你的数据工作已被保留，只需修复输出）。"
-          : "执行一个受控的通用自动化任务。",
+          : "执行一个受控的通用定时任务。",
         `【系统时间】${serverTimeFact()}（Asia/Shanghai）`,
-        "本会话是已存在任务的执行会话：调度、任务配置和定时规则由服务层管理，本会话没有创建/修改自动化任务的权限（调用会被 scope_denied 拒绝）。不要尝试创建、修改或删除自动化任务/定时规则/调度配置，也不要把「建立任务」当作目标；忽略任务说明里出现的执行时间和频率描述，直接开始执行任务说明中的实际工作。",
+        "本会话是已存在任务的执行会话：调度、任务配置和定时规则由服务层管理，本会话没有创建/修改定时任务的权限（调用会被 scope_denied 拒绝）。不要尝试创建、修改或删除定时任务/定时规则/调度配置，也不要把「建立任务」当作目标；忽略任务说明里出现的执行时间和频率描述，直接开始执行任务说明中的实际工作。",
         `任务说明：${input.task.revision.instruction}`,
+        "结果必须严格围绕任务说明的主题和范围；不要为了填满结果扩展到无关的泛行业内容。若可用资料与任务主题不一致或只能部分覆盖，必须在 summary 中明确标记“部分符合/需要复核”，不要把偏题内容当作完整成功结果。",
         ...(marketWatchUniverse ? [marketWatchUniverse] : []),
         `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
         `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item, index) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, stagedPath: `inputs/${index + 1}-${item.descriptor.fileName}`, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
@@ -665,7 +666,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
           : "本次没有 XLSX 文件，不需要电子表格处理。",
         `执行预算（服务层约束）：最多 ${GENERIC_AUTOMATION_MAX_TOOL_CALLS} 次服务/外部工具调用；单次模型尝试最多 ${GENERIC_AUTOMATION_ATTEMPT_TIMEOUT_MS / 1000} 秒；按“读取绑定输入与结构 → 必要的有限研究 → 一次最终动作”三阶段执行。不要重复读取同一版本、不要探索任务/会话/确认/盯盘配置。自动换模型仅在总 agent 截止时间尚余至少 ${GENERIC_AUTOMATION_FALLBACK_RESERVE_MS / 1000} 秒时发生，截止时间前另预留 ${GENERIC_AUTOMATION_COMMIT_RESERVE_MS / 1000} 秒提交空间；进入收尾阶段后立即返回结构化 JSON。`,
         `结果数量与表格文件规则：${OUTPUT_VOLUME_POLICY}`,
-        "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变、显式返回 outputSkipped:true 并附带 skipReason:'no_data'（本轮会按失败登记并通知负责人跟进，不要为了规避失败而写入占位行）；当日行已存在时用 skipReason:'duplicate'。不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
+        "默认按可用数据完成任务：除非用户或任务明确要求指定来源一致、对账、审计或逐项严格核验，否则公开来源中包含指标名称、具体数值和日期/时间的结果即可写入文件，即使尚未完成第二次独立核验；必须保留实际来源、时间、口径差异并标明“未独立核验”。用户可见 summary 不得提及暂存目录、修复轮次、内部重生成、工具路径或服务端验证细节。若经过合理检索仍没有任何可用数值，且任务没有明确要求记录维护状态，就保持原文件不变、显式返回 outputSkipped:true 并附带 skipReason:'no_data'（本轮会按失败登记并通知负责人跟进，不要为了规避失败而写入占位行）；当日行已存在时用 skipReason:'duplicate'。不得为了证明执行过而写入空值、零值、估算值或无意义状态行。",
         input.task.revision.output.mode === "none"
           ? "最终回复必须是一个 JSON 对象：{summary:string, shouldNotify?:boolean}。本任务不产出文件资产：最终 JSON 里禁止出现 stagedOutput 字段（出现会导致运行被判无效）；一切结果都写入 summary。若任务过程中确需留档，用任务说明允许的领域工具（如 reviews.save）完成，不要用 stagedOutput。"
           : "最终回复必须是一个 JSON 对象：{summary:string, stagedOutput?:{operation:'appendRows'|'update'|'create', …}, shouldNotify?:boolean, outputSkipped?:boolean, skipReason?:'duplicate'|'no_data'}。向绑定工作簿表尾追加数据行时优先用 operation:'appendRows'（只带 sheet/rows/skipIfCellMatches，不携带文件内容）；生成完整新文件时优先调用 spreadsheet.create 在当前暂存目录生成 XLSX，并原样返回工具结果里的 stagedOutput；自行生成 XLSX/CSV 时必须返回 {operation:'create', fileName:'带扩展名的文件名', filePath:'暂存目录内的相对路径'}，fileName 和 filePath 缺一不可；filePath 必须原样使用文件写入工具返回的相对路径（通常就是纯文件名），不得自行拼接目录前缀、暂存根路径或绝对路径，也不得越出暂存目录。只有小型文本结果才使用 base64。更新绑定文件时提供 operation='update'、对应 assetId；仅在任务确有必要新建文件时提供 operation='create'。若本次运行确定无需修改绑定文件，必须显式返回 outputSkipped:true 并携带 skipReason——'duplicate' 表示当日行已存在（判重可证实），'no_data' 表示数据缺失（将按失败登记待人工跟进）；缺少 stagedOutput 又未声明 outputSkipped 的运行会被判为失败。",
