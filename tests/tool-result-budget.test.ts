@@ -18,7 +18,7 @@ test("real SDK array prompt blocks oversized MCP result without mutating stored 
   const processor = createToolResultBudgetProcessor({});
   const result = processor.processLLMRequest({ prompt }) as { prompt: typeof prompt };
   assert.ok(Array.isArray(result.prompt));
-  const notice = JSON.parse((result.prompt[0].content[0].output as { text: string }).text);
+  const notice = JSON.parse(result.prompt[0].content[0].output as string);
   assert.equal(notice.status, "requires_smaller_query");
   assert.equal(notice.rows_visible_to_model, 0);
   assert.equal(value.content[0].text.length, 134846);
@@ -43,12 +43,16 @@ test("applyToolResultBudget truncates oversized tool results and keeps toolCallI
   };
   const result = applyToolResultBudget(prompt, 20_000);
   assert.notEqual(result, prompt, "oversized prompt must be rewritten");
-  const part = (result.messages[1].content as Array<{ type: string; toolCallId?: string; output: { text: string } }>)[0];
+  const part = (result.messages[1].content as Array<{ type: string; toolCallId?: string; output: unknown }>)[0];
   assert.equal(part.toolCallId, "t1");
-  assert.ok(part.output.text.length < 21_500, `truncated length ${part.output.text.length}`);
-  assert.ok(part.output.text.includes("截断"), "truncation notice must be appended");
-  assert.equal(JSON.parse(part.output.text).rows_visible_to_model, 0);
-  assert.ok(!part.output.text.includes("数".repeat(100)), "partial rows must not masquerade as usable data");
+  // 2026-10-11 契约：V2 prompt 的 tool-result output 必须是字符串（对象形状会被
+  // openai 兼容网关拒绝：content should be a string or a list）
+  assert.equal(typeof part.output, "string", "output must be a plain string");
+  const out = part.output as string;
+  assert.ok(out.length < 21_500, `truncated length ${out.length}`);
+  assert.ok(out.includes("截断"), "truncation notice must be appended");
+  assert.equal(JSON.parse(out).rows_visible_to_model, 0);
+  assert.ok(!out.includes("数".repeat(100)), "partial rows must not masquerade as usable data");
 });
 
 test("applyToolResultBudget passes through prompt unchanged when within budget or disabled", () => {
@@ -62,15 +66,16 @@ test("applyToolResultBudget serializes json-value outputs for budgeting", () => 
   const rows = Array.from({ length: 5_000 }, (_, i) => ({ code: `60000${i}`, name: `股票${i}`, 涨跌幅: i % 10 }));
   const prompt = { messages: [toolMessage("t-json", { type: "json", value: { rows } })] };
   const result = applyToolResultBudget(prompt, 20_000);
-  const part = (result.messages[0].content as Array<{ output: { text: string } }>)[0];
-  assert.ok(part.output.text.includes("截断"), "json output gets truncated as text");
+  const part = (result.messages[0].content as Array<{ output: unknown }>)[0];
+  assert.equal(typeof part.output, "string");
+  assert.ok((part.output as string).includes("截断"), "json output gets truncated as text");
 });
 
 test("structured row results retain coverage metadata instead of only a misleading head slice", () => {
   const rows = Array.from({ length: 5000 }, (_, i) => ({ date: `2026-09-${String((i % 30) + 1).padStart(2, "0")}`, symbol: `S${i}`, volume: i }));
   const prompt = { messages: [toolMessage("rows", { type: "text", text: JSON.stringify({ columns: ["date", "symbol", "volume"], rows, meta: { source: "mcp" } }) })] };
   const result = applyToolResultBudget(prompt, 2000);
-  const output = ((result.messages[0].content as Array<{ output: { text: string } }>)[0]).output.text;
+  const output = (result.messages[0].content as Array<{ output: string }>)[0].output;
   assert.match(output, /data_truncated_for_context/);
   assert.match(output, /returned_rows/);
   assert.match(output, /更小的 limit/);

@@ -85,9 +85,14 @@ export function applyToolResultBudget(prompt: LlmPrompt, budgetChars: number): L
       anyChanged = true;
       const compact = JSON.stringify({ status: "requires_smaller_query", data_truncated_for_context: true,
         original_chars: text.length, rows_visible_to_model: 0, ...compactStructuredResult(text), instruction: TRUNCATION_NOTICE });
+      // 2026-10-11 生产故障修复：LanguageModelV2 prompt 的 tool-result part
+      // 要求 output 为字符串；此前写成 {type:"text",text} 对象会被 openai 兼容
+      // 适配层原样塞进 content，GLM 网关拒绝（messages[N]: content should be a
+      // string or a list）。该路径在首个超预算工具结果（assets.list 含文件夹
+      // 与报告目录，~47k 字符）出现前从未被触发。
       return {
         ...record,
-        output: { type: "text", text: compact },
+        output: compact,
       };
     });
     return messageChanged ? { ...message, content } : message;
