@@ -239,6 +239,78 @@ export function resolveAutomationAttention(input: {
 }
 
 /**
+ * 送达兜底事项（T-584，2026-10-10 用户裁决并入）：automation 复盘成果推送挂
+ * awaiting_user（微信 48h 客服窗口关闭）时立即登记——成果已生成但微信暂不可达，
+ * Portal 待处理成为用户可见落点；推送事后经 resume 成功送达时自动收口。
+ * dedup 按 run（一次运行最多一条），幂等。
+ */
+export function recordDeliveryFallbackAttention(input: {
+  scope: AttentionScope;
+  taskId: string | null;
+  runId: string;
+  occurredAt?: string;
+}): AttentionItemView {
+  const now = input.occurredAt ?? new Date().toISOString();
+  const dedupKey = `delivery_fallback:${input.runId}`;
+  const existing = sqlite
+    .prepare(
+      `SELECT * FROM attention_items
+       WHERE user_id=? AND project_id=? AND instance_id=? AND dedup_key=?`,
+    )
+    .get(input.scope.userId, input.scope.projectId, input.scope.instanceId, dedupKey) as AttentionItemRow | undefined;
+  if (existing) return toView(existing);
+  const displayName = (input.taskId ? safeTaskTitle(input.taskId) : "") || "自动化任务";
+  const itemId = `attn_${randomUUID()}`;
+  sqlite
+    .prepare(
+      `INSERT INTO attention_items (
+         item_id, user_id, project_id, instance_id, kind, dedup_key, task_id, run_id,
+         title, impact_summary, system_status, error_category, status,
+         failure_count, wechat_notified, first_failed_at, last_failed_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, 'delivery_fallback', ?, ?, ?, ?, ?, ?, NULL, 'open', 1, 0, ?, ?, ?, ?)`,
+    )
+    .run(
+      itemId,
+      input.scope.userId,
+      input.scope.projectId,
+      input.scope.instanceId,
+      dedupKey,
+      input.taskId,
+      input.runId,
+      `复盘成果未送达：${displayName}`,
+      "微信通道超时未送达；成果已生成，点击查看完整内容",
+      "成果已生成，微信补发窗口已关闭",
+      now,
+      now,
+      now,
+      now,
+    );
+  const row = sqlite.prepare("SELECT * FROM attention_items WHERE item_id=?").get(itemId) as AttentionItemRow;
+  return toView(row);
+}
+
+/** 推送经 resume 补发成功后自动收口对应兜底事项（只处理 open；幂等）。 */
+export function resolveDeliveryFallbackAttentionByRun(scope: AttentionScope, runId: string, resolvedAt?: string): boolean {
+  const now = resolvedAt ?? new Date().toISOString();
+  const result = sqlite
+    .prepare(
+      `UPDATE attention_items
+       SET status='resolved', resolved_at=?, resolved_run_id=?, system_status='微信已补发送达', updated_at=?
+       WHERE user_id=? AND project_id=? AND instance_id=? AND kind='delivery_fallback' AND run_id=? AND status='open'`,
+    )
+    .run(now, runId, now, scope.userId, scope.projectId, scope.instanceId, runId);
+  return result.changes > 0;
+}
+
+function safeTaskTitle(taskId: string): string {
+  try {
+    return taskTitle(taskId) || "";
+  } catch {
+    return "";
+  }
+}
+
+/**
  * 用户手动关闭关注项（不开问题处理会话直接丢弃）。
  * 2026-10-08 用户裁决：手动关闭的行直接删除，不保留「已关闭」历史；
  * 任务再次失败时 recordAutomationFailureAttention 按 dedup_key 重新生成。
@@ -432,6 +504,33 @@ export function openAttentionConversation(scope: AttentionScope, itemId: string)
       origin: "attention_issue",
     },
   });
+  if (item.kind === "delivery_fallback") {
+    // 送达兜底会话：完整复盘内容按 run_id 回查 push_jobs 原文（单一数据源，
+    // 不在 attention 行冗余长文）；首答原样呈现内容，再询问是否深入。
+    const pushMessage = item.runId
+      ? (sqlite
+          .prepare(
+            `SELECT message FROM push_jobs
+             WHERE user_id=? AND project_id=? AND instance_id=? AND origin_run_id=? AND message_kind='automation_summary'
+             ORDER BY created_at DESC LIMIT 1`,
+          )
+          .get(scope.userId, scope.projectId, scope.instanceId, item.runId) as { message: string } | undefined)?.message
+      : undefined;
+    appendConversationMessage({
+      scope,
+      conversationId,
+      channel: "web",
+      role: "system",
+      content: [
+        `这是「${item.title}」的复盘成果会话：该成果微信通道超时未送达，内容在下面。`,
+        pushMessage
+          ? `【复盘内容】\n${pushMessage}\n【要求】请把上述复盘内容原样、完整地呈现给用户（保留结构与数字，不要删减或改写结论），呈现后询问用户是否需要针对内容做进一步分析或调整提醒方式。`
+          : "【要求】原始推送内容已不可查（可能已被清理）。请向用户说明这份复盘成果的微信推送超时未送达，引导用户在 Portal 的文件/报告资产中查看当期产出；如找不到再协助定位。",
+      ].join("\n"),
+      metadata: { attentionItemId: item.itemId, taskId: item.taskId, runId: item.runId, origin: "attention_issue" },
+    });
+    return { conversationId, itemId, reused: false };
+  }
   appendConversationMessage({
     scope,
     conversationId,

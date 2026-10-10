@@ -7,6 +7,7 @@ import { DEFAULT_INSTANCE_ID, DEFAULT_PROJECT_ID, DEFAULT_USER_ID } from "../lib
 import { hasActiveWeixinComplexTask } from "../channels/weixin-activity.js";
 import { sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { recordWeixinDeliveryAttempt, type WeixinDeliveryResult } from "./weixin-delivery.js";
+import { recordDeliveryFallbackAttention, resolveDeliveryFallbackAttentionByRun } from "./attention-items.js";
 
 export type PushBackend = "mastra";
 export type PushChannel = "weixin-mobile";
@@ -198,6 +199,24 @@ export async function processDuePushJobs(sender: PushSender, options: { limit?: 
       }
       if (isWaitingExternal(result.reason) && DEFERABLE_SOURCES.has(job.source)) {
         await markAwaitingUser(job.id, attempts, result.errorMessage || result.reason, result.sentChunks ?? job.sentChunks ?? 0);
+        // T-584 送达兜底：复盘成果挂起（微信窗口关闭）即登记 Portal 待处理
+        // 落点；resume 补发成功后由 syncAutomationDelivery 自动收口。登记失败
+        // 只告警，不影响投递流程。
+        if (job.messageKind === "automation_summary" && job.originRunId) {
+          try {
+            recordDeliveryFallbackAttention({
+              scope: {
+                userId: job.userId,
+                projectId: job.projectId || DEFAULT_PROJECT_ID,
+                instanceId: job.instanceId || DEFAULT_INSTANCE_ID,
+              },
+              taskId: job.originTaskKey ?? null,
+              runId: job.originRunId,
+            });
+          } catch (error) {
+            logger.warn(`delivery fallback attention record failed run=${job.originRunId}: ${(error as Error).message}`);
+          }
+        }
         awaitingUser += 1;
         continue;
       }
@@ -366,6 +385,17 @@ async function syncAutomationDelivery(
   // push_jobs.origin_run_id 与真实 job 终态，服务层校验）。中间态 pending
   // （重试中）不记；采证失败仅告警，不影响投递流程。
   if (status !== "sent" && status !== "failed") return;
+  if (status === "sent") {
+    // T-584：awaiting 期间登记的送达兜底事项在补发送达后自动收口。
+    try {
+      resolveDeliveryFallbackAttentionByRun(
+        { userId: job.userId, projectId: job.projectId, instanceId: job.instanceId },
+        job.originRunId,
+      );
+    } catch (error) {
+      logger.warn(`delivery fallback resolve failed run=${job.originRunId}: ${(error as Error).message}`);
+    }
+  }
   try {
     const { recordRunOutcome } = await import("./agent-space/tasks.js");
     recordRunOutcome({
