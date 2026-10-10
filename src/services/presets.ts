@@ -150,7 +150,7 @@ export interface PresetApplyResult {
   presetId: string;
   presetVersion: string;
   created: Array<{ taskId: string; taskType: string }>;
-  skipped: Array<{ taskType: string; reason: "existing_task" }>;
+  skipped: Array<{ taskType: string; reason: "existing_task" | "task_id_conflict" }>;
 }
 
 /**
@@ -172,19 +172,33 @@ export async function applyPreset(scope: AutomationScope, presetId: string): Pro
       skipped.push({ taskType: template.taskType, reason: "existing_task" });
       continue;
     }
-    const task = await createAutomationTask({
-      ...scope,
-      taskId: `preset_${preset.id}_${template.taskType}`,
-      name: template.name,
-      description: `${preset.name} · ${definition.description}`,
-      taskType: template.taskType,
-      schedule: template.schedule,
-      instruction: definition.defaultInstruction,
-      output: { mode: "none" },
-      // market-watch pushes conditionally (NO_PUSH semantics); reviews publish
-      // through reviews.save, so their task-level delivery stays "none".
-      delivery: template.taskType === "scheduled-market-watch" ? { mode: "wechat_on_condition", conditionVersion: 1 } : { mode: "none" },
-    });
+    // T-590 演示准备发现（2026-10-10）：taskId 全局唯一，旧格式
+    // preset_{presetId}_{taskType} 不含用户维度——第二个完成向导的用户必然
+    // 撞首个用户的预置任务而 500（镜像 fresh→demo 实证）。加 scope 维度；
+    // 旧格式存量任务仍被上方 per-template 查重按 scope+taskType 跳过。
+    let task;
+    try {
+      task = await createAutomationTask({
+        ...scope,
+        taskId: `preset_${scope.userId}_${preset.id}_${template.taskType}`,
+        name: template.name,
+        description: `${preset.name} · ${definition.description}`,
+        taskType: template.taskType,
+        schedule: template.schedule,
+        instruction: definition.defaultInstruction,
+        output: { mode: "none" },
+        // market-watch pushes conditionally (NO_PUSH semantics); reviews publish
+        // through reviews.save, so their task-level delivery stays "none".
+        delivery: template.taskType === "scheduled-market-watch" ? { mode: "wechat_on_condition", conditionVersion: 1 } : { mode: "none" },
+      });
+    } catch (error) {
+      // 撞全局唯一（如另一 scope 残留同 ID）时按幂等跳过，不让向导整体失败。
+      if (error instanceof Error && /AUTOMATION_TASK_EXISTS/.test(error.message)) {
+        skipped.push({ taskType: template.taskType, reason: "task_id_conflict" });
+        continue;
+      }
+      throw error;
+    }
     await activateAutomationTask({ ...scope, taskId: task.taskId });
     created.push({ taskId: task.taskId, taskType: template.taskType });
   }
