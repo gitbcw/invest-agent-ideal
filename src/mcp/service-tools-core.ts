@@ -15,14 +15,19 @@ import {
 import {
   archiveUserAsset,
   createUserAsset,
+  createUserAssetFolder,
   deleteUserAsset,
+  deleteUserAssetFolder,
   getUserAsset,
   listUserAssets,
+  listUserAssetFolders,
   listUserAssetReferences,
   listUserAssetVersions,
+  moveUserAsset,
   readCurrentUserAsset,
   readUserAssetVersion,
   renameUserAsset,
+  renameUserAssetFolder,
   saveConversationAttachmentAsUserAsset,
   saveConversationArtifactAsUserAsset,
   uploadUserAssetVersion,
@@ -44,7 +49,7 @@ import {
 import { ACTIVE_BACKEND, isWorkspaceBackend, planBackend, portfolioBackend, watchlistBackend } from "../lib/data-backend.js";
 import { getMastraPortfolioRevision, isSameRevisionInstant, readMastraPortfolioProjection, replaceMastraPortfolioProjection } from "../lib/mastra-portfolio-backend.js";
 import { recordSandboxAudit } from "../lib/sandbox-audit.js";
-import { registerReportAssetMapping } from "../services/report-asset-mappings.js";
+import { listReportAssetMappings, registerReportAssetMapping } from "../services/report-asset-mappings.js";
 import * as state from "../services/agent-space/state.js";
 import { AgentSpaceError } from "../services/agent-space/core.js";
 import {
@@ -419,6 +424,36 @@ async function dispatchServiceTool(
       return saveAttachmentAsAssetTool(input, context);
     case "assets.rename":
       return renameAssetTool(input, context);
+    case "assets.folder.create": {
+      const name = stringInput(input?.name) ?? "";
+      if (!name.trim()) throw new Error("name is required");
+      const folder = await createUserAssetFolder({ ...automationToolScope(context), name, parentFolderId: stringInput(input?.parentFolderId) ?? null });
+      await audit(context, { operation: "assets.folder.create", resourceType: "user_asset_folder", resourceId: folder.folderId, requestBody: { name }, resultSummary: `created folder "${folder.name}"` });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, folder };
+    }
+    case "assets.folder.rename": {
+      const folderId = stringInput(input?.folderId) ?? "";
+      const name = stringInput(input?.name) ?? "";
+      if (!folderId || !name.trim()) throw new Error("folderId and name are required");
+      const folder = await renameUserAssetFolder({ ...automationToolScope(context), folderId, name });
+      await audit(context, { operation: "assets.folder.rename", resourceType: "user_asset_folder", resourceId: folderId, requestBody: { folderId, name }, resultSummary: `renamed folder to "${folder.name}"` });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, folder };
+    }
+    case "assets.folder.delete": {
+      const folderId = stringInput(input?.folderId) ?? "";
+      if (!folderId) throw new Error("folderId is required");
+      await deleteUserAssetFolder({ ...automationToolScope(context), folderId });
+      await audit(context, { operation: "assets.folder.delete", resourceType: "user_asset_folder", resourceId: folderId, requestBody: { folderId }, resultSummary: `deleted empty folder ${folderId}` });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, folderId };
+    }
+    case "assets.move": {
+      const assetId = stringInput(input?.assetId) ?? "";
+      if (!assetId) throw new Error("assetId is required");
+      const rawFolder = stringInput(input?.folderId);
+      const asset = await moveUserAsset({ ...automationToolScope(context), assetId, folderId: rawFolder ?? null });
+      await audit(context, { operation: "assets.move", resourceType: "user_asset", resourceId: assetId, requestBody: { assetId, folderId: rawFolder ?? null }, resultSummary: `moved asset "${asset.name}" to ${rawFolder ? `folder ${rawFolder}` : "root"}` });
+      return { ok: true, userId: context.userId, instanceId: context.instanceId, asset: publicAssetDescriptor(asset) };
+    }
     case "assets.archive":
       return archiveAssetTool(input, context);
     case "assets.delete":
@@ -931,12 +966,27 @@ async function listAssetsTool(input: Record<string, unknown> | undefined, contex
     },
     resultSummary: `assets=${assets.length}`,
   });
+  // 2026-10-10：与 Portal「我的文件」对齐可见性——附带文件夹树与复盘报告目录
+  // （报告均含 backing 资产，正文可用 assets.version.read 读取）。
+  const folders = await listUserAssetFolders(scope);
+  let reports: Array<{ mappingId: string; title: string; reportId: string | null; backingAssetId: string | null; createdAt: string }> = [];
+  try {
+    reports = listReportAssetMappings(scope).map((r) => ({
+      mappingId: r.mappingId, title: r.title, reportId: r.reportId ?? null,
+      backingAssetId: r.backingAssetId ?? null, createdAt: String(r.createdAt ?? ""),
+    }));
+  } catch {
+    // 报告映射表未初始化等场景下不阻断资产列表
+  }
   return {
     ok: true,
     userId: context.userId,
     instanceId: context.instanceId,
     count: assets.length,
     items: assets.map((asset) => publicAssetDescriptor(asset)),
+    folders,
+    reports,
+    note: `items=资产（含 folderId 归属）；folders=文件夹树；reports=复盘报告目录（与 Portal「我的文件」一致，backingAssetId 可用 assets.version.read 读正文）。整理/归组用 assets.move 与 assets.folder.*。`,
   };
 }
 

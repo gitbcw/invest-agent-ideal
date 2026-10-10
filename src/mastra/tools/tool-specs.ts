@@ -114,7 +114,7 @@ export const ALL_SERVICE_TOOL_SPECS: readonly ToolSpec[] = [
   },
   {
     id: "assets.list",
-    description: "List active user assets that are authorized for the current user, project, and instance. Use this to choose an existing table or document for an automation task; the service never accepts caller-supplied scope.",
+    description: "List active user assets that are authorized for the current user, project, and instance. Use this to choose an existing table or document for an automation task; the service never accepts caller-supplied scope. Response also includes folders (folder tree of 我的文件) and reports (review-report catalog entries, each with a backingAssetId readable via assets.version.read) so the agent sees the same library as the Portal 我的文件 page.",
     inputSchema: { status: z.enum(["active", "archived", "all"]).optional(),
       search: z.string().max(200).optional(),
       format: z.enum(["markdown", "html", "csv", "xlsx", "pdf", "png", "jpeg", "webp", "svg", "yaml", "jsonl"]).optional(),
@@ -232,6 +232,30 @@ export const ALL_SERVICE_TOOL_SPECS: readonly ToolSpec[] = [
     id: "assets.rename",
     description: "Rename an active same-scope user asset without changing its versions or file bytes.",
     inputSchema: { assetId: z.string().min(1), name: z.string().min(1).max(200) },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    id: "assets.folder.create",
+    description: "Create a folder in the user's 我的文件 asset library. Use when the user asks to 新建文件夹 or to organize files into groups (整理/归类). Returns the folder descriptor with folderId for subsequent assets.move calls.",
+    inputSchema: { name: z.string().min(1).max(120), parentFolderId: z.string().min(1).optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    id: "assets.folder.rename",
+    description: "Rename an existing folder in 我的文件. Does not move or modify the assets inside it.",
+    inputSchema: { folderId: z.string().min(1), name: z.string().min(1).max(120) },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    id: "assets.folder.delete",
+    description: "Delete an EMPTY folder from 我的文件. Refuses (ASSET_FOLDER_NOT_EMPTY) when the folder still contains assets or child folders — move or delete the contents first. Safe to call without extra confirmation because it cannot destroy data.",
+    inputSchema: { folderId: z.string().min(1) },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    id: "assets.move",
+    description: "Move a user asset into a folder (folderId) or back to the library root (omit folderId). Core tool for 整理文件/归类: list with assets.list, create target folders with assets.folder.create, then move each asset.",
+    inputSchema: { assetId: z.string().min(1), folderId: z.string().min(1).optional() },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },
   {

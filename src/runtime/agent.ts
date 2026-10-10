@@ -409,6 +409,9 @@ export function createRuntimeAgent(): RuntimeAgent {
           scope: workspaceScope,
           bindings: await getMastraBindings(),
           autoLoadSkills: !agentSpaceAssemblyMode,
+          // 2026-10-10 裁决（与技能同方向）：装配模式下关闭工作区路径写入，
+          // 文件读写以资产库（user_assets / assets.* 工具）为唯一权威面。
+          fileWrites: !agentSpaceAssemblyMode,
         });
         const externalMcp = await resolveExternalMastraToolsets("interactive");
         const observedToolsets = withExternalToolCallObserver(externalMcp.toolsets, {

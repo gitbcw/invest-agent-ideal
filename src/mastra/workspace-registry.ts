@@ -171,6 +171,14 @@ export async function createRegisteredMastraWorkspace(input: {
    * reach the model (2026-10-08 裁决).
    */
   autoLoadSkills?: boolean;
+  /**
+   * Whether path-based file WRITE tools are enabled (default true, legacy
+   * behavior). Agent Space assembly mode passes false（2026-10-10 裁决，与技能
+   * 同方向）：「我的文件」的权威面是资产库（user_assets），模型直接写工作区
+   * 路径会制造 Portal 不可见的平行文件宇宙；读取类工具保留以便查阅历史
+   * 工作区树，写/建目录一律走 assets.* 服务工具。
+   */
+  fileWrites?: boolean;
 }): Promise<MastraWorkspaceLike | undefined> {
   const scope = normalizeScope(input.scope);
   const entry = await (input.registry ?? mastraWorkspaceRegistry).resolve(scope);
@@ -189,7 +197,7 @@ export async function createRegisteredMastraWorkspace(input: {
     // Mastra treats an absent (or empty) `skills` config as "no skills":
     // Workspace.skills stays undefined and the Agent skips skill discovery.
     ...((input.autoLoadSkills ?? true) ? { skills: ["skills"] } : {}),
-    tools: workspaceToolPolicy(scope),
+    tools: workspaceToolPolicy(scope, { fileWrites: input.fileWrites ?? true }),
   });
   return workspace;
 }
@@ -200,7 +208,7 @@ export async function resolveRegisteredMastraProjectRoot(scope: MastraWorkspaceS
   return entry?.realProjectRoot;
 }
 
-export function workspaceToolPolicy(scope: MastraWorkspaceScope): Record<string, unknown> {
+export function workspaceToolPolicy(scope: MastraWorkspaceScope, options: { fileWrites?: boolean } = {}): Record<string, unknown> {
   const audit = (event: string, status: "success" | "failure" | "pending", input: unknown, error?: unknown) => {
     recordFileLifecycleEvent({
       entityType: "workspace_project",
@@ -229,9 +237,12 @@ export function workspaceToolPolicy(scope: MastraWorkspaceScope): Record<string,
     // is the product-level gate for user assets. Tool-level approval has no
     // interactive surface in the runtime and would suspend writes forever
     // while the model still claims success. Destructive tools stay disabled.
-    mastra_workspace_write_file: { enabled: true, requireApproval: false, requireReadBeforeWrite: true },
-    mastra_workspace_edit_file: { enabled: true, requireApproval: false, requireReadBeforeWrite: true },
-    mastra_workspace_mkdir: { enabled: true, requireApproval: false },
+    // 装配模式（fileWrites=false）下写/建目录一并关闭：文件写入统一走
+    // assets.* 服务工具（user_assets 资产库），避免工作区路径与「我的文件」
+    // 分叉成两个平行宇宙。
+    mastra_workspace_write_file: { enabled: options.fileWrites ?? true, requireApproval: false, requireReadBeforeWrite: true },
+    mastra_workspace_edit_file: { enabled: options.fileWrites ?? true, requireApproval: false, requireReadBeforeWrite: true },
+    mastra_workspace_mkdir: { enabled: options.fileWrites ?? true, requireApproval: false },
     mastra_workspace_delete: { enabled: false },
     mastra_workspace_ast_edit: { enabled: false },
     mastra_workspace_file_stat: { enabled: false },
