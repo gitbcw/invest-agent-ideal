@@ -1,18 +1,18 @@
 # Invest Agent
 
-Invest Agent is a WeChat-first investment decision assistant for a small number of users. Each user has one assistant workspace that carries their holdings, watchlist, strategy, plans, review artifacts, and investment-method skills.
+Invest Agent is a Portal-first investment decision assistant with WeChat as a push and lightweight conversation channel. Each user has one assistant scope carrying holdings, watchlist, strategy, plans, review artifacts, and investment-method Skills.
 
 The runtime deliberately separates reasoning from deterministic execution:
 
 ```text
 WeChat or web message
-  -> workspace-scoped ACP backend (normally Codex)
-  -> workspace AGENTS.md and skills
-  -> named invest-agent-service-tools MCP capabilities
+  -> Mastra runtime resolves user, conversation, and Agent context
+  -> registered Skills and current user method context
+  -> service-owned tools for deterministic capabilities
   -> shared deterministic services, SQLite, market data, scheduler, and push
 ```
 
-Workspace Agents do not call local HTTP routes, handle service tokens, or edit service-owned state directly. HTTP remains an adapter for Platform, Portal, operations, and compatibility callers; MCP and HTTP adapters share the same service logic.
+Agents do not call local HTTP routes, handle service tokens, or edit service-owned state directly. HTTP remains an adapter for Platform, Portal, operations, and compatibility callers; service tools and HTTP adapters share the same service logic.
 
 ## Current Production Runtime
 
@@ -27,6 +27,8 @@ state and are retained for audit context; they are not current deployment
 instructions.
 
 ## Local Development
+
+Portal/Agent 用户工作流测试默认使用[本地镜像测试手册](./docs/agent-space-execution/local-mirror-test-playbook-20261005.md)：在仓库根目录运行 `node scripts/agent-space/p0/start-local-mirror.mjs`，访问 `http://127.0.0.1:3120/chat`。该入口自动读取并接入生产的两个只读数据 MCP，需要可用的 SSH 登录；`npm run dev` 不等价于完整数据能力的镜像测试环境。
 
 Prerequisites: Node.js 22 and npm.
 
