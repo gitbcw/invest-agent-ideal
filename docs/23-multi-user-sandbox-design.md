@@ -55,7 +55,7 @@
 
 ## 当前限制
 
-Portal 的 `workspace.file.list/get` 是服务层强制的只读浏览边界，但 Codex ACP 进程当前仍拥有其绑定 Workspace 内的文件写权限。尚未存在覆盖所有 ACP 文件写入的服务层 allowlist，因此不能把 Portal 的只读协议误写成完整的 Agent 文件系统沙箱。涉及 Workspace 资产替换仍必须遵守用户所有权、逐文件确认与备份红线。
+Codex ACP 进程当前仍拥有其绑定 Workspace 内的文件写权限。尚未存在覆盖所有 ACP 文件写入的服务层 allowlist，因此不能把 Portal 的只读读取面（artifact.get / attachment.get）误写成完整的 Agent 文件系统沙箱。涉及 Workspace 资产替换仍必须遵守用户所有权、逐文件确认与备份红线。
 
 ## 权威实现与验证
 

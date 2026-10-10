@@ -70,6 +70,7 @@
 | `investment_profiles` | `config/strategy.yaml`(profile + allocation + position_roles + rules) | 投资风格画像(workspace 模式下舍弃 customStyle / notificationPolicy / decisionPolicy) |
 | `methodology_profiles` | `knowledge/methods/{fundamental,technical,macro,risk}.md` | 方法沉淀(workspace 模式下舍弃 sourcePolicy) |
 | `method_change_candidates` | `memory/method_changes.jsonl` | 方法修订候选 |
+| `strategy_versions` | service-owned SQLite | 已采用策略不可变快照与用户确认回滚指针 |
 | `review_viewpoints` | `memory/review_viewpoints.jsonl` | 观点记录(read-modify-write,按 sourceDate 整组替换) |
 | `trade_actions` | `memory/behavior_events.jsonl`(event_type=action_confirmed) | 交易动作日志 |
 | `indicator_results` | `reports/metrics/indicators/*.json` + `memory/source_events.jsonl`(元数据) | 指标计算结果 |

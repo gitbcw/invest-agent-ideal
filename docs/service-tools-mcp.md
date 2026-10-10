@@ -69,6 +69,10 @@ Read tools:
 - `watch_rules.validate`
 - `watch_rules.dry_run`
 - `assets.version.read`：按当前服务 scope 读取任意同 scope 用户产物的当前或指定不可变版本；返回受控字节和 descriptor，不返回 Workspace 路径。
+- `assets.working_copy.read`：读取当前 scope 的方法/策略工作副本；返回受控内容和版本信息，不返回本地路径。
+- `skill.create`：在当前 scope 创建用户 Skill 草案；正式生效仍受版本和确认边界约束。
+- `state.candidate.propose`：提出 Agent 改进候选；候选不自动改变正式方法、Skill 或默认行为。
+- `state.candidate.revise`：修订已有 Agent 改进候选；候选不自动改变正式方法、Skill 或默认行为。
 
 Confirmation workflow tool:
 
@@ -115,6 +119,7 @@ Write tools:
 - `automation.update`：创建新的任务 revision；已启用任务默认保持启用，除非明确要求暂停。该工具不要求交互确认，并检查 expected revision（如提供）。
 - `automation.activate`：在当前 scope 内启用任务，不要求交互确认；历史和资产保留。
 - `automation.pause`：在当前 scope 内暂停任务，不要求交互确认；历史和资产保留。
+- `automation.delete`：删除当前 scope 内的自动化任务（软删除为 `deleted` 终态），始终需要 `confirmations.request` 建立的显式确认。删除后任务立即停止调度、默认从 `automation.list` 消失（显式 `statuses=["deleted"]` 仍可查到），运行历史、revision 和任务资产保留备查；删除不可撤销，有正在执行的 run 时拒绝（`AUTOMATION_TASK_BUSY`）。
 
 `portfolio.apply_changes` is a portfolio-domain transaction, not a file-field CRUD surface. The Agent first reads the current portfolio revision, resolves all holding identities, decides every watched-stock keep/remove action with the user, and supplies an explicit cash ratio when known weights would otherwise stop totaling 100%. `confirmations.request` previews and validates the exact change set before a confirmation is created. A later confirmed call rejects stale revisions, writes the complete portfolio once, preserves completed onboarding state, appends the change log, records service audit, and returns the saved state for read-back verification.
 
@@ -122,7 +127,7 @@ Write tools:
 
 `preferences.apply` updates only named post-onboarding preference domains: review schedule, intraday brief schedule, and notification mode. It requires an exact confirmation payload and optional expected revision, preserves unrelated schedule fields, writes and reads back the affected files, records a change log and audit, consumes the confirmation once, and publishes each changed config file. The confirmation ID is persisted in every affected configuration file so post-write failures can be retried idempotently while the confirmation remains pending. Each automatic artifact publication also uses the confirmation-and-path idempotency key, so partially completed publication retries do not duplicate artifact records. Required artifact publication failure is an error, not a successful response. It is not an arbitrary workspace YAML editor.
 
-User-owned Workspace methods, Skills, knowledge, ordinary reports, and research scripts do not each require a named domain MCP tool. They remain Agent-maintained Workspace assets and require an exact draft plus later explicit user confirmation. User automation task lifecycle is the narrow exception: named `automation.*` tools may create/update/activate/pause directly when the request is clear. The Agent must ask only for missing execution-critical details such as schedule, instruction scope, or an ambiguous update target. Service-consumed deterministic state and runtime capabilities still require named service contracts so scope, schema, audit, and execution guarantees are not delegated to prompt text.
+User-owned Workspace methods, Skills, knowledge, ordinary reports, and research scripts do not each require a named domain MCP tool. They remain Agent-maintained Workspace assets and require an exact draft plus later explicit user confirmation. User automation task lifecycle is the narrow exception: named `automation.*` tools may create/update/activate/pause directly when the request is clear; deletion (`automation.delete`) is destructive and always goes through `confirmations.request`. The Agent must ask only for missing execution-critical details such as schedule, instruction scope, or an ambiguous update target. Service-consumed deterministic state and runtime capabilities still require named service contracts so scope, schema, audit, and execution guarantees are not delegated to prompt text.
 
 `reviews.save` is the only current write exception: a scheduled daily-review conversation may publish without an interactive confirmation record. The Agent owns the report content and calls the tool with full Markdown `content` plus an independent WeChat `pushBrief`; optional `decisionRecords` and `sourceEvents` are appended to workspace memory. The service preserves the content, mirrors/indexes the artifact, records audit, and never derives the full report from the final customer reply. Manual durable saves still require `confirmedByUser=true`.
 

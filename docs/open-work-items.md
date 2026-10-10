@@ -24,9 +24,9 @@
 | 3 | gpt-5.5 | 自身最新有效探针 `<=10s` 且顺位 1-2 不可用 |
 | 4 | deepseek-v4-flash-vision-exp | 国产全模态首选，文本与图片均可用 |
 | 5 | qwen3.7-flash | 国产全模态后备，文本与图片均可用 |
-| 6 | doubao-seed-2-1-turbo-260628 | 国产全模态后备，文本与图片均可用 |
+| 6 | doubao-seed-2-1-turbo-260628 | 历史全模态后备；2026-10-05 起临时禁用，不参与新调用 |
 
-- 图片轮不采用上述文本顺位，固定优先 `deepseek-v4-flash-vision-exp -> qwen3.7-flash -> doubao-seed-2-1-turbo-260628`；GPT 仅在通过 10 秒探针门禁后作为后备。
+- 图片轮不采用上述文本顺位；当前有效链以运行时 `model-health.ts` 为准，豆包虽保留历史计价与目录信息，但 2026-10-05 起不参与新调用。
 - Portal 国产模型展示收敛为 DeepSeek Vision、Qwen、Doubao 三个；DeepSeek 只展示 `deepseek-v4-flash-vision-exp`，不再展示 `deepseek-v4-pro` 和 `deepseek-v4-flash`。
 
 ### 健康状态（双信号源 + 防抖）
@@ -75,7 +75,7 @@
 | gpt-5.6-sol | 旗舰质量，复杂分析与长推理首选 | ¥2/12 |
 | gpt-5.6-terra | 高质量均衡档，日常深度分析推荐 | ¥1/6 |
 | gpt-5.5 | 上代旗舰，质量稳定，速度通常更快 | ¥2/12 |
-| 豆包 Seed 2.1 Turbo | 多模态档，支持图片理解 | ¥6/30 |
+| 豆包 Seed 2.1 Turbo | 历史多模态档（当前禁用） | ¥6/30（仅历史 trace） |
 
 ## W3 · 用户菜单 + 使用记录 / 使用统计页
 
@@ -147,3 +147,15 @@ REPLAY_PLAN=./classic-plan.json REPLAY_RESULTS=./classic-results.jsonl REPLAY_CO
 - **线上观察与兼容窗口收口**：mg、dyk、111 已进入新 Agent Space 灰度；继续采集自然调度、微信投递和旧入口计数。满足 [T-534](./agent-space-execution/T524-current-state-and-next-work.md) 的独立验收后，由 owner 决定是否关闭旧运行入口；不默认物理删除历史。
 - **本地 Agent 空间只读可视化**：并行在隔离数据库/回放数据上制作首版控制面，先展示 Agent、方法/版本、Skill 安装、任务依赖、运行依据与结果，owner 校对后再评估发布。
 - **W7 后产品决策**：205 个 owner-review、dyk 核心模型、111 策略拆分、默认 Skill 发布与后续 Portal 产品范围另行决策，不反向改变已冻结的生产切换口径。
+
+## W8 · 本地镜像常态化与生产只读 MCP 桥接
+
+**状态**：本地镜像常态化入口已固化（2026-10-05）；生产 MCP 只读桥接已通过两套 MCP 的 discovery 与低成本只读调用，整体为 `Pass with caveats`，下一步进入 MG 真实数据主线复验。
+
+- 默认测试入口：`node scripts/agent-space/p0/start-local-mirror.mjs`，健康检查：`npm run mirror:health`；操作和证据格式见 [本地镜像常态化测试手册](./agent-space-execution/local-mirror-test-playbook-20261005.md)。
+- 本地镜像默认 OFFLINE，仅用于交互、工作流和历史夹具验证；不能把镜像结果当作生产行情数据或真实投递证据。
+- 后续桥接目标：让本地镜像在明确的临时授权、只读范围和可撤销网络通道下调用生产侧两个 MCP 数据源；不把生产凭证写入仓库或长期环境文件，不开放生产写工具。
+- 验收必须分别证明：MCP discovery、单次只读工具调用、超时/断开降级、调用预算与审计；通过后再用于 MG 真实数据主线复核。
+- 2026-10-05/06 验证记录：[T568 生产 MCP 只读桥接](./agent-space-execution/T568-production-mcp-bridge-readonly-20261005.md)；[T569 MG 真实数据主线复验](./agent-space-execution/T569-mg-production-mcp-replay-20261005.md)；[T570 MCP 失败降级演练](./agent-space-execution/T570-mg-mcp-failure-degradation-20261005.md)；[T571 MG 重型真实数据筛选](./agent-space-execution/T571-mg-heavy-real-data-screening-20261005.md)；[T572 批量工具描述对照复验](./agent-space-execution/T572-batch-tool-description-replay-20261006.md)；[T573 股票与 ETF 混合资产边界复验](./agent-space-execution/T573-mixed-assets-batch-boundary-replay-20261006.md)。T572 纯股票批量调用通过，T573 混合资产分流通过；T571 全持仓重型流程仍为 `Partial`，已建立会话后的中途断开仍为 `Unknown`。
+- T574 已新增全持仓筛选数据准备编排：股票/ETF 分流、一次批量预取、重复行情工具隐藏、失败回退；真实验证确认无重复 `get_hist_kline`，但完整策略判断仍较慢，详见 [T574](./agent-space-execution/T574-screening-preparation-orchestration-20261006.md)。
+- 2026-10-05 费用事件结论：高费用来自豆包模型在工具失败后的重复调用链，已通过路由修复并临时禁用豆包；这是一次已处置的路由事件，不构成本地镜像方案的常态风险。

@@ -2,7 +2,7 @@
 
 > **状态**：实验验证完成（2026-07-31），配置方式已沉淀，可作为切换任意 codex-compatible 模型的范本。
 > **分支**：`exp/model-switch`（实验环境，配置不入库；本文档为可复现经验）。
-> **关联**：[system-overview.md](./system-overview.md)、[service-tools-mcp.md](./service-tools-mcp.md)、[external-mcp-registry-generalization-plan.md](./external-mcp-registry-generalization-plan.md)
+> **关联**：[system-overview.md](../../system-overview.md)、[service-tools-mcp.md](../../service-tools-mcp.md)、[external-mcp-registry-generalization-plan.md](../../external-mcp-registry-generalization-plan.md)
 
 ## 1. 实验目标
 

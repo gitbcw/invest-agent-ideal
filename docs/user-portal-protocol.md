@@ -86,8 +86,6 @@ Connector 注册后，本地 runtime 以注册 scope 为权威。command payload
 | `artifact.publish.legacy` | relay -> connector | `{ relativePath, conversationId? }` | 注册后的 artifact 描述 |
 | `artifact.event` | relay -> connector | `{ artifactId, event, status?, reason? }` | `{ accepted: true }` |
 | `attachment.get` | relay -> connector | `{ attachmentId }` | attachment 元数据，active 时含 base64 |
-| `workspace.file.list` | relay -> connector | `{}` | `{ items }` |
-| `workspace.file.get` | relay -> connector | `{ relativePath }` | workspace 文件 payload |
 | `automation.list` | relay -> connector | `{}` | `{ items }` |
 | `automation.get` | relay -> connector | `{ taskId }` | task definition, current revision and assets |
 | `automation.create` | relay -> connector | `{ name, description?, schedule, sourceAsset }` | paused task |
@@ -225,46 +223,12 @@ interface ArtifactPayload {
   kind: string;
   previewMode: string;
   createdAt: string;
-  workspacePath?: string;
 }
 ```
 
-`workspacePath` 只在 artifact 对应 Portal 可浏览的 Workspace 文件时出现，且必须是相对路径。expired/deleted attachment 仍可返回安全元数据供页面显示状态，但不得返回文件字节。
+expired/deleted attachment 仍可返回安全元数据供页面显示状态，但不得返回文件字节。
 
-## Workspace 文件只读协议
-
-`workspace.file.list` 不接受任何筛选字段。返回 item：
-
-```ts
-interface WorkspaceFileItem {
-  fileId: string;
-  relativePath: string;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  updatedAt: string;
-  previewMode: "markdown" | "html" | "image" | "text";
-  downloadable: boolean;
-}
-
-interface WorkspaceFilePayload extends WorkspaceFileItem {
-  base64: string;
-  checksum: string;
-}
-```
-
-`workspace.file.get` 只接受 `relativePath`。服务端拒绝：
-
-- 绝对路径、空段、`.`、`..` 和路径穿越；
-- 符号链接与逃逸当前用户 Workspace 的真实路径；
-- 隐藏目录/文件、`.state`、`.trash`、`.git`、缓存、构建和运行目录；
-- `.env`、credentials/auth 文件；
-- 非 `markdown` / `html` / `image` 预览类型；YAML（`.yaml` / `.yml`）例外，作为转义的纯文本预览；
-- 超过 15 MB 的文件。
-
-列表最多 5,000 项。错误码包括 `WORKSPACE_FILE_INVALID_PATH`、`WORKSPACE_FILE_NOT_FOUND`、`WORKSPACE_FILE_FORBIDDEN`、`WORKSPACE_FILE_TOO_LARGE`、`WORKSPACE_FILE_LIMIT_EXCEEDED`。
-
-`report.asset.get` 是旧报告专用读取面，只允许 `reports/` 下白名单文件；Workspace 浏览器新接入应使用 `workspace.file.*`。
+`report.asset.get` 是旧报告专用读取面，只允许 `reports/` 下白名单文件。
 
 ## 配置与启动
 
@@ -287,7 +251,7 @@ interface WorkspaceFilePayload extends WorkspaceFileItem {
 npm run portal:connector
 ```
 
-本仓库直接 HTTP 兼容面由 `src/routes/portal.ts` 提供 health、conversation、chat 与 workspace file 路由；它不是云端 Portal 绕过 connector 直接访问本地 Workspace 的授权依据。
+本仓库直接 HTTP 兼容面由 `src/routes/portal.ts` 提供 health、conversation 与 chat 路由；它不是云端 Portal 绕过 connector 直接访问本地 Workspace 的授权依据。
 
 ## 权威实现与验证
 
@@ -297,7 +261,6 @@ npm run portal:connector
 - `src/services/conversation-log.ts`
 - `src/services/conversation-artifacts.ts`
 - `src/services/file-retention.ts`
-- `src/services/workspace-files.ts`
 
 ```bash
 npm run smoke:portal-conversation-log

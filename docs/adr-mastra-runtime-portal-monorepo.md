@@ -1,6 +1,6 @@
 # ADR: Mastra Runtime 与 Portal 同仓
 
-状态：Accepted；当前生产发布源为 `feat/mastra-migration`
+状态：Accepted；当前生产发布源为 `main`，Portal 实现为本仓 `apps/portal`
 
 ## 决策
 
@@ -45,7 +45,7 @@ packages/contracts/  无存储实现的共享 DTO
 - shared protocol fixture 对 Portal 和 runtime 都通过；capability 未分类差异为 0。
 - Portal 43 项现有测试、runtime 全套测试和 browser acceptance 通过。
 - Portal 不读取 runtime SQLite/文件根；runtime 不读取 Portal session DB。
-- 生产发布源切换需单独批准；在此之前 `/Users/combo/MyFile/projects/invest-agent-portal` 仍是正式 Portal 唯一发布源。（2026-08-24 用户裁决：切换已批准并生效——正式 Portal 为本仓 `apps/portal`，随 `scripts/deploy-volcano.sh` 构建感知流程发布，旧仓库仅作审计与历史参照；本条前半句自此作废，红线表述以 `AGENTS.md` 为准。）
+- 2026-08-24 用户裁决已生效：正式 Portal 为本仓 `apps/portal`，随 `scripts/deploy-volcano.sh` 构建感知流程发布；旧仓库仅作审计与历史参照。
 
 ## 风险
 
@@ -60,7 +60,7 @@ packages/contracts/  无存储实现的共享 DTO
 - 新的 runtime 能力必须**优先映射到 Portal 既有交互契约**（artifact 附件卡片、文件预览面板、自动化工作区、资产库、对话流），而不是发明新交付形态。G22 的教训：`spreadsheet.create` 交付在前两轮被做成"回复内链接 + 门户端下载路由/点击拦截"的自创交互，第四轮回归官方 artifact 卡片管线后撤销，`apps/portal/src` 恢复与正式仓字节对齐。
 - 只有当能力**本质需要新交互面**时才新增 UI，且必须作为显式批准的工作包立项（先例：新 onboarding 向导，D15）。
 - **架构驱动的交互演进是预期内的例外**：为承接重构后 runtime 的新能力（如按回合模型选择），交互层会有受控改变——首个在途实例是模型选择器（正式仓 WIP `local/ea43db2` 分支 commit `4dd6d0d`：对话框模型下拉，`model` 经 `conversation.chat` 协议透传；runtime 侧 model-gateway 按回合选择已就绪，仅差交互合入）。此类改变按"显式立项 → 合入正式仓 → 导入候选"路径走，不走顺手改。
-- 边界校验手段：`diff -rq /Users/combo/MyFile/projects/invest-agent-portal/src apps/portal/src`，预期差异仅限已批准工作包；出现未登记差异即视为越界，回滚或补立项。
+- 边界校验手段：对 `apps/portal` 的当前源码、构建产物和部署脚本做仓内校验；旧 `invest-agent-portal` 路径只用于历史审计，不再作为发布对照源。
 
 ## 暂停门
 

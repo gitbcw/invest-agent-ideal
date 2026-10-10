@@ -1,12 +1,12 @@
 # 模型路由与上下文治理演进规划（2026-08-27 起）
 
 > 状态：现行指导文档。owner 2026-08-27 发起，依据前沿工程共识（OpenAI/Anthropic/Google/Microsoft 的公开工程建议，经 GPT 综述输入）+ 本系统两天实测证据（[model-evaluation-2026-08-27-glm-qwen.md](./model-evaluation-2026-08-27-glm-qwen.md)）制定。后续逐步落地以此为纲，摩擦驱动，不预先建设。
-> 关联：[context-and-prompt-architecture.md](./context-and-prompt-architecture.md)（上下文分层现状）、[normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md)、[evaluation-assets-registry.md](./evaluation-assets-registry.md)、[ai-system-governance-principles.md](./ai-system-governance-principles.md)。
+> 关联：[context-and-prompt-architecture.md](./context-and-prompt-architecture.md)（上下文分层现状）、[evaluation-assets-registry.md](./evaluation-assets-registry.md)、[ai-system-governance-principles.md](./ai-system-governance-principles.md)。
 
 ## 0. 前提约束（owner 2026-08-27 对齐裁决）
 
 1. **单模型战略**：业务先行阶段主要依赖 glm-5.3-flash 一个模型（两档深度别名，max 档 2026-08-28 裁撤），其余模型只做可用性兜底。「成熟产品支持切换模型」由现有的模型选择器 + provider 抽象保证，**不进路由**。行业共识「先用强模型走顺流程」在此适配为「先用一个稳定模型走顺流程」。
-2. **业务拆解是地基**：路由（业务任务维度的判断）必须建立在业务工作流清单之上。地基文档为 [business-workflow-panorama.md](./business-workflow-panorama.md)（v0 起草→owner 纠正→定稿），各阶段优化工作引用其工作流编号。
+2. **业务拆解是输入，不是现行唯一基线**：路由判断应参考业务工作流清单，但旧版 [business-workflow-panorama.md](./business-workflow-panorama.md) 仍是 v0 历史输入。当前优化优先以 [current-state.md](./current-state.md)、真实体验和可复核证据为准。
 3. **评估不全由 AI**：owner 抽检制——AI 只做客观指标与初筛，质量结论由 owner 每周抽检得出（详见 P1）。
 4. **本文档从属治理上位原则**（[ai-system-governance-principles.md](./ai-system-governance-principles.md)），是其「评估反馈/服务护栏/可观测」在模型路由与上下文维度的展开。
 
@@ -71,7 +71,7 @@ GPT 综述给出的框架（与 OpenAI/Anthropic/Google/Microsoft 公开工程�
 
 **目标**：业务工作流清单定稿；路由决策可观测、owner 可抽检。
 
-1. **业务工作流全景图定稿**（地基，先于一切优化）：v0 已起草（[business-workflow-panorama.md](./business-workflow-panorama.md)，源自 14 天日志 + 任务清单 + 方法库盘点），owner 逐条纠正后定稿。后续各阶段工作必须引用工作流编号立项。
+1. **业务工作流全景图**：旧 v0 保留为历史输入；不把它作为当前阶段的独立收口门槛。新工作流只有在真实体验或运行证据需要时再补充。
 2. **抽检材料（取代原「路由周报」提案）**：客观指标 SQL（决策分布、high/max 占比、时延/成本、格式合规率、用户👎/重生成率）+ AI 初筛的关键样本与 bad case 清单，供 owner 每周 10-15 分钟抽检下结论；结论反哺规则集。不做无人消费的自动化周报。
 3. **质量 SLO v0**（按工作流类型）：自动化 = 格式合规 ≥98% + 数据来源交代 100%；速查 = 首字 <5s；深度分析 = 负反馈率 <10%。
 4. bad case（含路由误判）走既有 bad-cases 模板。

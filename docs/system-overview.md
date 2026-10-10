@@ -1,6 +1,6 @@
 # System Overview
 
-> **分支提示（2026-08-14）**：本文描述 **main 基线**的 ACP/Workspace 运行时架构。在 `feat/mastra-migration` 候选分支上，ACP/Codex 内核与 Workspace 运行时已被 Mastra + service-owned 投影替代，本文的 Runtime Flow / Workspace Boundary 章节不适用；候选分支的架构事实与已确认方向见 [mastra-architecture-baseline.md](./mastra-architecture-baseline.md)。
+> 当前基线：`main` 上的 Mastra runtime + `apps/portal`。旧 ACP/Codex、旧 Portal 仓库和迁移分支材料只用于历史审计；见 [current-state.md](./current-state.md) 与 [agent-context-quickstart.md](./agent-context-quickstart.md)。
 
 This page is the 10-minute map for Invest Agent. It explains the current runtime shape, ownership boundaries, and where to read next.
 
@@ -13,19 +13,19 @@ The current main path is intentionally simple:
 ```text
 WeChat message
   -> WeChat bridge resolves user / assistant / workspace
-  -> workspace-scoped ACP backend, normally Codex
-  -> Codex reads workspace AGENTS.md + .codex/skills
-  -> Codex calls named invest-agent-service-tools MCP tools when deterministic data or mutation is needed
+  -> Mastra runtime resolves user / conversation / Agent context
+  -> Agent uses registered Skills and current user method context
+  -> Agent calls service-owned tools when deterministic data or mutation is needed
   -> response returns to WeChat
 ```
 
-The service remains running because it owns durable state, scheduling, local APIs, push delivery, and operational surfaces. The workspace ACP backend owns reasoning, tool selection, and investment judgment.
+The service remains running because it owns durable state, scheduling, local APIs, push delivery, and operational surfaces. The Agent owns reasoning, tool selection, and investment judgment; services/MCP own scope, confirmation, audit, idempotency, scheduling and durable writes.
 
 ### Local HTTP Access
 
 The runtime binds to `127.0.0.1` by default. Other than the minimal `/health` and discovery endpoints, local HTTP APIs require `Authorization: Bearer <INVEST_AGENT_API_TOKEN>` (or `x-invest-agent-token`). Platform supports account/password login with an `HttpOnly` session cookie; the service token remains an owner-level operational credential, and HTTP Basic with username `invest-agent` remains a local compatibility path. Production must set the service token explicitly. Sandbox APIs retain their separate short-lived sandbox-token authentication. The cloud portal must use the authenticated connector protocol rather than reach these local routes from a browser.
 
-The default Codex ACP model is selected by configuration (`CODEX_MODEL`, with legacy fallback to `CODEX_COMPLEX_MODEL`). The normal runtime path does not split traffic into simple/complex tiers; changing the model should be a configuration or instance/channel policy choice, not a hard-coded branch.
+The active model is selected through runtime model/provider configuration. The normal runtime path does not split traffic into simple/complex tiers; changing the model should be a configuration or instance/channel policy choice, not a hard-coded branch.
 
 ## Runtime Flow
 
@@ -40,10 +40,10 @@ Runtime entry
   src/portal/connector.ts
 
 Reasoning
-  src/acp/agent.ts
-  src/acp/stdio-agent.ts
-  workspace AGENTS.md
-  workspace .codex/skills
+  src/runtime/agent.ts
+  src/mastra/run-turn.ts
+  src/runtime/agent-instructions.ts
+  templates/skills/
 
 Deterministic service APIs
   Platform APIs
@@ -99,7 +99,7 @@ The table-level split is defined in [table-ownership.md](./table-ownership.md).
 
 ## Scheduler Boundary
 
-The scheduler is service-owned. It scans workspace schedules and watch configuration, then invokes the workspace-scoped ACP backend or deterministic rule inspection as needed. Per WP4, the scheduler only triggers and delivers — it does not pre-orchestrate research (legacy pre-aggregation, tool allowlists, and forced fallback briefs are behind `SCHEDULED_*_LEGACY_ORCH` flags, default off).
+The scheduler is service-owned. It scans schedules and watch configuration, then invokes the Mastra runtime or deterministic rule inspection as needed. Per WP4, the scheduler only triggers and delivers — it does not pre-orchestrate research (legacy pre-aggregation, tool allowlists, and forced fallback briefs are behind `SCHEDULED_*_LEGACY_ORCH` flags, default off).
 
 There are two different runtime lines:
 

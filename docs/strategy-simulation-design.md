@@ -2,7 +2,7 @@
 
 日期：2026-09-19。
 
-状态：产品设计草案，核心方向来自本次用户讨论；默认执行细节属于设计建议，不代表已实现或已获真实用户采用。本文用于后续工程设计与验收，不授权部署、启动真实用户模拟或修改真实策略资产。
+状态：历史产品设计草案；专用执行器方向已于 2026-10-07 移除并归档（见 [docs/archive/2026-10-07-strategy-simulation-legacy/](./archive/2026-10-07-strategy-simulation-legacy/)），当前执行口径为 Agent-first，见 [templates/skills/strategy-simulation/SKILL.md](../templates/skills/strategy-simulation/SKILL.md)。本文保留早期用户目标和范围取舍，不作为当前工程执行输入。
 
 ## 1. 产品目标与已确认决定
 

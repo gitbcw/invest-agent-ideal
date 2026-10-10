@@ -1,7 +1,7 @@
 # 新 Onboarding 设计稿
 
 状态：v2（2026-08-14），按用户裁决修订——策略包进引导、复盘盯盘默认配置不显选、Portal 为主
-前置：预设模型已落地（[preset-system-design.md](./preset-system-design.md)；策略包 = kind:"strategy" 预设，策略实体库已就位）
+前置：预设模型已落地（[preset-system-design.md](../../preset-system-design.md)；策略包 = kind:"strategy" 预设，策略实体库已就位）
 
 ## 1. 设计原则
 

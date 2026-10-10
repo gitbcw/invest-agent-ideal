@@ -542,12 +542,10 @@ asset upload/rename/archive/restore/version commit、task revision、run claim/f
 
 | 入口 | 兼容语义 | 新资产约束 |
 | --- | --- | --- |
-| `workspace.file.list` | 仍为无筛选只读列表，最多 5,000 项；不返回绝对路径 | `assets/` 必须从列表排除，防止绕过版本/审计 |
-| `workspace.file.get` | 仍只接受 relativePath；拒绝绝对路径、空段、`.`/`..`、symlink、隐藏目录、`.state`、`.trash`、`.git`、缓存/构建/运行目录、凭据；读取上限 15 MiB | `assets/...` 一律 `WORKSPACE_FILE_FORBIDDEN`；资产不得通过此协议读取或写入 |
 | `report.asset.get` | 旧报告专用，继续只读 `reports/` 白名单 | 不扩展到 `assets/` |
 | Workspace storage | 仍是用户隔离存储面 | 新资产只使用服务生成的 `assets/<assetId>/versions/<versionId>/...`；浏览器不得看到 storage key |
 
-当前 Workspace 协议允许部分旧 MIME（如 YAML、JSON、TXT）作为技术文件浏览；这不等于它们进入资产库白名单。
+`workspace.file.list/get` 已随 Portal 右侧栏文件树一并移除（2026-10-08 用户裁决）；资产读取只走 `asset.*` 协议。
 
 ### 10.4 旧 Portal artifact 路由与协议
 

@@ -11,6 +11,21 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 
 若当前文档与归档文档冲突，以 `AGENTS.md`、本页、`current-state.md` 及明确标注为现行的领域文档为准。
 
+本次 2026-10 文档收敛归档清单见 [archive/2026-10-consolidation/](./archive/2026-10-consolidation/)。归档材料保留审计价值，但不作为新 Agent 的默认实现输入。
+
+## Agent 进入项目
+
+新 Agent 先读 [agent-context-quickstart.md](./agent-context-quickstart.md)，再按任务读取 `current-state.md`、治理原则、系统概览和对应领域契约。该入口明确本项目的 Agent-first 定位：Skill/方法承载投资语义，Agent 提供参考判断，服务/MCP 承担确定性边界；不要把完整 `docs/` 或用户 Workspace 全量注入上下文。
+
+### 2026-10-07 体验、会议与发布收尾
+
+| Document | Use It For |
+| --- | --- |
+| [2026-10-07-personal-experience-evaluation-kit.md](./2026-10-07-personal-experience-evaluation-kit.md) | `mirror-mg` 本人体验测评清单、结果标签和问题分流 |
+| [meeting-brief-2026-10-07.md](./meeting-brief-2026-10-07.md) | 明日会议汇报主线、当前结果、边界和建议口径 |
+| [release-notes-2026-10-06-draft.md](./release-notes-2026-10-06-draft.md) | 下一版本更新说明草案与发布前检查 |
+| [agent-space-execution/T574-ai-os-task-reconciliation-20261006.md](./agent-space-execution/T574-ai-os-task-reconciliation-20261006.md) | AI OS 中 P-33 相关任务的只读对账和后续建议 |
+
 ## Read By Domain
 
 ### Mastra Production Branch
@@ -20,7 +35,7 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 | Document | Use It For |
 | --- | --- |
 | [ai-system-governance-principles.md](./ai-system-governance-principles.md) | Invest Agent AI 系统治理上位原则：评估反馈、服务护栏、韧性、观测、灰度发布和回滚边界 |
-| [next-direction-governance-analysis-2026-08-22.md](./next-direction-governance-analysis-2026-08-22.md) | 基于治理上位原则的项目成熟度评估、证据缺口和治理计划起点；不创建产品执行任务 |
+| [archive/2026-10-consolidation/next-direction-governance-analysis-2026-08-22.md](./archive/2026-10-consolidation/next-direction-governance-analysis-2026-08-22.md) | 历史治理成熟度评估；不创建产品执行任务 |
 | [governance-assessment-matrix.md](./governance-assessment-matrix.md) | G1–G5、L1–L4 治理证据矩阵与复核规则 |
 | [evaluation-assets-registry.md](./evaluation-assets-registry.md) | 第一批版本化评估资产目录及 executable/candidate 数量口径 |
 | [customer-friction-signal-collection-design.md](./customer-friction-signal-collection-design.md) | 客户体验受阻信号自动采集机制设计（已采纳 9-3，T-442 实施中）：S1~S7 信号源（含 S7 诊断链关联缺口，9-6 增）、受阻点数据模型（含语义信号字段）、日/周/月三级产出、语义受阻信号与 Diagnosis Record 移交格式（§八）与落地分期 |
@@ -70,18 +85,18 @@ This directory keeps current, agent-useful knowledge small and navigable. Start 
 | [scheduled-flows-to-automation-design.md](./scheduled-flows-to-automation-design.md) | Review/market-watch to automation-task unification design (draft): task model extensions, preference field mapping, migration phases |
 | [automation-failure-notify-design.md](./automation-failure-notify-design.md) | Scheduled automation failure/recovery user notification (T-479): notify contract (first-failure + recovery aggregation), idempotency keys, copy templates, hooks, and acceptance map |
 | [automation-workbook-schema-contract.md](./automation-workbook-schema-contract.md) | Workbook schema contract for update-mode automation tasks (T-480): expectedSchema binding, auto-snapshot on edit, pre-model fail-fast gate, rollover create structural check, and the verified mg 17/10-column facts |
-| [mastra-main-parity-verification.md](./mastra-main-parity-verification.md) | Capability parity verification against `main`: four-layer framework, G1-G23 gap ledger, and per-gap evidence |
+| [archive/2026-10-consolidation/mastra-main-parity-verification.md](./archive/2026-10-consolidation/mastra-main-parity-verification.md) | 历史迁移 parity verification；保留作审计 |
 | [cost-statistics-design.md](./cost-statistics-design.md) | Cost-statistics rebuild design (draft): per-model pricing registry, price-at-trace-write, backfill, admin cost view server-side rework |
-| [mastra-workspace-exit-mapping.md](./mastra-workspace-exit-mapping.md) | Current Mastra candidate work package, technical evidence, H1 boundary, isolated topology, and next actions |
-| [mastra-workspace-exit-mapping_acceptance_review.md](./mastra-workspace-exit-mapping_acceptance_review.md) | Independent acceptance status: WP0-WP7 evidence, unresolved H1, and release exclusions |
-| [mastra-long-work-package.md](./mastra-long-work-package.md) | Scope, work-package stages, ownership and user gates for the candidate branch |
-| [mastra-real-data-migration-plan.md](./mastra-real-data-migration-plan.md) | Backup-copy-only migration validation; never a production migration command |
-| [mastra-real-data-migration-validation-2026-08-15.md](./mastra-real-data-migration-validation-2026-08-15.md) | Executed real-data migration validation: phases, evidence, findings F1-F3, E4/E8 gate unlock |
-| [mastra-main-sync.md](./mastra-main-sync.md) | Rules for selectively porting `main` behavior without restoring ACP runtime code |
+| [archive/2026-10-consolidation/mastra-workspace-exit-mapping.md](./archive/2026-10-consolidation/mastra-workspace-exit-mapping.md) | 历史 Agent Space 迁移工作包与技术证据 |
+| [archive/2026-10-consolidation/mastra-workspace-exit-mapping_acceptance_review.md](./archive/2026-10-consolidation/mastra-workspace-exit-mapping_acceptance_review.md) | 历史迁移验收记录 |
+| [archive/2026-10-consolidation/mastra-long-work-package.md](./archive/2026-10-consolidation/mastra-long-work-package.md) | 历史迁移阶段工作包 |
+| [archive/2026-10-consolidation/mastra-real-data-migration-plan.md](./archive/2026-10-consolidation/mastra-real-data-migration-plan.md) | 历史只读迁移验证方案 |
+| [archive/2026-10-consolidation/mastra-real-data-migration-validation-2026-08-15.md](./archive/2026-10-consolidation/mastra-real-data-migration-validation-2026-08-15.md) | 历史真实数据迁移验证记录 |
+| [archive/2026-10-consolidation/mastra-main-sync.md](./archive/2026-10-consolidation/mastra-main-sync.md) | 历史迁移分支同步规则 |
 
 The pre-cutover candidate description in the Mastra documents is historical.
 The active production baseline branch is `main` (promoted from
-`feat/mastra-migration` on 2026-08-28; the pre-mastra system line is archived
+`feat/mastra-migration` on 2026-08-28; the migration worktree is now archived
 as `legacy/pre-mastra`): PM2 `invest-agent-mastra`, runtime
 `/home/claude/invest-agent-mastra`, port `23655`, with `mastra-portal` on
 `23657/23658`. Use the current production facts above for deployment and
@@ -104,13 +119,13 @@ WeChat bindings.
 
 ### P-17 Convergence Decisions (2026-08)
 
-> ⚠️ 项目身份标注（2026-09-02 owner 裁决）：P-17（旧投研助手）已于 2026-08-28 归档，用户与数据全部迁入 P-33（mastra 重构线）。P-33 走**现役深化**路线：主线 = 产品稳定 + 好用（服务客户在产品内打磨投资策略），选股产品化只是其中一部分而非单点主线；配合客户商业化是后续阶段，当前不启动。本组 P-17 决策书仅作历史决策与证据参照——其定位声明描述的客户与核心循环仍大体成立，但 **M1-M4 里程碑与 10 月外推门槛不作为 P-33 的现行路线图**（P-33 方向记录见 Personal OS 任务 T-419；顶层目标=以本项目为样本验证 AI 应用开发方法论，抽取沉淀由 P-35 承载）。
+> ⚠️ 项目身份标注（2026-09-02 owner 裁决）：P-17（旧投研助手）已于 2026-08-28 归档，用户与数据全部迁入 P-33。P-33 走**现役深化**路线：主线 = 产品稳定 + 好用（服务客户在产品内打磨投资策略），选股产品化只是其中一部分而非单点主线；配合客户商业化，当前不启动。P-17 决策书已移至 [archive/2026-10-consolidation/](./archive/2026-10-consolidation/)，仅作历史决策与证据参照。
 
 | Document | Use It For |
 | --- | --- |
-| [p17-convergence-positioning-2026-08.md](./p17-convergence-positioning-2026-08.md) | 收敛决策①（T-303，定稿）：下一阶段定位=明光哥流水线车间、双渠道排序、唯一指标、10 月外推门槛、三用户使用证据 |
-| [p17-convergence-mg-core-loop-2026-08.md](./p17-convergence-mg-core-loop-2026-08.md) | 收敛决策②（T-305，定稿）：mg 四个时刻、策略资产盘点、复盘流水线规格、痛点证据→T-315/317/318 映射、承接路径 |
-| [p17-convergence-execution-draft-2026-08.md](./p17-convergence-execution-draft-2026-08.md) | 收敛决策③（T-304/306/307，定稿；人岗对应 08-21 周五补）：功能取舍裁决尺与三堆初分、分工归口三问、M1-M4 里程碑与 go/no-go |
+| [archive/2026-10-consolidation/p17-convergence-positioning-2026-08.md](./archive/2026-10-consolidation/p17-convergence-positioning-2026-08.md) | P-17 历史收敛决策，保留作方向来源 |
+| [archive/2026-10-consolidation/p17-convergence-mg-core-loop-2026-08.md](./archive/2026-10-consolidation/p17-convergence-mg-core-loop-2026-08.md) | P-17 历史 MG 核心闭环，保留作证据来源 |
+| [archive/2026-10-consolidation/p17-convergence-execution-draft-2026-08.md](./archive/2026-10-consolidation/p17-convergence-execution-draft-2026-08.md) | P-17 历史执行草案，不作为当前路线图 |
 | [p17-weekly-meeting-2026-08-22-slides.html](./p17-weekly-meeting-2026-08-22-slides.html) | 08-22 周会团队内部场幻灯片（T-308 产物）：架构、项目情况、使用数据、定位与里程碑 |
 
 ### Runtime, Workspace, And Security
@@ -123,10 +138,15 @@ WeChat bindings.
 | [23-multi-user-sandbox-design.md](./23-multi-user-sandbox-design.md) | Sandbox token, permission, audit, and isolation model |
 | [composite-indicator-system.md](./composite-indicator-system.md) | Implemented L1, L3a and L3b indicator contracts, acknowledgement gate, and runtime red lines |
 | [onboarding-draft-commit-design.md](./onboarding-draft-commit-design.md) | Draft confirmation, frozen commit, retry, and completion-notification contract |
-| [normal-chat-context-optimization-design.md](./normal-chat-context-optimization-design.md) | Direct workspace ACP message contract and prohibited service-side context wrapping |
+| [context-and-prompt-architecture.md](./context-and-prompt-architecture.md) | Current context layering and prohibited service-side context wrapping |
 | [workspace-compatibility.md](./workspace-compatibility.md) | Read-only preflight, managed-asset ownership, backup, migration and rollback contract for existing user Workspaces |
 | [agent-space-workspace-exit-design-v3.md](./agent-space-workspace-exit-design-v3.md) | 当前执行权威：拆分用户资产、方法、技能、任务、对话与 Agent 状态；Agent 空间控制面、隔离迁移、真实切换及旧 Workspace 退出 |
 | [agent-space-execution/](./agent-space-execution/) | v3 的 W0-W7 可派发执行稿：权威源基线、领域契约、方法资产、技能目录、运行时、任务状态、隔离演练与 owner 切换 |
+| [agent-space-execution/local-mirror-test-playbook-20261005.md](./agent-space-execution/local-mirror-test-playbook-20261005.md) | 本地 production-mirror 常态化测试手册：启动、健康检查、用户切换、工作流顺序、证据边界与生产前门槛 |
+| [agent-space-execution/T566-issue-consolidation-20261005.md](./agent-space-execution/T566-issue-consolidation-20261005.md) | T-561/T-562/T-565 体验与工作流问题总表、优先级、证据性质和推进顺序 |
+| [agent-space-execution/T567-strategy-improvement-candidate-20261005.md](./agent-space-execution/T567-strategy-improvement-candidate-20261005.md) | MG 判断到行动的策略改进候选草案；仅供确认和隔离回放，不自动采用 |
+| [agent-space-execution/T567-strategy-improvement-replay-20261005.md](./agent-space-execution/T567-strategy-improvement-replay-20261005.md) | T-567 隔离回放记录：有效数据缺口样本、夹具缺口和后续回放门槛 |
+| [open-work-items.md](./open-work-items.md) | 当前工作台账；W8 记录本地镜像默认路径与生产只读 MCP 桥接待办 |
 | [agent-space-execution/T524-current-state-and-next-work.md](./agent-space-execution/T524-current-state-and-next-work.md) | T-524 三用户生产灰度后的当前状态、线上观察线与本地 Agent 空间可视化路线 |
 | [agent-space-user-product-design.md](./agent-space-user-product-design.md) | 用户资产管理与失败告知 GUI 正式设计：工作空间双 Tab、文件/自动化升级、待处理、问题对话、纠错候选与本地 111 验证门槛（T-537~T-541 的上游依据） |
 | [agent-space-execution/T537-p0-baseline.md](./agent-space-execution/T537-p0-baseline.md) | T-537 P0 基线：111 隔离副本来源与校验、隔离环境（runtime 23660/Portal 3110/假投递）启动与自检方式 |
@@ -176,7 +196,7 @@ Initial Portal design, completed work packages and acceptance records are under 
 | --- | --- |
 | [data-source-policy-decision.md](./data-source-policy-decision.md) | Accepted data-source policy and cost posture |
 | [data-provider-cost-evaluation.md](./data-provider-cost-evaluation.md) | Provider cost bands and build-vs-buy decision support |
-| [doubao-search-integration-plan.md](./doubao-search-integration-plan.md) | Proposed Doubao Search Custom primary / SearXNG fallback implementation plan |
+| [archive/2026-10-consolidation/doubao-search-integration-plan.md](./archive/2026-10-consolidation/doubao-search-integration-plan.md) | Historical Doubao Search Custom proposal; currently disabled and not a production capability |
 | [mcp-registry-and-agent-tooling-refactor-plan.md](./mcp-registry-and-agent-tooling-refactor-plan.md) | MCP registration, Agent-owned research, scheduler simplification, and narrow deterministic rule facts (WP0-WP8 completed) |
 | [mcp-refactor-wp0-baseline.md](./mcp-refactor-wp0-baseline.md) | Refactor WP0 baseline: consumer matrix, conflict-item status table, test baseline |
 | [mcp-refactor-wp6-rule-decision.md](./mcp-refactor-wp6-rule-decision.md) | WP6 non-price rule retirement decision and rationale |
