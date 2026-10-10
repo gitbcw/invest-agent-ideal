@@ -30,7 +30,14 @@ function runtimeServiceToken(): string | undefined {
 export async function POST(request: Request) {
   const session = await getCurrentSession();
   if (!session) return unauthorized();
-  let body: { userId?: string; projectId?: string; instanceId?: string; strategyPackId?: string; portfolioText?: string } = {};
+  let body: {
+    userId?: string; projectId?: string; instanceId?: string; strategyPackId?: string; portfolioText?: string;
+    // T-590 演示准备发现（2026-10-10）：向导前端发的是 style/customText/notify，
+    // 此前代理只转发 strategyPackId/portfolioText —— 风格与推送设置被静默丢弃，
+    // 策略从未创建、推送偏好从未应用。补齐透传。
+    style?: string; customText?: string;
+    notify?: Record<string, unknown>;
+  } = {};
   try { body = await request.json(); } catch { /* empty body is fine */ }
   // 2026-10-08：不再把 portal username 当 runtime userId（镜像 mirror-* 部署会写错
   // scope）；改传 instanceId 由 runtime 反查 owner。
@@ -40,7 +47,15 @@ export async function POST(request: Request) {
     const res = await fetch(`${runtimeBase}/api/onboarding/wizard/complete`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ projectId: body.projectId, instanceId: body.instanceId || session.instanceId, strategyPackId: body.strategyPackId, portfolioText: body.portfolioText }),
+      body: JSON.stringify({
+        projectId: body.projectId,
+        instanceId: body.instanceId || session.instanceId,
+        strategyPackId: body.strategyPackId,
+        portfolioText: body.portfolioText,
+        style: body.style,
+        customText: body.customText,
+        notify: body.notify,
+      }),
     });
     const data = await res.json().catch(() => null);
     if (!res.ok || !data?.ok) {
