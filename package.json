@@ -75,6 +75,7 @@
     "cache:clear-indicator": "node scripts/clear-indicator-cache.mjs",
     "scan:convergence": "node scripts/convergence-responsibility-scan.mjs",
     "portal:connector": "tsx src/portal/connector.ts",
+    "mirror:health": "node scripts/agent-space/p0/check-local-mirror.mjs",
     "volcano:package-runtime": "bash scripts/package-volcano-runtime.sh",
     "volcano:apply-runtime": "bash scripts/apply-volcano-runtime.sh",
     "volcano:configure-portal": "bash scripts/configure-volcano-portal-env.sh",
