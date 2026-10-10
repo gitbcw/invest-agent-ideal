@@ -183,33 +183,42 @@ export function recordAutomationFailureAttention(input: {
   }
 
   const itemId = `attn_${randomUUID()}`;
-  sqlite
-    .prepare(
-      `INSERT INTO attention_items (
-         item_id, user_id, project_id, instance_id, kind, dedup_key, task_id, run_id,
-         title, impact_summary, system_status, error_category, status,
-         failure_count, wechat_notified, first_failed_at, last_failed_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, 'automation_failure', ?, ?, ?, ?, ?, ?, ?, 'open', 1, 0, ?, ?, ?, ?)`,
-    )
-    .run(
-      itemId,
-      input.scope.userId,
-      input.scope.projectId,
-      input.scope.instanceId,
-      dedupKey,
-      input.taskId,
-      input.runId,
-      `定时任务失败：${taskTitle(input.taskId)}`,
-      impactFor(input.errorCategory),
-      systemStatusFor(input.scope, input.taskId),
-      input.errorCategory,
-      now,
-      now,
-      now,
-      now,
-    );
-  const row = sqlite.prepare("SELECT * FROM attention_items WHERE item_id=?").get(itemId) as AttentionItemRow;
-  return toView(row);
+  try {
+    sqlite
+      .prepare(
+        `INSERT INTO attention_items (
+           item_id, user_id, project_id, instance_id, kind, dedup_key, task_id, run_id,
+           title, impact_summary, system_status, error_category, status,
+           failure_count, wechat_notified, first_failed_at, last_failed_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 'automation_failure', ?, ?, ?, ?, ?, ?, ?, 'open', 1, 0, ?, ?, ?, ?)`,
+      )
+      .run(
+        itemId,
+        input.scope.userId,
+        input.scope.projectId,
+        input.scope.instanceId,
+        dedupKey,
+        input.taskId,
+        input.runId,
+        `定时任务失败：${taskTitle(input.taskId)}`,
+        impactFor(input.errorCategory),
+        systemStatusFor(input.scope, input.taskId),
+        input.errorCategory,
+        now,
+        now,
+        now,
+        now,
+      );
+    const row = sqlite.prepare("SELECT * FROM attention_items WHERE item_id=?").get(itemId) as AttentionItemRow;
+    return toView(row);
+  } catch (error) {
+    // T-586 并发竞态：另一挂点刚以同 dedup 插入——回读返回，不再让失败
+    // 通知路径因 UNIQUE 报错而 skipped。
+    if (!isUniqueConstraintError(error)) throw error;
+    const existing = selectAttentionByDedup(input.scope, dedupKey);
+    if (!existing) throw error;
+    return toView(existing);
+  }
 }
 
 /** 成功终态自动恢复（只处理 open 事项；幂等）。 */
@@ -238,6 +247,22 @@ export function resolveAutomationAttention(input: {
   return result.changes > 0;
 }
 
+/** T-586：attention 登记是「先查后插」，同一失败从多个挂点并发记录时会双双
+ * 通过检查、双双 INSERT，后者撞 (scope, dedup_key) 唯一索引（生产 10-08/10-09
+ * 各一次）。撞约束时按幂等语义回读既有行返回——并发方写入的是同一事实。 */
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
+}
+
+function selectAttentionByDedup(scope: AttentionScope, dedupKey: string): AttentionItemRow | undefined {
+  return sqlite
+    .prepare(
+      `SELECT * FROM attention_items
+       WHERE user_id=? AND project_id=? AND instance_id=? AND dedup_key=?`,
+    )
+    .get(scope.userId, scope.projectId, scope.instanceId, dedupKey) as AttentionItemRow | undefined;
+}
+
 /**
  * 送达兜底事项（T-584，2026-10-10 用户裁决并入）：automation 复盘成果推送挂
  * awaiting_user（微信 48h 客服窗口关闭）时立即登记——成果已生成但微信暂不可达，
@@ -261,32 +286,39 @@ export function recordDeliveryFallbackAttention(input: {
   if (existing) return toView(existing);
   const displayName = (input.taskId ? safeTaskTitle(input.taskId) : "") || "自动化任务";
   const itemId = `attn_${randomUUID()}`;
-  sqlite
-    .prepare(
-      `INSERT INTO attention_items (
-         item_id, user_id, project_id, instance_id, kind, dedup_key, task_id, run_id,
-         title, impact_summary, system_status, error_category, status,
-         failure_count, wechat_notified, first_failed_at, last_failed_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, 'delivery_fallback', ?, ?, ?, ?, ?, ?, NULL, 'open', 1, 0, ?, ?, ?, ?)`,
-    )
-    .run(
-      itemId,
-      input.scope.userId,
-      input.scope.projectId,
-      input.scope.instanceId,
-      dedupKey,
-      input.taskId,
-      input.runId,
-      `复盘成果未送达：${displayName}`,
-      "微信通道超时未送达；成果已生成，点击查看完整内容",
-      "成果已生成，微信补发窗口已关闭",
-      now,
-      now,
-      now,
-      now,
-    );
-  const row = sqlite.prepare("SELECT * FROM attention_items WHERE item_id=?").get(itemId) as AttentionItemRow;
-  return toView(row);
+  try {
+    sqlite
+      .prepare(
+        `INSERT INTO attention_items (
+           item_id, user_id, project_id, instance_id, kind, dedup_key, task_id, run_id,
+           title, impact_summary, system_status, error_category, status,
+           failure_count, wechat_notified, first_failed_at, last_failed_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, 'delivery_fallback', ?, ?, ?, ?, ?, ?, NULL, 'open', 1, 0, ?, ?, ?, ?)`,
+      )
+      .run(
+        itemId,
+        input.scope.userId,
+        input.scope.projectId,
+        input.scope.instanceId,
+        dedupKey,
+        input.taskId,
+        input.runId,
+        `复盘成果未送达：${displayName}`,
+        "微信通道超时未送达；成果已生成，点击查看完整内容",
+        "成果已生成，微信补发窗口已关闭",
+        now,
+        now,
+        now,
+        now,
+      );
+    const row = sqlite.prepare("SELECT * FROM attention_items WHERE item_id=?").get(itemId) as AttentionItemRow;
+    return toView(row);
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const existing = selectAttentionByDedup(input.scope, dedupKey);
+    if (!existing) throw error;
+    return toView(existing);
+  }
 }
 
 /** 推送经 resume 补发成功后自动收口对应兜底事项（只处理 open；幂等）。 */
