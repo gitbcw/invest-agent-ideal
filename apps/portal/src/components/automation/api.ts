@@ -105,8 +105,8 @@ export async function pauseAutomation(taskId: string, expectedRevision?: number)
   return requestJson<AutomationTask>(`/api/automations/${encodeURIComponent(taskId)}/pause`, json(expectedRevision === undefined ? {} : { expectedRevision }));
 }
 
-export async function archiveAutomation(taskId: string, expectedRevision?: number): Promise<AutomationTask> {
-  return requestJson<AutomationTask>(`/api/automations/${encodeURIComponent(taskId)}/archive`, json(expectedRevision === undefined ? {} : { expectedRevision }));
+export async function deleteAutomation(taskId: string, expectedRevision?: number): Promise<AutomationTask> {
+  return requestJson<AutomationTask>(`/api/automations/${encodeURIComponent(taskId)}/delete`, json(expectedRevision === undefined ? {} : { expectedRevision }));
 }
 
 export async function runAutomationNow(taskId: string): Promise<AutomationRunNowResult> {

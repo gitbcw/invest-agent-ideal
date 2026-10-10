@@ -20,15 +20,18 @@ interface AttentionItemApiView {
   resolvedRunId: string | null;
 }
 
-/** 全局待处理（首版仅失败告知）：open 列表 + 未处理计数；?status=resolved 查恢复历史。 */
+/** 全局待处理（首版仅失败告知）：open 列表 + 未处理计数；?status=resolved 查收口历史；limit 控制条数（分页/加载更多）。 */
 export async function GET(request: Request) {
   const session = await getCurrentSession();
   if (!session) return unauthorized();
-  const status = new URL(request.url).searchParams.get("status") === "resolved" ? "resolved" : "open";
+  const search = new URL(request.url).searchParams;
+  const status = search.get("status") === "resolved" ? "resolved" : "open";
+  const rawLimit = Number(search.get("limit"));
+  const limit = Number.isFinite(rawLimit) ? Math.min(200, Math.max(1, Math.floor(rawLimit))) : undefined;
   const remote = await forwardWorkspace<{ status: string; items: AttentionItemApiView[]; openCount: number }>(
     session,
     PORTAL_TYPES.ATTENTION_LIST,
-    { status },
+    { status, ...(limit ? { limit } : {}) },
   );
   return workspaceResponse(remote);
 }

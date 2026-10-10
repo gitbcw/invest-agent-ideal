@@ -30,7 +30,7 @@ export async function PATCH(request: Request, { params }: Params) {
   const raw = body as Record<string, unknown>;
   if (raw.taskId !== undefined && raw.taskId !== taskId) return badRequest("taskId 与路径不一致");
   const parsed = automationUpdateSchema.safeParse({ ...raw, taskId });
-  if (!parsed.success) return badRequest("自动化任务参数错误", { issues: parsed.error.issues });
+  if (!parsed.success) return badRequest("定时任务参数错误", { issues: parsed.error.issues });
   const { taskId: _ignored, ...payload } = parsed.data;
 
   const remote = await forwardAutomation<AutomationTask>(session, PORTAL_TYPES.AUTOMATION_UPDATE, { taskId, ...payload });

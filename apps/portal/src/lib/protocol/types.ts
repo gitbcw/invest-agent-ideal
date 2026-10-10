@@ -28,12 +28,10 @@ export type ConnectorCapability =
   | "artifact.publish.legacy"
   | "artifact.event"
   | "dashboard.snapshot"
-  // Historical curated-library compatibility. Current real connectors and UI
-  // use workspace.file.list/get; the mock retains this for archived scenarios.
+  // Historical curated-library compatibility; the mock retains this for
+  // archived scenarios.
   | "artifact.library.list"
   | "attachment.get"
-  | "workspace.file.list"
-  | "workspace.file.get"
   | "automation.list"
   | "automation.get"
   | "automation.create"
@@ -238,8 +236,6 @@ export interface ArtifactDescriptor {
   checksum?: string;
   /** The runtime has already promoted this artifact to the user's long-term file library. */
   savedToMyFiles?: boolean;
-  /** Workspace-relative location when this artifact is visible in the read-only browser. */
-  workspacePath?: string;
 }
 
 export interface ArtifactGetRequest {
@@ -336,28 +332,6 @@ export interface ArtifactLibraryListResult {
   nextCursor?: string;
 }
 
-export type WorkspaceFilePreviewMode = ArtifactPreviewMode;
-
-export interface WorkspaceFileItem {
-  fileId: string;
-  relativePath: string;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  updatedAt: string;
-  previewMode: WorkspaceFilePreviewMode;
-  downloadable: boolean;
-}
-
-export interface WorkspaceFileListResult {
-  items: WorkspaceFileItem[];
-}
-
-export interface WorkspaceFileGetResult extends WorkspaceFileItem {
-  base64: string;
-  checksum: string;
-}
-
 // ---------------------------------------------------------------------------
 // Automation task protocol
 //
@@ -368,19 +342,23 @@ export interface WorkspaceFileGetResult extends WorkspaceFileItem {
 // browser; relative asset paths are task-owned paths, never absolute paths.
 // ---------------------------------------------------------------------------
 
-export type AutomationTaskStatus = "paused" | "active" | "needs_attention" | "archived";
+export type AutomationTaskStatus = "paused" | "active" | "needs_attention" | "archived" | "deleted";
 export type AutomationTaskRunOrigin = "manual" | "scheduled";
 export type AutomationTaskRunStatus = "running" | "succeeded" | "failed" | "skipped" | "cancelled";
 export type AutomationTaskAssetRole = "source" | "working";
 
 export interface AutomationSchedule {
-  frequency: "daily" | "trading_days" | "weekdays" | "weekly";
+  frequency: "daily" | "trading_days" | "weekdays" | "weekly" | "monthly";
   /** Local wall-clock time in HH:mm form. */
   time: string;
   /** IANA timezone, for example Asia/Shanghai. */
   timezone: string;
   /** ISO weekday numbers (1 Monday .. 7 Sunday) for weekly schedules. */
   weekdays?: number[];
+  /** Day of month (1..28) for monthly schedules. */
+  monthlyDay?: number;
+  /** Additional same-day trigger points (HH:mm), e.g. market-watch windows. */
+  windows?: string[];
 }
 
 export interface AutomationAssetUpload {
@@ -494,7 +472,7 @@ export interface AutomationListQuery {
 }
 
 export interface AutomationBatchActionRequest {
-  action: "pause" | "activate" | "archive";
+  action: "pause" | "activate" | "delete";
   items: Array<{ taskId: string; expectedRevision: number }>;
   idempotencyKey: string;
 }

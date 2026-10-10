@@ -9,6 +9,8 @@ const preferencePatchSchema = z
     wechatRecoveryEnabled: z.boolean().optional(),
     quietHoursStart: z.string().regex(/^[0-2]\d:[0-5]\d$/, "时间格式 HH:mm").nullable().optional(),
     quietHoursEnd: z.string().regex(/^[0-2]\d:[0-5]\d$/, "时间格式 HH:mm").nullable().optional(),
+    categories: z.array(z.enum(["failure", "recovery"])).nullable().optional(),
+    defaultDeliveryMode: z.enum(["wechat", "none"]).optional(),
   })
   .strict();
 

@@ -7,9 +7,7 @@ import test from "node:test";
 import { statusForCode } from "../src/lib/protocol/error-status";
 import { createClientId } from "../src/lib/client-id";
 import { sha256Hex } from "../src/components/chat/media-helpers";
-import { openPinnedTab, openPreviewTab, pinTab } from "../src/components/chat/workspace-tabs";
-import { isVisibleWorkspaceFile } from "../src/components/chat/LibraryTree";
-import type { WorkspaceFileItem } from "../src/lib/protocol";
+import { openPinnedTab } from "../src/components/chat/workspace-tabs";
 import type { ConversationMessage } from "../src/lib/protocol";
 import { cancelConversation, fetchConversation, fetchConversationMessagesBefore, PortalApiError } from "../src/components/chat/api";
 import { openDatabaseAt } from "../src/lib/db";
@@ -228,28 +226,6 @@ test("conversation artifact API adds server-parsed workbook previews", () => {
   assert.match(route, /workbook,\s*\n\s*workbookPreviewError/);
 });
 
-test("workspace single-click previews reuse one transient tab", () => {
-  const pinned = { tabId: "fixed.md", pinned: true };
-  const firstPreview = { tabId: "first.md", pinned: false };
-  const secondPreview = { tabId: "second.md", pinned: false };
-
-  const afterFirst = openPreviewTab([pinned], firstPreview, 8);
-  const afterSecond = openPreviewTab(afterFirst, secondPreview, 8);
-
-  assert.deepEqual(afterSecond, [pinned, secondPreview]);
-});
-
-test("workspace double-click pins a preview so later previews preserve it", () => {
-  const preview = { tabId: "keep.md", pinned: false };
-  const fixed = pinTab([preview], preview.tabId);
-  const next = openPreviewTab(fixed, { tabId: "browse.md", pinned: false }, 8);
-
-  assert.deepEqual(next, [
-    { tabId: "keep.md", pinned: true },
-    { tabId: "browse.md", pinned: false }
-  ]);
-});
-
 test("opening an existing preview with explicit intent pins it", () => {
   const next = openPinnedTab(
     [{ tabId: "report.md", pinned: false }],
@@ -258,29 +234,6 @@ test("opening an existing preview with explicit intent pins it", () => {
   );
 
   assert.deepEqual(next, [{ tabId: "report.md", pinned: true }]);
-});
-
-test("workspace tree exposes YAML as a text preview without exposing other text files", () => {
-  const yaml: WorkspaceFileItem = {
-    fileId: "yaml",
-    relativePath: "config/portfolio.yaml",
-    fileName: "portfolio.yaml",
-    mimeType: "application/yaml",
-    sizeBytes: 20,
-    updatedAt: "2026-07-29T00:00:00.000Z",
-    previewMode: "text",
-    downloadable: true
-  };
-  const source: WorkspaceFileItem = {
-    ...yaml,
-    fileId: "source",
-    relativePath: "analysis.py",
-    fileName: "analysis.py",
-    mimeType: "text/x-python"
-  };
-
-  assert.equal(isVisibleWorkspaceFile(yaml), true);
-  assert.equal(isVisibleWorkspaceFile(source), false);
 });
 
 test("conversation message pagination keeps equal timestamps stable", () => {

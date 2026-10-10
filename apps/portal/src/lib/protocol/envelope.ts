@@ -59,11 +59,6 @@ export type PortalErrorCode =
   | "ARTIFACT_DELETE_CONFIRMATION_REQUIRED"
   | "ARTIFACT_DELETE_CONFIRMATION_EXPIRED"
   | "ARTIFACT_DELETE_CONFLICT"
-  | "WORKSPACE_FILE_INVALID_PATH"
-  | "WORKSPACE_FILE_NOT_FOUND"
-  | "WORKSPACE_FILE_FORBIDDEN"
-  | "WORKSPACE_FILE_TOO_LARGE"
-  | "WORKSPACE_FILE_LIMIT_EXCEEDED"
   // Automation task errors are returned by the runtime connector. Keep the
   // public union additive so Portal routes can preserve connector error codes.
   | "AUTOMATION_INVALID_SCOPE"
@@ -97,6 +92,7 @@ export type PortalErrorCode =
   | "AUTOMATION_TASK_NOT_ACTIVE"
   | "AUTOMATION_TASK_NEEDS_ATTENTION"
   | "AUTOMATION_TASK_ARCHIVED"
+  | "AUTOMATION_TASK_DELETED"
   // Agent-space object errors (T-538) are raised by the runtime service layer
   // (src/services/agent-space/core.ts AgentSpaceError) and surfaced verbatim.
   | "AGENT_SPACE_SCOPE_MISMATCH"
@@ -165,11 +161,9 @@ export const PORTAL_TYPES = {
   CONVERSATION_SYNC: "conversation.sync",
   DASHBOARD_SNAPSHOT: "dashboard.snapshot",
   // Attachment reads remain current. Artifact library list is retained for
-  // historical mock/schema compatibility; the current tree uses workspace.*.
+  // historical mock/schema compatibility.
   ATTACHMENT_GET: "attachment.get",
   ARTIFACT_LIBRARY_LIST: "artifact.library.list",
-  WORKSPACE_FILE_LIST: "workspace.file.list",
-  WORKSPACE_FILE_GET: "workspace.file.get",
   AUTOMATION_LIST: "automation.list",
   AUTOMATION_GET: "automation.get",
   AUTOMATION_CREATE: "automation.create",
@@ -225,6 +219,7 @@ export const PORTAL_TYPES = {
   METHOD_CREATE: "method.create",
   METHOD_ADD_VERSION: "method.add_version",
   METHOD_ADOPT: "method.adopt",
+  STRATEGY_SET_PRIMARY: "strategy.set_primary",
   METHOD_REVOKE: "method.revoke",
   SKILL_LIST_PRIVATE: "skill.list_private",
   SKILL_LIST_INSTALLED: "skill.list_installed",
@@ -247,6 +242,7 @@ export const PORTAL_TYPES = {
   PREFERENCE_GET: "preference.get",
   PREFERENCE_SET: "preference.set",
   ATTENTION_OPEN_CONVERSATION: "attention.open_conversation",
+  ATTENTION_RESOLVE: "attention.resolve",
   STATE_CANDIDATES_LIST: "state.candidates.list",
   STATE_CANDIDATE_APPROVE: "state.candidate.approve",
   STATE_CANDIDATE_REJECT: "state.candidate.reject",

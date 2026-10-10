@@ -43,8 +43,27 @@ export function LoginForm() {
         return;
       }
       const data = json.data!;
-      const dest = data.user.mustChangePassword ? "/change-password" : next;
-      router.replace(dest);
+      if (data.user.mustChangePassword) {
+        router.replace("/change-password");
+        router.refresh();
+        return;
+      }
+      // 2026-10-08 冷启动引导闭环：登录后检查初始化状态，未完成先进入
+      // 初始化向导（显式 next 目标视为用户有明确去处，不打断）。
+      if (!params.get("next")) {
+        try {
+          const statusRes = await fetch("/api/onboarding/status", { cache: "no-store" });
+          const status = (await statusRes.json()) as { ok?: boolean; data?: { needsOnboarding?: boolean } };
+          if (statusRes.ok && status?.data?.needsOnboarding) {
+            router.replace("/onboarding");
+            router.refresh();
+            return;
+          }
+        } catch {
+          // 状态查询失败不阻断登录。
+        }
+      }
+      router.replace(next);
       router.refresh();
     } catch (err) {
       setError((err as Error).message ?? "网络异常");

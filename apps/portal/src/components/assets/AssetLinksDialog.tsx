@@ -18,7 +18,7 @@ type WorkspaceUsage = {
 
 /**
  * 文件关联信息弹层（T-538 我的文件关联升级）：
- * 来源、被自动化引用、被方法/Skill 引用。方法/Skill 只提供跳转，
+ * 来源、被自动化引用、被方法/技能引用。方法/技能只提供跳转，
  * 不在本页形成第二编辑入口。
  */
 export function AssetLinksDialog({ assetId, name, source, onClose }: { assetId: string; name: string; source?: string; onClose: () => void }) {
@@ -74,7 +74,7 @@ export function AssetLinksDialog({ assetId, name, source, onClose }: { assetId: 
         ) : (
           <>
             <section>
-              <h3 className="mb-1.5 text-sm font-semibold">被自动化任务引用（{taskBindings.length}）</h3>
+              <h3 className="mb-1.5 text-sm font-semibold">被定时任务引用（{taskBindings.length}）</h3>
               {taskBindings.length === 0 ? (
                 <p className="text-xs text-[#7a827c]">暂无自动化读写该文件。</p>
               ) : (
@@ -89,7 +89,7 @@ export function AssetLinksDialog({ assetId, name, source, onClose }: { assetId: 
               )}
             </section>
             <section>
-              <h3 className="mb-1.5 text-sm font-semibold">方法与 Skills 引用</h3>
+              <h3 className="mb-1.5 text-sm font-semibold">方法与技能引用</h3>
               {usage && (usage.methods.length > 0 || usage.skills.length > 0) ? (
                 <ul className="flex flex-col gap-1">
                   {usage.methods.map((method) => (
@@ -99,12 +99,12 @@ export function AssetLinksDialog({ assetId, name, source, onClose }: { assetId: 
                   ))}
                   {usage.skills.map((skill) => (
                     <li key={skill.skillId} className="text-xs">
-                      Skill <a className="text-[#52705f] hover:underline" href="/workspace#skills">{skill.name}</a>
+                      技能 <a className="text-[#52705f] hover:underline" href="/workspace#skills">{skill.name}</a>
                     </li>
                   ))}
                 </ul>
               ) : (
-                <p className="text-xs text-[#7a827c]">该文件不是方法或 Skill 的内容来源。</p>
+                <p className="text-xs text-[#7a827c]">该文件不是方法或技能的内容来源。</p>
               )}
             </section>
           </>

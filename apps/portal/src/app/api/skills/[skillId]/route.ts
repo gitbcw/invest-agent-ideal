@@ -34,7 +34,8 @@ export async function PUT(request: Request, { params }: Params) {
   return workspaceResponse(remote);
 }
 
-/** 卸载：安装行保留 removed 状态供追溯，运行解析随即拒绝该 Skill。 */
+/** 卸载（页面语义=删除）：安装行保留 removed 状态供追溯，运行解析随即拒绝；
+ * 私有技能同事务打墓碑彻底从列表/目录消失（2026-10-08 裁决），系统域技能仍可从目录找回。 */
 export async function DELETE(_request: Request, { params }: Params) {
   const session = await getCurrentSession();
   if (!session) return unauthorized();

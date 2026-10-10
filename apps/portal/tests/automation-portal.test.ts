@@ -66,6 +66,11 @@ test("automation HTTP request schemas reject browser scope fields", () => {
   assert.equal(automationUpdateSchema.safeParse({ taskId: "at_1", name: "New name", projectId: "other" }).success, false);
   assert.equal(automationUpdateSchema.safeParse({ taskId: "at_1", schedule: { ...valid.schedule, timezone: "UTC" } }).success, false);
   assert.equal(automationScheduleSchema.safeParse({ frequency: "weekly", time: "07:30", timezone: "Asia/Shanghai" }).success, false);
+  // 2026-10-09：月度与盘中时间窗进入门户 schema——设置页推送任务和任务页
+  // 此前改不了月复盘日期与盯盘时间窗。
+  assert.equal(automationScheduleSchema.safeParse({ frequency: "monthly", time: "09:00", timezone: "Asia/Shanghai", monthlyDay: 1 }).success, true);
+  assert.equal(automationScheduleSchema.safeParse({ frequency: "trading_days", time: "14:30", timezone: "Asia/Shanghai", windows: ["09:55", "11:20", "14:30"] }).success, true);
+  assert.equal(automationScheduleSchema.safeParse({ frequency: "daily", time: "07:30", timezone: "Asia/Shanghai", monthlyDay: 2 }).success, false);
 });
 
 test("automation editor defaults to Shanghai and only exposes supported spreadsheet types", () => {

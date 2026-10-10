@@ -3,15 +3,6 @@ export interface WorkspaceTabState {
   pinned: boolean;
 }
 
-export function openPreviewTab<T extends WorkspaceTabState>(tabs: T[], incoming: T, maxTabs: number): T[] {
-  const withoutOtherPreviews = tabs.filter((tab) => tab.pinned || tab.tabId === incoming.tabId);
-  const existing = withoutOtherPreviews.find((tab) => tab.tabId === incoming.tabId);
-  const next = existing
-    ? withoutOtherPreviews.map((tab) => tab.tabId === incoming.tabId ? { ...tab, ...incoming, pinned: tab.pinned } : tab)
-    : [...withoutOtherPreviews, { ...incoming, pinned: false }];
-  return limitTabs(next, maxTabs);
-}
-
 export function openPinnedTab<T extends WorkspaceTabState>(tabs: T[], incoming: T, maxTabs: number): T[] {
   const existing = tabs.some((tab) => tab.tabId === incoming.tabId);
   const next = existing

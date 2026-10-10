@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { AlarmClock, BellRing, Check, ChevronDown, ChevronRight, Files, Folder, FolderPlus, MessageCircle, Package, PanelLeftClose, PanelLeftOpen, Pencil, Search, Settings, SquarePen, Tag, Trash2, X } from "lucide-react";
+import { AlarmClock, BellRing, Check, ChevronDown, ChevronRight, Files, Folder, FolderPlus, MessageCircle, Package, PanelLeftClose, PanelLeftOpen, Pencil, Search, Settings, ShieldCheck, SquarePen, Tag, Trash2, X } from "lucide-react";
 
 import type { ConversationListItem } from "./types";
 import { UserMenu } from "./UserMenu";
+import { useAppNavigate } from "../../lib/app-navigation";
 
 const SHOW_UNSTABLE_DESTINATIONS = true;
 
@@ -32,7 +33,7 @@ interface SidebarProps {
   onDropConversation: (conversation: ConversationListItem, labelId: string | null) => void;
   onDropConversationOrder: (conversation: ConversationListItem, target: ConversationListItem) => void;
   username: string;
-  activeDestination?: "automations" | "assets" | "patrol" | "workspace" | "attention" | "settings";
+  activeDestination?: "automations" | "assets" | "strategies" | "patrol" | "workspace" | "attention" | "settings";
   onOpenAutomations: () => void;
   onOpenAssets: () => void;
   onOpenWorkspace?: () => void;
@@ -78,6 +79,7 @@ export function Sidebar({
   onLogout,
   onOpenUsage
 }: SidebarProps) {
+  const appNavigate = useAppNavigate();
   const [searchOpen, setSearchOpen] = useState(false);
   const [expandedLabelIds, setExpandedLabelIds] = useState<Record<string, boolean>>({});
   // 折叠分组红点：分组内最新会话 updatedAt 晚于「上次展开时间」时提示。
@@ -207,8 +209,8 @@ export function Sidebar({
                 <button
                   type="button"
                   className={`flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-black/5 hover:text-[#202123] ${activeDestination === "automations" ? "bg-white text-[#365b40] shadow-sm" : "text-[#5f6368]"}`}
-                  aria-label="自动化任务"
-                  title="自动化任务"
+                  aria-label="定时任务"
+                  title="定时任务"
                   onClick={onOpenAutomations}
                 >
                   <AlarmClock size={17} strokeWidth={1.8} aria-hidden="true" />
@@ -311,7 +313,7 @@ export function Sidebar({
             <button
               type="button"
               className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "attention" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`}
-              onClick={onOpenAttention ?? (() => window.location.assign("/attention"))}
+              onClick={onOpenAttention ?? (() => appNavigate("/attention"))}
             >
               <BellRing size={16} strokeWidth={1.8} aria-hidden="true" />
               待处理
@@ -325,17 +327,21 @@ export function Sidebar({
               onClick={onOpenAutomations}
             >
               <AlarmClock size={16} strokeWidth={1.8} aria-hidden="true" />
-              自动化任务
+              定时任务
             </button>
             <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "assets" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="我的文件" title="我的文件" onClick={onOpenAssets}>
               <Files size={16} strokeWidth={1.8} aria-hidden="true" />
               我的文件
             </button>
-            <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "workspace" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="技能管理" title="技能管理（原工作空间；方法文件在「我的文件」管理）" onClick={onOpenWorkspace ?? (() => window.location.assign("/workspace"))}>
+            <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "strategies" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="我的策略" title="我的策略（主策略常驻生效的规则与纪律）" onClick={() => appNavigate("/strategies")}>
+              <ShieldCheck size={16} strokeWidth={1.8} aria-hidden="true" />
+              我的策略
+            </button>
+            <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "workspace" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="技能管理" title="技能管理（可复用的操作流程）" onClick={onOpenWorkspace ?? (() => appNavigate("/workspace"))}>
               <Package size={16} strokeWidth={1.8} aria-hidden="true" />
               技能管理
             </button>
-            <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "settings" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="设置" title="设置（通知偏好等低频配置）" onClick={onOpenSettings ?? (() => window.location.assign("/settings"))}>
+            <button type="button" className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition hover:bg-black/5 ${activeDestination === "settings" ? "bg-white font-medium text-[#365b40] shadow-sm" : "text-[#303632]"}`} aria-label="设置" title="设置（通知偏好等低频配置）" onClick={onOpenSettings ?? (() => appNavigate("/settings"))}>
               <Settings size={16} strokeWidth={1.8} aria-hidden="true" />
               设置
             </button>

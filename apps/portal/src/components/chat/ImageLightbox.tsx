@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchArtifact, fetchAttachment, fetchWorkspaceFile, recordArtifactEvent, type ArtifactPayload } from "./api";
+import { fetchArtifact, fetchAttachment, recordArtifactEvent, type ArtifactPayload } from "./api";
 import {
   base64ToBytes,
   formatBytes,
@@ -13,7 +13,6 @@ import {
 interface ImageLightboxProps {
   artifactId?: string;
   attachmentId?: string;
-  workspacePath?: string;
   title?: string;
   onClose: () => void;
   /**
@@ -40,7 +39,7 @@ type LoadState =
  * context). Esc / overlay click / ✕ close. Deleted / expired artifacts show
  * a stable notice instead of a perpetual spinner.
  */
-export function ImageLightbox({ artifactId, attachmentId, workspacePath, title, onClose, caption }: ImageLightboxProps) {
+export function ImageLightbox({ artifactId, attachmentId, title, onClose, caption }: ImageLightboxProps) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [retryNonce, setRetryNonce] = useState(0);
   const objectUrlRef = useRef<string | null>(null);
@@ -70,11 +69,7 @@ export function ImageLightbox({ artifactId, attachmentId, workspacePath, title, 
         }
         payload = outcome.data;
       } else {
-        const outcome = workspacePath
-          ? await fetchWorkspaceFile(workspacePath)
-          : artifactId
-            ? await fetchArtifact(artifactId)
-            : null;
+        const outcome = artifactId ? await fetchArtifact(artifactId) : null;
         if (!outcome) {
           setState({ kind: "error", reason: "图片路径无效", retryable: false });
           return;
@@ -108,7 +103,7 @@ export function ImageLightbox({ artifactId, attachmentId, workspacePath, title, 
     return () => {
       cancelled = true;
     };
-  }, [artifactId, attachmentId, releaseObjectUrl, retryNonce, workspacePath]);
+  }, [artifactId, attachmentId, releaseObjectUrl, retryNonce]);
 
   useEffect(() => () => releaseObjectUrl(), [releaseObjectUrl]);
 

@@ -28,8 +28,6 @@ import {
   type ConversationListResult,
   type ConversationMessage,
   type ConversationSummary,
-  type WorkspaceFileGetResult,
-  type WorkspaceFileListResult,
   type PortalEnvelope,
   type PortalResponse
 } from "@/lib/protocol";
@@ -40,8 +38,6 @@ import {
   MOCK_LIBRARY_ITEMS,
   mockDeleteImpactNotes
 } from "./retention-fixtures";
-
-const MOCK_HTML_REPORT = "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>持仓风险报告</title><style>body{font-family:system-ui;padding:32px;color:#202123}h1{font-size:24px}section{margin-top:24px;padding-top:16px;border-top:1px solid #e5e7eb}</style></head><body><h1>持仓风险报告</h1><p>生成时间：2026-07-27</p><section><h2>风险摘要</h2><p>当前没有需要立即处理的异常信号。</p></section></body></html>";
 
 export interface MockConnectorOptions {
   scenario: string;
@@ -196,12 +192,10 @@ export class MockConnector {
         "conversation.sync",
         "conversation.attachments",
         // File-retention governance capabilities. The mock advertises them so
-        // the Portal can exercise the file tree, attachment preview, image
-        // lightbox and delete flows end-to-end without a real runtime.
+        // the Portal can exercise attachment preview, image lightbox and
+        // delete flows end-to-end without a real runtime.
         "artifact.library.list",
         "attachment.get",
-        "workspace.file.list",
-        "workspace.file.get",
         "report.mapping.get",
         "asset.list",
         "asset.folder.list",
@@ -251,12 +245,6 @@ export class MockConnector {
         break;
       case PORTAL_TYPES.ATTACHMENT_GET:
         this.handleAttachmentGet(env);
-        break;
-      case PORTAL_TYPES.WORKSPACE_FILE_LIST:
-        this.handleWorkspaceFileList(env);
-        break;
-      case PORTAL_TYPES.WORKSPACE_FILE_GET:
-        this.handleWorkspaceFileGet(env);
         break;
       case PORTAL_TYPES.ASSET_LIST:
         this.handleAssetList(env);
@@ -480,8 +468,8 @@ export class MockConnector {
 
   // ---- File-retention governance handlers (mock) ----
   // The mock mirrors the runtime contract from user-portal-protocol.md so the
-  // Portal can exercise the file tree, attachment preview, lightbox and delete
-  // flows end-to-end. State is per-connector-instance and resets on restart.
+  // Portal can exercise attachment preview, lightbox and delete flows
+  // end-to-end. State is per-connector-instance and resets on restart.
 
   private deletedArtifactIds = new Set<string>();
   private deleteTokens = new Map<string, { artifactId: string; path: string; expiresAt: number }>();
@@ -490,39 +478,6 @@ export class MockConnector {
     const items = MOCK_LIBRARY_ITEMS.filter((item) => !this.deletedArtifactIds.has(item.artifactId));
     const result: ArtifactLibraryListResult = { items };
     this.sendResponse(PORTAL_TYPES.ARTIFACT_LIBRARY_LIST, env.requestId, result);
-  }
-
-  private handleWorkspaceFileList(env: PortalEnvelope) {
-    const items: WorkspaceFileListResult["items"] = [
-      mockWorkspaceFile("AGENTS.md", "text/markdown", "# 投资助手\n"),
-      mockWorkspaceFile("docs/preview.html", "text/html", "<h1>Workspace preview</h1>\n"),
-      mockWorkspaceFile("images/chart.svg", "image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#f3f4f6"/><circle cx="160" cy="90" r="48" fill="#10a37f"/></svg>'),
-      mockWorkspaceFile("knowledge/decision_protocol.md", "text/markdown", "# 决策协议\n"),
-      mockWorkspaceFile("reports/daily/today.md", "text/markdown", "# 今日复盘\n"),
-      mockWorkspaceFile(
-        "reports/html/2026-07-27-portfolio-risk.html",
-        "text/html",
-        MOCK_HTML_REPORT
-      )
-    ];
-    this.sendResponse(PORTAL_TYPES.WORKSPACE_FILE_LIST, env.requestId, { items });
-  }
-
-  private handleWorkspaceFileGet(env: PortalEnvelope) {
-    const path = String((env.payload as { relativePath?: string }).relativePath || "");
-    const contentByPath: Record<string, string> = {
-      "AGENTS.md": "# 投资助手\n",
-      "docs/preview.html": "<h1>Workspace preview</h1>\n",
-      "images/chart.svg": '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#f3f4f6"/><circle cx="160" cy="90" r="48" fill="#10a37f"/></svg>',
-      "knowledge/decision_protocol.md": "# 决策协议\n",
-      "reports/daily/today.md": "# 今日复盘\n",
-      "reports/html/2026-07-27-portfolio-risk.html": MOCK_HTML_REPORT
-    };
-    const content = contentByPath[path] ?? "";
-    const mimeType = path.endsWith(".md") ? "text/markdown" : path.endsWith(".html") ? "text/html" : path.endsWith(".svg") ? "image/svg+xml" : "text/plain";
-    const item = mockWorkspaceFile(path || "AGENTS.md", mimeType, content);
-    const data: WorkspaceFileGetResult = { ...item, base64: Buffer.from(content).toString("base64"), checksum: createHash("sha256").update(content).digest("hex") };
-    this.sendResponse(PORTAL_TYPES.WORKSPACE_FILE_GET, env.requestId, data);
   }
 
   private handleAssetList(env: PortalEnvelope) {
@@ -840,21 +795,6 @@ function attachmentOnlyText(attachments: { kind?: string; mimeType: string }[]):
   if (imageCount > 0) return `上传了 ${imageCount} 张图片`;
   if (documentCount > 0) return `上传了 ${documentCount} 份文档`;
   return "";
-}
-
-function mockWorkspaceFile(relativePath: string, mimeType: string, content: string): WorkspaceFileListResult["items"][number] {
-  const bytes = Buffer.byteLength(content);
-  const previewMode = mimeType === "text/markdown" ? "markdown" : mimeType === "text/html" ? "html" : mimeType.startsWith("image/") ? "image" : mimeType.startsWith("text/") || mimeType.includes("yaml") ? "text" : "unsupported";
-  return {
-    fileId: createHash("sha256").update(relativePath).digest("hex").slice(0, 24),
-    relativePath,
-    fileName: relativePath.split("/").at(-1) || relativePath,
-    mimeType,
-    sizeBytes: bytes,
-    updatedAt: new Date().toISOString(),
-    previewMode,
-    downloadable: true
-  };
 }
 
 /**

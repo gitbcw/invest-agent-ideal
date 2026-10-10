@@ -4,12 +4,14 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 
 import { MarkdownLite } from "@/components/chat/MarkdownLite";
+import { useAppNavigate } from "@/lib/app-navigation";
 import { buildManualMarkdown, userManual } from "@/content/user-manual";
 
 type ViewMode = "web" | "document";
 type DocumentMode = "pdf" | "md";
 
 export function ManualShell() {
+  const appNavigate = useAppNavigate();
   const [viewMode, setViewMode] = useState<ViewMode>("web");
   const [documentMode, setDocumentMode] = useState<DocumentMode>("pdf");
   const markdown = buildManualMarkdown();
@@ -24,7 +26,7 @@ export function ManualShell() {
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-xl text-[#5f6368] transition hover:bg-black/5"
               aria-label="返回聊天"
               title="返回聊天"
-              onClick={() => window.location.assign("/chat")}
+              onClick={() => appNavigate("/chat")}
             >
               ‹
             </button>

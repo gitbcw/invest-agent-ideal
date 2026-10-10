@@ -16,15 +16,17 @@ import {
 } from "@/components/chat/api";
 import type { ConversationLabelView } from "@/components/chat/Sidebar";
 import type { ConversationListItem } from "@/components/chat/types";
+import { useAppNavigate } from "@/lib/app-navigation";
 import {
   ACTIVE_CONVERSATION_STORAGE_KEY,
   conversationNavigationUrl
 } from "@/components/chat/conversation-navigation";
 
-type PortalSection = "automations" | "assets" | "workspace" | "attention" | "settings";
+type PortalSection = "automations" | "assets" | "strategies" | "workspace" | "attention" | "settings";
 // Reuse the chat page's actual sidebar, including its conversation list and
 // account actions, rather than maintaining a second navigation implementation.
 export function PortalSidebar({ active }: { active: PortalSection }) {
+  const appNavigate = useAppNavigate();
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   const [labels, setLabels] = useState<ConversationLabelView[]>([]);
   const [collapsed, setCollapsed] = useState(false);
@@ -74,7 +76,7 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
     } catch {
       // ChatShell still receives the URL selection when storage is unavailable.
     }
-    window.location.assign(href);
+    appNavigate(href);
   }, []);
 
   const navigateToNewConversation = useCallback(() => {
@@ -83,7 +85,7 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
     } catch {
       // Explicit `new=1` is also consumed by ChatShell when storage is blocked.
     }
-    window.location.assign("/chat?new=1");
+    appNavigate("/chat?new=1");
   }, []);
 
   const loadMore = useCallback(async () => {
@@ -107,7 +109,12 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
   }, [refreshConversations]);
 
   return <Sidebar
-    conversations={conversations}
+    conversations={conversations.map((conversation) => ({
+      ...conversation,
+      // 徽标合并 turnActive（2026-10-09）：mirror 的 processing 在消息同步后
+      // 恒为 false，非聊天页侧栏此前永远看不到「处理中」。
+      processing: Boolean(conversation.processing || conversation.turnActive)
+    }))}
     activeId={null}
     activeDestination={active}
     collapsed={collapsed}
@@ -134,15 +141,15 @@ export function PortalSidebar({ active }: { active: PortalSection }) {
       void updateConversation(conversation.conversationId, { labelId: conversation.labelId ?? null, position: target.position ?? 0 }).then(refreshConversations).catch(() => undefined);
     }}
     username={username}
-    onOpenAutomations={() => window.location.assign("/automations")}
-    onOpenAssets={() => window.location.assign("/assets")}
-    onOpenWorkspace={() => window.location.assign("/workspace")}
-    onOpenAttention={() => window.location.assign("/attention")}
-    onOpenSettings={() => window.location.assign("/settings")}
+    onOpenAutomations={() => appNavigate("/automations")}
+    onOpenAssets={() => appNavigate("/assets")}
+    onOpenWorkspace={() => appNavigate("/workspace")}
+    onOpenAttention={() => appNavigate("/attention")}
+    onOpenSettings={() => appNavigate("/settings")}
     attentionCount={attentionCount}
-    onOpenManual={() => window.location.assign("/manual")}
-    onOpenUsage={() => window.location.assign("/usage")}
-    onChangePassword={() => window.location.assign("/change-password")}
+    onOpenManual={() => appNavigate("/manual")}
+    onOpenUsage={() => appNavigate("/usage")}
+    onChangePassword={() => appNavigate("/change-password")}
     onLogout={() => void logout().then(() => window.location.assign("/login"))}
   />;
 }

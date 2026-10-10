@@ -32,14 +32,15 @@ export async function POST(request: Request) {
   if (!session) return unauthorized();
   let body: { userId?: string; projectId?: string; instanceId?: string; strategyPackId?: string; portfolioText?: string } = {};
   try { body = await request.json(); } catch { /* empty body is fine */ }
-  if (body.userId && body.userId !== session.username) return badRequest("userId 不匹配当前会话");
+  // 2026-10-08：不再把 portal username 当 runtime userId（镜像 mirror-* 部署会写错
+  // scope）；改传 instanceId 由 runtime 反查 owner。
   const runtimeBase = process.env.PORTAL_RUNTIME_URL ?? "http://127.0.0.1:23656";
   const token = runtimeServiceToken();
   try {
     const res = await fetch(`${runtimeBase}/api/onboarding/wizard/complete`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ userId: session.username, projectId: body.projectId, instanceId: body.instanceId, strategyPackId: body.strategyPackId, portfolioText: body.portfolioText }),
+      body: JSON.stringify({ projectId: body.projectId, instanceId: body.instanceId || session.instanceId, strategyPackId: body.strategyPackId, portfolioText: body.portfolioText }),
     });
     const data = await res.json().catch(() => null);
     if (!res.ok || !data?.ok) {

@@ -43,6 +43,10 @@ export async function GET(request: Request) {
   // 用户级重命名/归档/删除/置顶只保存在 portal mirror 上,最终列表从本地视图生成。
   // 带搜索词的请求只查本地 mirror LIKE（T-448）：搜索不需要远端同步往返，
   // 且这是搜索输入防抖后的高频路径。
+  // turnActive 是运行时活动轮的瞬时状态,只随响应透传、不落 mirror——
+  // 前端切页/整页导航回来后据此恢复「处理中」（2026-10-09 mirror 回归：
+  // 透传缺失导致徽标丢失,用户误以为轮次被打断）。
+  const remoteActiveConversationIds = new Set<string>();
   if (!parsed.data.query) {
     const remote = await sendConnectorRequest<ConversationListResult>(
       session.assistantId,
@@ -58,6 +62,9 @@ export async function GET(request: Request) {
 
     if (remote.ok) {
       for (const conv of remote.data.items) {
+        if ((conv as ConversationListResult["items"][number] & { turnActive?: boolean }).turnActive) {
+          remoteActiveConversationIds.add(conv.conversationId);
+        }
         repo.upsertConversation({
           conversationId: conv.conversationId,
           userId: session.sub,
@@ -93,7 +100,10 @@ export async function GET(request: Request) {
         userId: session.sub,
         assistantId: session.assistantId,
         instanceId: session.instanceId
-      })
+      }),
+      ...(remoteActiveConversationIds.has(row.conversation_id)
+        ? { turnActive: true as const }
+        : {})
     })),
     nextCursor: local.nextCursor
   });

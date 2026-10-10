@@ -16,11 +16,11 @@ export async function POST(request: Request, { params }: Params) {
   const raw = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
   if (raw.taskId !== undefined && raw.taskId !== taskId) return badRequest("taskId 与路径不一致");
   const parsed = automationActionSchema.safeParse({ ...raw, taskId });
-  if (!parsed.success) return badRequest("自动化任务参数错误", { issues: parsed.error.issues });
-  const remote = await forwardAutomation<AutomationBatchActionResult>(session, PORTAL_TYPES.AUTOMATION_BATCH_ACTION, { action: "archive", items: [{ taskId, expectedRevision: parsed.data.expectedRevision ?? 1 }], idempotencyKey: `portal:archive:${taskId}:${Date.now()}` });
+  if (!parsed.success) return badRequest("定时任务参数错误", { issues: parsed.error.issues });
+  const remote = await forwardAutomation<AutomationBatchActionResult>(session, PORTAL_TYPES.AUTOMATION_BATCH_ACTION, { action: "delete", items: [{ taskId, expectedRevision: parsed.data.expectedRevision ?? 1 }], idempotencyKey: `portal:delete:${taskId}:${Date.now()}` });
   if (!remote.ok) return automationResponse(remote);
   const result = remote.data.results[0];
-  if (!result) return fail("AUTOMATION_BATCH_INVALID", "归档任务失败", { status: 400 });
+  if (!result) return fail("AUTOMATION_BATCH_INVALID", "删除任务失败", { status: 400 });
   if (!result.ok) return fail(result.error.code, result.error.message, { status: 409, retryable: result.error.retryable });
   return ok(sanitizeAutomationTask(result.task as AutomationTask & Record<string, unknown>));
 }

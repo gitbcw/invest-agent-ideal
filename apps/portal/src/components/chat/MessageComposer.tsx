@@ -41,6 +41,7 @@ interface MessageComposerProps {
   processing?: boolean;
   stopping?: boolean;
   draftKey?: string;
+  initialDraft?: string;
   onSend: (text: string, attachments: ComposerAttachment[]) => Promise<ComposerSendResult | void>;
   onCancel?: () => Promise<void>;
 }
@@ -56,6 +57,7 @@ export function MessageComposer({
   processing = false,
   stopping = false,
   draftKey,
+  initialDraft,
   onSend,
   onCancel
 }: MessageComposerProps) {
@@ -91,11 +93,16 @@ export function MessageComposer({
       setAttachments([]);
       setError(null);
     }
+    // 多会话并行（2026-10-09 mirror 回归）：sending 在 await onSend（整个轮次
+    // 完成）期间为 true，而 composer 是全页单实例——不随会话切换释放会把其它
+    // 会话（含新聊天）的发送按钮一起锁死。原会话的在途状态由其 processing
+    // （服务端 turnActive 权威）表达，切回去仍不可重复发送。
+    setSending(false);
     draftKeyRef.current = nextKey;
     draftInitializedRef.current = true;
     restoringDraftRef.current = true;
-    setValue(nextKey ? readDraft(nextKey) : "");
-  }, [draftKey]);
+    setValue(nextKey ? (readDraft(nextKey) || initialDraft || "") : "");
+  }, [draftKey, initialDraft]);
 
   useEffect(() => {
     const key = draftKeyRef.current;

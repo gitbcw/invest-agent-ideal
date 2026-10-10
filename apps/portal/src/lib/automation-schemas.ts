@@ -35,16 +35,23 @@ export function isSupportedAutomationInputFileName(fileName: string): boolean {
 }
 
 export const automationScheduleSchema = z.object({
-  frequency: z.enum(["daily", "trading_days", "weekdays", "weekly"]),
+  frequency: z.enum(["daily", "trading_days", "weekdays", "weekly", "monthly"]),
   time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "执行时间必须是 HH:mm"),
   timezone: z.literal(AUTOMATION_TIMEZONE),
   weekdays: z.array(z.number().int().min(1).max(7)).max(7).optional(),
+  /** 每月任务的日子（1..28，避免短月越界）；仅 monthly 频率可携带。 */
+  monthlyDay: z.number().int().min(1).max(28).optional(),
+  /** 同日额外触发点（HH:mm），如盘中盯盘的时间窗。 */
+  windows: z.array(z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "时间窗必须是 HH:mm")).min(1).max(12).optional(),
 }).strict().superRefine((schedule, ctx) => {
   if (schedule.frequency === "weekly" && (!schedule.weekdays || schedule.weekdays.length === 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["weekdays"], message: "每周任务至少选择一天" });
   }
   if (schedule.frequency !== "weekly" && schedule.weekdays && schedule.weekdays.length > 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["weekdays"], message: "仅每周任务可设置星期" });
+  }
+  if (schedule.frequency !== "monthly" && schedule.monthlyDay !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["monthlyDay"], message: "仅每月任务可设置日期" });
   }
 });
 
@@ -131,7 +138,7 @@ const listValue = <T extends z.ZodTypeAny>(schema: T) => z.preprocess(
 
 export const automationListQuerySchema = z.object({
   query: z.string().trim().max(200).optional(),
-  statuses: listValue(z.enum(["paused", "active", "needs_attention", "archived"])),
+  statuses: listValue(z.enum(["paused", "active", "needs_attention", "archived", "deleted"])),
   frequencies: listValue(z.enum(["daily", "trading_days", "weekdays", "weekly"])),
   deliveryModes: listValue(z.enum(["none", "wechat_summary", "wechat_on_condition"])),
   outputModes: listValue(z.enum(["none", "agent", "create", "update"])),
@@ -157,7 +164,7 @@ export const automationRunsListQuerySchema = z.object({
 }).strict();
 
 export const automationBatchActionSchema = z.object({
-  action: z.enum(["pause", "activate", "archive"]),
+  action: z.enum(["pause", "activate", "delete"]),
   items: z.array(z.object({
     taskId: z.string().trim().min(1).max(160),
     expectedRevision: z.number().int().positive(),

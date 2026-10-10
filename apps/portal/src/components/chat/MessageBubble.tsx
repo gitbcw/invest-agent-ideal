@@ -8,9 +8,9 @@ import { MarkdownLite } from "./MarkdownLite";
 import { ToolCallTimeline } from "./ToolCallTimeline";
 import { useTypewriter } from "./useTypewriter";
 import { useWaitingHint } from "./useElapsedTime";
-import { fetchAttachment, fetchTrace } from "./api";
+import { fetchAttachment } from "./api";
 import { base64ToBytes, formatBytes, formatExpiry, sha256Hex, svgToDataUrl, svgToPngBytes, triggerBrowserDownload } from "./media-helpers";
-import type { ArtifactCardView, AttachmentView, ChatMessageView, InlineSvgVisual, TraceDetailView, WorkStepView } from "./types";
+import type { ArtifactCardView, AttachmentView, ChatMessageView, InlineSvgVisual, WorkStepView } from "./types";
 import type { AttachmentGetResult } from "@/lib/protocol";
 import { toolDisplayName } from "./tool-display";
 
@@ -61,9 +61,6 @@ export const MessageBubble = memo(function MessageBubble({
 }: MessageBubbleProps) {
   const [animationDone, setAnimationDone] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [traceDetail, setTraceDetail] = useState<TraceDetailView | null>(null);
-  const [traceLoading, setTraceLoading] = useState(false);
-  const [traceOpen, setTraceOpen] = useState(false);
   // 点踩反馈弹窗（owner 2026-08-28）：点踩立即生效并弹窗，填不填都可以。
   const [dislikeDialogOpen, setDislikeDialogOpen] = useState(false);
   const [dislikeComment, setDislikeComment] = useState("");
@@ -132,35 +129,6 @@ export const MessageBubble = memo(function MessageBubble({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [dislikeDialogOpen]);
-
-  // T-199 历史回看：点开时按需拉取 trace 摘要（工具时间线 + 计量）。
-  const handleToggleTrace = useCallback(async () => {
-    if (!message.traceId) return;
-    const next = !traceOpen;
-    setTraceOpen(next);
-    if (next && !traceDetail && !traceLoading) {
-      setTraceLoading(true);
-      try {
-        const detail = await fetchTrace(message.traceId).catch(() => null);
-        setTraceDetail(detail);
-      } finally {
-        setTraceLoading(false);
-      }
-    }
-  }, [message.traceId, traceDetail, traceLoading, traceOpen]);
-
-  const traceSteps: WorkStepView[] | null = traceDetail
-    ? traceDetail.toolCalls.map((call) => ({
-        at: call.startedAt ?? traceDetail.createdAt,
-        kind: (call.status === "error" ? "tool_result" : "tool_call") as WorkStepView["kind"],
-        toolName: call.toolName,
-        status: call.status,
-        elapsedMs: call.elapsedMs,
-        inputChars: call.inputChars,
-        outputChars: call.outputChars,
-        errorExcerpt: call.errorExcerpt
-      }))
-    : null;
 
   if (message.role === "user") {
     return (
@@ -247,21 +215,6 @@ export const MessageBubble = memo(function MessageBubble({
                 点此重试
               </button>
             </div>
-        ) : null}
-        {!isWaiting && !typewriter.isAnimating && message.traceId ? (
-            traceOpen && traceDetail ? (
-              <div className="mt-1">
-                <ToolCallTimeline steps={traceSteps ?? []} summary={traceDetail} />
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void handleToggleTrace()}
-                className="mt-2 text-[11px] text-[#b4b4b8] underline-offset-2 transition-colors hover:text-slate-500 hover:underline"
-              >
-                {traceLoading ? "处理过程加载中…" : "查看处理过程"}
-              </button>
-            )
         ) : null}
       </div>
       {!isWaiting && !typewriter.isAnimating && message.status === "sent" && message.content ? (

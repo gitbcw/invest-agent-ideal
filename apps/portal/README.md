@@ -186,7 +186,7 @@ npm run deploy:volcano
 invest-agent-ideal 实现的 connector 需要:
 
 1. WebSocket 连接到 `ws://<portal-host>:<relay-port>/?token=<PORTAL_CONNECTOR_TOKEN>`。
-2. 发送 `connector.register`(mode=`real`),capabilities 至少包含 `conversation.chat / conversation.list / conversation.get`；workspace 浏览还需要 `workspace.file.list / workspace.file.get`。
+2. 发送 `connector.register`(mode=`real`),capabilities 至少包含 `conversation.chat / conversation.list / conversation.get`。
 3. 维护心跳,处理 Relay 转发的 `conversation.list / conversation.get / conversation.chat` 命令。
 4. 写入本地 canonical conversation log(`conversation_sessions / conversation_messages`),并通过 `conversation.sync` 事件把会话/消息推给 Relay。
 5. `assistantId` 默认使用 `invest-agent-primary`(与门户默认测试账号绑定一致)。

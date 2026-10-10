@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Fragment } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { nanoid } from "nanoid";
-import { Folder, FolderOpen } from "lucide-react";
 
 import { Sidebar } from "./Sidebar";
 import { MessageComposer, type ComposerAttachment, type ComposerSendResult } from "./MessageComposer";
@@ -28,7 +27,6 @@ import {
   updateConversationLabel,
   deleteConversationLabel,
   fetchCurrentUser,
-  fetchWorkspaceFiles,
   cancelConversation,
   deleteConversation,
   logout as apiLogout,
@@ -52,9 +50,8 @@ import {
   resolveConversationNavigation
 } from "./conversation-navigation";
 import { toView, type ArtifactCardView, type ChatMessageView, type ConversationListItem, type WorkStepView } from "./types";
-import type { WorkspaceFileItem } from "@/lib/protocol";
+import { useAppNavigate } from "../../lib/app-navigation";
 import { DEFAULT_MODEL_VALUE } from "@/lib/models";
-import { ModelPicker } from "@/components/chat/ModelPicker";
 
 interface ChatShellProps {
   initialUser: {
@@ -71,7 +68,9 @@ function buildComposerDraftKey(user: ChatShellProps["initialUser"], conversation
 }
 
 export function ChatShell({ initialUser }: ChatShellProps) {
+  const appNavigate = useAppNavigate();
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [labels, setLabels] = useState<Array<{ label_id: string; name: string; position: number }>>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [conversationViews, setConversationViews] = useState<Record<string, ConversationViewState>>({});
@@ -91,8 +90,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const [activeArtifact, setActiveArtifact] = useState<ArtifactCardView | null>(null);
   const [artifactLightbox, setArtifactLightbox] = useState<ArtifactCardView | null>(null);
   const [artifactPanelClosed, setArtifactPanelClosed] = useState(true);
-  const [revealTreeNonce, setRevealTreeNonce] = useState(0);
-  const [workspaceRefreshNonce, setWorkspaceRefreshNonce] = useState(0);
   const [rightPanelWidth, setRightPanelWidth] = useState<number | null>(null);
   // Attachment opened from a message card via attachment.get → image Lightbox.
   const [attachmentLightbox, setAttachmentLightbox] = useState<{ attachmentId: string; title: string } | null>(null);
@@ -104,8 +101,12 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   const cursorRef = useRef<string | null>(null);
   // T-199：当前等待轮的实时工作过程事件（按 conversationId 分组，尽力而为）。
   const [liveSteps, setLiveSteps] = useState<Record<string, WorkStepView[]>>({});
-  // 引导式新建（技能管理页「新建 Skill」等）：开场白确定，本地渲染不调模型。
+  // 引导式新建技能：开场白确定，本地渲染不调模型。
   const [guidedStart, setGuidedStart] = useState<string | null>(null);
+  const [guidedPrompt, setGuidedPrompt] = useState<string | null>(null);
+  const [guidedAutoSend, setGuidedAutoSend] = useState<string | null>(null);
+  // 待处理「AI分析」进入的既有会话：选中并加载完成后自动发送一次分析请求。
+  const [pendingAttentionAutosend, setPendingAttentionAutosend] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const processingConversationsRef = useRef<Record<string, boolean>>({});
   const navigationInitializedRef = useRef(false);
@@ -180,7 +181,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
             messageId: "guided_opening",
             conversationId: "guided",
             role: "assistant" as const,
-            content: GUIDE_OPENINGS[guidedStart] ?? "",
+            content: guidedPrompt ? `${GUIDE_OPENINGS[guidedStart] ?? ""}\n\n你可以直接从这个问题开始：\n“${guidedPrompt}”` : GUIDE_OPENINGS[guidedStart] ?? "",
             status: "sent" as const,
             createdAt: new Date().toISOString(),
             isLocal: true,
@@ -247,6 +248,21 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     setRightPanelWidth(clampRightPanelWidth(next));
   }, [clampRightPanelWidth, rightPanelWidth]);
 
+  // ---- 初始化引导状态（2026-10-08）：未完成初始化时顶部常驻引导 ----
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/onboarding/status", { cache: "no-store" });
+        const payload = (await res.json()) as { ok?: boolean; data?: { needsOnboarding?: boolean } };
+        if (!cancelled) setNeedsOnboarding(Boolean(res.ok && payload?.data?.needsOnboarding));
+      } catch {
+        // 查询失败不展示横幅。
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // ---- 初始化:加载会话列表 + 助手状态 ----
   const refreshStatus = useCallback(async () => {
     const s = await fetchAssistantStatus();
@@ -276,6 +292,32 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     try {
       const res = await fetchConversations({ limit: 20, query: debouncedSearch, archived: false });
       setConversations(res.items);
+      // 服务端活动轮 → 「处理中」对账（2026-10-09 mirror 回归）。
+      // 双信号：turnActive 是运行时活动轮权威；processing 是 mirror 上
+      // pending 用户消息无终态回复的兜底（relay 响应丢失时 turnActive 可能
+      // 先消失而轮次结果未回）。对列表内会话以服务端为准（清除陈旧徽标 +
+      // 恢复活动徽标），但不清除本地视图仍在等待的乐观标记——发送到服务端
+      // 接管之间有约 1s 窗口，那时的 turn_active 还没写。列表外的会话
+      //（分页外）保持原值不动。
+      setProcessingConversations((current) => {
+        const next: Record<string, boolean> = {};
+        const listedIds = new Set(res.items.map((item) => item.conversationId));
+        for (const [id, value] of Object.entries(current)) {
+          if (!value) continue;
+          if (!listedIds.has(id)) {
+            next[id] = true;
+            continue;
+          }
+          if (conversationViewsRef.current[id]?.waiting === true) {
+            next[id] = true;
+          }
+        }
+        for (const item of res.items) {
+          if (item.turnActive || item.processing) next[item.conversationId] = true;
+        }
+        processingConversationsRef.current = next;
+        return next;
+      });
       setHasNextConversations(Boolean(res.nextCursor));
       cursorRef.current = res.nextCursor;
     } catch (err) {
@@ -510,20 +552,51 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     };
   }, [activeId, loadConversation, processingConversations]);
 
+  // 实时步骤流订阅（集中式，2026-10-09）：活动会话处于处理中即订阅 SSE——
+  // 无论这轮是本机发起（发送/重新生成）还是切页/刷新后从服务端状态恢复。
+  // 此前订阅只在发送路径创建，恢复场景只能看到静态「已等待较久」文案，
+  // 没有展开式步骤流。轮次结束（processing 翻 false）时自动断开。
+  useEffect(() => {
+    if (!activeId || processingConversations[activeId] !== true) return;
+    const conversationId = activeId;
+    const stopProgress = subscribeConversationProgress(conversationId, (step) => {
+      setLiveSteps((current) => {
+        const existing = current[conversationId] ?? [];
+        return { ...current, [conversationId]: [...existing, step].slice(-200) };
+      });
+    });
+    return stopProgress;
+  }, [activeId, processingConversations]);
+
   // URL selection wins over sessionStorage. `new=1` is an explicit reset and
   // must clear both recovery sources before the blank chat is shown.
   useEffect(() => {
     if (navigationInitializedRef.current) return;
     navigationInitializedRef.current = true;
-    // 引导式新建（如技能管理页「新建 Skill」）：开场白是确定内容，本地立即
-    // 渲染，不调模型；用户首次发送时才创建真实会话并带引导前缀。
+    // 引导式入口：技能试用可携带一个真实示例问题；技能创建仍只展示引导，
+    // 避免把用户尚未填写的内容误发给模型。
     try {
       const url = new URL(window.location.href);
+      // autosend=attention-analysis（待处理「AI分析」按钮）：一次性自动发送
+      // 标记，挂载时立即从 URL 清除，刷新/回退不会重复发送。
+      const autosendConversationId = url.searchParams.get("autosend") === "attention-analysis"
+        && url.searchParams.get("conversationId");
+      if (url.searchParams.has("autosend")) {
+        url.searchParams.delete("autosend");
+        window.history.replaceState(window.history.state, "", url.toString());
+      }
+      if (autosendConversationId) setPendingAttentionAutosend(autosendConversationId);
       const guide = url.searchParams.get("guide");
       if (url.searchParams.get("new") === "1" && guide && GUIDE_OPENINGS[guide]) {
         setGuidedStart(guide);
+        const prompt = url.searchParams.get("prompt");
+        setGuidedPrompt(prompt);
+        if (url.searchParams.get("auto") === "1" && guide === GUIDE_SKILL_TRY && prompt?.trim()) {
+          setGuidedAutoSend(prompt.trim());
+        }
         url.searchParams.delete("new");
         url.searchParams.delete("guide");
+        url.searchParams.delete("prompt");
         window.history.replaceState(window.history.state, "", url.toString());
         activeIdRef.current = null;
         setActiveId(null);
@@ -549,16 +622,16 @@ export function ChatShell({ initialUser }: ChatShellProps) {
 
   const handleNewConversation = useCallback(() => {
     setFatalError(null);
-    if (activeId) writeProcessingStartedAt(activeId, null);
     activeIdRef.current = null;
     setActiveId(null);
-    setProcessingConversations({});
-    processingConversationsRef.current = {};
+    // 不再整体清空 processingConversations（2026-10-09 回归）：处理中标记以
+    // 服务端 turnActive 为权威，切到新聊天不该把其它会话的「处理中」徽标
+    // 一起抹掉；陈旧标记由 refreshConversations 的对账逻辑纠正。
     setStoppingConversations({});
     syncConversationNavigation(null);
     setActiveArtifact(null);
     setArtifactPanelClosed(true);
-  }, [activeId, syncConversationNavigation, writeProcessingStartedAt]);
+  }, [syncConversationNavigation]);
 
   const handleOpenArtifact = useCallback(async (artifact: ArtifactCardView) => {
     void recordArtifactEvent(artifact.artifactId, "open");
@@ -566,16 +639,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       setArtifactLightbox(artifact);
       return;
     }
-    let resolvedArtifact = artifact;
-    if (!artifact.workspacePath) {
-      const workspaceFiles = await fetchWorkspaceFiles();
-      if (workspaceFiles.ok) {
-        const workspacePath = findUniqueWorkspacePath(artifact, workspaceFiles.data.items);
-        if (workspacePath) resolvedArtifact = { ...artifact, workspacePath };
-      }
-    }
-    setActiveArtifact(resolvedArtifact);
-    setWorkspaceRefreshNonce((nonce) => nonce + 1);
+    setActiveArtifact(artifact);
     setArtifactPanelClosed(false);
   }, []);
 
@@ -598,13 +662,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   }, []);
 
   const handleToggleArtifactPanel = useCallback(() => {
-    setArtifactPanelClosed((prev) => {
-      if (prev) {
-        setRevealTreeNonce((nonce) => nonce + 1);
-        setWorkspaceRefreshNonce((nonce) => nonce + 1);
-      }
-      return !prev;
-    });
+    setArtifactPanelClosed((prev) => !prev);
   }, []);
 
   // User clicked an active image attachment in a message → open the Lightbox.
@@ -646,7 +704,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         checksum: descriptor.checksum,
         messageId,
         conversationId,
-        workspacePath: relativePath
       };
       void handleOpenArtifact(cardView);
     },
@@ -718,13 +775,14 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       }));
       setConversationProcessing(conversationId, true);
       writeProcessingStartedAt(conversationId, processingStartedAt);
-
-      const stopProgress = subscribeConversationProgress(conversationId, (step) => {
-        setLiveSteps((current) => {
-          const existing = current[conversationId] ?? [];
-          return { ...current, [conversationId]: [...existing, step].slice(-200) };
-        });
+      // 新一轮开始前清掉上一轮残留的实时步骤（集中式订阅见下方 effect）。
+      setLiveSteps((current) => {
+        if (!(conversationId in current)) return current;
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
       });
+
       try {
         const result = await sendMessage(
           conversationId,
@@ -774,7 +832,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         if (result.ok) {
           writeProcessingStartedAt(conversationId, null);
           setConversationProcessing(conversationId, false);
-          setWorkspaceRefreshNonce((nonce) => nonce + 1);
         } else if (result.error?.code !== "TIMEOUT" && result.error?.code !== "CONNECTOR_OFFLINE") {
           writeProcessingStartedAt(conversationId, null);
           setConversationProcessing(conversationId, false);
@@ -829,7 +886,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         setFatalError((err as Error).message);
         return { ok: false, draftKey: buildComposerDraftKey(initialUser, conversationId) };
       } finally {
-        stopProgress();
         setStoppingConversations((current) => {
           if (!current[conversationId]) return current;
           const next = { ...current };
@@ -853,6 +909,23 @@ export function ChatShell({ initialUser }: ChatShellProps) {
     },
     [activeId, guidedStart, initialUser.assistantId, initialUser.id, initialUser.instanceId, selectedModel, setConversationProcessing, status, syncConversationNavigation, updateConversationView, writeProcessingStartedAt]
   );
+
+  useEffect(() => {
+    if (!guidedAutoSend || guidedStart !== GUIDE_SKILL_TRY) return;
+    setGuidedAutoSend(null);
+    setGuidedPrompt(null);
+    void handleSend(guidedAutoSend);
+  }, [guidedAutoSend, guidedStart, handleSend]);
+
+  // 待处理「AI分析」：等会话选中且首屏加载完成（不在处理中）再发送；
+  // 若正有轮次在跑，等它结束后由轮询触发的视图更新再补发。
+  useEffect(() => {
+    if (!pendingAttentionAutosend || activeId !== pendingAttentionAutosend) return;
+    const view = conversationViews[activeId];
+    if (!view || view.loading || view.waiting) return;
+    setPendingAttentionAutosend(null);
+    void handleSend("请分析这次任务失败的原因，并给出处理建议。");
+  }, [activeId, conversationViews, pendingAttentionAutosend, handleSend]);
 
   const handleCancelConversation = useCallback(async () => {
     const conversationId = activeIdRef.current ?? activeId;
@@ -932,11 +1005,11 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       }));
       setConversationProcessing(activeId, true);
       writeProcessingStartedAt(activeId, processingStartedAt);
-      const stopProgress = subscribeConversationProgress(activeId, (step) => {
-        setLiveSteps((current) => {
-          const existing = current[activeId] ?? [];
-          return { ...current, [activeId]: [...existing, step].slice(-200) };
-        });
+      setLiveSteps((current) => {
+        if (!(activeId in current)) return current;
+        const next = { ...current };
+        delete next[activeId];
+        return next;
       });
       void (async () => {
         try {
@@ -970,7 +1043,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
               : m)
           }));
         } finally {
-          stopProgress();
           setConversationProcessing(activeId, false);
         }
       })();
@@ -1084,11 +1156,10 @@ export function ChatShell({ initialUser }: ChatShellProps) {
       : "助手暂时离线,本地服务恢复后可继续。"
     : undefined;
 
-  // Portal consumes workspace files through a read-only connector capability.
+  // Portal consumes attachments through a read-only connector capability.
   // Browser-side file mutation capabilities are intentionally ignored.
   const capabilities = useMemo(
     () => ({
-      workspaceFileList: hasCapability(status, "workspace.file.list"),
       attachmentGet: hasCapability(status, "attachment.get")
     }),
     [status]
@@ -1097,7 +1168,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
   // Keep an opened workspace mounted after its one-shot artifact request is
   // consumed. Otherwise a transient capability refresh could tear it down and
   // discard its tabs before the user explicitly closes the panel.
-  const workspaceVisible = capabilities.workspaceFileList || !artifactPanelClosed || Boolean(activeArtifact);
+  const workspaceVisible = !artifactPanelClosed || Boolean(activeArtifact);
 
   const offlineBanner = useMemo(
     () =>
@@ -1139,17 +1210,16 @@ export function ChatShell({ initialUser }: ChatShellProps) {
         onDropConversation={(conversation, labelId) => void handleDropConversation(conversation, labelId)}
         onDropConversationOrder={(conversation, target) => void handleDropConversationOrder(conversation, target)}
         username={initialUser.username}
-        onOpenAutomations={() => window.location.assign("/automations")}
-        onOpenAssets={() => window.location.assign("/assets")}
-        onOpenManual={() => window.location.assign("/manual")}
-        onOpenUsage={() => window.location.assign("/usage")}
+        onOpenAutomations={() => appNavigate("/automations")}
+        onOpenAssets={() => appNavigate("/assets")}
+        onOpenManual={() => appNavigate("/manual")}
+        onOpenUsage={() => appNavigate("/usage")}
         onChangePassword={() => setChangePasswordOpen(true)}
         onLogout={() => void apiLogout().then(() => window.location.assign("/login"))}
       />
       <main className="flex min-w-0 flex-1 flex-col bg-white">
         <div className="flex h-14 items-center justify-between border-b border-black/10 bg-white px-3 sm:px-5">
         <div className="flex items-center">
-          <ModelPicker value={selectedModel} onChange={setSelectedModel} disabled={offline} />
           {status ? (
             <span
                 className={`flex items-center gap-1.5 px-1 text-[11px] font-medium ${
@@ -1160,21 +1230,10 @@ export function ChatShell({ initialUser }: ChatShellProps) {
             >
               <span className={`h-1.5 w-1.5 rounded-full ${status.online ? "bg-emerald-500" : "bg-zinc-400"}`} aria-hidden="true" />
               {status.online ? "在线" : "离线"}
-            </span>
+          </span>
           ) : null}
         </div>
           <div className="flex items-center gap-2">
-            {capabilities.workspaceFileList ? (
-              <button
-                type="button"
-                className={`flex h-9 w-9 items-center justify-center rounded-md transition ${artifactPanelClosed ? "text-[#6b7280] hover:bg-black/5 hover:text-[#202123]" : "bg-[#f1f5f3] text-[#202123]"}`}
-                aria-label={artifactPanelClosed ? "打开工作空间" : "收起文档工作区"}
-                title={artifactPanelClosed ? "打开工作空间" : "收起文档工作区"}
-                onClick={handleToggleArtifactPanel}
-              >
-                {artifactPanelClosed ? <Folder size={18} aria-hidden="true" /> : <FolderOpen size={18} aria-hidden="true" />}
-              </button>
-            ) : null}
             <div className="hidden text-xs text-[#8e8ea0] sm:block">
               {initialUser.role === "admin" ? "管理员" : "用户"} · {initialUser.username}
             </div>
@@ -1193,6 +1252,31 @@ export function ChatShell({ initialUser }: ChatShellProps) {
           </button>
         </div>
       ) : null}
+        {needsOnboarding ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#f3e8c8] bg-[#fdf8ec] px-4 py-2 sm:px-6">
+            <p className="text-xs text-[#8a6d3b]">
+              还差一步：完成初始化（录入持仓、选择初始策略，约 2 分钟），分析、复盘和提醒就会围绕你的真实持仓展开。
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => appNavigate("/onboarding")}
+                className="h-7 rounded-md bg-[#365b40] px-3 text-xs font-medium text-white transition hover:bg-[#2c4c35]"
+              >
+                开始初始化
+              </button>
+              <button
+                type="button"
+                onClick={() => setNeedsOnboarding(false)}
+                className="h-7 rounded-md px-2 text-xs text-[#8a6d3b] transition hover:bg-[#f6ecd6]"
+                aria-label="暂不提示"
+                title="本次会话不再提示"
+              >
+                暂不
+              </button>
+            </div>
+          </div>
+        ) : null}
         <section className="flex min-h-0 flex-1 flex-col">
           <div ref={messagesRef} className="flex-1 overflow-y-auto scrollbar-thin">
             <div className="mx-auto flex min-h-full max-w-3xl flex-col px-4 pb-6 pt-6 sm:px-6">
@@ -1260,6 +1344,7 @@ export function ChatShell({ initialUser }: ChatShellProps) {
             processing={waiting}
             stopping={Boolean(activeId && stoppingConversations[activeId])}
             draftKey={composerDraftKey}
+            initialDraft={guidedPrompt ?? undefined}
             onSend={handleSend}
             onCancel={handleCancelConversation}
           />
@@ -1298,9 +1383,6 @@ export function ChatShell({ initialUser }: ChatShellProps) {
               onClose={handleCloseArtifact}
               onCollapse={handleToggleArtifactPanel}
               collapsed={artifactPanelClosed}
-              revealTreeNonce={revealTreeNonce}
-              refreshNonce={workspaceRefreshNonce}
-              capabilities={capabilities}
             />
           </div>
         </>
@@ -1440,26 +1522,22 @@ function parseTimestamp(value: string | null): number | null {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function findUniqueWorkspacePath(artifact: ArtifactCardView, files: WorkspaceFileItem[]): string | undefined {
-  const exactMatches = files.filter((file) =>
-    file.fileName === artifact.fileName &&
-    file.mimeType === artifact.mimeType &&
-    file.sizeBytes === artifact.sizeBytes
-  );
-  if (exactMatches.length === 1) return exactMatches[0].relativePath;
-  const sameNameAndType = files.filter((file) =>
-    file.fileName === artifact.fileName && file.mimeType === artifact.mimeType
-  );
-  return sameNameAndType.length === 1 ? sameNameAndType[0].relativePath : undefined;
-}
-
-/** 引导式新建：开场白为确定内容，本地渲染；内容须与 skill-creator 系统技能的访谈口径一致。 */
+/** 引导式新建：对用户使用“技能”语言；内部仍由系统技能负责整理和确认。 */
 const GUIDE_SKILL_CREATE = "skill-create";
+const GUIDE_SKILL_TRY = "skill-try";
+/** 引导式新建策略（2026-10-09 owner 裁决：对齐技能管理的 agent 式创建，
+ * 不再手填表单）：开场白引导用户口述规则，由 agent 整理方案、确认后
+ * strategy.create 保存。 */
+const GUIDE_STRATEGY_CREATE = "strategy-create";
 const GUIDE_OPENINGS: Record<string, string> = {
-  [GUIDE_SKILL_CREATE]: "我们来新建一个 Skill。请告诉我：\n\n1. **名称**（暂定即可）\n2. **用途与触发场景**：它解决什么问题，什么情况下该用它\n3. **核心规则/步骤要点**\n\n如果还没想好，直接描述你想沉淀的流程——我会先帮你判断是否值得建 Skill，再起草 SKILL.md 给你确认；你同意后才会保存为私有草案（待确认，不会自动启用）。",
+  [GUIDE_SKILL_CREATE]: "我们来新建一个技能。请告诉我：\n\n1. **名称**（暂定即可）\n2. **用途与触发场景**：它解决什么问题，什么情况下该用它\n3. **核心规则/步骤要点**\n\n如果还没想好，直接描述你想长期采用的做法。我会先帮你判断是否值得保存为技能，再整理成一份易读的方案给你确认；确认后才会生效。",
+  [GUIDE_SKILL_TRY]: "我们来试试这个技能。请直接描述一个你想解决的问题，或给出一只股票、一个行业和你想了解的方向；助手会根据当前技能给你一个实际示例。",
+  [GUIDE_STRATEGY_CREATE]: "我们来新建一个策略。请告诉我：\n\n1. **名称**（暂定即可）\n2. **这是哪类规则**：买卖条件、仓位或风控纪律、观察口径……\n3. **具体规则**：什么条件下做什么，越明确越好（比如「跌破 20 日均线减半」）\n\n如果还没想清楚，直接用大白话描述你的做法。我会帮你整理成一份明确的策略方案给你确认，确认后才保存生效；第一个保存的策略会成为主策略，之后随时可以调整。",
 };
 const GUIDE_SEND_PREFIXES: Record<string, string> = {
-  [GUIDE_SKILL_CREATE]: "新建 Skill：",
+  [GUIDE_SKILL_CREATE]: "新建技能：",
+  [GUIDE_SKILL_TRY]: "技能试用：",
+  [GUIDE_STRATEGY_CREATE]: "新建策略：",
 };
 
 function EmptyConversation({ offline }: { offline: boolean }) {

@@ -21,7 +21,7 @@ export async function POST(request: Request, { params }: Params) {
   const raw = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
   if (raw.taskId !== undefined && raw.taskId !== taskId) return badRequest("taskId 与路径不一致");
   const parsed = automationRunNowSchema.safeParse({ ...raw, taskId });
-  if (!parsed.success) return badRequest("自动化任务参数错误", { issues: parsed.error.issues });
+  if (!parsed.success) return badRequest("定时任务参数错误", { issues: parsed.error.issues });
 
   const remote = await forwardAutomation<AutomationRunNowResult>(session, PORTAL_TYPES.AUTOMATION_RUN_NOW, {
     taskId,

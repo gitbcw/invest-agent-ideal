@@ -20,7 +20,7 @@ async function handle(request: Request, params: { taskId: string }, type: string
   const raw = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
   if (raw.taskId !== undefined && raw.taskId !== taskId) return badRequest("taskId 与路径不一致");
   const parsed = automationActionSchema.safeParse({ ...raw, taskId });
-  if (!parsed.success) return badRequest("自动化任务参数错误", { issues: parsed.error.issues });
+  if (!parsed.success) return badRequest("定时任务参数错误", { issues: parsed.error.issues });
   const remote = await forwardAutomation<AutomationTask>(session, type, { taskId, expectedRevision: parsed.data.expectedRevision });
   return automationResponse(remote, (data) => sanitizeAutomationTask(data as AutomationTask & Record<string, unknown>));
 }

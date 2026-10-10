@@ -12,6 +12,10 @@ export interface ConversationDetailSyncResult {
   complete: boolean;
   reconciled?: boolean;
   error?: { code: string; message: string };
+  /** 运行时活动轮权威状态（2026-10-09 mirror 回归）：mirror 的 pending
+   * 启发式在消息同步后恒为 false，中段轮询必须以此为准，否则 1s 轮询会把
+   * 刚恢复的「处理中」标记清掉。 */
+  turnActive?: boolean;
 }
 
 export async function syncConversationDetail(input: {
@@ -49,6 +53,7 @@ export async function syncConversationDetail(input: {
   let pendingAssistantFound = false;
   let pendingTurnSeen = false;
   let pendingTurnClosed = false;
+  let turnActive = false;
 
   for (let page = 0; page < maxPages; page += 1) {
     const remote = await input.requestPage(cursor, pageSize);
@@ -60,8 +65,9 @@ export async function syncConversationDetail(input: {
           error: `${remote.code}: ${remote.message}`
         });
       }
-      return { complete: false, error: { code: remote.code, message: remote.message } };
+      return { complete: false, error: { code: remote.code, message: remote.message }, turnActive };
     }
+    turnActive = Boolean((remote.data as ConversationGetResult & { turnActive?: boolean }).turnActive);
     if (remote.data.conversationId !== input.conversationId) {
       return {
         complete: false,
@@ -159,7 +165,7 @@ export async function syncConversationDetail(input: {
       // The newest page is mirrored; older history is already in the mirror
       // from the open-conversation full sync, so a single page is complete
       // for the processing poll's purpose.
-      return { complete: true, reconciled: true };
+      return { complete: true, reconciled: true, turnActive };
     }
 
     if (!remote.data.nextCursor) {
@@ -167,7 +173,7 @@ export async function syncConversationDetail(input: {
       if (reconciled) {
         input.repo.clearReconciliation({ ...scope, conversationId: input.conversationId });
       }
-      return { complete: true, reconciled };
+      return { complete: true, reconciled, turnActive };
     }
     if (seenCursors.has(remote.data.nextCursor)) {
       return {

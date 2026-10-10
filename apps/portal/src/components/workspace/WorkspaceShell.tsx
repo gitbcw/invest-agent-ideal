@@ -14,7 +14,7 @@ export function WorkspaceShell() {
             <Layers size={20} className="shrink-0 text-[#52705f]" />
             <div className="min-w-0">
               <h1 className="truncate text-base font-semibold">技能管理</h1>
-              <p className="truncate text-[11px] text-[#7a827c]">管理你的 Skills 安装与目录；方法文件在「我的文件」中直接管理</p>
+              <p className="truncate text-[11px] text-[#7a827c]">查看助手当前具备的技能；技能文件和资料在「我的文件」中管理</p>
             </div>
           </div>
         </header>

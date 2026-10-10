@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
-  Archive,
   ArrowLeft,
   Bell,
   Building2,
@@ -31,6 +30,7 @@ import {
   Send,
   Settings2,
   Sparkles,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -68,10 +68,10 @@ import { PatrolShell } from "@/components/patrol/PatrolShell";
 import { useFilePanel } from "@/components/file-panel/FilePanelProvider";
 import {
   activateAutomation,
-  archiveAutomation,
   batchAutomationAction,
   continueAutomationInChat,
   createAutomation,
+  deleteAutomation,
   fetchAutomation,
   fetchAutomationRun,
   fetchAutomationRuns,
@@ -251,12 +251,12 @@ function AutomationHeader({
           <nav className="order-1 flex items-center gap-2 text-sm" aria-label="自动化面包屑">
             <Link href="/automations?view=tasks" className="font-medium text-[#304936] hover:text-[#527a5d]">自动化</Link>
             <span className="text-[#a0aaa2]">/</span>
-            <span className="text-[#718078]">{view === "templates" ? "从模板添加" : "添加自动化任务"}</span>
+            <span className="text-[#718078]">{view === "templates" ? "从模板添加" : "添加定时任务"}</span>
           </nav>
         ) : (
           <nav
             className="order-1 flex shrink-0 items-center rounded-lg bg-[#f4f6f4] p-1 text-sm"
-            aria-label="自动化任务导航"
+            aria-label="定时任务导航"
           >
           <Link
             href="/automations?view=tasks"
@@ -289,7 +289,7 @@ function AutomationHeader({
           <div className="order-2 flex w-full items-center gap-2 lg:ml-auto lg:w-[250px]">
             <label className="relative block w-full">
               <span className="sr-only">
-                {view === "runs" ? "搜索运行记录" : "搜索自动化任务"}
+                {view === "runs" ? "搜索运行记录" : "搜索定时任务"}
               </span>
               <Search
                 className="pointer-events-none absolute left-3 top-2.5 text-[#9aa49c]"
@@ -299,7 +299,7 @@ function AutomationHeader({
                 className="input-base h-10 !pl-9"
                 value={search}
                 placeholder={
-                  view === "runs" ? "搜索运行记录" : "搜索自动化任务"
+                  view === "runs" ? "搜索运行记录" : "搜索定时任务"
                 }
                 onChange={(event) =>
                   replaceAutomationQuery(router, pathname, searchParams, {
@@ -420,7 +420,7 @@ function TaskListView({
       statuses:
         filter === "all"
           ? includeArchived
-            ? ["needs_attention", "active", "paused", "archived"]
+            ? ["needs_attention", "active", "paused", "archived", "deleted"]
             : undefined
           : [filter],
       frequencies: frequencies.length
@@ -509,13 +509,13 @@ function TaskListView({
     );
   }
 
-  async function doBatch(action: "pause" | "activate" | "archive") {
+  async function doBatch(action: "pause" | "activate" | "delete") {
     const items = tasks.filter((task) => selected.includes(task.taskId));
     if (!items.length) return;
     if (
-      action === "archive" &&
+      action === "delete" &&
       !window.confirm(
-        `归档 ${items.length} 个任务？归档后任务停止执行且不可恢复启用（历史记录保留，可在筛选中勾选「显示已归档」查看）。`,
+        `删除 ${items.length} 个任务？删除后不可恢复，历史运行记录会保留，可在筛选中勾选「显示已归档和已删除」查看。`,
       )
     )
       return;
@@ -560,7 +560,7 @@ function TaskListView({
       const failed = result.results.filter((item) => !item.ok);
       const successfulIds = new Set(successful.map((item) => item.taskId));
       setTasks((current) =>
-        action === "archive" && !includeArchived
+        action === "delete" && !includeArchived
           ? current.filter((task) => !successfulIds.has(task.taskId))
           : current.map(
               (task) =>
@@ -585,12 +585,12 @@ function TaskListView({
   }
 
   async function doSingle(
-    action: "pause" | "activate" | "archive" | "run",
+    action: "pause" | "activate" | "delete" | "run",
     task: AutomationTask,
   ) {
     if (
-      action === "archive" &&
-      !window.confirm("归档这个任务？归档后停止执行且不可恢复启用，历史运行记录会保留。")
+      action === "delete" &&
+      !window.confirm("删除这个任务？删除后不可恢复，历史运行记录会保留，可在筛选中勾选「显示已归档和已删除」查看。")
     )
       return;
     try {
@@ -615,8 +615,8 @@ function TaskListView({
           ? await pauseAutomation(task.taskId, task.currentRevision)
           : action === "activate"
             ? await activateAutomation(task.taskId, task.currentRevision)
-            : await archiveAutomation(task.taskId, task.currentRevision);
-      if (action === "archive" && !includeArchived)
+            : await deleteAutomation(task.taskId, task.currentRevision);
+      if (action === "delete" && !includeArchived)
         setTasks((current) =>
           current.filter((item) => item.taskId !== task.taskId),
         );
@@ -758,9 +758,9 @@ function TaskListView({
                   }
                 />
                 <span>
-                  <span className="block font-medium">显示已归档</span>
+                  <span className="block font-medium">显示已归档和已删除</span>
                   <span className="mt-0.5 block text-xs text-[#879188]">
-                    归档任务默认隐藏，避免干扰日常处理。
+                    已归档和已删除的任务默认隐藏，避免干扰日常处理。
                   </span>
                 </span>
               </label>
@@ -893,11 +893,12 @@ function TaskRow({
   isRunning: boolean;
   onSelect: () => void;
   onMenu: () => void;
-  onAction: (action: "pause" | "activate" | "archive" | "run") => void;
+  onAction: (action: "pause" | "activate" | "delete" | "run") => void;
 }) {
   const status = statusMeta(task.status);
   const latest = task.latestRun;
   const hasRunningRun = isRunning || latest?.status === "running";
+  const isTerminal = task.status === "archived" || task.status === "deleted";
   const nextExecution =
     task.status === "active" && task.nextRunAt
       ? formatRelative(task.nextRunAt)
@@ -905,7 +906,9 @@ function TaskRow({
         ? "已暂停"
         : task.status === "archived"
           ? "已归档"
-          : "处理后安排";
+          : task.status === "deleted"
+            ? "已删除"
+            : "处理后安排";
   const nextExecutionTitle =
     task.status === "active" && task.nextRunAt
       ? formatDate(task.nextRunAt)
@@ -1019,7 +1022,7 @@ function TaskRow({
         />
       </div>
       <div className="absolute right-3 top-3 flex items-center gap-1 lg:static lg:justify-self-end">
-        {task.status !== "archived" ? (
+        {!isTerminal ? (
           <span className="group relative inline-flex">
             <button type="button" className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#59675e] hover:bg-[#eef3ee] disabled:cursor-not-allowed disabled:text-[#a4ada6]" aria-label={hasRunningRun ? "运行中" : "测试运行"} disabled={hasRunningRun} onClick={() => onAction("run")}>
               {hasRunningRun ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} strokeWidth={1.8} />}
@@ -1034,10 +1037,10 @@ function TaskRow({
         </button>
         {menuOpen ? (
           <div className="absolute right-0 top-10 z-20 w-36 rounded-xl border border-[#dfe6df] bg-white p-1.5 text-sm shadow-lg">
-            {task.status === "archived" ? <Link href={`/automations/new?copy=${encodeURIComponent(task.taskId)}`} className="block rounded-lg px-3 py-2 hover:bg-[#f1f5f1]">复制为新建任务</Link> : null}
-            {task.status !== "archived" ? <Link href={`/automations/new?edit=${encodeURIComponent(task.taskId)}`} className="block rounded-lg px-3 py-2 hover:bg-[#f1f5f1]">编辑任务</Link> : null}
-            {task.status !== "archived" ? <button type="button" className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[#f1f5f1]" onClick={() => onAction(task.status === "active" ? "pause" : "activate")}>{task.status === "active" ? "暂停执行" : "启用执行"}</button> : null}
-            {task.status !== "archived" ? <button type="button" className="block w-full rounded-lg px-3 py-2 text-left text-[#a04c42] hover:bg-[#fff5f3]" onClick={() => onAction("archive")}>归档任务</button> : null}
+            {isTerminal ? <Link href={`/automations/new?copy=${encodeURIComponent(task.taskId)}`} className="block rounded-lg px-3 py-2 hover:bg-[#f1f5f1]">复制为新建任务</Link> : null}
+            {!isTerminal ? <Link href={`/automations/new?edit=${encodeURIComponent(task.taskId)}`} className="block rounded-lg px-3 py-2 hover:bg-[#f1f5f1]">编辑任务</Link> : null}
+            {!isTerminal ? <button type="button" className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[#f1f5f1]" onClick={() => onAction(task.status === "active" ? "pause" : "activate")}>{task.status === "active" ? "暂停执行" : "启用执行"}</button> : null}
+            {!isTerminal ? <button type="button" className="block w-full rounded-lg px-3 py-2 text-left text-[#a04c42] hover:bg-[#fff5f3]" onClick={() => onAction("delete")}>删除任务</button> : null}
           </div>
         ) : null}
       </div>
@@ -1086,7 +1089,7 @@ function BatchBar({
   onExit,
 }: {
   count: number;
-  onAction: (action: "pause" | "activate" | "archive") => void;
+  onAction: (action: "pause" | "activate" | "delete") => void;
   onExit: () => void;
 }) {
   return (
@@ -1113,10 +1116,10 @@ function BatchBar({
       <button
         type="button"
         className="btn-secondary h-10 px-3 text-[#9a4d43]"
-        onClick={() => onAction("archive")}
+        onClick={() => onAction("delete")}
       >
-        <Archive size={14} />
-        归档
+        <Trash2 size={14} />
+        删除
       </button>
       <button type="button" className="btn-ghost h-10 px-2" onClick={onExit}>
         退出
@@ -1150,7 +1153,7 @@ function TaskEmpty({
       <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#eaf3eb] text-[#527a5d]">
         <Sparkles size={25} />
       </div>
-      <h3 className="mt-4 text-lg font-semibold">还没有自动化任务</h3>
+      <h3 className="mt-4 text-lg font-semibold">还没有定时任务</h3>
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[#78857b]">
         点击右上角“添加自动化”，配置触发时间与工作内容；需要处理文件时，可在任务说明下添加附件。
       </p>
@@ -1175,7 +1178,7 @@ function RunRow({ run }: { run: AutomationTaskRun }) {
         <span className={`h-2 w-2 shrink-0 rounded-full ${meta.dot}`} />
         <span className="min-w-0">
           <strong className="block truncate text-sm font-medium text-[#35443a]">
-            {run.taskName || "自动化任务"}
+            {run.taskName || "定时任务"}
           </strong>
           <span className="mt-0.5 block text-xs text-[#8a958c]">
             第 {run.attempt ?? 1} 次尝试 ·{" "}
@@ -1188,7 +1191,7 @@ function RunRow({ run }: { run: AutomationTaskRun }) {
         <p
           className={`truncate text-sm ${run.status === "failed" ? "text-[#a4544a]" : "text-[#657269]"}`}
         >
-          {run.errorMessage || run.resultSummary || "暂无摘要"}
+          {sanitizeRunSummary(run.errorMessage || run.resultSummary || "暂无摘要")}
         </p>
         <div className="mt-1 flex flex-wrap gap-1.5 text-[11px] text-[#829087]">
           {run.outputAssetId ? (
@@ -1689,8 +1692,27 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
     } else {
       const next = emptyEditor();
       if (template) applyTemplate(next, template);
-      setState(next);
-      setLoading(false);
+      if (!template) {
+        fetch("/api/preferences")
+          .then((response) => response.json() as Promise<{ ok?: boolean; data?: { defaultDeliveryMode?: "wechat" | "none" } }>)
+          .then((payload) => {
+            if (cancelled) return;
+            if (payload.ok && payload.data?.defaultDeliveryMode === "wechat") {
+              next.deliveryEnabled = true;
+              next.deliveryMode = "wechat_summary";
+            }
+            setState(next);
+            setLoading(false);
+          })
+          .catch(() => {
+            if (cancelled) return;
+            setState(next);
+            setLoading(false);
+          });
+      } else {
+        setState(next);
+        setLoading(false);
+      }
     }
     return () => {
       cancelled = true;
@@ -1830,14 +1852,14 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
             <div className="flex items-center gap-2 text-[#527a5d]">
               <Sparkles size={17} />
               <span className="text-sm font-medium">
-                {editing ? "编辑任务" : copying ? "复制为新建任务" : "新建自动化任务"}
+                {editing ? "编辑任务" : copying ? "复制为新建任务" : "新建定时任务"}
               </span>
             </div>
             <h2 className="mt-2 text-2xl font-semibold tracking-tight">
               {editing
-                ? state.name || "编辑自动化任务"
+                ? state.name || "编辑定时任务"
                 : copying
-                  ? state.name || "复制自动化任务"
+                  ? state.name || "复制定时任务"
                   : "让助手按时帮你做一件事"}
             </h2>
             <p className="mt-2 text-sm leading-6 text-[#77847a]">
@@ -2042,19 +2064,22 @@ function EditorView({ onError }: { onError: (message: string) => void }) {
           <FormSection
             number="03"
             title="结果投递"
-            hint="需要时，把执行结果摘要推送到已绑定的微信。"
+            hint="这里决定这个任务是否声明结果投递；全局设置只控制失败/恢复提醒。"
           >
             <label className="flex cursor-pointer items-start justify-between gap-4 rounded-xl border border-[#dce7dd] bg-[#f7fbf7] p-4">
               <span className="flex gap-3">
                 <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-[#527a5d]">
                   <Send size={16} />
                 </span>
-                <span>
+                  <span>
                   <span className="block text-sm font-medium">
                     执行结果推送到微信
                   </span>
                   <span className="mt-1 block text-xs leading-5 text-[#7b887e]">
                     开启后，任务完成时会把结果摘要发送到已绑定的微信。
+                  </span>
+                  <span className="mt-1 block text-[11px] leading-5 text-[#8a958c]">
+                    关闭设置页的提醒不会改变这里的任务配置，也不会删除网页端运行结果。
                   </span>
                 </span>
               </span>
@@ -2419,6 +2444,7 @@ function TaskDetailView({
     return <NotFoundState onBack={() => router.push("/automations")} />;
   const hasRunningRun = runs.some((run) => run.status === "running");
   const runDisabled = busy !== null || hasRunningRun;
+  const isTerminal = task.status === "archived" || task.status === "deleted";
   async function toggle() {
     setBusy("status");
     try {
@@ -2445,11 +2471,11 @@ function TaskDetailView({
       setBusy(null);
     }
   }
-  async function archive() {
-    if (!window.confirm("归档这个任务？归档后停止执行且不可恢复启用，历史记录会保留。")) return;
-    setBusy("archive");
+  async function remove() {
+    if (!window.confirm("删除这个任务？删除后不可恢复，历史运行记录会保留，可在任务列表筛选中勾选「显示已归档和已删除」查看。")) return;
+    setBusy("delete");
     try {
-      const next = await archiveAutomation(task!.taskId, task!.currentRevision);
+      const next = await deleteAutomation(task!.taskId, task!.currentRevision);
       setTask(next);
     } catch (cause) {
       onError(readError(cause));
@@ -2489,9 +2515,14 @@ function TaskDetailView({
                 此任务已归档，仅保留历史记录和产物，不能再次执行或修改；可复制为新建任务继续使用。
               </p>
             ) : null}
+            {task.status === "deleted" ? (
+              <p className="mt-3 text-xs text-[#8a958c]">
+                此任务已删除，仅保留历史记录和产物，不能再次执行或修改；可复制为新建任务继续使用。
+              </p>
+            ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
-            {task.status === "archived" ? (
+            {isTerminal ? (
               <Link
                 href={`/automations/new?copy=${encodeURIComponent(task.taskId)}`}
                 className="btn-primary"
@@ -2500,7 +2531,7 @@ function TaskDetailView({
                 复制为新建任务
               </Link>
             ) : null}
-            {task.status !== "archived" ? (
+            {!isTerminal ? (
               <Link
                 href={`/automations/new?edit=${encodeURIComponent(task.taskId)}`}
                 className="btn-secondary"
@@ -2508,15 +2539,15 @@ function TaskDetailView({
                 编辑
               </Link>
             ) : null}
-            {task.status !== "archived" ? (
+            {!isTerminal ? (
               <button
                 type="button"
                 className="btn-secondary"
-                onClick={() => void archive()}
+                onClick={() => void remove()}
                 disabled={busy !== null}
               >
-                <Archive size={16} />
-                归档
+                <Trash2 size={16} />
+                删除
               </button>
             ) : null}
             {task.status === "active" ? (
@@ -2533,7 +2564,7 @@ function TaskDetailView({
                 )}
                 暂停执行
               </button>
-            ) : task.status !== "archived" ? (
+            ) : !isTerminal ? (
               <button
                 type="button"
                 className="btn-primary"
@@ -2563,7 +2594,7 @@ function TaskDetailView({
                 {hasRunningRun ? "运行中" : "立即运行一次"}
               </button>
             ) : null}
-            {task.status !== "active" && task.status !== "archived" ? (
+            {task.status !== "active" && !isTerminal ? (
               <button
                 type="button"
                 className="btn-secondary"
@@ -2715,7 +2746,7 @@ function RunDetailViewAccurate({
               </span>
             </div>
             <h2 className="mt-3 text-xl font-semibold">
-              {run.taskName || task?.revision.name || "自动化任务"}
+              {run.taskName || task?.revision.name || "定时任务"}
             </h2>
             <p className="mt-1 text-xs text-[#8a958c]">运行编号 {run.runId}</p>
           </div>
@@ -2761,7 +2792,7 @@ function RunDetailViewAccurate({
             {run.status === "failed" ? "运行未完成" : "运行结果"}
           </p>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
-            {run.errorMessage || run.resultSummary || "暂无摘要"}
+            {sanitizeRunSummary(run.errorMessage || run.resultSummary || "暂无摘要")}
           </p>
         </div>
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -2976,6 +3007,12 @@ function statusMeta(status: AutomationTaskStatus) {
         bg: "#f0f1f0",
         text: "#68716b",
       },
+      deleted: {
+        label: "已删除",
+        dot: "#9ca49e",
+        bg: "#f0f1f0",
+        text: "#68716b",
+      },
     } as const
   )[status];
 }
@@ -3082,6 +3119,14 @@ function deliveryStatusLabel(status: AutomationTaskRun["deliveryStatus"]) {
       } as Record<string, string>
     )[status || "not_requested"] || "未投递"
   );
+}
+
+function sanitizeRunSummary(value: string): string {
+  return value
+    .replace(/本文件为修复本轮输出而重新生成于暂存目录。?/g, "本次结果文件已重新生成。")
+    .replace(/修复上一轮(?:的)?最终提交[^。]*。?/g, "本次结果已按校验要求重新整理。")
+    .replace(/暂存目录中的 automation-sheet\.mjs 仅供参考、无法执行。?/g, "")
+    .replace(/暂存目录/g, "结果文件目录");
 }
 function groupRunsByDate(runs: AutomationTaskRun[]) {
   const formatter = new Intl.DateTimeFormat("zh-CN", {

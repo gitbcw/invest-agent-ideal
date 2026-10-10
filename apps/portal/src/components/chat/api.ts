@@ -4,9 +4,7 @@ import type {
   ArtifactDescriptor,
   ArtifactEventName,
   ConversationCancelResult,
-  ConversationMessage,
-  WorkspaceFileGetResult,
-  WorkspaceFileListResult
+  ConversationMessage
 } from "@/lib/protocol";
 import type { ChatMessageView, ConversationListItem, TraceDetailView, WorkStepView } from "./types";
 import type { WorkbookPreviewData } from "@/lib/workbook-preview";
@@ -392,41 +390,6 @@ export async function saveArtifactToAssets(artifactId: string, name?: string): P
     if (!response.ok || !body.ok || !body.data) return { ok: false, error: body.error?.message || "保存文件失败" };
     return { ok: true, data: body.data };
   } catch { return { ok: false, error: "文件服务暂时不可用" }; }
-}
-
-export async function fetchWorkspaceFiles(): Promise<ApiOutcome<WorkspaceFileListResult>> {
-  const res = await fetch("/api/workspace/files", { credentials: "same-origin" });
-  const json = (await res.json()) as
-    | { ok: true; data: WorkspaceFileListResult }
-    | { ok: false; error: { code: string; message: string } };
-  if (json.ok) return { ok: true, data: json.data };
-  return { ok: false, code: json.error.code, message: json.error.message, status: res.status };
-}
-
-export async function fetchWorkspaceFile(relativePath: string): Promise<ArtifactFetchOutcome> {
-  const url = new URL("/api/workspace/files/content", window.location.origin);
-  url.searchParams.set("path", relativePath);
-  const res = await fetch(url, { credentials: "same-origin" });
-  const json = (await res.json()) as
-    | { ok: true; data: WorkspaceFileGetResult }
-    | { ok: false; error: { code: string; message: string } };
-  if (!json.ok) return { ok: false, code: json.error.code, message: json.error.message, status: res.status };
-  return {
-    ok: true,
-    payload: {
-      artifactId: json.data.fileId,
-      title: json.data.fileName,
-      fileName: json.data.fileName,
-      mimeType: json.data.mimeType,
-      sizeBytes: json.data.sizeBytes,
-      kind: "document",
-      previewMode: json.data.previewMode,
-      createdAt: json.data.updatedAt,
-      checksum: json.data.checksum,
-      sanitized: false,
-      base64: json.data.base64
-    }
-  };
 }
 
 export type LegacyPublishOutcome =

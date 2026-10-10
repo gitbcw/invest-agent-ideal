@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   fetchArtifact,
-  fetchWorkspaceFile,
   recordArtifactEvent,
   type ArtifactFetchOutcome,
   type ArtifactPayload
@@ -128,9 +127,7 @@ export function ArtifactViewer({ artifact, payload: initialPayload, embedded = f
       try {
         const outcome: ArtifactFetchOutcome = initialPayload
           ? { ok: true, payload: initialPayload }
-          : artifact.workspacePath
-            ? await fetchWorkspaceFile(artifact.workspacePath)
-            : await fetchArtifact(artifact.artifactId);
+          : await fetchArtifact(artifact.artifactId);
         if (cancelled) return;
         const next = await deriveLoadState(outcome, artifact);
         if (cancelled) {
@@ -143,7 +140,7 @@ export function ArtifactViewer({ artifact, payload: initialPayload, embedded = f
         // Only the "ready" terminal state counts as a client success event.
         // Failure states are already captured on the connector side when it
         // rejects the artifact read.
-        if (next.kind === "ready" && !artifact.workspacePath && !initialPayload) {
+        if (next.kind === "ready" && !initialPayload) {
           void recordArtifactEvent(artifact.artifactId, "success");
         }
       } catch (error) {
@@ -161,7 +158,7 @@ export function ArtifactViewer({ artifact, payload: initialPayload, embedded = f
     };
     // retryNonce lets the retry button trigger a fresh load without
     // unmounting the viewer.
-  }, [artifact.artifactId, artifact.previewMode, artifact.sizeBytes, artifact.workspacePath, initialPayload, releaseObjectUrl, retryNonce]);
+  }, [artifact.artifactId, artifact.previewMode, artifact.sizeBytes, initialPayload, releaseObjectUrl, retryNonce]);
 
   useEffect(() => {
     return () => releaseObjectUrl();
@@ -189,7 +186,7 @@ export function ArtifactViewer({ artifact, payload: initialPayload, embedded = f
       const verify = await sha256Hex(bytes);
       if (verify !== state.payload.checksum) {
         setState({ kind: "stale", reason: "checksum mismatch after download" });
-        if (!artifact.workspacePath) void recordArtifactEvent(artifact.artifactId, "failure", {
+        void recordArtifactEvent(artifact.artifactId, "failure", {
           status: "failure",
           reason: "checksum_mismatch_download"
         });
@@ -197,8 +194,8 @@ export function ArtifactViewer({ artifact, payload: initialPayload, embedded = f
       }
     }
     triggerBrowserDownload(bytes, state.payload.mimeType, state.payload.fileName || artifact.fileName);
-    if (!artifact.workspacePath) void recordArtifactEvent(artifact.artifactId, "download");
-  }, [artifact.artifactId, artifact.fileName, artifact.workspacePath, state]);
+    void recordArtifactEvent(artifact.artifactId, "download");
+  }, [artifact.artifactId, artifact.fileName, state]);
 
   const handleRetry = useCallback(() => {
     // In-place retry: clear object URLs and bump the effect's dependency

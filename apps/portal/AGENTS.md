@@ -9,12 +9,11 @@ Do not import runtime internals or turn Portal into a second investment runtime.
 ## Current Product Contract
 
 - Production must support fixed public IP plus HTTP at `http://118.145.115.197:22649`; no filed domain is available. Do not require HTTPS or secure-context-only APIs.
-- The right workspace rail is read-only. It uses `workspace.file.list/get` and exposes only Markdown, HTML and supported images.
+- The right rail is a document preview area: it only hosts multi-tab preview/download of conversation artifacts. The workspace file tree was removed (2026-10-08 用户裁决); there is no `workspace.file.list/get` surface anymore.
 - Images, including SVG, open in the full-screen lightbox. Markdown and safe HTML open in deduplicated right-rail tabs.
-- A conversation artifact reveals the tree only when it carries a verified `workspacePath`. Conversation-only files and images must not alter the tree state.
 - The web UI cannot edit, rename, move or delete workspace files. Users request file changes through the AI conversation.
 - Browser read-only access is not the AI filesystem boundary. Runtime write controls belong to `invest-agent-ideal`.
-- The right rail starts closed, remains resizable, and must preserve deliberate tree/tab state. Artifact-open state is a one-shot request, not persistent selected-file state.
+- The right rail starts closed, remains resizable, and must preserve open tabs across collapse/expand. Artifact-open state is a one-shot request, not persistent selected-file state.
 
 ## Engineering Rules
 

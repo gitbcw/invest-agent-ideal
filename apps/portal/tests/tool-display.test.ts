@@ -11,5 +11,5 @@ test("tool display names translate known market tools into user language", () =>
 
 test("tool display names hide unknown implementation identifiers", () => {
   assert.equal(toolDisplayName("some_internal_tool"), "执行分析步骤");
-  assert.equal(toolDisplayName("workspace.file.get"), "读取工作文件");
+  assert.equal(toolDisplayName("document.load"), "读取工作文件");
 });

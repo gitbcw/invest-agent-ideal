@@ -51,8 +51,6 @@ export interface ArtifactCardView {
   savedToMyFiles?: boolean;
   messageId: string;
   conversationId: string;
-  /** Present for read-only workspace browser entries instead of indexed artifacts. */
-  workspacePath?: string;
 }
 
 export interface ConversationListItem {
@@ -66,6 +64,8 @@ export interface ConversationListItem {
   pinnedAt?: string;
   archivedAt?: string;
   processing?: boolean;
+  /** 服务端活动轮（2026-10-09）：切页/重载后恢复「处理中」的权威来源。 */
+  turnActive?: boolean;
   labelId?: string;
   position?: number;
 }
@@ -207,11 +207,7 @@ export function normalizeArtifacts(
         checksum,
         savedToMyFiles: data.savedToMyFiles === true,
         messageId: msg.messageId,
-        conversationId: msg.conversationId,
-        // Newer runtime records may carry an explicit workspace-relative
-        // location. It lets the Portal reveal and focus the matching tree item
-        // instead of treating it as an unrelated conversation artifact.
-        workspacePath: typeof data.workspacePath === "string" ? data.workspacePath : undefined
+        conversationId: msg.conversationId
       }
     ];
   });

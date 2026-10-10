@@ -35,8 +35,6 @@ type ConnectorCapability =
   | "dashboard.snapshot"
   | "attachment.get"
   | "artifact.library.list" // historical mock/schema compatibility only
-  | "workspace.file.list"
-  | "workspace.file.get"
   | "automation.list"
   | "automation.get"
   | "automation.create"
@@ -111,56 +109,20 @@ interface ArtifactDescriptor {
   previewMode: "markdown" | "html" | "image" | "pdf" | "text" | "table" | "unsupported";
   createdAt: string;
   checksum?: string;
-  workspacePath?: string;
 }
 ```
-
-`workspacePath` is optional and workspace-relative. The runtime emits it only when the artifact is backed by a Portal-browsable Markdown, HTML or image file. It never contains an absolute server path.
 
 - Images, including SVG, open in the full-screen lightbox.
 - Markdown and safe HTML open in right-rail tabs.
-- A descriptor with `workspacePath` reveals and selects the matching workspace tree item.
-- A conversation-only descriptor leaves the workspace tree state unchanged.
-- Tabs deduplicate by `workspacePath`, falling back to `artifactId`.
+- Tabs deduplicate by `artifactId`.
 
 Artifact open commands are one-shot UI requests. Once the workspace consumes a request, the parent clears it; closing the last tab therefore cannot replay and reopen a stale artifact.
-
-## Workspace File List And Get
-
-`workspace.file.list` takes no browser-supplied path, glob, filter or scope. It returns a flat list that the Portal groups into a directory tree:
-
-```ts
-interface WorkspaceFileItem {
-  fileId: string;
-  relativePath: string;
-  fileName: string;
-  mimeType: string;
-  sizeBytes: number;
-  updatedAt: string;
-  previewMode: "markdown" | "html" | "image" | "pdf" | "text" | "table" | "unsupported";
-  downloadable: boolean;
-}
-
-interface WorkspaceFileListResult {
-  items: WorkspaceFileItem[];
-}
-```
-
-`workspace.file.get` accepts only a listed safe relative path and returns the same descriptor plus `base64` and `checksum`.
 
 ## Automation tasks
 
 The Portal exposes automation task management under authenticated `/api/automations/*` routes. Browser requests contain only task/run/asset ids and task fields; `userId`, `instanceId` and `projectId` are never accepted from the browser and are injected by the registered connector scope. The Portal forwards the following connector commands: `automation.list`, `automation.get`, `automation.create`, `automation.update`, `automation.activate`, `automation.pause`, `automation.run_now`, `automation.runs.list`, `automation.run.get`, `automation.asset.get` and `automation.continue_in_chat`.
 
 The `/automations` page is reachable from the Chat sidebar. It supports CSV/XLSX upload, immutable revision edits, pause/activate, real run-now navigation to the returned conversation, run history/details, task asset downloads and explicit continue-in-chat navigation. Responses redact connector scope columns before reaching browser code.
-
-Runtime enforcement:
-
-- Allow only Markdown, HTML and supported image extensions for the current Portal tree.
-- Reject absolute paths, empty/dot segments, traversal, symlinks and realpath escapes.
-- Exclude credentials, `.env*`, SQLite, logs, `.git`, `.state`, `.trash`, `node_modules`, build/cache/temp directories and other runtime internals.
-- Never return an absolute path or a workspace root.
-- Enforce file count and file size limits before returning bytes.
 
 Portal enforcement:
 
@@ -176,16 +138,10 @@ User uploads are addressed only by opaque `attachmentId`. `attachment.get` retur
 
 ## Errors
 
-Protocol errors are returned in the standard envelope with `code`, user-safe `message`, `retryable` and optional safe details. Workspace-specific codes include:
-
-- `WORKSPACE_FILE_INVALID_PATH` -> HTTP 400
-- `WORKSPACE_FILE_NOT_FOUND` -> HTTP 404
-- `WORKSPACE_FILE_FORBIDDEN` -> HTTP 403
-- `WORKSPACE_FILE_TOO_LARGE` -> HTTP 413
-- `WORKSPACE_FILE_LIMIT_EXCEEDED` -> HTTP 413
+Protocol errors are returned in the standard envelope with `code`, user-safe `message`, `retryable` and optional safe details.
 
 Error details must never reveal absolute paths, tokens, secrets or another user's identifiers.
 
 ## Versioning
 
-Breaking envelope or command-shape changes require a new protocol version. Additive optional fields such as `workspacePath` remain backward compatible: older clients ignore them, and current clients accept their absence.
+Breaking envelope or command-shape changes require a new protocol version. Additive optional fields remain backward compatible: older clients ignore them, and current clients accept their absence.

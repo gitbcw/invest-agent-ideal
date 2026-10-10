@@ -105,14 +105,18 @@ export async function GET(request: Request, { params }: Params) {
       assistantId: session.assistantId,
       instanceId: session.instanceId
     });
+    // turnActive（运行时活动轮）是中段权威信号；mirror pending 启发式只在
+    // 同步前短暂为 true，二者取或，1s 轮询才不会误清「处理中」。
+    const turnActive = sync.turnActive === true;
     return ok({
       conversationId: params.id,
       title: refreshedConversation.title_override || refreshedConversation.title,
       messages: messages.items.map(mapMessageRow),
       nextCursor: messages.nextCursor,
       nextBeforeCursor: messages.nextBeforeCursor,
-      processing: processingStartedAt !== null,
-      processingStartedAt
+      processing: turnActive || processingStartedAt !== null,
+      processingStartedAt,
+      turnActive
     });
   } catch (error) {
     if (error instanceof InvalidConversationMessageCursorError) {
