@@ -36,18 +36,28 @@ const fixture = (async () => {
   db.initDb();
   db.sqlite.prepare("INSERT INTO settings (key, value) VALUES ('agent_space.owner_admin_token', ?)").run(OWNER_TOKEN);
   const { registerTestProject } = await import("./helpers/mastra-project.js");
-  await registerTestProject(scope);
+  const projectRoot = await registerTestProject(scope);
   return {
     db,
     space: await import("../src/services/agent-space/index.js"),
     automation: await import("../src/services/automation-tasks.js"),
     runner: await import("../src/services/generic-automation-runner.js"),
     userAssets: await import("../src/services/user-assets.js"),
+    projectRoot,
   };
 })();
 
 test("W7 前置：装配模式下 generic automation 上游端到端——固定方法注入真实模型上下文", async (t) => {
-  const { db, space, automation, runner, userAssets } = await fixture;
+  const { db, space, automation, runner, userAssets, projectRoot } = await fixture;
+
+  // 2026-10-08 裁决反例：装配模式下技能可见性只走注册表，workspace skills/
+  // 目录文件不得到达模型（绕过注册表直接落盘的 SKILL.md 即此通道）。
+  const leakSkillDir = path.join(projectRoot, "skills", "w7-leak-skill");
+  mkdirSync(leakSkillDir, { recursive: true });
+  writeFileSync(
+    path.join(leakSkillDir, "SKILL.md"),
+    "---\nname: w7-leak-skill\ndescription: W7_LEAK_SKILL_MARKER 绕过注册表的文件通道技能\n---\n# W7_LEAK_SKILL_MARKER\n",
+  );
 
   // 方法：真实字节资产 → draft → owner 授权 approve+adopt。
   const asset = await userAssets.createUserAsset({ ...scope, name: "w7-method", fileName: "w7-method.md", bytes: METHOD_BODY, source: "upload" });
@@ -152,7 +162,10 @@ test("W7 前置：装配模式下 generic automation 上游端到端——固定
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n");
   assert.match(system, /Agent Space 装配（generic_automation）/, "system 必须含装配段");
   assert.ok(system.includes("E2E_METHOD_MARKER_V1"), "system 必须注入固定版本方法正文");
-  assert.ok(!system.includes(root), "system 不得携带本地 workspace 路径");
+  // 装配轮有意挂载 scoped 项目根（文件交付契约，2026-10-07 裁决），Mastra 会把
+  // 该项目根作为工作目录注入 system；这里的守卫收窄为 legacy workspace 根不得泄漏。
+  assert.ok(!system.includes(path.join(root, "workspaces")), "system 不得携带 legacy workspace 路径");
+  assert.ok(!system.includes("W7_LEAK_SKILL_MARKER"), "装配模式下 workspace skills/ 目录技能不得出现在模型上下文");
 
   // 对照：未注册依赖的任务得到显式空集（skipped 可查），不落静默旧路径。
   const resultB = await runner.runGenericAutomationTaskNow({ scope, taskId: taskB.taskId, origin: "manual", idempotencyKey: "w7-e2e-b-1" });

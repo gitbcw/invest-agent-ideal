@@ -13,6 +13,7 @@ import {
   type MastraAgentLike,
   type MastraBindings,
 } from "../src/mastra/index.js";
+import { isLikelyInternalAgentDraft } from "../src/lib/customer-output.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -531,4 +532,26 @@ test("timeout mid-stream still carries first-token and tool-call evidence (glm 2
   // 2026-08-27 修复：首字时间（思考流即可见）也必须挂上。
   assert.equal(typeof error.firstTokenMs, "number");
   assert.ok((error.firstTokenMs as number) < 400);
+});
+
+test("timeout after visible text preserves a bounded partial result", async () => {
+  const never = new Promise<never>(() => {});
+  async function* fakeFullStream() {
+    yield { type: "text-delta", text: "已确认：当前标的维持观察。" };
+    await never;
+  }
+  const agent: MastraAgentLike = { stream: () => ({ fullStream: fakeFullStream() }) };
+  const error = await runMastraTurn(
+    { conversationId: "timeout-partial-text", text: "test", timeoutMs: 400 },
+    { agent },
+  ).then(() => null, (e: unknown) => e);
+  assert.ok(error instanceof MastraTurnTimeoutError, `expected timeout error, got ${String(error)}`);
+  assert.equal(error.partialText, "已确认：当前标的维持观察。");
+});
+
+test("internal tool-planning partial text is not customer-facing", () => {
+  assert.equal(isLikelyInternalAgentDraft(
+    "Need to actually execute: use svc_catalog to find simulation tools. The draft was confirmed.",
+  ), true);
+  assert.equal(isLikelyInternalAgentDraft("已确认：当前标的维持观察。"), false);
 });

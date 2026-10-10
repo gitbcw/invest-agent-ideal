@@ -78,7 +78,7 @@ test("自动化 run（runId）载荷落库，交互会话（无 runId）不落",
     taskId: "at_t459-task",
     userId: "t459-user", projectId: "invest-agent", instanceId: "t459-instance",
     conversationId: "automation-run:atrun_t459-run-1", channel: "automation",
-    userText: "执行一个受控的通用自动化任务。",
+    userText: "执行一个受控的通用定时任务。",
     mode: "automation", status: "success",
     toolCalls: [{ toolCallId: "tc-1", inputChars: 20, outputChars: 30 }],
     toolPayloads: [

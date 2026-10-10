@@ -17,18 +17,20 @@ const REGISTERED_TOOLS = [
   "assets.list", "assets.version.read",
   "assets.version.commit", "assets.working_copy.read", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete",
   "automation.list", "automation.get", "automation.create", "automation.update",
-  "automation.activate", "automation.pause",
+  "automation.activate", "automation.pause", "automation.delete",
   "portfolio.read", "watchlist.read", "plans.read", "conversation.history",
   "confirmations.pending", "watch_rules.catalog", "watch_rules.list",
   "watch_rules.validate", "watch_rules.dry_run",
   "reviews.save",
-  "portfolio.apply_changes", "watchlist.add", "plans.set", "plans.watch_conditions",
+  "portfolio.apply_changes", "watchlist.add", "watchlist.add_many", "plans.set", "plans.watch_conditions",
   "method_changes.propose", "method_changes.apply", "preferences.apply", "watch_rules.create",
   "confirmations.request", "artifacts.publish", "spreadsheet.create", "spreadsheet.transform",
   "onboarding.confirm_portfolio",
   "onboarding.draft.get", "onboarding.draft.upsert_step", "onboarding.draft.request_confirmation",
   "state.candidate.propose", "state.candidate.revise",
   "skill.create",
+  "skill.list", "skill.install", "skill.set_enabled", "skill.uninstall", "skill.edit",
+  "strategy.list", "strategy.create", "strategy.read", "strategy.edit", "strategy.set_primary",
 ];
 
 // ─── 分类表完整性 ──────────────────────────────────────────────

@@ -101,15 +101,16 @@ test("recordAgentTrace prices usage at write time with costSource envelope (E10 
       agentBackend: "mastra",
       agentModel: "gpt-5.6-terra",
       status: "success",
-      usage: { source: "actual", inputTokens: 500_000, outputTokens: 100_000, thoughtTokens: 50_000, cachedReadTokens: 1_000_000, totalTokens: 1_650_000 },
+      usage: { source: "actual", inputTokens: 500_000, outputTokens: 100_000, thoughtTokens: 50_000, cachedReadTokens: 200_000, totalTokens: 600_000 },
     });
 
     const row = sqlite.prepare("SELECT cost_amount AS cost, cost_currency AS currency, usage_raw AS raw FROM agent_traces WHERE conversation_id='conv-cost'").get() as { cost: number; currency: string; raw: string };
-    // terra: 0.5M*1.0 + 0.1M*6.0 + 0.05M*6.0 + 1M*0.1 = 0.5 + 0.6 + 0.3 + 0.1
-    assert.equal(row.cost, 1.5);
+    // SDK totals include cache and reasoning: 0.3M*1 + 0.2M*0.1 + 0.1M*6.
+    assert.equal(row.cost, 0.92);
     assert.equal(row.currency, "CNY");
     const envelope = JSON.parse(row.raw) as { costSource: string };
     assert.equal(envelope.costSource, "priced");
+    assert.equal(JSON.parse(row.raw).tokenAccounting, "inclusive-v1");
 
     // Gateway-reported cost passthrough wins and is marked as such.
     await recordAgentTrace({

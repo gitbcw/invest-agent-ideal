@@ -43,7 +43,14 @@ test("interactive core service tool list stays in sync with TOOL_SPECS (parity g
   }
 });
 
+// 2026-10-08 镜像定性：技能主路径埋进目录后模型改走 workspace 写文件——
+// create/install/list/edit 必须常驻，这是产品主路径契约，不随清单瘦身回退。
+const SKILL_LIFECYCLE_CORE_TOOLS = ["skill.list", "skill.create", "skill.install", "skill.edit"];
+
 test("service track keeps core tools and exposes catalog + dispatch shell", async () => {
+  for (const name of SKILL_LIFECYCLE_CORE_TOOLS) {
+    assert.ok(INTERACTIVE_CORE_SERVICE_TOOLS.includes(name), `skill lifecycle tool must stay in core set: ${name}`);
+  }
   const full: Record<string, unknown> = {};
   const spies = new Map<string, Array<Record<string, unknown>>>();
   for (const spec of TOOL_SPECS) {
@@ -91,7 +98,15 @@ test("external track keeps mdt top5 and routes long tail through the shell", asy
     full[name] = tool;
     spies.set(name, calls);
   }
-  const observed = { "market-data-tool": full, "qsse-qlib": { quant_screen: fakeTool("quant_screen", "量化选股。", ["expr"]).tool } };
+  const observed = {
+    "market-data-tool": full,
+    "qsse-qlib": {
+      quant_capabilities: fakeTool("quant_capabilities", "返回选股系统的能力清单与数据状态。").tool,
+      quant_validate_expression: fakeTool("quant_validate_expression", "校验表达式。", ["expr"]).tool,
+      quant_screen_stocks: fakeTool("quant_screen_stocks", "量化选股。", ["expr"]).tool,
+      quant_backtest: fakeTool("quant_backtest", "信号回测。", ["expr"]).tool,
+    },
+  };
   const result = await applyInteractiveExternalToolDiscovery(observed, fakeBindings);
 
   const mdt = result["market-data-tool"] as Record<string, unknown>;
@@ -104,7 +119,7 @@ test("external track keeps mdt top5 and routes long tail through the shell", asy
   assert.ok(catalog.includes("get_board_fundflow_rank"));
 
   const qsseCatalog = await ((result["qsse-qlib"] as Record<string, unknown>)["qsse.catalog"] as { execute: () => Promise<string> }).execute();
-  assert.ok(qsseCatalog.includes("quant_screen"), "qsse tools appear in their own server catalog");
+  assert.ok(!qsseCatalog.includes("quant_backtest"), "resident tools are not repeated in the qsse catalog");
 
   // 壳 delegate + serverId 前缀归一化（模型可能学到 market-data-tool__name 展平名）。
   const shell = mdt["mdt.call"] as { execute: (i: Record<string, unknown>) => Promise<unknown> };
@@ -115,9 +130,11 @@ test("external track keeps mdt top5 and routes long tail through the shell", asy
   const unknown = await shell.execute({ name: "quant_screen" }) as { error: string };
   assert.equal(unknown.error, "TOOL_NOT_IN_CATALOG", "cross-server name must not resolve in mdt shell");
 
-  // qsse：全走目录，无核心常驻。
+  // qsse：4 工具全常驻（2026-10-09 owner 裁决，量化链主路径直达）。
   const qsse = result["qsse-qlib"] as Record<string, unknown>;
-  assert.equal(Object.keys(qsceKeysWithoutDiscoveryTools(qsse)).length, 0, "qsse has no resident core tools");
+  for (const name of ["quant_capabilities", "quant_validate_expression", "quant_screen_stocks", "quant_backtest"]) {
+    assert.ok(qsse[name], `${name} must stay resident`);
+  }
   assert.ok(qsse["qsse.catalog"]);
   assert.ok(qsse["qsse.call"]);
 });
@@ -140,10 +157,6 @@ test("catalog shell inputSchema must serialize to a JSON Schema with type object
   assert.equal(z.toJSONSchema(mdt["mdt.catalog"].inputSchema).type, "object", "mdt.catalog inputSchema must serialize with type object");
   assert.equal(z.toJSONSchema(mdt["mdt.call"].inputSchema).type, "object", "mdt.call inputSchema must serialize with type object");
 });
-
-function qsceKeysWithoutDiscoveryTools(qsse: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(qsse).filter(([k]) => !k.includes(".")));
-}
 
 test("discovery switch defaults on and honours INTERACTIVE_TOOL_DISCOVERY=off", () => {
   assert.equal(interactiveToolDiscoveryEnabled({}), true);

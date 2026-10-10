@@ -83,9 +83,13 @@ test("Mastra backend reads scoped portfolio projections and daily records withou
   }
 });
 
-test("Portal health makes asset capabilities primary while retaining workspace compatibility", async () => {
+test("Portal health advertises the asset contract as the primary file surface", async () => {
   const { PORTAL_HEALTH_CAPABILITIES } = await import("../src/routes/portal.js");
-  assert.ok(PORTAL_HEALTH_CAPABILITIES.indexOf("asset.list") < PORTAL_HEALTH_CAPABILITIES.indexOf("workspace.file.list"));
-  assert.ok(PORTAL_HEALTH_CAPABILITIES.includes("asset.get"));
-  assert.ok(PORTAL_HEALTH_CAPABILITIES.includes("workspace.file.get"));
+  const capabilities: readonly string[] = PORTAL_HEALTH_CAPABILITIES;
+  assert.ok(capabilities.includes("asset.list"));
+  assert.ok(capabilities.includes("asset.get"));
+  // The workspace file tree commands were removed with the Portal right-rail
+  // tree (2026-10-08 用户裁决); health must no longer advertise them.
+  assert.ok(!capabilities.includes("workspace.file.list"));
+  assert.ok(!capabilities.includes("workspace.file.get"));
 });

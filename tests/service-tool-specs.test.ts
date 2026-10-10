@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { ALL_SERVICE_TOOL_SPECS } from "../src/mastra/tools/tool-specs.js";
 import { TOOL_SPECS as MASTRA_TOOL_SPECS } from "../src/mastra/tools/registry.js";
+import { createInProcessToolset } from "../src/mastra/tools/index.js";
 
 const MCP_EXCLUDED_TOOLS = new Set(["spreadsheet.create", "spreadsheet.transform"]);
 
@@ -57,11 +58,30 @@ test("automation schedule and list filters agree on the monthly frequency (8-31 
 
 test("write tools are not marked readOnly", () => {
   const writeTools = ALL_SERVICE_TOOL_SPECS.filter((spec) =>
-    spec.annotations?.readOnlyHint === false || /^(watch_rules\.create|assets\.(rename|archive|delete)|automation\.(create|update|activate|pause)|assets\.version\.commit)/.test(spec.id)
+    spec.annotations?.readOnlyHint === false || /^(watch_rules\.create|assets\.(rename|archive|delete)|automation\.(create|update|activate|pause|delete)|assets\.version\.commit)/.test(spec.id)
   );
   assert.ok(writeTools.length >= 10, "expected the usual write tool set");
   for (const spec of writeTools) {
     assert.equal(spec.annotations?.readOnlyHint ?? true, false, `${spec.id} is a write tool and must not claim readOnlyHint`);
+  }
+});
+
+test("method_changes.apply accepts the minimal confirmed-draft invocation", () => {
+  const spec = ALL_SERVICE_TOOL_SPECS.find((item) => item.id === "method_changes.apply");
+  assert.ok(spec);
+  const strategyPatch = spec.inputSchema.strategyPatch as { isOptional?: () => boolean } | undefined;
+  assert.equal(strategyPatch?.isOptional?.(), true, "confirmed draft execution must not force the model to rebuild strategyPatch");
+});
+
+test("Agent-facing service tool descriptions are Chinese for the confirmation and simulation paths", () => {
+  const tools = createInProcessToolset({
+    specs: MASTRA_TOOL_SPECS,
+    context: { userId: "test", instanceId: "test-instance", projectId: "invest-agent", channel: "web" },
+  });
+  for (const id of ["confirmations.request", "method_changes.propose", "method_changes.apply"]) {
+    const description = tools.find((tool) => tool.id === id)?.description ?? "";
+    assert.match(description, /[\u4e00-\u9fff]/, `${id} must have a Chinese Agent-facing description`);
+    assert.doesNotMatch(description, /^(After|Read|Create|Use|Publish|Read-only)\b/i, `${id} must not start with English prose`);
   }
 });
 

@@ -25,7 +25,7 @@ const fixture = (async () => {
   const { registerTestProject } = await import("./helpers/mastra-project.js");
   await registerTestProject({ userId: "mcp-direct-automation-a", projectId: "invest-agent", instanceId: "mcp-direct-automation-instance-a" });
   await registerTestProject({ userId: "mcp-direct-automation-b", projectId: "invest-agent", instanceId: "mcp-direct-automation-instance-b" });
-  return { tools, automation, assets, classification };
+  return { tools, automation, assets, classification, db };
 })();
 
 const scopeA = {
@@ -44,6 +44,23 @@ function schedule() {
   return { frequency: "daily", time: "07:30", timezone: "Asia/Shanghai" };
 }
 
+function seedConversation(db: any, scope: typeof scopeA) {
+  const now = new Date().toISOString();
+  db.sqlite.prepare(`
+    INSERT OR IGNORE INTO conversation_sessions
+      (conversation_id, user_id, project_id, instance_id, assistant_id, channel, title, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'web', 'Automation MCP delete contract', ?, ?)
+  `).run(scope.conversationId, scope.userId, scope.projectId, scope.instanceId, scope.instanceId, now, now);
+}
+
+function addUserConfirmation(db: any, scope: typeof scopeA, messageId: string, content: string) {
+  db.sqlite.prepare(`
+    INSERT INTO conversation_messages
+      (message_id, conversation_id, user_id, project_id, instance_id, assistant_id, channel, role, content, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'web', 'user', ?, ?)
+  `).run(messageId, scope.conversationId, scope.userId, scope.projectId, scope.instanceId, scope.instanceId, content, new Date(Date.now() + 1_000).toISOString());
+}
+
 function createPayload(taskId: string, extra: Record<string, unknown> = {}) {
   return {
     taskId,
@@ -58,6 +75,7 @@ function createPayload(taskId: string, extra: Record<string, unknown> = {}) {
 test("direct automation MCP tools are classified and dispatchable", async () => {
   const { tools, classification } = await fixture;
   assert.equal(classification.classifyServiceTool("automation.create"), "other-write");
+  assert.equal(classification.classifyServiceTool("automation.delete"), "other-write");
   assert.equal(classification.classifyServiceTool("automation.list"), "read");
   const result = await tools.callServiceTool("automation.list", {}, scopeA) as { ok: boolean; items: unknown[] };
   assert.equal(result.ok, true);
@@ -119,4 +137,73 @@ test("updating an active task keeps it active, while pause is explicit", async (
     status: "paused",
   }, scopeA) as any;
   assert.equal(explicitlyPaused.task.status, "paused");
+});
+
+test("automation.delete requires an explicit user confirmation", async () => {
+  const { tools, automation } = await fixture;
+  const created = await tools.callServiceTool("automation.create", createPayload("mcp-direct-delete-guard"), scopeA) as any;
+  assert.equal(created.ok, true);
+  await assert.rejects(
+    () => tools.callServiceTool("automation.delete", { taskId: created.task.taskId }, scopeA),
+    /confirmedByUser|confirmationId/i,
+  );
+  assert.equal((await automation.getAutomationTask({ ...scopeA, taskId: created.task.taskId }))?.status, "active");
+});
+
+test("confirmed automation.delete soft-deletes the task and hides it from the default list", async () => {
+  const { db, tools, automation } = await fixture;
+  seedConversation(db, scopeA);
+  const created = await tools.callServiceTool("automation.create", createPayload("mcp-direct-delete-flow"), scopeA) as any;
+  assert.equal(created.ok, true);
+
+  const requested = await tools.callServiceTool("confirmations.request", {
+    operation: "automation.delete",
+    payload: { taskId: created.task.taskId },
+  }, scopeA) as any;
+  assert.equal(requested.ok, true);
+  assert.ok(requested.confirmationId);
+
+  addUserConfirmation(db, scopeA, "mcp-automation-delete-confirmation", "确认删除");
+  const deleted = await tools.callServiceTool("automation.delete", {
+    taskId: created.task.taskId,
+    confirmationId: requested.confirmationId,
+    confirmedByUser: true,
+  }, scopeA) as any;
+  assert.equal(deleted.ok, true);
+  assert.equal(deleted.task.status, "deleted");
+
+  const audits = await automation.listAutomationTaskAuditLogs({ ...scopeA, taskId: created.task.taskId });
+  assert.ok(audits.some((audit) => audit.action === "task.deleted"));
+
+  const listed = await tools.callServiceTool("automation.list", {}, scopeA) as any;
+  assert.ok(listed.items.every((item: any) => item.taskId !== created.task.taskId));
+  const withDeleted = await tools.callServiceTool("automation.list", { statuses: ["deleted"] }, scopeA) as any;
+  assert.ok(withDeleted.items.some((item: any) => item.taskId === created.task.taskId && item.status === "deleted"));
+
+  // 终态与幂等：重复删除返回同一 deleted 记录，已删任务不能再被更新或启用。
+  const again = await automation.deleteAutomationTask({ ...scopeA, taskId: created.task.taskId });
+  assert.equal(again.status, "deleted");
+  await assert.rejects(
+    () => automation.pauseAutomationTask({ ...scopeA, taskId: created.task.taskId }),
+    (error: unknown) => (error as { code?: string }).code === "AUTOMATION_TASK_DELETED",
+  );
+});
+
+test("automation.delete is rejected across service scopes", async () => {
+  const { tools, automation } = await fixture;
+  const created = await tools.callServiceTool("automation.create", createPayload("mcp-direct-delete-scope"), scopeB) as any;
+  assert.equal(created.ok, true);
+  // 登记入口的业务校验先拦：跨 scope 的 taskId 在 scopeA 不可执行。
+  await assert.rejects(
+    () => tools.callServiceTool("confirmations.request", {
+      operation: "automation.delete",
+      payload: { taskId: created.task.taskId },
+    }, scopeA),
+    /确认草案不可执行/,
+  );
+  await assert.rejects(
+    () => automation.deleteAutomationTask({ ...scopeA, taskId: created.task.taskId }),
+    (error: unknown) => (error as { code?: string }).code === "AUTOMATION_SCOPE_MISMATCH",
+  );
+  assert.equal((await automation.getAutomationTask({ ...scopeB, taskId: created.task.taskId }))?.status, "active");
 });

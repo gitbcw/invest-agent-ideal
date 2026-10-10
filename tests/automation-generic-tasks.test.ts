@@ -288,6 +288,17 @@ test("batch lifecycle actions are scope-bound, revision-aware, and partially suc
   assert.equal(audits.some((audit) => audit.details.correlationId === result.correlationId), true);
   const conflictAudits = await automation.listAutomationTaskAuditLogs({ ...scope, taskId: conflictTask.taskId });
   assert.equal(conflictAudits.some((audit) => audit.status === "failed" && audit.details.correlationId === result.correlationId), true);
+  const deleted = await automation.batchAutomationTaskAction({
+    ...scope,
+    action: "delete",
+    items: [{ taskId: successfulTask.taskId, expectedRevision: successfulTask.currentRevision }],
+    idempotencyKey: "generic-batch-delete-1",
+  });
+  const deletedItem = deleted.results[0];
+  assert.equal(deletedItem?.ok, true);
+  if (deletedItem?.ok) assert.equal(deletedItem.task.status, "deleted");
+  const deletedAudits = await automation.listAutomationTaskAuditLogs({ ...scope, taskId: successfulTask.taskId });
+  assert.equal(deletedAudits.some((audit) => audit.action === "task.deleted"), true);
 });
 
 test("generic runner commits one Markdown version and keeps run output references", async () => {
@@ -992,6 +1003,19 @@ test("typed review runs require a service-published artifact for the exact sched
     },
   });
   assert.equal(published.run.status, "succeeded");
+
+  // 报告产出默认归组（2026-10-08）：周/月复盘 system 资产进「报告」文件夹。
+  const userAssets = await import("../src/services/user-assets.js");
+  const db = await import("../src/db/index.js").then((m) => (m.default ?? m));
+  const artifactRow = db.sqlite.prepare(
+    "SELECT asset_id AS assetId FROM conversation_artifacts WHERE user_id=? AND instance_id=? AND relative_path=? AND deleted_at IS NULL LIMIT 1",
+  ).get(scope.userId, scope.instanceId, "reports/weekly/2026-08-22_weekly.md") as { assetId?: string } | undefined;
+  assert.ok(artifactRow?.assetId, "周复盘工件已绑定资产");
+  const reviewAsset = await userAssets.getUserAsset({ ...scope, assetId: artifactRow!.assetId! });
+  const folders = await userAssets.listUserAssetFolders(scope);
+  const reportFolder = folders.find((f) => f.name === userAssets.DEFAULT_REPORT_FOLDER_NAME && !f.parentFolderId);
+  assert.ok(reportFolder, "「报告」文件夹已自动创建");
+  assert.equal(reviewAsset.folderId, reportFolder!.folderId, "复盘资产已归入「报告」文件夹");
 });
 
 test("generic latest update uses the head read at run start and advances it once", async () => {

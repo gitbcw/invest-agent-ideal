@@ -31,6 +31,7 @@ interface NotifyJobRow {
   origin_task_key: string | null;
   origin_run_id: string | null;
   expires_at: string | null;
+  next_retry_at: string;
   created_at: string;
   message: string;
   user_id: string;
@@ -39,7 +40,7 @@ interface NotifyJobRow {
 function notifyJobs(taskId?: string): NotifyJobRow[] {
   const { db } = requireFixtureSync();
   const rows = db.sqlite.prepare(`
-    SELECT id, message_kind, idempotency_key, source, origin_task_key, origin_run_id, expires_at, created_at, message, user_id
+    SELECT id, message_kind, idempotency_key, source, origin_task_key, origin_run_id, expires_at, next_retry_at, created_at, message, user_id
     FROM push_jobs
     WHERE message_kind IN ('automation_failure', 'automation_recovery')
     ORDER BY created_at ASC, id ASC
@@ -115,6 +116,34 @@ test("first scheduled failure enqueues exactly one automation_failure job with t
   `).get(result.run.runId) as { action: string; status: string } | undefined;
   assert.ok(audit, "failure notify audit row must exist");
   assert.equal(audit.status, "sent");
+});
+
+test("new generic tasks inherit the user default delivery only when delivery is omitted", async () => {
+  const { automation, attention } = await fixture;
+  attention.updateNotificationPreferences(baseScope, { defaultDeliveryMode: "wechat" });
+
+  const inherited = await automation.createAutomationTask({
+    ...baseScope,
+    taskId: "notify-default-wechat",
+    name: "默认微信投递",
+    instruction: "使用默认投递设置。",
+    schedule: { frequency: "daily" as const, time: "09:00", timezone: "Asia/Shanghai" },
+    output: { mode: "none" },
+  });
+  assert.equal(inherited.revision.delivery.mode, "wechat_summary");
+
+  const explicitNone = await automation.createAutomationTask({
+    ...baseScope,
+    taskId: "notify-explicit-none",
+    name: "显式不推送",
+    instruction: "显式关闭投递。",
+    schedule: { frequency: "daily" as const, time: "09:05", timezone: "Asia/Shanghai" },
+    output: { mode: "none" },
+    delivery: { mode: "none" },
+  });
+  assert.equal(explicitNone.revision.delivery.mode, "none");
+
+  attention.updateNotificationPreferences(baseScope, { defaultDeliveryMode: "none" });
 });
 
 test("second consecutive failure stays aggregated (no new job); recovery default-silent (T-539) with attention resolved", async () => {
@@ -322,4 +351,56 @@ test("T-539: attention items are scope-isolated", async () => {
   const otherScope = { userId: "notify-other", projectId: "invest-agent", instanceId: "notify-other-instance" };
   assert.equal(attention.listAttentionItems(otherScope, { status: "open" }).length, 0);
   assert.equal(attention.countOpenAttention(baseScope) >= 1, true);
+});
+
+test("T-565: notification categories gate only the matching reminder projection", async () => {
+  const { attention } = await fixture;
+  const task = await createScheduledTask("notify-category-gate");
+  attention.updateNotificationPreferences(baseScope, { categories: ["recovery"] });
+  await failRun(task.taskId, "category-fail-1");
+  assert.equal(notifyJobs(task.taskId).length, 0, "failure category disabled: no WeChat reminder");
+  assert.equal((await attentionItemsFor(task.taskId, "open")).length, 1, "failure fact remains on the Portal side");
+  attention.updateNotificationPreferences(baseScope, { categories: null });
+});
+
+test("T-565: quiet hours delay the reminder job without changing the failure fact", async () => {
+  const { attention } = await fixture;
+  const task = await createScheduledTask("notify-quiet-hours");
+  attention.updateNotificationPreferences(baseScope, { quietHoursStart: "00:00", quietHoursEnd: "23:59" });
+  await failRun(task.taskId, "quiet-fail-1");
+  const job = notifyJobs(task.taskId)[0];
+  assert.ok(job, "failure reminder job exists during quiet hours");
+  assert.ok(Date.parse(job.next_retry_at) > Date.now(), "job is deferred until quiet hours end");
+  assert.equal((await attentionItemsFor(task.taskId, "open")).length, 1, "failure fact remains open");
+  attention.updateNotificationPreferences(baseScope, { quietHoursStart: null, quietHoursEnd: null });
+});
+
+test("T-539: user manually closes an open attention item (discard, idempotent, scope-isolated)", async () => {
+  const { attention } = await fixture;
+  const task = await createScheduledTask("notify-manual-close");
+  await failRun(task.taskId, "nmc-f1");
+  const items = await attentionItemsFor(task.taskId, "open");
+  assert.equal(items.length, 1);
+  const itemId = items[0]!.item_id;
+
+  const otherScope = { userId: "notify-other", projectId: "invest-agent", instanceId: "notify-other-instance" };
+  // 跨 scope 删除按未找到处理：行保留给原 scope（丢弃语义下幂等返回成功，但绝不删别人的行）
+  const otherResult = attention.closeAttentionItem(otherScope, itemId);
+  assert.deepEqual(otherResult, { discarded: true });
+  assert.equal((await attentionItemsFor(task.taskId, "open")).length, 1, "跨 scope 调用不得删除原 scope 的行");
+
+  assert.deepEqual(attention.closeAttentionItem(baseScope, itemId), { discarded: true });
+  assert.equal((await attentionItemsFor(task.taskId, "open")).length, 0, "关闭后 open 列表移除");
+  assert.equal((await attentionItemsFor(task.taskId, "resolved")).length, 0, "手动关闭的行直接丢弃，不留在 resolved 视图");
+
+  // 重复丢弃幂等（行已不存在同样视为成功）
+  assert.deepEqual(attention.closeAttentionItem(baseScope, itemId), { discarded: true });
+
+  // 手动丢弃后再失败：按 dedup_key 重新生成一条全新的关注项
+  await failRun(task.taskId, "nmc-f2");
+  const recreated = await attentionItemsFor(task.taskId, "open");
+  assert.equal(recreated.length, 1, "丢弃后再失败重新生成关注项");
+  assert.notEqual(recreated[0]!.item_id, itemId, "丢弃后重新生成新行而非复用旧行");
+  assert.equal(recreated[0]!.resolved_run_id, null);
+  assert.equal(recreated[0]!.wechat_notified, 0, "连败非首条不重复发微信");
 });

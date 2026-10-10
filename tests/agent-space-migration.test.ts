@@ -319,6 +319,34 @@ test("W6 导入：归档态 method、data_asset 不 method 化、幂等重放零
   assert.equal(dykVersion.status, "draft");
   assert.equal(dykVersion.origin, "migration");
   assert.deepEqual(dykVersion.adoptionConstraints, []);
+
+  // 内容级防重（2026-10-08 镜像定性）：同 scope 已有同 checksum 的 active
+  // 资产（不同 idempotencyKey）时跳过登记，不再造出第二条重复资产记录。
+  {
+    const { createUserAsset } = await import("../src/services/user-assets.js");
+    // 模拟"会话已先保存同一份复盘报告"的既有资产（不同 idempotencyKey）。
+    await createUserAsset({
+      ...sc.u111,
+      name: "每日复盘 2026-09-17（会话已保存）",
+      fileName: "2026-09-17.md",
+      bytes: U111_DAILY_BODY,
+      source: "conversation",
+      idempotencyKey: "content-dedup-test:conversation-first",
+    });
+    const stagedDaily = staged.staged.get("111:liveProjectRoot:reports/daily/2026-09-17.md")!;
+    const dailyItem = importable.find((i) => i.itemId === "111:liveProjectRoot:reports/daily/2026-09-17.md")!;
+    // key 不同的重放路径已用尽：换新 key 触发内容级判定。
+    const freshKeyItem = { ...dailyItem, itemId: `${dailyItem.itemId}:rekeyed` };
+    const stagedMap = new Map(staged.staged);
+    stagedMap.set(freshKeyItem.itemId, stagedDaily);
+    const dedup = await space.importStagedMigration([freshKeyItem], stagedMap, copyRoot);
+    assert.deepEqual(dedup.failures, []);
+    assert.equal(dedup.outcomes.length, 0, "内容重复项不产生 outcome");
+    assert.match(dedup.skipped[0]!.reason, /content-duplicate of active asset asset_/);
+    // first 导入的 restore + 预创建的 conversation 共两条；fresh-key 重放不新增第三条。
+    const rows = db.sqlite.prepare("SELECT COUNT(*) AS n FROM user_assets a JOIN user_asset_versions v ON v.version_id=a.current_version_id WHERE a.user_id='111' AND v.checksum=?").get(sha256Of(U111_DAILY_BODY)) as { n: number };
+    assert.equal(rows.n, 2, "同内容仍只有两条既有记录，重放零新增");
+  }
 });
 
 test("W6 S1：mg 四因子与 KP 独立；缺账本显式失败，不推断空仓", async () => {

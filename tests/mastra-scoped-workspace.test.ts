@@ -133,6 +133,35 @@ test("scoped Workspace has containment, private skills, no sandbox, and an expli
   }
 });
 
+test("assembly mode (autoLoadSkills: false) builds a Workspace with no skills auto-mount", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "mastra-scoped-projects-"));
+  const project = path.join(root, "alpha-project");
+  await mkdir(path.join(project, "skills"), { recursive: true });
+  try {
+    const registry = new MastraWorkspaceRegistry(root);
+    await registry.register({ ...alpha, projectRoot: project });
+    let workspaceOptions: Record<string, unknown> | undefined;
+    class FakeWorkspace {
+      constructor(options: Record<string, unknown>) { workspaceOptions = options; }
+    }
+    const workspace = await createRegisteredMastraWorkspace({
+      scope: alpha,
+      registry,
+      bindings: { Agent: class { stream() { return { text: "unused" }; } } as unknown as new () => MastraAgentLike, Workspace: FakeWorkspace, LocalFilesystem: class {} },
+      autoLoadSkills: false,
+    });
+    assert.ok(workspace);
+    // Mastra treats an absent skills config as "no skills" (Workspace.skills
+    // stays undefined); assembly mode must not even see the directory channel.
+    assert.equal("skills" in (workspaceOptions ?? {}), false);
+    // Filesystem and the least-privilege tool policy are unaffected.
+    assert.ok(workspaceOptions?.filesystem);
+    assert.ok(workspaceOptions?.tools);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("unregistered scope never constructs a Workspace and scoped agent factory forwards only the resolved object", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "mastra-scoped-projects-"));
   try {

@@ -1843,8 +1843,8 @@ test("manageable skill pause preserves installation and blocks task pin bypass",
 test("starter skills inject only for matching conversation requests", async () => {
   const { isStarterSkillApplicable } = await import("../src/runtime/agent-space-context.js");
   assert.equal(isStarterSkillApplicable("technical-analysis", "看这只股票的均线和量价"), true);
-  assert.equal(isStarterSkillApplicable("technical-analysis", "帮我修改每天的自动化任务"), false);
-  assert.equal(isStarterSkillApplicable("automation-task-designer", "帮我修改每天的自动化任务"), true);
+  assert.equal(isStarterSkillApplicable("technical-analysis", "帮我修改每天的定时任务"), false);
+  assert.equal(isStarterSkillApplicable("automation-task-designer", "帮我修改每天的定时任务"), true);
   assert.equal(isStarterSkillApplicable("automation-task-designer", "看公司财报"), false);
   assert.equal(isStarterSkillApplicable("my-private-skill", "任意请求"), true, "private skills retain their existing behavior");
 });
@@ -2073,7 +2073,7 @@ test("W4 rework R5-R9 at the model boundary: platform base, content blocking, st
   assert.match(r5System, /【事实与推断纪律】/, "platform fact discipline survives assembly mode");
   assert.match(r5System, /【工具使用原则】/, "platform tool doctrine survives assembly mode");
   assert.match(r5System, /Agent Space 装配（conversation）/, "assembly section coexists with the platform base");
-  assert.match(r5System, /【用户方法论（Agent Space 装配）】/, "methodology is rewritten to the new object contract");
+  assert.match(r5System, /【用户投资框架与我的策略】/, "methodology section speaks the two-layer framework/strategy contract (2026-10-08)");
   assert.ok(!r5System.includes("methods/ 与 skills/ 目录"), "legacy workspace discovery guidance never reappears");
 
   // —— R7：稳定执行身份——新增 Agent 不换身份、不冲突；多 active 无绑定明确拒绝 ——
@@ -2113,6 +2113,17 @@ test("W4 rework R5-R9 at the model boundary: platform base, content blocking, st
   );
   assert.equal(assemblyCaptures().length, beforeR6, "zero assembly model calls while content is broken");
   wf(assetFile, originalBytes);
+  // —— 2026-10-08：技能内容缺失在 conversation 入口降级（跳过+提示），
+  // 不再阻断用户整轮对话；任务入口的 fail-closed 语义由上面 R6 覆盖 ——
+  const skillFile = path.join(entry!.projectRoot, "assets", "asset_w2", "versions", "ver_w2_1", "strategy.md");
+  const originalSkillBytes = rf(skillFile);
+  wf(skillFile, Buffer.concat([originalSkillBytes, Buffer.from("conv-degrade-tampered")]));
+  const degraded = await buildAgentSpaceTurnOptions({
+    scope: scopeA, conversationId: "conv_w1", messageId: r5MessageId, channel: "api",
+    grantedTools: {}, toolAllowlist: null,
+  });
+  assert.match(degraded.instructions, /已跳过技能 [^\n]+：内容源缺失/, "conversation entry degrades a broken skill with a visible skip notice");
+  wf(skillFile, originalSkillBytes);
   const r6Recovered = await buildAgentSpaceTurnOptions({ scope: scopeA, conversationId: `automation-run:r6`, messageId: randomUUID(), entryKind: "generic_automation", taskId: "task_r59", runId: "run_r59", grantedTools: {}, toolAllowlist: [] });
   assert.match(r6Recovered.instructions, /Agent Space 装配（generic_automation）/, "restored bytes let the same request retry succeed");
 
