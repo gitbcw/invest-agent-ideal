@@ -673,10 +673,11 @@ export const ALL_SERVICE_TOOL_SPECS: readonly ToolSpec[] = [
   },
   {
     id: "strategy.edit",
-    description: "Edit a user strategy: saves and adopts a NEW version (text). No confirmation is needed beyond the user's agreement to the edited text in this conversation. If the strategy is the primary strategy, the resident rules update on the next turn's assembly.",
+    description: "Edit an existing user strategy IN PLACE. Two uses: (1) RENAME — pass only {strategyId, name} when the user asks to 改名/重命名/换个名字 for a strategy; this changes the display name only, keeps the content version, primary flag and task bindings. NEVER implement a rename by saving a duplicate strategy with the new name — that orphans bindings and inflates the strategy list. (2) EDIT CONTENT — pass {strategyId, text} to save and adopt a NEW version (optionally also name to rename in the same call). No confirmation is needed beyond the user's agreement in this conversation. If the strategy is the primary strategy, the resident rules update on the next turn's assembly.",
     inputSchema: {
       strategyId: z.string().min(1),
-      text: z.string().min(1).max(40000),
+      text: z.string().min(1).max(40000).optional(),
+      name: z.string().min(1).max(120).optional().describe("New display name (rename). Provide alone for rename-only, or together with text."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
   },

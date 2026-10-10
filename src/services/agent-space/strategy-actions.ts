@@ -209,6 +209,26 @@ export function setPrimaryStrategy(input: { scope: StrategyScope; strategyId: st
   return cardOf(input.scope, strategy.method_id);
 }
 
+/** 重命名策略：仅改显示名，内容版本与绑定关系不变；供 agent/Portal 纠正命名。 */
+export function renameStrategy(input: { scope: StrategyScope; strategyId: string; name: string; actor: string }): StrategyCard {
+  const name = input.name.trim();
+  if (!name) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "strategy name must be non-empty");
+  const strategy = strategyRow(input.scope, input.strategyId);
+  const dup = sqlite
+    .prepare(
+      `SELECT method_id FROM agent_space_methods
+       WHERE user_id=? AND project_id=? AND instance_id=? AND name=? AND status != 'retired' AND method_id != ?`,
+    )
+    .get(input.scope.userId, input.scope.projectId, input.scope.instanceId, name, strategy.method_id);
+  if (dup) throw new AgentSpaceError("AGENT_SPACE_ARGUMENT_INVALID", "同名策略已存在，先重命名或退役旧条目");
+  sqlite.prepare("UPDATE agent_space_methods SET name=?, updated_at=? WHERE method_id=?").run(
+    name,
+    new Date().toISOString(),
+    strategy.method_id,
+  );
+  return cardOf(input.scope, strategy.method_id);
+}
+
 /** 读取策略当前采用版本正文（非主策略按需使用；主策略也可显式复核）。 */
 export async function readStrategyContent(input: { scope: StrategyScope; strategyId: string }): Promise<{ strategyId: string; name: string; text: string; versionId: string }> {
   const strategy = strategyRow(input.scope, input.strategyId);

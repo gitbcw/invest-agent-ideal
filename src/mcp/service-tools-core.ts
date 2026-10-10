@@ -63,6 +63,7 @@ import {
   editStrategy,
   listStrategies,
   readStrategyContent,
+  renameStrategy,
   setPrimaryStrategy,
 } from "../services/agent-space/strategy-actions.js";
 import { getVersionRow as getSkillVersionRow } from "../services/agent-space/skills.js";
@@ -706,7 +707,22 @@ async function dispatchServiceTool(
     case "strategy.edit": {
       const strategyId = stringInput(input?.strategyId) ?? "";
       const text = stringInput(input?.text) ?? "";
-      if (!strategyId || !text.trim()) throw new Error("strategyId and non-empty text are required");
+      const newName = stringInput(input?.name) ?? "";
+      if (!strategyId) throw new Error("strategyId is required");
+      if (!text.trim() && !newName.trim()) throw new Error("provide new text and/or a new name");
+      if (newName.trim()) {
+        const renamed = renameStrategy({ scope: strategyScope(context), strategyId, name: newName, actor: `agent:${context.userId}` });
+        if (!text.trim()) {
+          await audit(context, {
+            operation: name,
+            resourceType: "agent_space_method",
+            resourceId: strategyId,
+            requestBody: { strategyId, name: newName },
+            resultSummary: `renamed strategy to "${renamed.name}"`,
+          });
+          return { ok: true, userId: context.userId, instanceId: context.instanceId, strategy: renamed, note: "策略已重命名；内容版本与绑定关系不变。" };
+        }
+      }
       const edited = await editStrategy({
         scope: strategyScope(context),
         strategyId,
@@ -718,8 +734,8 @@ async function dispatchServiceTool(
         operation: name,
         resourceType: "agent_space_method",
         resourceId: strategyId,
-        requestBody: { strategyId },
-        resultSummary: `edited strategy "${edited.name}" (new adopted version)`,
+        requestBody: { strategyId, ...(newName.trim() ? { name: newName } : {}) },
+        resultSummary: `edited strategy "${edited.name}" (new adopted version${newName.trim() ? ", renamed" : ""})`,
       });
       return { ok: true, userId: context.userId, instanceId: context.instanceId, strategy: edited };
     }
