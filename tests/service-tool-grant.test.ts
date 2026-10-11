@@ -16,6 +16,7 @@ const REGISTERED_TOOLS = [
   "research.news_search", "research.web_search", "research.web_read",
   "assets.list", "assets.version.read",
   "assets.version.commit", "assets.working_copy.read", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete",
+  "assets.folder.create", "assets.folder.rename", "assets.folder.delete", "assets.move",
   "automation.list", "automation.get", "automation.create", "automation.update",
   "automation.activate", "automation.pause", "automation.delete",
   "portfolio.read", "watchlist.read", "plans.read", "conversation.history",
@@ -88,7 +89,7 @@ test("scheduled automation grant permits same-scope asset reads but no asset mut
   assert.ok(grant.includes("assets.version.read"));
   assert.ok(grant.includes("spreadsheet.create"), "staging-only workbook creation must be available");
   assert.ok(grant.includes("spreadsheet.transform"));
-  for (const tool of ["assets.version.commit", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete"]) {
+  for (const tool of ["assets.version.commit", "assets.conversation.save", "assets.attachment.save", "assets.rename", "assets.archive", "assets.delete", "assets.folder.create", "assets.folder.rename", "assets.folder.delete", "assets.move"]) {
     assert.ok(!grant.includes(tool), `scheduled automation grant exposes ${tool}`);
   }
   // 未发布工作副本只属于交互会话：定时授权基线不得看到（草稿不影响运行行为）。
