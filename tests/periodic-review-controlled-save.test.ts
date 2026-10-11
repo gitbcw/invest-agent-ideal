@@ -142,3 +142,128 @@ test("scheduledCompletion prefix check covers weekly/monthly", () => {
     assert.ok(isScheduled, `${convId} should be recognized as scheduled`);
   }
 });
+
+// ─── htmlReport 校验（scheduled 周/月复盘强制）────────────────────
+
+const HTML_TEST_USER = "html-review-test-user";
+const HTML_TEST_INSTANCE = "html-review-test-instance";
+const HTML_WEEKLY_KEY = "2026-07-28_weekly";
+
+function scheduledWeeklyContext() {
+  return {
+    userId: HTML_TEST_USER,
+    instanceId: HTML_TEST_INSTANCE,
+    conversationId: `scheduler:weekly-review:${HTML_TEST_USER}:${HTML_TEST_INSTANCE}`,
+    expectedReviewKind: "weekly" as const,
+    expectedReviewKey: HTML_WEEKLY_KEY,
+  };
+}
+
+const baseWeeklyInput = {
+  kind: "weekly",
+  reportKey: HTML_WEEKLY_KEY,
+  content: "# 周复盘\n\n正文",
+  pushBrief: "**本周要点**\n\n- 示例简报",
+};
+
+test("scheduled weekly reviews.save rejects missing htmlReport", async () => {
+  const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+  await assert.rejects(
+    () => callServiceTool("reviews.save", { ...baseWeeklyInput }, scheduledWeeklyContext()),
+    /REVIEW_HTML_REPORT_REQUIRED/,
+  );
+});
+
+test("scheduled monthly reviews.save rejects missing htmlReport", async () => {
+  const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+  await assert.rejects(
+    () => callServiceTool("reviews.save", { ...baseWeeklyInput, kind: "monthly", reportKey: "2026-07" }, {
+      ...scheduledWeeklyContext(),
+      conversationId: `scheduler:monthly-review:${HTML_TEST_USER}:${HTML_TEST_INSTANCE}`,
+      expectedReviewKind: "monthly",
+      expectedReviewKey: "2026-07",
+    }),
+    /REVIEW_HTML_REPORT_REQUIRED/,
+  );
+});
+
+test("scheduled weekly reviews.save rejects unsafe htmlReport", async () => {
+  const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+  const unsafePayloads = [
+    "<html><body><script>alert(1)</script></body></html>",
+    '<html><body><a href="javascript:alert(1)">x</a></body></html>',
+    '<html><body><img src="https://evil.example.com/x.png"></body></html>',
+    "<html><style>@import url(fonts)</style><body>x</body></html>",
+    "<html><body><iframe srcdoc='x'></iframe></body></html>",
+  ];
+  for (const htmlReport of unsafePayloads) {
+    await assert.rejects(
+      () => callServiceTool("reviews.save", { ...baseWeeklyInput, htmlReport }, scheduledWeeklyContext()),
+      /REVIEW_HTML_REPORT_INVALID/,
+      `should reject: ${htmlReport.slice(0, 40)}`,
+    );
+  }
+});
+
+test("scheduled weekly reviews.save rejects empty or oversized htmlReport", async () => {
+  const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+  // 纯空白按缺省处理（stringInput 会 trim）。
+  await assert.rejects(
+    () => callServiceTool("reviews.save", { ...baseWeeklyInput, htmlReport: "   " }, scheduledWeeklyContext()),
+    /REVIEW_HTML_REPORT_REQUIRED/,
+  );
+  const oversized = `<html><body>${"a".repeat(1024 * 1024)}</body></html>`;
+  await assert.rejects(
+    () => callServiceTool("reviews.save", { ...baseWeeklyInput, htmlReport: oversized }, scheduledWeeklyContext()),
+    /REVIEW_HTML_REPORT_INVALID/,
+  );
+});
+
+test("scheduled weekly reviews.save publishes markdown + html artifacts idempotently", async () => {
+  const { randomUUID } = await import("node:crypto");
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
+  const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
+  const { sqlite } = await import("../src/db/index.js");
+
+  const suffix = randomUUID();
+  const userId = `html-publish-user-${suffix}`;
+  const instanceId = `html-publish-instance-${suffix}`;
+  const reportKey = "2026-08-09_weekly";
+  await registerTestProject({ userId, projectId: "invest-agent", instanceId });
+  const context = {
+    userId,
+    instanceId,
+    conversationId: `scheduler:weekly-review:${userId}:${instanceId}`,
+    expectedReviewKind: "weekly" as const,
+    expectedReviewKey: reportKey,
+  };
+  const htmlReport = "<html><head><style>body{color:#111}</style></head><body><svg viewBox=\"0 0 10 10\"></svg><h1>周复盘</h1></body></html>";
+
+  const first = await callServiceTool("reviews.save", { ...baseWeeklyInput, reportKey, htmlReport }, context) as {
+    artifact?: { artifactId: string; versionId?: string | null };
+    htmlArtifact?: { artifactId: string; versionId?: string | null; previewMode?: string; mimeType?: string };
+  };
+  assert.ok(first.artifact?.artifactId, "markdown artifact published");
+  assert.ok(first.htmlArtifact?.artifactId, "html artifact published");
+  assert.notEqual(first.htmlArtifact!.artifactId, first.artifact!.artifactId);
+  assert.equal(first.htmlArtifact!.mimeType, "text/html");
+  assert.equal(first.htmlArtifact!.previewMode, "html");
+
+  const row = sqlite.prepare(
+    "SELECT relative_path AS relativePath, title FROM conversation_artifacts WHERE artifact_id = ?",
+  ).get(first.htmlArtifact!.artifactId) as { relativePath: string; title: string };
+  assert.equal(row.relativePath, `reports/weekly/${reportKey}.html`);
+  assert.ok(row.title.includes("可视化报告"), "html artifact title carries 可视化报告");
+
+  // 内容变化后重发：两个 artifact 都复用同一 artifactId 并追加新资产版本。
+  const second = await callServiceTool("reviews.save", {
+    ...baseWeeklyInput,
+    reportKey,
+    content: "# 周复盘\n\n正文 v2",
+    htmlReport: htmlReport.replace("周复盘", "周复盘 v2"),
+  }, context) as typeof first;
+  assert.equal(second.artifact?.artifactId, first.artifact?.artifactId);
+  assert.equal(second.htmlArtifact?.artifactId, first.htmlArtifact?.artifactId);
+  assert.notEqual(second.artifact?.versionId, first.artifact?.versionId);
+  assert.notEqual(second.htmlArtifact?.versionId, first.htmlArtifact?.versionId);
+});

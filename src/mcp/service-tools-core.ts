@@ -7,6 +7,7 @@ import { alertRules, conversationArtifacts, conversationMessages, mastraProjectP
 import { resolveProjectStorageRoot } from "../services/project-storage-root.js";
 import {
   ConversationArtifactError,
+  MAX_HTML_BYTES,
   publishConversationArtifact,
   readConversationArtifactPayload,
   type ConversationArtifact,
@@ -2453,6 +2454,27 @@ async function applyUserPreferences(input: Record<string, unknown> | undefined, 
   };
 }
 
+/**
+ * reviews.save 的 htmlReport 校验：自包含单文件 HTML（内联 CSS/SVG）。
+ * 保守拒识 script/外链/iframe 等；渲染侧另有 Portal sandbox iframe 双保险。
+ */
+function validateReviewHtmlReport(html: string): void {
+  if (!html.trim()) throw new Error("REVIEW_HTML_REPORT_INVALID:htmlReport 不能为空");
+  if (Buffer.byteLength(html, "utf8") > MAX_HTML_BYTES) {
+    throw new Error(`REVIEW_HTML_REPORT_INVALID:htmlReport 超过 ${MAX_HTML_BYTES} 字节上限`);
+  }
+  const forbidden: Array<[RegExp, string]> = [
+    [/<script/i, "禁止包含 <script>"],
+    [/javascript:/i, "禁止包含 javascript: 协议"],
+    [/https?:\/\//i, "禁止包含 http(s):// 外链资源"],
+    [/@import/i, "禁止包含 CSS @import"],
+    [/<iframe/i, "禁止包含 <iframe>"],
+  ];
+  for (const [pattern, reason] of forbidden) {
+    if (pattern.test(html)) throw new Error(`REVIEW_HTML_REPORT_INVALID:${reason}`);
+  }
+}
+
 async function saveReview(input: Record<string, unknown> | undefined, context: ServiceToolContext) {
   // F2: scheduledCompletion 扩展为 daily/weekly/monthly 三前缀
   const convId = context.conversationId ?? "";
@@ -2477,13 +2499,20 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
   if (scheduledCompletion) {
     assertScheduledReviewTarget(context, kind, requestedKey);
   }
+  // 可视化报告：scheduled 周/月复盘必传 htmlReport（服务端强制，缺省拒绝）；
+  // daily 可选不强制，传入时同样走安全校验。
+  const htmlReport = stringInput(input?.htmlReport);
+  if (scheduledCompletion && (kind === "weekly" || kind === "monthly") && !htmlReport) {
+    throw new Error("REVIEW_HTML_REPORT_REQUIRED:scheduled 周/月复盘必须传 htmlReport（自包含 HTML 可视化报告，内联 SVG、禁外链禁脚本）");
+  }
+  if (htmlReport) validateReviewHtmlReport(htmlReport);
   const publicationMeta = {
     ...asRecord(input?.context),
     publication: { conversationId: context.conversationId ?? null, scheduled: scheduledCompletion },
   };
 
   // F2: 按 kind 分派。daily 走 saveSkillDailyReview（不变）；weekly/monthly 走 saveSkillPeriodicReview
-  let saved: { date?: string; kind?: string; reportKey?: string; filePath: string; artifact?: ConversationArtifactRecord };
+  let saved: { date?: string; kind?: string; reportKey?: string; filePath: string; artifact?: ConversationArtifactRecord; htmlArtifact?: ConversationArtifactRecord };
   if (kind === "weekly" || kind === "monthly") {
     const reportKey = stringInput(input?.reportKey);
     if (!reportKey) throw new Error(`reviews.save requires reportKey for kind=${kind}`);
@@ -2493,10 +2522,11 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
       kind,
       reportKey,
       content,
+      htmlReport,
       summary: pushBrief,
       context: publicationMeta,
     });
-    saved = { kind: result.kind, reportKey: result.reportKey, filePath: result.filePath, artifact: result.artifact };
+    saved = { kind: result.kind, reportKey: result.reportKey, filePath: result.filePath, artifact: result.artifact, htmlArtifact: result.htmlArtifact };
   } else {
     const result = await saveSkillDailyReview({
       userId: context.userId,
@@ -2571,6 +2601,7 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
       decisionRecordCount: decisionRecords.length,
       sourceEventCount: sourceEvents.length,
       scheduledCompletion,
+      hasHtmlReport: Boolean(htmlReport),
     },
     resultSummary: `saved ${kind} review ${resourceId}; decisions=${decisionRecords.length}; sourceEvents=${sourceEvents.length}`,
   });
@@ -2618,6 +2649,7 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
     decisionRecordCount: decisionRecords.length,
     sourceEventCount: sourceEvents.length,
     artifact,
+    htmlArtifact: saved.htmlArtifact,
   };
 }
 

@@ -108,7 +108,7 @@ const MAX_INLINE_BYTES = 15 * 1024 * 1024;
 // HTML renders inside a sandboxed Portal iframe, so it gets a much tighter
 // cap than binary media: it is meant for static document previews, not for
 // shipping large applications or embedded datasets.
-const MAX_HTML_BYTES = 1 * 1024 * 1024;
+export const MAX_HTML_BYTES = 1 * 1024 * 1024;
 const REPORT_ROOT = "reports";
 const CONFIG_ROOT = "config";
 /** Service-delivery staging area. It is never a user-managed library. */
@@ -745,7 +745,14 @@ export interface PublishServiceOwnedReviewArtifactInput {
   kind: "weekly" | "monthly";
   reportKey: string;
   content: string;
+  /** 可选：自包含 HTML 可视化报告；提供时额外发布 reports/<kind>/<reportKey>.html 变体。 */
+  html?: string;
   title?: string;
+}
+
+export interface PublishServiceOwnedReviewArtifactResult {
+  artifact: ConversationArtifactRecord;
+  htmlArtifact?: ConversationArtifactRecord;
 }
 
 export interface ReviewArtifactPublicationLookup {
@@ -778,42 +785,41 @@ export function hasReviewArtifactPublication(input: ReviewArtifactPublicationLoo
   return Boolean(row);
 }
 
-/**
- * Publishes a Mastra periodic review from its already validated content.
- *
- * Mastra periodic reviews are service-owned records and do not have a
- * workspace file to read. The bytes are committed to a scoped system asset,
- * while the artifact keeps the normal reports/<kind>/ display path for the
- * Portal library. The backing asset is authoritative on reads; the user's
- * reports directory is never created or overwritten.
- *
- * The logical review key is the artifact idempotency key. Re-publishing the
- * same key updates the same artifact and mapping, appending a new asset
- * version only when the content changes.
- */
-export async function publishServiceOwnedReviewArtifact(
+interface ReviewArtifactVariant {
+  extension: "md" | "html";
+  mimeType: "text/markdown" | "text/html";
+  previewMode: "markdown" | "html";
+  content: string;
+  title: string;
+  maxBytes: number;
+}
+
+/** 发布单个变体（markdown 正文或 html 可视化报告）；幂等键、锁与资产版本语义按变体独立。 */
+async function publishReviewArtifactVariant(
   input: PublishServiceOwnedReviewArtifactInput,
+  variant: ReviewArtifactVariant,
 ): Promise<ConversationArtifactRecord> {
-  const relativePath = `reports/${input.kind}/${input.reportKey}.md`;
-  const idempotencyKey = `reviews.save:${input.kind}:${input.reportKey}`;
+  const relativePath = `reports/${input.kind}/${input.reportKey}.${variant.extension}`;
+  const idempotencyKey = `reviews.save:${input.kind}:${input.reportKey}${variant.extension === "html" ? ":html" : ""}`;
   const scope = {
     userId: input.userId,
     projectId: input.projectId,
     instanceId: input.instanceId,
   };
+  const fileName = `${input.reportKey}.${variant.extension}`;
 
   try {
     const keyError = validateReportKey(input.kind, input.reportKey);
     if (keyError) throw new ConversationArtifactError("ARTIFACT_INVALID_PATH", keyError);
-    const raw = Buffer.from(input.content, "utf8");
+    const raw = Buffer.from(variant.content, "utf8");
     if (!raw.length) throw new ConversationArtifactError("ARTIFACT_UNSAFE", "review content is empty");
-    if (raw.length > MAX_INLINE_BYTES || raw.length > DURABLE_LIBRARY_MAX_BYTES) {
+    if (raw.length > variant.maxBytes || raw.length > DURABLE_LIBRARY_MAX_BYTES) {
       throw new ConversationArtifactError("ARTIFACT_TOO_LARGE", String(raw.length));
     }
-    const prepared = await prepareArtifactPayload("text/markdown", raw);
+    const prepared = await prepareArtifactPayload(variant.mimeType, raw);
     const mimeType = prepared.mimeType;
     const checksum = sha256Hex(raw);
-    const title = (input.title ?? `${input.kind === "weekly" ? "周" : "月"}复盘 ${input.reportKey}`).trim().slice(0, 200);
+    const title = variant.title.trim().slice(0, 200);
     const classification = classifyArtifactRetention({
       source: "reviews.save",
       relativePath,
@@ -827,7 +833,7 @@ export async function publishServiceOwnedReviewArtifact(
     // one review without blocking unrelated assets for the same user.
     return await withResourceMutationLock(
       scope,
-      `service-review-artifact:${input.kind}:${input.reportKey}`,
+      `service-review-artifact:${input.kind}:${input.reportKey}:${variant.extension}`,
       async () => {
         const existing = sqlite.prepare(
           `SELECT ${ARTIFACT_SELECT_COLUMNS}
@@ -859,7 +865,7 @@ export async function publishServiceOwnedReviewArtifact(
           asset = await uploadUserAssetVersion({
             ...scope,
             assetId: asset.assetId,
-            fileName: `${input.reportKey}.md`,
+            fileName: fileName,
             mimeType,
             bytes: raw,
             expectedVersionId: asset.currentVersionId,
@@ -877,7 +883,7 @@ export async function publishServiceOwnedReviewArtifact(
             ...scope,
             ...(reportFolderId ? { folderId: reportFolderId } : {}),
             name: title,
-            fileName: `${input.reportKey}.md`,
+            fileName: fileName,
             mimeType,
             bytes: raw,
             source: "system",
@@ -904,7 +910,7 @@ export async function publishServiceOwnedReviewArtifact(
           ).run(
             input.conversationId ?? null,
             title,
-            `${input.reportKey}.md`,
+            fileName,
             mimeType,
             relativePath,
             raw.length,
@@ -928,7 +934,7 @@ export async function publishServiceOwnedReviewArtifact(
                conversation_id, message_id, turn_id, source, kind, preview_mode,
                title, file_name, mime_type, relative_path, size_bytes, checksum, asset_id, version_id, idempotency_key,
                created_at, updated_at, origin, retention_class, visibility, expires_at
-             ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'reviews.save', 'report', 'markdown', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'reviews.save', 'report', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).run(
             artifactId,
             input.userId,
@@ -937,8 +943,9 @@ export async function publishServiceOwnedReviewArtifact(
             input.assistantId,
             input.conversationId ?? null,
             turnId,
+            variant.previewMode,
             title,
-            `${input.reportKey}.md`,
+            fileName,
             mimeType,
             relativePath,
             raw.length,
@@ -959,7 +966,7 @@ export async function publishServiceOwnedReviewArtifact(
           ...scope,
           reportId: artifactId,
           title,
-          fileName: `${input.reportKey}.md`,
+          fileName: fileName,
           mimeType,
           sizeBytes: raw.length,
           backingAssetId: asset.assetId,
@@ -999,6 +1006,54 @@ export async function publishServiceOwnedReviewArtifact(
         };
       },
     );
+  } catch (error) {
+    if (error instanceof ReviewArtifactPublishError) throw error;
+    throw new ReviewArtifactPublishError(error);
+  }
+}
+
+/**
+ * Publishes a Mastra periodic review from its already validated content.
+ *
+ * Mastra periodic reviews are service-owned records and do not have a
+ * workspace file to read. The bytes are committed to a scoped system asset,
+ * while the artifact keeps the normal reports/<kind>/ display path for the
+ * Portal library. The backing asset is authoritative on reads; the user's
+ * reports directory is never created or overwritten.
+ *
+ * The logical review key is the artifact idempotency key. Re-publishing the
+ * same key updates the same artifact and mapping, appending a new asset
+ * version only when the content changes. When `html` is provided, an
+ * additional `reports/<kind>/<reportKey>.html` visualization variant is
+ * published under the same conversation and scope (idempotency key suffixed
+ * with `:html`); any failure of either variant throws so scheduled runs can
+ * retry idempotently.
+ */
+export async function publishServiceOwnedReviewArtifact(
+  input: PublishServiceOwnedReviewArtifactInput,
+): Promise<PublishServiceOwnedReviewArtifactResult> {
+  try {
+    const title = (input.title ?? `${input.kind === "weekly" ? "周" : "月"}复盘 ${input.reportKey}`).trim().slice(0, 200);
+    const artifact = await publishReviewArtifactVariant(input, {
+      extension: "md",
+      mimeType: "text/markdown",
+      previewMode: "markdown",
+      content: input.content,
+      title,
+      maxBytes: MAX_INLINE_BYTES,
+    });
+    let htmlArtifact: ConversationArtifactRecord | undefined;
+    if (input.html !== undefined) {
+      htmlArtifact = await publishReviewArtifactVariant(input, {
+        extension: "html",
+        mimeType: "text/html",
+        previewMode: "html",
+        content: input.html,
+        title: `${title} · 可视化报告`,
+        maxBytes: MAX_HTML_BYTES,
+      });
+    }
+    return { artifact, htmlArtifact };
   } catch (error) {
     if (error instanceof ReviewArtifactPublishError) throw error;
     throw new ReviewArtifactPublishError(error);

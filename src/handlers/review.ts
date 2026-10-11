@@ -1053,6 +1053,9 @@ export async function buildWeeklyReviewContext(options: { userId?: string; insta
     .where(and(eq(alertEvents.userId, userId), eq(alertEvents.instanceId, instanceId), gte(alertEvents.eventDate, weekStartStr), lte(alertEvents.eventDate, weekEndStr)))
     .orderBy(desc(alertEvents.createdAt));
   const viewpointSummary = await getWeeklyViewpointSummary(userId, instanceId, weekStartStr, weekEndStr);
+  // 对齐月复盘 WP5.3:周复盘需要看到已有的 proposed 方法候选(含全量状态),
+  // 供「策略进化建议」区块判断是否重复提议同一改动。
+  const methodChangeProposals = await methodChangeBackend.list(userId, instanceId, { limit: 30 });
   // WP5.6:周复盘行为纠偏统计
   const behaviorStats = await collectBehaviorStats(userId, instanceId, weekStartStr, weekEndStr);
 
@@ -1065,6 +1068,16 @@ export async function buildWeeklyReviewContext(options: { userId?: string; insta
     alertSummary: formatAlertSummary(weekAlerts),
     viewpointSummary,
     viewpointSummaryText: formatWeeklyViewpointSummary(viewpointSummary),
+    // 本周方法候选全量(含 proposed/confirmed/rejected),agent 据此判断是否提议新候选
+    methodChangeProposals: methodChangeProposals.map((r) => ({
+      id: r.id,
+      sourceType: r.sourceType,
+      proposedChange: r.proposedChange,
+      reason: r.reason,
+      affectedResource: r.affectedResource,
+      status: r.status,
+      createdAt: r.createdAt,
+    })),
     behaviorStats,
   };
 }
@@ -1175,9 +1188,11 @@ export async function saveSkillPeriodicReview(input: {
   kind: PeriodicReviewKind;
   reportKey: string;
   content: string;
+  /** 可选：自包含 HTML 可视化报告；Mastra 分支额外发布 .html artifact 并在返回值带出。 */
+  htmlReport?: string;
   summary?: string;
   context?: unknown;
-}): Promise<{ kind: PeriodicReviewKind; reportKey: string; filePath: string; artifact?: ConversationArtifactRecord }> {
+}): Promise<{ kind: PeriodicReviewKind; reportKey: string; filePath: string; artifact?: ConversationArtifactRecord; htmlArtifact?: ConversationArtifactRecord }> {
   const userId = input.userId ?? DEFAULT_USER_ID;
   const instanceId = input.instanceId ?? DEFAULT_INSTANCE_ID;
   // R1: reportKey 校验（backend.upsert 会再校验一次，这里提前拦截给出清晰错误）
@@ -1193,7 +1208,7 @@ export async function saveSkillPeriodicReview(input: {
       kind: input.kind, reportKey: input.reportKey, generatedAt, summary: input.summary ?? null, content: input.content,
       data: { source: "skill", savedAt: generatedAt, context: input.context ?? null },
     });
-    const artifact = await publishServiceOwnedReviewArtifact({
+    const { artifact, htmlArtifact } = await publishServiceOwnedReviewArtifact({
       userId,
       instanceId,
       projectId: process.env.MASTRA_PROJECT_ID?.trim() || "invest-agent",
@@ -1204,6 +1219,7 @@ export async function saveSkillPeriodicReview(input: {
       kind: input.kind,
       reportKey: input.reportKey,
       content: input.content,
+      html: input.htmlReport,
       title: `${input.kind === "weekly" ? "周" : "月"}复盘 ${input.reportKey}`,
     });
     return {
@@ -1211,6 +1227,7 @@ export async function saveSkillPeriodicReview(input: {
       reportKey: input.reportKey,
       filePath: `reports/${input.kind}/${input.reportKey}.md`,
       artifact,
+      htmlArtifact,
     };
   }
 

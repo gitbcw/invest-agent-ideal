@@ -341,6 +341,14 @@ async function runStructuredReviewPrompt(
     promptLines.push(
       `发布是本任务唯一完成路径：完成研究后必须调用 reviews.save，kind 传 "${kind}"，reportKey 传 "${reportKey}"，content 放完整 Markdown，pushBrief 放独立的微信简报。`,
       "pushBrief 会直接作为微信消息发送给用户，必须使用适合微信阅读且可由微信渲染的简洁 Markdown；使用 `**重点**` 和清晰分段，并按内容需要使用列表或短标题，不要写成无格式的连续纯文本。",
+    );
+    if (kind === "weekly") {
+      promptLines.push(
+        "报告必须包含「策略进化建议」区块：基于本周复盘与观点回测，给出对主策略规则的具体调整建议（每条建议含理由与失效信号）；无建议也要明确说明。",
+      );
+    }
+    promptLines.push(
+      "reviews.save 必须同时传 htmlReport：自包含单文件 HTML 可视化报告（内联 SVG 图表、内联样式，禁止外链资源与脚本，禁止 <iframe>）。",
       "若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。仅在 reviews.save 返回成功后，才可给出最终回复，且最终回复必须逐字使用该次成功保存的 pushBrief。",
     );
   }

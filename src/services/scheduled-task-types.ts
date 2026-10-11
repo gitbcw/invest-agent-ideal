@@ -27,11 +27,24 @@ const DAILY_REVIEW_INSTRUCTION = [
   "不要把未保存的复盘草稿、摘要或自然语言最终回复当作完成。若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。",
 ].join("\n");
 
-const PERIODIC_REVIEW_INSTRUCTION = [
-  "你正在执行当前用户的周期复盘（周或月）。",
-  "基于区间内日复盘、提醒事件与观点追踪，生成周期复盘并回测此前的判断。",
+// 周/月复盘共用的发布要求（与 runtime/scheduled-tasks.ts 的 runStructuredReviewPrompt 保持一致，双份事实须同步修改）。
+const PERIODIC_REVIEW_PUBLISH_LINES = [
   "发布是本任务唯一完成路径：完成研究后必须调用 reviews.save，content 放完整 Markdown，pushBrief 放独立的微信简报。",
+  "reviews.save 必须同时传 htmlReport：自包含单文件 HTML 可视化报告（内联 SVG 图表、内联样式，禁止外链资源与脚本，禁止 <iframe>）。",
   "不要把未保存的复盘草稿、摘要或自然语言最终回复当作完成。若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。",
+];
+
+const WEEKLY_REVIEW_INSTRUCTION = [
+  "你正在执行当前用户的周复盘。",
+  "基于本周日复盘、提醒事件与观点追踪，生成周度复盘并回测此前的判断。",
+  "报告必须包含「策略进化建议」区块：基于本周复盘与观点回测，给出对主策略规则的具体调整建议（每条建议含理由与失效信号）；无建议也要明确说明。",
+  ...PERIODIC_REVIEW_PUBLISH_LINES,
+].join("\n");
+
+const MONTHLY_REVIEW_INSTRUCTION = [
+  "你正在执行当前用户的月复盘。",
+  "基于本月日复盘、提醒事件与观点追踪，生成月度复盘并回测此前的判断。",
+  ...PERIODIC_REVIEW_PUBLISH_LINES,
 ].join("\n");
 
 const MARKET_WATCH_INSTRUCTION = [
@@ -55,14 +68,14 @@ export const SCHEDULED_TASK_TYPES: Record<string, ScheduledTaskTypeDefinition> =
     name: "周复盘",
     description: "每周生成周度复盘并保存发布",
     completionContract: "reviews.save 成功即完成；失败则不得输出用户内容",
-    defaultInstruction: PERIODIC_REVIEW_INSTRUCTION,
+    defaultInstruction: WEEKLY_REVIEW_INSTRUCTION,
   },
   "scheduled-monthly-review": {
     id: "scheduled-monthly-review",
     name: "月复盘",
     description: "每月生成月度复盘并保存发布",
     completionContract: "reviews.save 成功即完成；失败则不得输出用户内容",
-    defaultInstruction: PERIODIC_REVIEW_INSTRUCTION,
+    defaultInstruction: MONTHLY_REVIEW_INSTRUCTION,
   },
   "scheduled-market-watch": {
     id: "scheduled-market-watch",

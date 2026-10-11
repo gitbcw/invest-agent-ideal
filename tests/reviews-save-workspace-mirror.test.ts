@@ -74,6 +74,8 @@ test("scheduled weekly reviews.save does not return ok when service-owned public
       kind: "weekly",
       reportKey: "2026-08-23_weekly",
       content: "# weekly publication failure\n",
+      // scheduled 周/月复盘强制 htmlReport；带上合法值才能走到发布失败分支。
+      htmlReport: "<html><body><h1>weekly</h1></body></html>",
       pushBrief: "weekly failure",
     }, {
       ...scope,
