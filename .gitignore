@@ -27,3 +27,8 @@ __pycache__/
 *.pyo
 .sandbox-profiles/
 /apps/deploy-staging-portal-check/
+
+# ZCode 插件运行时标记与本地演示产物（不入库；服务器侧同名垃圾 2026-10-10 已清）
+.v2c/
+.video_agent/
+artifacts/
