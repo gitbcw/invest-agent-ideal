@@ -143,7 +143,7 @@ test("scheduledCompletion prefix check covers weekly/monthly", () => {
   }
 });
 
-// ─── htmlReport 校验（scheduled 周/月复盘强制）────────────────────
+// ─── htmlReport 内容安全校验（传入即校验，与偏好无关）──────────────
 
 const HTML_TEST_USER = "html-review-test-user";
 const HTML_TEST_INSTANCE = "html-review-test-instance";
@@ -166,25 +166,75 @@ const baseWeeklyInput = {
   pushBrief: "**本周要点**\n\n- 示例简报",
 };
 
-test("scheduled weekly reviews.save rejects missing htmlReport", async () => {
+// ─── 报告格式偏好（owner 2026-10-12 二次裁决：宽松模式，无服务端契约强制）──
+// htmlReport 是否生成由运行注入的偏好引导（prompt 层），服务门不拒绝缺失；
+// markdown/brief/table 偏好下保存同样正常且无 html artifact。
+
+test("scheduled weekly reviews.save accepts missing htmlReport (no service-side requirement, default preference)", async () => {
+  const { randomUUID } = await import("node:crypto");
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
   const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
-  await assert.rejects(
-    () => callServiceTool("reviews.save", { ...baseWeeklyInput }, scheduledWeeklyContext()),
-    /REVIEW_HTML_REPORT_REQUIRED/,
-  );
+
+  const suffix = randomUUID();
+  const userId = `html-pref-user-${suffix}`;
+  const instanceId = `html-pref-instance-${suffix}`;
+  const reportKey = "2026-08-16_weekly";
+  await registerTestProject({ userId, projectId: "invest-agent", instanceId });
+  const saved = await callServiceTool("reviews.save", { ...baseWeeklyInput, reportKey }, {
+    userId,
+    instanceId,
+    conversationId: `scheduler:weekly-review:${userId}:${instanceId}`,
+    expectedReviewKind: "weekly",
+    expectedReviewKey: reportKey,
+  }) as { artifact?: { artifactId: string }; htmlArtifact?: { artifactId: string } };
+  assert.ok(saved.artifact?.artifactId, "markdown artifact 正常发布");
+  assert.ok(!saved.htmlArtifact, "缺省 html 偏好下缺 htmlReport 不再被拒绝，也不发布 html artifact");
 });
 
-test("scheduled monthly reviews.save rejects missing htmlReport", async () => {
+test("scheduled weekly/monthly reviews.save honors markdown/brief/table preference (no htmlReport, no html artifact)", async () => {
+  const { randomUUID } = await import("node:crypto");
+  const { registerTestProject } = await import("./helpers/mastra-project.js");
   const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
-  await assert.rejects(
-    () => callServiceTool("reviews.save", { ...baseWeeklyInput, kind: "monthly", reportKey: "2026-07" }, {
-      ...scheduledWeeklyContext(),
-      conversationId: `scheduler:monthly-review:${HTML_TEST_USER}:${HTML_TEST_INSTANCE}`,
-      expectedReviewKind: "monthly",
-      expectedReviewKey: "2026-07",
-    }),
-    /REVIEW_HTML_REPORT_REQUIRED/,
-  );
+  const { MastraUserPreferenceStore } = await import("../src/services/user-preferences.js");
+
+  for (const reportFormat of ["markdown", "brief", "table"] as const) {
+    const suffix = randomUUID();
+    const userId = `html-pref-user-${suffix}`;
+    const instanceId = `html-pref-instance-${suffix}`;
+    const reportKey = "2026-08-16_weekly";
+    await registerTestProject({ userId, projectId: "invest-agent", instanceId });
+    const store = new MastraUserPreferenceStore(userId, instanceId, "invest-agent");
+    await store.writeSchedules({ weekly_review: { report_format: reportFormat } });
+    const context = {
+      userId,
+      instanceId,
+      conversationId: `scheduler:weekly-review:${userId}:${instanceId}`,
+      expectedReviewKind: "weekly" as const,
+      expectedReviewKey: reportKey,
+    };
+    const saved = await callServiceTool("reviews.save", { ...baseWeeklyInput, reportKey }, context) as {
+      artifact?: { artifactId: string };
+      htmlArtifact?: { artifactId: string };
+    };
+    assert.ok(saved.artifact?.artifactId, `${reportFormat} 偏好下仍发布 markdown artifact`);
+    assert.ok(!saved.htmlArtifact, `${reportFormat} 偏好下不发布 html artifact`);
+  }
+
+  // monthly 同理：偏好 markdown 时不带 htmlReport 保存正常。
+  const suffix = randomUUID();
+  const userId = `html-pref-user-${suffix}`;
+  const instanceId = `html-pref-instance-${suffix}`;
+  await registerTestProject({ userId, projectId: "invest-agent", instanceId });
+  const store = new MastraUserPreferenceStore(userId, instanceId, "invest-agent");
+  await store.writeSchedules({ monthly_review: { report_format: "markdown" } });
+  const saved = await callServiceTool("reviews.save", { ...baseWeeklyInput, kind: "monthly", reportKey: "2026-08" }, {
+    userId,
+    instanceId,
+    conversationId: `scheduler:monthly-review:${userId}:${instanceId}`,
+    expectedReviewKind: "monthly",
+    expectedReviewKey: "2026-08",
+  }) as { htmlArtifact?: { artifactId: string } };
+  assert.ok(!saved.htmlArtifact, "monthly 偏好 markdown 时不发布 html artifact");
 });
 
 test("scheduled weekly reviews.save rejects unsafe htmlReport", async () => {
@@ -205,13 +255,8 @@ test("scheduled weekly reviews.save rejects unsafe htmlReport", async () => {
   }
 });
 
-test("scheduled weekly reviews.save rejects empty or oversized htmlReport", async () => {
+test("scheduled weekly reviews.save rejects oversized htmlReport", async () => {
   const { callServiceTool } = await import("../src/mcp/service-tools-core.js");
-  // 纯空白按缺省处理（stringInput 会 trim）。
-  await assert.rejects(
-    () => callServiceTool("reviews.save", { ...baseWeeklyInput, htmlReport: "   " }, scheduledWeeklyContext()),
-    /REVIEW_HTML_REPORT_REQUIRED/,
-  );
   const oversized = `<html><body>${"a".repeat(1024 * 1024)}</body></html>`;
   await assert.rejects(
     () => callServiceTool("reviews.save", { ...baseWeeklyInput, htmlReport: oversized }, scheduledWeeklyContext()),

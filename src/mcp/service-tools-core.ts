@@ -2499,12 +2499,11 @@ async function saveReview(input: Record<string, unknown> | undefined, context: S
   if (scheduledCompletion) {
     assertScheduledReviewTarget(context, kind, requestedKey);
   }
-  // 可视化报告：scheduled 周/月复盘必传 htmlReport（服务端强制，缺省拒绝）；
-  // daily 可选不强制，传入时同样走安全校验。
+  // 可视化报告（owner 2026-10-12 二次裁决：不做服务端契约强制，宽松模式）：
+  // htmlReport 是否生成由运行上下文注入的报告格式偏好引导（prompt 层指令），
+  // 偶发缺失由用户反馈暴露，不整轮拒绝；也不为其他偏好逐项加校验。
+  // 传入时仍做内容安全校验（自包含、禁脚本/外链/iframe，Portal 渲染安全边界）。
   const htmlReport = stringInput(input?.htmlReport);
-  if (scheduledCompletion && (kind === "weekly" || kind === "monthly") && !htmlReport) {
-    throw new Error("REVIEW_HTML_REPORT_REQUIRED:scheduled 周/月复盘必须传 htmlReport（自包含 HTML 可视化报告，内联 SVG、禁外链禁脚本）");
-  }
   if (htmlReport) validateReviewHtmlReport(htmlReport);
   const publicationMeta = {
     ...asRecord(input?.context),

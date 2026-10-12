@@ -24,6 +24,7 @@ import {
 import { createMastraToolMap } from "../mastra/tools/mastra-tools.js";
 import { runMastraTurn } from "../mastra/run-turn.js";
 import { resolveAutoModel } from "../services/model-health.js";
+import { describeReviewReportFormat, readReviewReportFormat } from "../services/user-preferences.js";
 import { resolveExternalMastraToolsets, withExternalToolCallObserver } from "../mastra/external-mcp.js";
 import { buildAgentInstructions } from "./agent-instructions.js";
 import { buildAgentSpaceTurnOptions, isAgentSpaceAssemblyModeEnabled } from "./agent-space-context.js";
@@ -347,8 +348,10 @@ async function runStructuredReviewPrompt(
         "报告必须包含「策略进化建议」区块：基于本周复盘与观点回测，给出对主策略规则的具体调整建议（每条建议含理由与失效信号）；无建议也要明确说明。",
       );
     }
+    // 报告格式偏好（owner 2026-10-12）：注入当前格式偏好行引导模型生成
+    //（html 时要求 htmlReport；prompt 层指令，无服务端契约强制）
+    promptLines.push(describeReviewReportFormat(await readReviewReportFormat(userContext.userId, userContext.instanceId, kind, userContext.projectId)));
     promptLines.push(
-      "reviews.save 必须同时传 htmlReport：自包含单文件 HTML 可视化报告（内联 SVG 图表、内联样式，禁止外链资源与脚本，禁止 <iframe>）。",
       "若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。仅在 reviews.save 返回成功后，才可给出最终回复，且最终回复必须逐字使用该次成功保存的 pushBrief。",
     );
   }

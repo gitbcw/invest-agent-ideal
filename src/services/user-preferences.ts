@@ -1,5 +1,5 @@
 import { sqlite } from "../db/index.js";
-import { DEFAULT_PROJECT_ID } from "../lib/user-context.js";
+import { DEFAULT_PROJECT_ID, defaultInstanceIdForUser } from "../lib/user-context.js";
 import { WorkspaceStore, type NotificationYaml, type SchedulesYaml, type OnboardingStateYaml, type WatchYaml } from "../lib/workspace-store.js";
 
 export interface UserPreferenceStore {
@@ -68,6 +68,74 @@ export class MastraUserPreferenceStore implements UserPreferenceStore {
 
 export type NotificationPreferenceMode = "low_disturbance" | "active_watch" | "evening_summary";
 
+/**
+ * 复盘报告格式偏好（owner 2026-10-12 裁决：HTML 可视化是默认配置而非服务端无条件强制契约）。
+ * html=完整 Markdown + htmlReport 可视化（缺省）；markdown=完整 Markdown 不生成 HTML；
+ * brief=简短文字为主；table=表格为主。服务门只在偏好为 html 时强制 htmlReport。
+ */
+export type ReviewReportFormat = "html" | "markdown" | "brief" | "table";
+
+export const REVIEW_REPORT_FORMATS: ReviewReportFormat[] = ["html", "markdown", "brief", "table"];
+
+const REVIEW_REPORT_FORMAT_ALIASES: Record<string, ReviewReportFormat> = {
+  html: "html", 可视化: "html", visual: "html",
+  markdown: "markdown", md: "markdown",
+  brief: "brief", 简短: "brief", 短文: "brief", 简报: "brief",
+  table: "table", 表格: "table",
+};
+
+export function normalizeReviewReportFormat(value: unknown): ReviewReportFormat | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return REVIEW_REPORT_FORMAT_ALIASES[raw] ?? null;
+}
+
+export const REVIEW_SECTION_BY_KIND: Record<"daily" | "weekly" | "monthly", "daily_review" | "weekly_review" | "monthly_review"> = {
+  daily: "daily_review",
+  weekly: "weekly_review",
+  monthly: "monthly_review",
+};
+
+/** 读取某类复盘的报告格式偏好；未设置或历史数据缺失时按 html（默认带可视化）。 */
+export function resolveReviewReportFormat(
+  schedules: SchedulesYaml | Record<string, unknown> | null | undefined,
+  kind: "daily" | "weekly" | "monthly",
+): ReviewReportFormat {
+  const section = record(record(schedules)[REVIEW_SECTION_BY_KIND[kind]]);
+  if (section.report_format === undefined) return "html";
+  return normalizeReviewReportFormat(section.report_format) ?? "html";
+}
+
+const REVIEW_REPORT_FORMAT_PROMPTS: Record<ReviewReportFormat, string> = {
+  html: "本用户复盘报告格式偏好为 html：reviews.save 必须同时传 htmlReport——自包含单文件 HTML 可视化报告（内联 SVG 图表、内联样式，禁止外链资源与脚本，禁止 <iframe>）。",
+  markdown: "本用户复盘报告格式偏好为 markdown：报告使用完整 Markdown 结构，不需要 htmlReport。",
+  brief: "本用户复盘报告格式偏好为 brief：报告以简短文字为主，直接给结论、关键变化和下一步观察点，不写长篇展开，不需要 htmlReport。",
+  table: "本用户复盘报告格式偏好为 table：报告以 Markdown 表格为主体组织关键信息（表格外加必要的简短说明），不需要 htmlReport。",
+};
+
+/** 生成注入复盘运行上下文的报告格式指令行（scheduled-tasks 与 generic-automation-runner 共用的单一事实）。 */
+export function describeReviewReportFormat(format: ReviewReportFormat): string {
+  return REVIEW_REPORT_FORMAT_PROMPTS[format];
+}
+
+/**
+ * 按用户读取某类复盘的报告格式偏好（旧编排 prompt 与 generic runner 运行注入共用；
+ * owner 2026-10-12 二次裁决：不做服务端契约强制，注入行引导模型按偏好生成）。
+ * 偏好不可读（投影缺失/损坏）时按 html 返回（缺省口径）。
+ */
+export async function readReviewReportFormat(
+  userId: string,
+  instanceId: string | undefined,
+  kind: "daily" | "weekly" | "monthly",
+  projectId?: string,
+): Promise<ReviewReportFormat> {
+  try {
+    const store = new MastraUserPreferenceStore(userId, instanceId ?? defaultInstanceIdForUser(userId), projectId);
+    return resolveReviewReportFormat(await store.readSchedules(), kind);
+  } catch {
+    return "html";
+  }
+}
+
 export interface UserPreferenceChangeInput {
   reviewSchedule?: Record<string, unknown>;
   marketWatchSchedule?: Record<string, unknown>;
@@ -118,13 +186,18 @@ function currentRevision(schedules: SchedulesYaml, notification: NotificationYam
 }
 
 function validateReviewSchedule(value: Record<string, unknown>) {
-  const sections = ["daily_review", "weekly_review", "monthly_review", "company_financial_analysis"]
+  const sectionKeys = ["daily_review", "weekly_review", "monthly_review", "company_financial_analysis"];
+  const sections = sectionKeys
     .map((key) => record(value[key]))
     .filter((section) => Object.keys(section).length > 0);
   if (sections.length === 0) throw new Error("reviewSchedule 至少需要一个复盘配置段");
-  for (const section of sections) {
+  for (const key of sectionKeys) {
+    const section = record(value[key]);
     if (section.default_time !== undefined && typeof section.default_time !== "string") {
       throw new Error("reviewSchedule.default_time 必须是字符串");
+    }
+    if (section.report_format !== undefined && normalizeReviewReportFormat(section.report_format) === null) {
+      throw new Error(`reviewSchedule.${key}.report_format 必须是 ${REVIEW_REPORT_FORMATS.join("、")} 之一`);
     }
   }
 }
@@ -202,6 +275,14 @@ export async function planUserPreferenceChange(store: UserPreferenceStore, input
     nextSchedules.weekly_review = { enabled: true, auto_run: true, ...record(schedules.weekly_review), ...record(requested.weekly_review) };
     nextSchedules.monthly_review = { enabled: true, auto_run: true, ...record(schedules.monthly_review), ...record(requested.monthly_review) };
     nextSchedules.company_financial_analysis = { enabled: true, ...record(schedules.company_financial_analysis), ...record(requested.company_financial_analysis) };
+    // report_format 存储归一化为标准枚举（校验已拒绝非法值，历史残留非法值保持原样不覆盖）。
+    for (const key of ["daily_review", "weekly_review", "monthly_review"] as const) {
+      const section = record(nextSchedules[key]);
+      const normalized = normalizeReviewReportFormat(section.report_format);
+      if (section.report_format !== undefined && normalized) {
+        nextSchedules[key] = { ...section, report_format: normalized };
+      }
+    }
     nextSchedules.last_confirmed_at = now;
     if (input.confirmationId) nextSchedules.last_confirmation_id = input.confirmationId;
     changedPaths.push("config/schedules.yaml");

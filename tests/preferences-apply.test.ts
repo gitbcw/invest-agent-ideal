@@ -160,3 +160,39 @@ test("preferences.apply updates confirmed schedule and notification settings", a
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("reviewSchedule report_format: 校验枚举、别名归一化并随 plan 持久化", async () => {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "invest-agent-report-format-"));
+  process.env.NODE_ENV = "test";
+  process.env.DB_PATH = path.join(tempRoot, "test.db");
+  process.env.WORKSPACE_ROOT = path.join(tempRoot, "workspaces");
+  process.env.RUNTIME_DATA_ROOT = path.join(tempRoot, "runtime");
+  process.env.WORKSPACE_BACKEND = "workspace";
+  process.env.INVEST_AGENT_SANDBOX_SECRET_FILE = path.join(tempRoot, ".sandbox-secret");
+
+  try {
+    const { initDb } = await import("../src/db/index.js");
+    const { MastraUserPreferenceStore, planUserPreferenceChange, resolveReviewReportFormat } = await import("../src/services/user-preferences.js");
+    initDb();
+    const store = new MastraUserPreferenceStore("report-format-user", "report-format-instance", "invest-agent");
+
+    // 非法值在校验层拒绝
+    await assert.rejects(
+      () => planUserPreferenceChange(store, { reviewSchedule: { weekly_review: { report_format: "ppt" } } }),
+      /report_format/,
+    );
+
+    // 中文别名归一化为标准枚举
+    const plan = await planUserPreferenceChange(store, { reviewSchedule: { weekly_review: { report_format: "简短" } } });
+    assert.equal(plan.schedules.weekly_review.report_format, "brief");
+    // 未指定的 monthly_review 不被写入口径（缺省即 html）
+    assert.equal(plan.schedules.monthly_review.report_format, undefined);
+    assert.equal(resolveReviewReportFormat(plan.schedules, "monthly"), "html");
+
+    // apply 持久化后回读一致
+    await store.writeSchedules(plan.schedules);
+    assert.equal(resolveReviewReportFormat(await store.readSchedules(), "weekly"), "brief");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

@@ -27,10 +27,12 @@ const DAILY_REVIEW_INSTRUCTION = [
   "不要把未保存的复盘草稿、摘要或自然语言最终回复当作完成。若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。",
 ].join("\n");
 
-// 周/月复盘共用的发布要求（与 runtime/scheduled-tasks.ts 的 runStructuredReviewPrompt 保持一致，双份事实须同步修改）。
+// 周/月复盘共用的发布要求。报告格式是用户偏好（owner 2026-10-12 裁决，非无条件强制）：
+// 运行上下文会注入当前格式（services/user-preferences.ts 的 describeReviewReportFormat，
+// scheduled-tasks.ts 的 runStructuredReviewPrompt 与 generic-automation-runner 共用同一事实）。
 const PERIODIC_REVIEW_PUBLISH_LINES = [
   "发布是本任务唯一完成路径：完成研究后必须调用 reviews.save，content 放完整 Markdown，pushBrief 放独立的微信简报。",
-  "reviews.save 必须同时传 htmlReport：自包含单文件 HTML 可视化报告（内联 SVG 图表、内联样式，禁止外链资源与脚本，禁止 <iframe>）。",
+  "报告格式遵循用户偏好（运行上下文会注入当前格式）：默认 html——reviews.save 必须同时传 htmlReport（自包含单文件 HTML 可视化报告，内联 SVG 图表、内联样式，禁止外链资源与脚本，禁止 <iframe>）；偏好为 markdown/brief/table 时按注入说明的形态生成，不要求 htmlReport。",
   "不要把未保存的复盘草稿、摘要或自然语言最终回复当作完成。若 reviews.save 未成功，停止，不得输出任何面向用户的复盘内容。",
 ];
 

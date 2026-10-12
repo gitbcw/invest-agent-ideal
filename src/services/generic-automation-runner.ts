@@ -32,6 +32,7 @@ import {
   type AutomationTaskRunRecord,
 } from "./automation-tasks.js";
 import { classifyTaskError, executionResponseError, type TaskErrorInfo } from "./task-execution.js";
+import { describeReviewReportFormat, readReviewReportFormat } from "./user-preferences.js";
 import { hasReviewArtifactPublication } from "./conversation-artifacts.js";
 import { classifyThinkingDepth } from "./thinking-depth-router.js";
 import {
@@ -636,6 +637,11 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
   const marketWatchUniverse = input.task.taskType === MARKET_WATCH_TASK_TYPE
     ? await buildMarketWatchUniverseFact(input.scope)
     : null;
+  // 报告格式偏好（owner 2026-10-12）：复盘任务注入当前用户对该类复盘的格式偏好，
+  // 使存量迁移任务（revision 指令冻结为旧文本）也能感知偏好并按其生成报告。
+  const reviewFormatPrompt = reviewTarget
+    ? describeReviewReportFormat(await readReviewReportFormat(input.scope.userId, input.scope.instanceId, reviewTarget.kind, input.scope.projectId))
+    : null;
   const message: AgentMessage = {
     id: input.repairContext ? `${input.run.runId}-repair` : input.run.runId,
     from: `automation:${input.task.taskId}`,
@@ -660,6 +666,7 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         reviewTarget
           ? `本次是受控 ${reviewTarget.kind} 复盘：必须调用 reviews.save，并严格使用 kind='${reviewTarget.kind}'、${reviewTarget.kind === "daily" ? "date" : "reportKey"}='${reviewTarget.reportKey}'；只有服务端回读到本次 artifact 后 run 才能成功。`
           : "",
+        reviewFormatPrompt ?? "",
         spreadsheetContextText,
         input.monthlyRollover
           ? `本任务按月滚动工作簿：当前绑定《${input.monthlyRollover.boundFileName}》不是本月目标《${input.monthlyRollover.targetFileName}》。本次运行必须：先用 assets.version.read 读取当前绑定文件，沿用其工作表、表头与字段口径生成本月目标文件（只含表头与口径、不含历史行），把本次结果追加进新文件，并在 stagedOutput 返回 operation='create'、fileName='${input.monthlyRollover.targetFileName}' 与完整新文件内容；不得继续向旧月份文件追加，也不得使用其他文件名。服务层会把任务绑定切换到本月文件。`
