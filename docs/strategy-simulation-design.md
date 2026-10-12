@@ -2,7 +2,7 @@
 
 日期：2026-09-19。
 
-状态：历史产品设计草案；专用执行器方向已于 2026-10-07 移除并归档（见 [docs/archive/2026-10-07-strategy-simulation-legacy/](./archive/2026-10-07-strategy-simulation-legacy/)），当前执行口径为 Agent-first，见 [templates/skills/strategy-simulation/SKILL.md](../templates/skills/strategy-simulation/SKILL.md)。本文保留早期用户目标和范围取舍，不作为当前工程执行输入。
+状态：历史产品设计草案；专用执行器方向已于 2026-10-07 移除并归档（见 [docs/archive/2026-10-07-strategy-simulation-legacy/](./archive/2026-10-07-strategy-simulation-legacy/)），当前执行口径为 Agent-first（以 [agent-context-quickstart.md](./agent-context-quickstart.md) 的策略模拟方向为准）。本文保留早期用户目标和范围取舍，不作为当前工程执行输入。
 
 ## 1. 产品目标与已确认决定
 
