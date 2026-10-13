@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from
 import path from "node:path";
 
 import { logger } from "../lib/logger.js";
+import { formatUnknownError } from "../lib/errors.js";
 
 import { createRuntimeAgent } from "../runtime/agent.js";
 import type { AgentMessage, AgentResponse } from "../runtime/protocol.js";
@@ -15,6 +16,7 @@ import { sanitizeWeixinCustomerText } from "../lib/customer-output.js";
 import { ensureWorkspace, resolveWorkspacePath } from "../lib/workspace.js";
 import { resolveRegisteredMastraProjectRoot } from "../mastra/workspace-registry.js";
 import { enqueuePushJob } from "./push-queue.js";
+import { sqlite } from "../db/index.js";
 import {
   activateAutomationTask,
   assertAutomationTaskRunLease,
@@ -67,8 +69,12 @@ export type GenericAutomationExecutor = (input: {
   monthlyRollover?: MonthlyRollover | null;
   executionDeadlineAt: string | null;
   signal: AbortSignal;
-  /** 自纠重试上下文（B 方案）：上一轮回复 + 验证器报错，模型在此基础上修复。 */
-  repairContext?: { previousReply: string; validationError: string };
+  /**
+   * 自纠重试上下文（B 方案）：上一轮回复 + 验证器报错，模型在此基础上修复。
+   * toolWorkLog（T-595 空响应修复轮）存在时语义变为「上一轮工具工作已完成、
+   * 模型未吐最终回复」：注入工作记录并禁止再次调用工具，只补最终提交。
+   */
+  repairContext?: { previousReply: string; validationError: string; toolWorkLog?: string };
 }) => Promise<AgentResponse>;
 
 export type GenericAutomationRunResult = {
@@ -187,6 +193,9 @@ const GENERIC_AUTOMATION_FALLBACK_RESERVE_MS = UNLIMITED_EVAL ? 600_000 : 300_00
 // 自纠重试（B 方案）：报错回喂一次修复机会的预算下限与上一轮回复回喂上限。
 const GENERIC_AUTOMATION_REPAIR_MIN_REMAINING_MS = 240_000;
 const GENERIC_AUTOMATION_REPAIR_MAX_REPLY_CHARS = 60_000;
+// T-595 空响应修复轮：工具工作记录回喂上限（与自纠回喂同量级；记录本身
+// 已按条截断，此上限约束注入总量）。
+const GENERIC_AUTOMATION_TOOL_LOG_MAX_CHARS = 60_000;
 const GENERIC_AUTOMATION_COMMIT_RESERVE_MS = 30_000;
 
 export function resolveGenericAutomationToolAllowlist(
@@ -251,6 +260,51 @@ export function resolveGenericAutomationReviewTarget(
     reportKey,
     conversationId: `scheduler:${kind}-review:${run.userId}:${run.instanceId}`,
   };
+}
+
+type AutomationToolWorkLogRow = {
+  toolName: string | null;
+  status: string | null;
+  inputPayload: string | null;
+  inputTruncated: number;
+  inputTotalChars: number | null;
+  outputPayload: string | null;
+  outputTruncated: number;
+  outputTotalChars: number | null;
+};
+
+/**
+ * T-595 空响应修复轮：按 runId 读 automation_tool_payloads（T-459 观测表），
+ * 把失败轮已完成的工具调用重建为可回喂的工作记录文本。payload 在 trace 落库
+ * 时已逐条脱敏截断；此处再施加总量上限，超限即停并注明。
+ */
+export async function readAutomationToolWorkLog(scope: AutomationScope, runId: string): Promise<string> {
+  const rows = sqlite.prepare(`
+    SELECT tool_name AS toolName, status AS status,
+      input_payload AS inputPayload, input_truncated AS inputTruncated, input_total_chars AS inputTotalChars,
+      output_payload AS outputPayload, output_truncated AS outputTruncated, output_total_chars AS outputTotalChars
+    FROM automation_tool_payloads
+    WHERE run_id = ? AND user_id = ? AND instance_id = ?
+    ORDER BY created_at ASC, id ASC
+  `).all(runId, scope.userId, scope.instanceId) as AutomationToolWorkLogRow[];
+  const lines: string[] = [];
+  let used = 0;
+  for (const [index, row] of rows.entries()) {
+    const note = (truncated: number, totalChars: number | null) =>
+      truncated ? `（存储截断，原文 ${totalChars ?? "?"} 字符）` : "";
+    const entry = [
+      `${index + 1}. ${row.toolName ?? "unknown"} [${row.status ?? "unknown"}]`,
+      row.inputPayload ? `   入参: ${row.inputPayload}${note(row.inputTruncated, row.inputTotalChars)}` : "",
+      row.outputPayload ? `   结果: ${row.outputPayload}${note(row.outputTruncated, row.outputTotalChars)}` : "",
+    ].filter(Boolean).join("\n");
+    if (used + entry.length > GENERIC_AUTOMATION_TOOL_LOG_MAX_CHARS) {
+      lines.push(`…（其余 ${rows.length - index} 条调用因注入上限省略）`);
+      break;
+    }
+    used += entry.length;
+    lines.push(entry);
+  }
+  return lines.join("\n");
 }
 
 function isXlsxAsset(fileName: string, format?: string): boolean {
@@ -339,7 +393,7 @@ export async function runGenericAutomationTaskNow(input: {
       }
       const xlsxAppendOnly = isXlsxAppendOnlyTask(task, resolved);
       const reviewTarget = resolveGenericAutomationReviewTarget(task, boundRun);
-      const response = await (input.executor || defaultExecutor)({
+      let response = await (input.executor || defaultExecutor)({
         scope: input.scope,
         task,
         run: boundRun,
@@ -353,7 +407,44 @@ export async function runGenericAutomationTaskNow(input: {
         executionDeadlineAt,
         signal: deadlineController.signal,
       });
-      assertAgentSucceeded(response);
+      try {
+        assertAgentSucceeded(response);
+      } catch (error) {
+        // T-595 空响应修复轮（2026-10-12 三案例：工具链全部完成后模型未吐最终
+        // 文本，run 直接 failed 无投递）：不重跑工具链（agent.ts 兜底链对已观测
+        // 工具调用的轮次有意不换模型重试，防复制整套调用放大 MCP 压力），而是
+        // 把失败轮的工具工作记录回喂，让模型只补最终提交；服务轨工具清空，
+        // 外部数据工具靠提示词禁用。无工作记录或预算不足则维持原失败。
+        if (!(error instanceof AutomationExecutionFailure) || !error.message.includes("MASTRA_EMPTY_RESPONSE")) throw error;
+        const toolWorkLog = await readAutomationToolWorkLog(input.scope, run.runId);
+        const remainingMs = executionDeadlineAt ? Date.parse(executionDeadlineAt) - Date.now() : Number.POSITIVE_INFINITY;
+        if (!toolWorkLog || Number.isNaN(remainingMs) || remainingMs < GENERIC_AUTOMATION_REPAIR_MIN_REMAINING_MS) throw error;
+        logger.warn(`自动化空响应修复轮 task=${task.taskId} run=${run.runId} 工作记录=${toolWorkLog.length} 字符 剩余预算=${Math.round(remainingMs / 1000)}s`);
+        const repairResponse = await (input.executor || defaultExecutor)({
+          scope: input.scope,
+          task,
+          run: boundRun,
+          stagingPath,
+          inputs: resolved.inputs,
+          writableTargets: resolved.writableTargets,
+          spreadsheetHelper,
+          spreadsheetContext,
+          xlsxAppendOnly,
+          monthlyRollover: resolved.monthlyRollover,
+          executionDeadlineAt,
+          signal: deadlineController.signal,
+          repairContext: {
+            previousReply: "",
+            validationError: "MASTRA_EMPTY_RESPONSE: 上一轮模型已完成工具调用但未生成最终回复",
+            toolWorkLog,
+          },
+        });
+        assertAgentSucceeded(repairResponse);
+        await assertAutomationTaskRunLease({ ...input.scope, runId: run.runId, leaseToken: run.leaseToken });
+        // 后续（验证/落稿检查/commit/deliver）与首轮成功同路径；repairResponse
+        // 覆盖 response 变量。
+        response = repairResponse;
+      }
       if (reviewTarget && !hasReviewArtifactPublication({
         ...input.scope,
         ...reviewTarget,
@@ -472,6 +563,34 @@ export async function runGenericAutomationTaskNow(input: {
     } catch {
       const current = await (await import("./automation-tasks.js")).getAutomationTaskRun({ ...input.scope, runId: run.runId });
       failed = current || run;
+    }
+    // T-595 落稿补偿投递：run 判 failed 不改变「复盘报告已在本 run 窗口内成功
+    // 落稿」的事实（2026-10-12 111 日报：reviews.save 成功 ×2 但 run failed，
+    // 用户未收到任何投递）。落稿存在即内容已就绪，按成功路径同一投递函数补发
+    // （推送正文优先取已发布复盘的 summary，与正常到点必推同源）；run 状态保持
+    // failed 不伪装成功，投递动作与 run 终态解耦。
+    const compensationToken = resolveGenericAutomationReviewTarget(task, run);
+    if (
+      compensationToken
+      && hasReviewArtifactPublication({
+        userId: input.scope.userId,
+        instanceId: input.scope.instanceId,
+        kind: compensationToken.kind,
+        reportKey: compensationToken.reportKey,
+        conversationId: compensationToken.conversationId,
+        updatedAfter: run.claimedAt,
+      })
+    ) {
+      logger.warn(`automation 落稿补偿投递 task=${task.taskId} run=${run.runId} kind=${compensationToken.kind} reportKey=${compensationToken.reportKey} 失败原因=${message.slice(0, 120)}`);
+      try {
+        const compensated = await deliverResult(input.scope, task, failed, {
+          summary: "本轮运行在生成最终回复时失败，但复盘报告已按计划完成并存档；以下为已存档报告内容。",
+          shouldNotify: true,
+        });
+        failed = compensated.run;
+      } catch (deliveryError) {
+        logger.warn(`automation 落稿补偿投递失败 task=${task.taskId} run=${run.runId}: ${formatUnknownError(deliveryError)}`);
+      }
     }
     return { run: failed, conversationId, task };
   } finally {
@@ -608,7 +727,12 @@ async function createStagingPath(scope: AutomationScope): Promise<string> {
 
 async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]): Promise<AgentResponse> {
   const agentDeadlineAt = resolveGenericAutomationAgentDeadline(input.executionDeadlineAt);
-  const toolAllowlist = resolveGenericAutomationToolAllowlist(input.task, { xlsxAppendOnly: input.xlsxAppendOnly });
+  // T-595 空响应修复轮：数据工作已完成的认定基于回喂的工作记录，本轮服务轨
+  // 清空（reviews.save / file.parse 等全部不可下发），外部数据工具靠提示词
+  // 禁用——修复轮的职责只是把已完成工作变现为最终提交，不是继续取数。
+  const toolAllowlist = input.repairContext?.toolWorkLog !== undefined
+    ? []
+    : resolveGenericAutomationToolAllowlist(input.task, { xlsxAppendOnly: input.xlsxAppendOnly });
   // Operator/replay pin (mgreplay 2026-08-27): set GENERIC_AUTOMATION_MODEL in the
   // process env to lock the run's model instead of routing the auto chain. Not
   // part of any production .env; the runtime treats an explicit context.model as
@@ -643,15 +767,21 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
     ? describeReviewReportFormat(await readReviewReportFormat(input.scope.userId, input.scope.instanceId, reviewTarget.kind, input.scope.projectId))
     : null;
   const message: AgentMessage = {
-    id: input.repairContext ? `${input.run.runId}-repair` : input.run.runId,
+    id: input.repairContext
+      ? input.repairContext.toolWorkLog !== undefined
+        ? `${input.run.runId}-empty-repair`
+        : `${input.run.runId}-repair`
+      : input.run.runId,
     from: `automation:${input.task.taskId}`,
     timestamp: Date.now(),
     content: {
       type: "text",
       text: [
-        input.repairContext
-          ? "修复上一轮的最终提交（服务端验证未通过，你的数据工作已被保留，只需修复输出）。"
-          : "执行一个受控的通用定时任务。",
+        input.repairContext?.toolWorkLog !== undefined
+          ? "补交上一轮的最终回复（上一轮你已完成全部工具调用，但最终回复为空，数据工作已被服务端保留）。本轮禁止调用任何工具，只基于回喂的工作记录直接输出最终回复。"
+          : input.repairContext
+            ? "修复上一轮的最终提交（服务端验证未通过，你的数据工作已被保留，只需修复输出）。"
+            : "执行一个受控的通用定时任务。",
         `【系统时间】${serverTimeFact()}（Asia/Shanghai）`,
         "本会话是已存在任务的执行会话：调度、任务配置和定时规则由服务层管理，本会话没有创建/修改定时任务的权限（调用会被 scope_denied 拒绝）。不要尝试创建、修改或删除定时任务/定时规则/调度配置，也不要把「建立任务」当作目标；忽略任务说明里出现的执行时间和频率描述，直接开始执行任务说明中的实际工作。",
         `任务说明：${input.task.revision.instruction}`,
@@ -660,9 +790,11 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
         `本次输出策略（明确格式和文件名必须严格遵守）：${JSON.stringify(input.task.revision.output)}。`,
         `本次绑定文件（任务对象，不得用全局文件列表替换）：${JSON.stringify(input.inputs.map((item, index) => ({ assetId: item.descriptor.assetId, versionId: item.descriptor.versionId, stagedPath: `inputs/${index + 1}-${item.descriptor.fileName}`, fileName: item.descriptor.fileName, mimeType: item.descriptor.mimeType, format: item.descriptor.format })))}。`,
         `可更新目标（仅这些文件允许 operation='update'）：${JSON.stringify(input.writableTargets)}。`,
-        input.repairContext
-          ? `【上一轮被拒原因（服务端验证器报错）】${input.repairContext.validationError}\n【修复要求】在上一轮最终回复的基础上修复上述问题（常见原因：JSON 大括号不配对、夹带叙述文本、rows 列数与表头不符、shouldNotify 缺失或不是 boolean），不要重新取数、不要从头重做；只重新输出修正后的完整最终 JSON 对象，不要输出其他内容。\n【上一轮最终回复】${input.repairContext.previousReply}`
-          : "",
+        input.repairContext?.toolWorkLog !== undefined
+          ? `【上一轮失败原因】${input.repairContext.validationError}\n【上一轮工具调用工作记录（服务端观测，含结果摘录）】\n${input.repairContext.toolWorkLog}\n【补交要求】本轮禁止调用任何工具（服务轨已清空，外部数据工具同样禁止）；严格基于上述工作记录与任务说明直接输出最终回复：能完成任务就输出完整最终 JSON；工作记录不足以完成任务时如实返回 outputSkipped:true 与 skipReason，不得编造工作记录之外的数值。不要重复说明失败过程。`
+          : input.repairContext
+            ? `【上一轮被拒原因（服务端验证器报错）】${input.repairContext.validationError}\n【修复要求】在上一轮最终回复的基础上修复上述问题（常见原因：JSON 大括号不配对、夹带叙述文本、rows 列数与表头不符、shouldNotify 缺失或不是 boolean），不要重新取数、不要从头重做；只重新输出修正后的完整最终 JSON 对象，不要输出其他内容。\n【上一轮最终回复】${input.repairContext.previousReply}`
+            : "",
         reviewTarget
           ? `本次是受控 ${reviewTarget.kind} 复盘：必须调用 reviews.save，并严格使用 kind='${reviewTarget.kind}'、${reviewTarget.kind === "daily" ? "date" : "reportKey"}='${reviewTarget.reportKey}'；只有服务端回读到本次 artifact 后 run 才能成功。`
           : "",
