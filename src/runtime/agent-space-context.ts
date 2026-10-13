@@ -47,8 +47,21 @@ export function isStarterSkillApplicable(slug: string, request: string): boolean
   return STARTER_SKILL_TRIGGERS[slug]?.test(request) ?? true;
 }
 
+let assemblyModeLockWarned = false;
+
 export function isAgentSpaceAssemblyModeEnabled(userId: string): boolean {
   const flag = (process.env[AGENT_SPACE_ASSEMBLY_MODE_ENV] ?? "").trim().toLowerCase();
+  // T-534 收口请示①（owner 2026-10-13 批准关闭旧 Workspace 运行入口）：
+  // 生产只允许全量装配。off/scope/缺省本会让轮次回落 legacy Workspace 装配
+  //（autoLoadSkills + 路径写入 + AGENTS.md instructions），旧入口自此无法
+  // 通过改配置重开，回退只能走发版。测试与隔离镜像保留 off/scope 语义。
+  if (process.env.NODE_ENV === "production" && !(flag === "on" || flag === "1" || flag === "true")) {
+    if (!assemblyModeLockWarned) {
+      assemblyModeLockWarned = true;
+      logger.warn(`AGENT_SPACE_ASSEMBLY_MODE 生产锁定：配置=${flag || "(未设置)"} 视为 on（旧 Workspace 运行入口已关闭，回退需发版；T-534 2026-10-13）`);
+    }
+    return true;
+  }
   if (!flag || flag === "off" || flag === "0" || flag === "false") return false;
   if (flag === "on" || flag === "1" || flag === "true") return true;
   if (flag.startsWith("scope:")) {
