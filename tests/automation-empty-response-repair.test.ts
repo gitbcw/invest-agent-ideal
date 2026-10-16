@@ -250,10 +250,25 @@ test("failed review runs without an archived artifact deliver nothing extra", as
   assert.notEqual(result.run.deliveryStatus, "pending", "no artifact means no compensation delivery");
 });
 
+test("automation runs must surface EMPTY to the repair chain: partial narration is never a usable reply (T-317)", async () => {
+  const { __test__ } = await import("../src/runtime/agent.js");
+  // 2026-10-13/15 生产形态：glm flash 工具期中文叙述（汉字占比≥30%）曾被
+  // partial 降级当成 success 返回，吞掉 MASTRA_EMPTY_RESPONSE，T-317 因此绕过
+  // 空响应修复链、走上只看得见叙述散文的旧验证修复轮，补交 16≠17 列失败。
+  const narration = "任务：行业复盘，追加到工作簿。需要当日涨幅前10行业数据。食品饮料 0.72，非银金融 0.40。";
+  assert.equal(__test__.isPartialTextUsableReply("automation", narration), false);
+  assert.equal(__test__.isPartialTextUsableReply("automation", ""), false);
+  // 会话通道语义保持：中文叙述仍可作为阶段性回复，英文工作叙述仍判不可用。
+  assert.equal(__test__.isPartialTextUsableReply("web", narration), true);
+  assert.equal(__test__.isPartialTextUsableReply("weixin-mobile", narration), true);
+  assert.equal(__test__.isPartialTextUsableReply("web", "Need top 10 industry gainers. Use mdt catalog."), false);
+});
+
 test("the empty-response repair prompt keeps tools forbidden and feeds the work log", async () => {
   const source = await import("node:fs/promises");
   const runnerSource = await source.readFile(new URL("../src/services/generic-automation-runner.ts", import.meta.url), "utf8");
   assert.match(runnerSource, /本轮禁止调用任何工具/);
   assert.match(runnerSource, /【上一轮工具调用工作记录（服务端观测，含结果摘录）】/);
   assert.match(runnerSource, /落稿补偿投递/);
+  assert.match(runnerSource, /【补交列数要求】/);
 });

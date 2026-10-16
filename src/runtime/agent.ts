@@ -717,12 +717,11 @@ export function createRuntimeAgent(): RuntimeAgent {
         // flash 思考档的英文工作叙述会被空响应/超时兜底拼成「英文回复」；
         // 汉字占字母类字符不足 30% 的 partial 一律按内部叙述丢弃，走确定性
         // 中文降级文案。正常完成的回复不走此路径，不受影响。
-        const partialCjk = (partialText.match(/[\u4e00-\u9fff]/g) ?? []).length;
-        const partialLatin = (partialText.match(/[a-zA-Z]/g) ?? []).length;
-        const partialUsable = partialText
-          && !isLikelyInternalAgentDraft(partialText)
-          && partialCjk + partialLatin >= 4
-          && partialCjk / (partialCjk + partialLatin) >= 0.3;
+        // T-595 后续（2026-10-16）：automation 通道豁免——partial 叙述会把
+        // MASTRA_EMPTY_RESPONSE 伪装成 success（executionStatus=partial），
+        // generic runner 的空响应修复链（回喂工具工作记录）永不触发，只能走
+        // 看得见叙述散文的旧验证修复轮（T-317 三天 16≠17 列失败的根因）。
+        const partialUsable = isPartialTextUsableReply(channel, partialText);
         if (partialUsable) {
           const partial = channel === "weixin-mobile"
             ? sanitizeWeixinCustomerText(partialText)
@@ -872,4 +871,16 @@ export function buildChannelContextInstruction(channel: UserContext["channel"]):
   return null;
 }
 
-export const __test__ = { isInitializationUnfinished, buildInitializationNotice };
+/** 空响应/超时残留的 partial 叙述能否当作「阶段性回复」直接返回。会话类
+ * 通道允许（用户能追问补齐）；automation 通道不允许——run 的下游是结构化
+ * 输出验证器，叙述会把 EMPTY 伪装成 success、绕过服务层的空响应修复链
+ * （T-595 后续，2026-10-16，T-317 三天 16≠17 列失败的根因）。 */
+function isPartialTextUsableReply(channel: string, partialText: string): boolean {
+  if (channel === "automation") return false;
+  if (!partialText || isLikelyInternalAgentDraft(partialText)) return false;
+  const cjk = (partialText.match(/[\u4e00-\u9fff]/g) ?? []).length;
+  const latin = (partialText.match(/[a-zA-Z]/g) ?? []).length;
+  return cjk + latin >= 4 && cjk / (cjk + latin) >= 0.3;
+}
+
+export const __test__ = { isInitializationUnfinished, buildInitializationNotice, isPartialTextUsableReply };

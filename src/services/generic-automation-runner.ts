@@ -795,6 +795,12 @@ async function defaultExecutor(input: Parameters<GenericAutomationExecutor>[0]):
           : input.repairContext
             ? `【上一轮被拒原因（服务端验证器报错）】${input.repairContext.validationError}\n【修复要求】在上一轮最终回复的基础上修复上述问题（常见原因：JSON 大括号不配对、夹带叙述文本、rows 列数与表头不符、shouldNotify 缺失或不是 boolean），不要重新取数、不要从头重做；只重新输出修正后的完整最终 JSON 对象，不要输出其他内容。\n【上一轮最终回复】${input.repairContext.previousReply}`
             : "",
+        // T-595 后续（2026-10-16，T-317 三天 16≠17 列）：补交轮从工作记录重建
+        // 行时会对墓碑列/不适用列做「合理省略」，服务端列数校验只认整数列。
+        // 显式要求占位，把语义判断从模型手里收回服务端。
+        input.repairContext?.toolWorkLog !== undefined && input.spreadsheetHelper
+          ? "【补交列数要求】若最终 JSON 包含 appendRows，rows 每行必须恰好等于 columnCount 列、严格按服务端给出的 header 列序排列；表头中标记为已删除/停用/不适用的列也必须占位（可填空串或「不适用」），不得因列语义省略整列或跳过个别列。"
+          : "",
         reviewTarget
           ? `本次是受控 ${reviewTarget.kind} 复盘：必须调用 reviews.save，并严格使用 kind='${reviewTarget.kind}'、${reviewTarget.kind === "daily" ? "date" : "reportKey"}='${reviewTarget.reportKey}'；只有服务端回读到本次 artifact 后 run 才能成功。`
           : "",
